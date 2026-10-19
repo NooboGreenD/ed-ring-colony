@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authFetch } from '@/lib/supabaseClient';
-import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconRefresh, IconShieldHalf, IconTrash, IconUpload, IconXCircle } from '@/components/Icons';
+import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconRefresh, IconShieldHalf, IconTrash, IconXCircle } from '@/components/Icons';
+import ArchiveUploadControl from '@/components/Admin/ArchiveUploadControl';
 import { BGS_ALLEGIANCE_COLOR, BGS_SOURCE_LABEL, allegianceLabel, formatBgsDate, normalizeSource } from '@/lib/bgs';
 import {
   BGS_MODE_LABEL,
@@ -14,7 +15,6 @@ import {
   formatBgsBytes,
   formatBgsCount,
   formatBgsDuration,
-  formatBgsSpeed,
   sanitizeBgsLog,
   sanitizeBgsProgress,
   type BgsLogLine,
@@ -262,39 +262,6 @@ function ProgressBar({ fraction, color, height = 8, indeterminate = false, label
   );
 }
 
-interface UploadState {
-  name: string;
-  size: number;
-  sent: number;
-  /** С какого байта началась эта сессия (продолжение незаконченной загрузки). */
-  startOffset: number;
-  startedAt: number;
-}
-
-class UploadHttpError extends Error {
-  status: number;
-
-  constructor(message: string, status: number) {
-    super(message);
-    this.status = status;
-  }
-}
-
-const UPLOAD_CHUNK_FALLBACK = 8 * 1024 * 1024;
-
-async function postUpload(body: Record<string, unknown>): Promise<Record<string, any>> {
-  const response = await authFetch('/api/admin/factions/upload', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || !payload || payload.success === false) {
-    throw new UploadHttpError(payload?.error || `HTTP ${response.status}`, response.status);
-  }
-  return payload;
-}
-
 function Stat({ label, value, color, small = false, title }: { label: string; value: string; color?: string; small?: boolean; title?: string }) {
   return (
     <div style={{ background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px' }} title={title}>
@@ -312,9 +279,7 @@ export default function FactionsAdminTab() {
   const [isError, setIsError] = useState(false);
   const [copied, setCopied] = useState(false);
   const [segments, setSegments] = useState<number | null>(null);
-  const [upload, setUpload] = useState<UploadState | null>(null);
-  const uploadAbort = useRef<AbortController | null>(null);
-  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
   const logRef = useRef<HTMLPreElement | null>(null);
   const stickToBottom = useRef(true);
 
@@ -406,85 +371,6 @@ export default function FactionsAdminTab() {
     }
   };
 
-  /**
-   * Архив с компьютера: кусками по 8 МБ, каждый со своим смещением. Обрыв —
-   * повтор куска; 409 — сервер говорит, сколько у него на самом деле, и
-   * загрузка продолжается с этого места (в том числе после перезагрузки
-   * страницы: тот же файл продолжается, а не начинается заново).
-   */
-  const uploadArchive = async (file: File) => {
-    const controller = new AbortController();
-    uploadAbort.current = controller;
-    setMessage('');
-    setIsError(false);
-    try {
-      const started = await postUpload({ action: 'start', name: file.name, size: file.size, lastModified: file.lastModified });
-      let offset = Math.max(0, Number(started.offset) || 0);
-      const chunkBytes = Math.max(1024, Number(started.chunkBytes) || UPLOAD_CHUNK_FALLBACK);
-      setUpload({ name: file.name, size: file.size, sent: offset, startOffset: offset, startedAt: Date.now() });
-      while (offset < file.size) {
-        const end = Math.min(file.size, offset + chunkBytes);
-        for (let attempt = 1; ; attempt++) {
-          if (controller.signal.aborted) throw new Error('stopped');
-          try {
-            const response = await authFetch(`/api/admin/factions/upload?offset=${offset}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/octet-stream' },
-              body: file.slice(offset, end),
-              signal: controller.signal,
-            });
-            const payload = await response.json().catch(() => null);
-            if (response.status === 409 && typeof payload?.offset === 'number') {
-              offset = payload.offset;
-              break;
-            }
-            if (!response.ok || !payload?.success) throw new UploadHttpError(payload?.error || `HTTP ${response.status}`, response.status);
-            offset = Number(payload.offset);
-            break;
-          } catch (error) {
-            if (controller.signal.aborted) throw error;
-            const status = (error as UploadHttpError).status ?? 0;
-            const retryable = status === 0 || status >= 500 || status === 408 || status === 429;
-            if (!retryable || attempt >= 6) throw error;
-            await new Promise((resolve) => window.setTimeout(resolve, 1500 * attempt));
-          }
-        }
-        setUpload((current) => (current ? { ...current, sent: offset } : current));
-      }
-      const done = await postUpload({ action: 'finish' });
-      setMessage(
-        `Архив загружен на сервер: ${formatBgsBytes(done.bytes)}${done.sameAsEdsm ? ' — это тот же дамп, что сейчас на EDSM' : ''}. `
-          + 'Нажмите «Загрузить данные»: архив разобьётся на куски и запишется в базу, EDSM не понадобится.',
-      );
-    } catch (error) {
-      if (controller.signal.aborted) {
-        setMessage('Загрузка архива остановлена. Принятое осталось на сервере — выберите тот же файл, и загрузка продолжится.');
-      } else {
-        setMessage(`Архив не загружен: ${(error as Error).message}`);
-        setIsError(true);
-      }
-    } finally {
-      uploadAbort.current = null;
-      setUpload(null);
-      if (fileInput.current) fileInput.current.value = '';
-      stickToBottom.current = true;
-      await load();
-    }
-  };
-
-  const discardUpload = async () => {
-    if (!window.confirm('Удалить незаконченную загрузку архива с сервера?')) return;
-    try {
-      const result = await postUpload({ action: 'cancel' });
-      setMessage(result.removed ? `Незаконченная загрузка удалена — освобождено ${formatBgsBytes(result.freed)}` : 'Незаконченной загрузки нет');
-      setIsError(false);
-    } catch (error) {
-      setMessage((error as Error).message);
-      setIsError(true);
-    }
-    await load();
-  };
-
   const copyLog = async () => {
     if (!status?.log.length) return;
     const text = status.log.map((line) => `${line.at} ${line.level.toUpperCase()} ${line.text}`).join('\n');
@@ -522,10 +408,7 @@ export default function FactionsAdminTab() {
   const shardSystems = status?.config.shardSystems ?? 1000;
   const stallSeconds = status?.config.stallSeconds ?? 15;
   const shortRequests = status?.config.shortRequests ?? 'auto';
-  const uploading = upload !== null;
   const splitting = running && progress?.stages.find((stage) => stage.id === 'split')?.status === 'running';
-  const pendingUpload = !uploading && status?.upload?.active ? status.upload : null;
-  const uploadSpeed = upload ? (upload.sent - upload.startOffset) / Math.max(1, (Date.now() - upload.startedAt) / 1000) : 0;
   const dumpUrl = status?.config.dumpUrl ?? 'https://www.edsm.net/dump/systemsPopulated.json.gz';
 
   return (
@@ -714,68 +597,24 @@ export default function FactionsAdminTab() {
                   <IconTrash size={12} /> Удалить архив и куски
                 </button>
               </div>
-              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #2d3136' }} data-bgs-admin-upload="">
-                {upload ? (
-                  <>
-                    <div style={{ color: RUN }} data-bgs-admin-upload-progress="">
-                      Загружаю {upload.name}: {formatBgsBytes(upload.sent)} из {formatBgsBytes(upload.size)}
-                      {` (${Math.floor((upload.sent / Math.max(1, upload.size)) * 100)} %)`}
-                      {uploadSpeed > 0 ? ` · ${formatBgsSpeed(uploadSpeed)}` : ''}
-                    </div>
-                    <div style={{ marginTop: 4 }}>
-                      <ProgressBar fraction={upload.sent / Math.max(1, upload.size)} color={RUN} height={5} label="Загружено с компьютера" />
-                    </div>
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      style={{ fontSize: 12, padding: '3px 8px', marginTop: 6 }}
-                      onClick={() => uploadAbort.current?.abort()}
-                      data-bgs-admin-action="upload-stop"
-                    >
-                      Остановить загрузку
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {pendingUpload && (
-                      <div style={{ color: '#fbbf24', marginBottom: 6 }} data-bgs-admin-upload-pending="">
-                        Незаконченная загрузка: {pendingUpload.name} — {formatBgsBytes(pendingUpload.received)} из {formatBgsBytes(pendingUpload.size)}.
-                        Выберите тот же файл — загрузка продолжится с этого места.{' '}
-                        <button type="button" className="btn" style={{ fontSize: 11, padding: '1px 6px' }} onClick={() => void discardUpload()} data-bgs-admin-action="upload-discard">
-                          Удалить
-                        </button>
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ fontSize: 12, padding: '3px 8px' }}
-                      disabled={busy !== null || running}
-                      onClick={() => fileInput.current?.click()}
-                      title="Передать на сервер systemsPopulated.json.gz, скачанный на этом компьютере"
-                      data-bgs-admin-action="upload"
-                    >
-                      <IconUpload size={12} /> Загрузить архив с компьютера
-                    </button>
-                    <input
-                      ref={fileInput}
-                      type="file"
-                      accept=".gz,application/gzip,application/x-gzip"
-                      style={{ display: 'none' }}
-                      data-bgs-admin-upload-input=""
-                      onChange={(event) => {
-                        const file = event.currentTarget.files?.[0];
-                        if (file) void uploadArchive(file);
-                      }}
-                    />
-                    <div style={{ fontSize: 11, color: DIM, marginTop: 4, lineHeight: 1.5 }}>
-                      Серверу не скачать архив с EDSM (в журнале соединения «замолкают» или «замирают»)? Скачайте{' '}
-                      <a href={dumpUrl} target="_blank" rel="noreferrer" style={{ color: ACCENT }}>systemsPopulated.json.gz</a> на этом
-                      компьютере и загрузите его сюда — дальше «Загрузить данные» разобьёт его на куски и запишет в базу без EDSM.
-                    </div>
-                  </>
-                )}
-              </div>
+              <ArchiveUploadControl
+                endpoint="/api/admin/factions/upload"
+                prefix="bgs-admin"
+                sourceName="systemsPopulated.json.gz"
+                dumpUrl={dumpUrl}
+                disabled={busy !== null || running}
+                pending={status?.upload}
+                accent={ACCENT}
+                onUploadingChange={setUploading}
+                onMessage={(text, error) => {
+                  setMessage(text);
+                  setIsError(error);
+                }}
+                onSettled={async () => {
+                  stickToBottom.current = true;
+                  await load();
+                }}
+              />
             </div>
           )}
           <div style={{ background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px', fontSize: 12, color: MUTED }} data-bgs-admin-shards="">

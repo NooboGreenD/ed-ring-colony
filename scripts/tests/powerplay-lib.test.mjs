@@ -58,6 +58,7 @@ import {
 } from '../../src/lib/powerplay.ts';
 import {
   POWERPLAY_LOG_LIMIT,
+  POWERPLAY_MODE_STAGES,
   POWERPLAY_SYNC_STAGES,
   computePowerplayPercent,
   createPowerplayProgress,
@@ -65,8 +66,11 @@ import {
   finishPowerplayStage,
   formatPowerplayBytes,
   formatPowerplayDuration,
+  formatPowerplaySpeed,
+  markPowerplayInterrupted,
   publicPowerplayProgress,
   pushPowerplayLog,
+  resetPowerplayStage,
   sanitizePowerplayLog,
   sanitizePowerplayProgress,
   sanitizePublicPowerplayProgress,
@@ -472,41 +476,74 @@ test('фильтр по державам: двенадцать держав до
 
 /* ── Ход импорта: этапы, проценты, журнал ──────────────────────────────── */
 
-test('ход импорта: проценты по весам этапов, 304 — сразу 100 %, ошибка оставляет этап с ошибкой', () => {
+test('ход импорта: этапы как у фракций, проценты по весам, «без изменений» — сразу 100 %, ошибка оставляет этап с ошибкой', () => {
   assert.equal(POWERPLAY_SYNC_STAGES.reduce((sum, stage) => sum + stage.weight, 0), 100, 'веса этапов — ровно сто');
+  assert.deepEqual(POWERPLAY_SYNC_STAGES.map((stage) => stage.id), ['probe', 'download', 'split', 'import', 'finish'], 'архив → куски → база');
   const at = '2026-10-18T10:00:00.000Z';
   const progress = createPowerplayProgress({ id: 'run-a', trigger: 'admin', force: true, now: at });
   assert.equal(progress.percent, 0);
   assert.equal(progress.phase, 'running');
-  assert.deepEqual(progress.stages.map((stage) => stage.status), ['pending', 'pending', 'pending', 'pending', 'pending', 'pending']);
+  assert.equal(progress.mode, 'full');
+  assert.deepEqual(progress.stages.map((stage) => stage.status), ['pending', 'pending', 'pending', 'pending', 'pending']);
 
-  startPowerplayStage(progress, 'request', { now: at });
-  finishPowerplayStage(progress, 'request', { now: at });
+  startPowerplayStage(progress, 'probe', { now: at });
+  finishPowerplayStage(progress, 'probe', { now: at });
   assert.equal(progress.percent, 4);
   startPowerplayStage(progress, 'download', { total: 1000, detail: 'начало', now: at });
   updatePowerplayStage(progress, 'download', { done: 500, detail: '500 из 1000' });
-  assert.equal(progress.percent, 22, 'половина скачивания: 4 + 36/2');
-  assert.equal(progress.message, 'Скачивание дампа: 500 из 1000');
+  assert.equal(progress.percent, 27, 'половина скачивания: 4 + 46/2');
+  assert.equal(progress.message, 'Скачивание архива на сервер: 500 из 1000');
   assert.equal(progress.stage, 'download');
 
   // Дамп не менялся: остальные этапы «не нужны», итог — 100 %.
   const notModified = createPowerplayProgress({ id: 'run-b', now: at });
-  startPowerplayStage(notModified, 'request', { now: at });
-  finishPowerplayStage(notModified, 'request', { now: at });
+  startPowerplayStage(notModified, 'probe', { now: at });
+  finishPowerplayStage(notModified, 'probe', { now: at });
   finishPowerplayProgress(notModified, 'not_modified', { message: 'без изменений', now: at });
   assert.equal(notModified.percent, 100);
-  assert.deepEqual(notModified.stages.map((stage) => stage.status), ['done', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped']);
+  assert.deepEqual(notModified.stages.map((stage) => stage.status), ['done', 'skipped', 'skipped', 'skipped', 'skipped']);
 
   // Ошибка посреди записи: этап с ошибкой, процент — сколько успели.
-  startPowerplayStage(progress, 'write', { total: 100, now: at });
-  updatePowerplayStage(progress, 'write', { done: 40 });
+  finishPowerplayStage(progress, 'download', { now: at });
+  startPowerplayStage(progress, 'split', { now: at });
+  finishPowerplayStage(progress, 'split', { now: at });
+  startPowerplayStage(progress, 'import', { total: 10, now: at });
+  updatePowerplayStage(progress, 'import', { done: 4 });
   finishPowerplayProgress(progress, 'error', { message: 'сбой', result: { error: 'сбой' }, now: at });
-  const write = progress.stages.find((stage) => stage.id === 'write');
+  const write = progress.stages.find((stage) => stage.id === 'import');
   assert.equal(write.status, 'error');
   assert.equal(progress.stages.find((stage) => stage.id === 'finish').status, 'pending', 'до завершения не дошли');
   assert.ok(progress.percent > 0 && progress.percent < 100);
   assert.equal(progress.percent, computePowerplayPercent(progress));
   assert.equal(publicPowerplayProgress(progress), null, 'закончившийся прогон во вкладку не отдаётся');
+});
+
+test('виды запуска PowerPlay: по частям, этапы вне запуска не входят в процент, оборванный ход честно помечен', () => {
+  const at = '2026-10-18T10:00:00.000Z';
+  assert.deepEqual(POWERPLAY_MODE_STAGES.download, ['probe', 'download']);
+  assert.deepEqual(POWERPLAY_MODE_STAGES.import, ['split', 'import', 'finish']);
+  const download = createPowerplayProgress({ id: 'd', mode: 'download', now: at });
+  assert.deepEqual(download.stages.map((stage) => stage.status), ['pending', 'pending', 'skipped', 'skipped', 'skipped']);
+  startPowerplayStage(download, 'probe', { now: at });
+  finishPowerplayStage(download, 'probe', { now: at });
+  startPowerplayStage(download, 'download', { total: 100, now: at });
+  updatePowerplayStage(download, 'download', { done: 50, now: at });
+  assert.equal(download.percent, Math.round(((4 + 46 / 2) / 50) * 1000) / 10, 'процент только по своим этапам');
+  // Дамп сменился посреди скачивания — этап начинается заново.
+  resetPowerplayStage(download, 'download', at);
+  assert.deepEqual([download.stages[1].status, download.stages[1].done, download.stages[1].total], ['pending', 0, null]);
+
+  const split = createPowerplayProgress({ id: 's', mode: 'split', now: at });
+  assert.deepEqual(split.stages.filter((stage) => stage.status !== 'skipped').map((stage) => stage.id), ['split']);
+
+  const running = createPowerplayProgress({ id: 'r', trigger: 'lazy', now: at });
+  startPowerplayStage(running, 'download', { total: 100, now: at });
+  const lost = markPowerplayInterrupted(running, Date.parse(at) + 1000);
+  assert.equal(lost.phase, 'cancelled');
+  assert.match(lost.result.error, /Прервано перезапуском сайта/);
+  assert.equal(lost.stages[1].status, 'error');
+  assert.equal(running.phase, 'running', 'исходный ход не тронут');
+  assert.equal(markPowerplayInterrupted(lost), lost, 'законченный — как есть');
 });
 
 test('журнал импорта: обрезка по длине и количеству, разбор сохранённого хода и журнала', () => {
@@ -522,31 +559,47 @@ test('журнал импорта: обрезка по длине и колич�
   ]);
   assert.deepEqual(sanitizePowerplayLog('junk'), []);
 
-  const running = createPowerplayProgress({ id: 'run-c', trigger: 'cron', now: '2026-10-18T10:00:00.000Z' });
-  startPowerplayStage(running, 'write', { total: 10, detail: 'пачка 1 из 5' });
-  updatePowerplayStage(running, 'write', { done: 2 });
+  const running = createPowerplayProgress({ id: 'run-c', trigger: 'cron', mode: 'import', now: '2026-10-18T10:00:00.000Z' });
+  startPowerplayStage(running, 'import', { total: 10, detail: 'кусок 1 из 5' });
+  updatePowerplayStage(running, 'import', { done: 2 });
   const restored = sanitizePowerplayProgress(JSON.parse(JSON.stringify(running)));
-  assert.equal(restored.trigger, 'cron');
-  assert.equal(restored.stage, 'write');
-  assert.equal(restored.percent, running.percent);
+  assert.deepEqual(restored, running, 'JSON туда и обратно без потерь');
   assert.equal(restored.stages.length, POWERPLAY_SYNC_STAGES.length);
   assert.equal(sanitizePowerplayProgress({ id: 'x' }), null, 'без времени старта — не ход импорта');
   assert.equal(sanitizePowerplayProgress(null), null);
-  const hostile = sanitizePowerplayProgress({ id: 'h', startedAt: '2026-10-18T10:00:00Z', phase: 'evil', trigger: 'root', stages: [{ id: 'write', status: 'boom', done: -5 }] });
+  const hostile = sanitizePowerplayProgress({ id: 'h', startedAt: '2026-10-18T10:00:00Z', phase: 'evil', trigger: 'root', mode: 'nuke', stages: [{ id: 'import', status: 'boom', done: -5 }] });
   assert.equal(hostile.phase, 'error');
   assert.equal(hostile.trigger, 'manual');
-  assert.equal(hostile.stages.find((stage) => stage.id === 'write').status, 'pending');
-  assert.equal(hostile.stages.find((stage) => stage.id === 'write').done, 0);
+  assert.equal(hostile.mode, 'full');
+  assert.equal(hostile.stages.find((stage) => stage.id === 'import').status, 'pending');
+  assert.equal(hostile.stages.find((stage) => stage.id === 'import').done, 0);
+
+  // Ход, сохранённый до web 2.24.0 (запрос → скачивание → распаковка → разбор → запись → завершение).
+  const legacy = sanitizePowerplayProgress({
+    id: 'old', phase: 'ok', trigger: 'lazy', stage: 'write', startedAt: '2026-10-18T09:00:00Z',
+    stages: [
+      { id: 'request', status: 'done' }, { id: 'download', status: 'done', done: 10, total: 10 }, { id: 'decode', status: 'done' },
+      { id: 'parse', status: 'done' }, { id: 'write', status: 'done', detail: 'пачка 14 из 14' }, { id: 'finish', status: 'done' },
+    ],
+    result: { rows: 5, deleted: 1, total: 5, durationMs: 900 },
+  });
+  assert.deepEqual(legacy.stages.map((stage) => [stage.id, stage.status]),
+    [['probe', 'done'], ['download', 'done'], ['split', 'done'], ['import', 'done'], ['finish', 'done']], 'прежние этапы читаются по-новому');
+  assert.equal(legacy.stage, 'import');
+  assert.equal(legacy.stages[3].detail, 'пачка 14 из 14');
+  assert.deepEqual(legacy.result, { rows: 5, deleted: 1, total: 5, durationMs: 900 });
 
   const pub = publicPowerplayProgress(running);
-  assert.deepEqual(Object.keys(pub).sort(), ['message', 'percent', 'stage', 'stageLabel', 'startedAt'], 'наружу — без триггера и журнала');
-  assert.equal(pub.stageLabel, 'Запись в базу');
-  assert.equal(sanitizePublicPowerplayProgress({ stage: 'write', percent: 250, message: 'm' }).percent, 100);
+  assert.deepEqual(Object.keys(pub).sort(), ['message', 'mode', 'percent', 'stage', 'stageLabel', 'startedAt'], 'наружу — без триггера и журнала');
+  assert.equal(pub.stageLabel, 'Загрузка кусков в базу');
+  assert.equal(sanitizePublicPowerplayProgress({ stage: 'import', percent: 250, message: 'm' }).percent, 100);
+  assert.equal(sanitizePublicPowerplayProgress({ stage: 'write', percent: 64 }).stage, 'import', 'этап прежней версии из кэша браузера');
   assert.equal(sanitizePublicPowerplayProgress('x'), null);
 
   // В ответе API слоя ход импорта переживает разбор в браузере.
   const decoded = decodePowerplayLayer({ status: 'empty', powers: [], systems: [], meta: { refreshing: true, progress: pub } });
-  assert.equal(decoded.meta.progress.stage, 'write');
+  assert.equal(decoded.meta.progress.stage, 'import');
+  assert.equal(decoded.meta.progress.stageLabel, 'Загрузка кусков в базу');
   assert.equal(decoded.meta.refreshing, true);
   assert.equal(decodePowerplayLayer({ status: 'empty', systems: [] }).meta.progress, null);
 });
@@ -558,4 +611,7 @@ test('подписи хода импорта: байты и длительнос
   assert.equal(formatPowerplayDuration(12_400), '12,4 с');
   assert.equal(formatPowerplayDuration(125_000), '2 мин 05 с');
   assert.equal(formatPowerplayDuration(-1), '—');
+  assert.equal(formatPowerplayDuration(3_725_000), '1 ч 02 мин');
+  assert.equal(formatPowerplaySpeed(1_468_006), '1,4 МБ/с');
+  assert.equal(formatPowerplaySpeed(0), '—');
 });

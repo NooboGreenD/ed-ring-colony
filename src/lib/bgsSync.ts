@@ -44,8 +44,8 @@
  * журнал — в памяти процесса и копией в `bgs_sync_state`.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, statfsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { BgsDumpCounter, type BgsDumpStats } from './bgsDump.ts';
@@ -83,7 +83,6 @@ import {
   sameBgsDumpSource,
   splitBgsArchive,
   writeBgsShardManifest,
-  writeFileAtomic,
   type BgsDumpSource,
   type BgsShardManifest,
   type BgsShardsInfo,
@@ -95,7 +94,21 @@ import {
   type BgsDbWriter,
   type BgsPgClient,
 } from './bgsWriter.ts';
-import { createFreshConnectionFetch } from './freshFetch.ts';
+import {
+  adoptManualArchive,
+  archiveIsComplete,
+  archiveLeftovers,
+  archiveMetaSource,
+  dumpArchiveInfo,
+  fileSize,
+  freeBytes,
+  readArchiveMeta,
+  removeArchive,
+  writeArchiveMeta,
+  type ArchiveMeta,
+  type DumpArchiveInfo,
+} from './dumpArchive.ts';
+import { sharedFreshConnectionFetch } from './freshFetch.ts';
 import {
   downloadDump,
   downloadedBytesOnDisk,
@@ -108,13 +121,23 @@ import {
 
 export { bgsBatchSize, bgsDirectDb, describeBgsWriter, isStatementTimeout, recountAllFactions } from './bgsWriter.ts';
 export type { BgsShardsInfo } from './bgsShards.ts';
+// Архив на диске — общий с PowerPlay (`dumpArchive.ts`); имена прежние.
+export {
+  archiveIsComplete,
+  freeBytes,
+  readArchiveMeta,
+  readFileHead,
+  removeArchive,
+  uploadedDumpEtag,
+  writeArchiveMeta,
+  type ArchiveMeta,
+} from './dumpArchive.ts';
 
 type Svc = any;
 
 export const DEFAULT_BGS_DUMP_URL = 'https://www.edsm.net/dump/systemsPopulated.json.gz';
 const USER_AGENT = 'ED-Ring-Colony/2 (+https://edringcolony.ru; minor factions layer)';
 export const BGS_ARCHIVE_FILE = 'edsm-systemsPopulated.json.gz';
-const META_SUFFIX = '.meta.json';
 
 /** Населённых систем в настоящем дампе десятки тысяч. */
 export const BGS_MIN_SYSTEMS = 1000;
@@ -253,13 +276,9 @@ export function bgsFreshConnections(env: Record<string, string | undefined> = pr
   return !/^(0|off|no|false)$/i.test(env.FACTIONS_FRESH_CONNECTIONS?.trim() ?? '');
 }
 
-type FreshGlobal = typeof globalThis & { edrcBgsFreshFetch?: typeof fetch };
-
-/** Один на процесс: общий кэш TLS-сессий делает новые соединения дешевле. */
+/** Один на процесс (общий с PowerPlay): общий кэш TLS-сессий делает новые соединения дешевле. */
 function freshFetch(): typeof fetch {
-  const holder = globalThis as FreshGlobal;
-  holder.edrcBgsFreshFetch ??= createFreshConnectionFetch();
-  return holder.edrcBgsFreshFetch;
+  return sharedFreshConnectionFetch();
 }
 
 /** `FACTIONS_SHARD_SYSTEMS` — систем в куске (100–10 000, по умолчанию 1000). */
@@ -354,150 +373,12 @@ function importedSource(state: BgsSyncState): BgsDumpSource | null {
   return { url: state.source_url, etag: state.etag, lastModified: state.last_modified, total: state.dump_bytes };
 }
 
-/* ── Архив на диске ────────────────────────────────────────────────────── */
+/* ── Архив на диске (общий механизм — `dumpArchive.ts`) ──────────────── */
 
-/**
- * Метка архива рядом с файлом: какой дамп качается (пишется в начале
- * скачивания) и скачан ли он целиком (`completedAt`). Без неё нельзя понять,
- * чья недокачанная часть лежит на диске: дописать к ней хвост другого дампа —
- * значит получить битый gzip.
- */
-export interface ArchiveMeta {
-  url: string;
-  etag: string | null;
-  lastModified: string | null;
-  total: number | null;
-  completedAt: string | null;
-  /** Архив загружен в админке с компьютера (или положен на сервер вручную), а не скачан с EDSM. */
-  uploaded?: boolean;
-  /** Имя загруженного файла. */
-  uploadName?: string | null;
-}
-
-export function readArchiveMeta(dest: string): ArchiveMeta | null {
-  try {
-    const raw = JSON.parse(readFileSync(`${dest}${META_SUFFIX}`, 'utf8')) as Partial<ArchiveMeta>;
-    if (!raw || typeof raw.url !== 'string') return null;
-    return {
-      url: raw.url,
-      etag: typeof raw.etag === 'string' ? raw.etag : null,
-      lastModified: typeof raw.lastModified === 'string' ? raw.lastModified : null,
-      total: typeof raw.total === 'number' && raw.total > 0 ? raw.total : null,
-      completedAt: typeof raw.completedAt === 'string' && raw.completedAt ? raw.completedAt : null,
-      ...(raw.uploaded === true ? { uploaded: true, uploadName: typeof raw.uploadName === 'string' ? raw.uploadName.slice(0, 200) : null } : {}),
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function writeArchiveMeta(dest: string, meta: ArchiveMeta): void {
-  try {
-    mkdirSync(dirname(dest), { recursive: true });
-    writeFileAtomic(`${dest}${META_SUFFIX}`, JSON.stringify(meta, null, 1));
-  } catch {
-    // Без метки архив просто скачается заново в следующий раз.
-  }
-}
-
-function metaSource(meta: ArchiveMeta | null): BgsDumpSource | null {
-  return meta ? { url: meta.url, etag: meta.etag, lastModified: meta.lastModified, total: meta.total } : null;
-}
-
-function fileSize(path: string): number {
-  try {
-    return statSync(path).size;
-  } catch {
-    return 0;
-  }
-}
-
-/** Архив скачан целиком: есть метка с `completedAt`, размер сходится, плана докачки нет. */
-export function archiveIsComplete(dest: string, meta: ArchiveMeta | null): boolean {
-  return Boolean(meta?.completedAt && existsSync(dest) && !existsSync(segmentStatePath(dest)) && meta.total === fileSize(dest));
-}
-
-/** Удалить архив, план докачки и метку. Возвращает освобождённые байты. */
-export function removeArchive(dest: string): number {
-  const partial = downloadedBytesOnDisk(dest);
-  const bytes = partial ? partial.done : fileSize(dest);
-  for (const path of [dest, segmentStatePath(dest), `${dest}${META_SUFFIX}`]) rmSync(path, { force: true });
-  return bytes;
-}
-
-export function freeBytes(dir: string): number | null {
-  try {
-    mkdirSync(dir, { recursive: true });
-    const stats = statfsSync(dir);
-    return Number(stats.bavail) * Number(stats.bsize);
-  } catch {
-    return null;
-  }
-}
-
-export interface BgsArchiveInfo {
-  path: string;
-  exists: boolean;
-  /** Размер файла на диске (у недокачанного параллельного — уже полный размер: файл выделен заранее). */
-  bytes: number;
-  /** Сколько реально скачано. */
-  downloaded: number;
-  /** Размер дампа на EDSM, если известен. */
-  total: number | null;
-  /** Скачивание не закончено — следующий запуск докачает. */
-  partial: boolean;
-  /** Архив скачан целиком (есть метка), дата дампа. */
-  complete: boolean;
-  lastModified: string | null;
-  freeBytes: number | null;
-  /** Загружен в админке с компьютера (или положен вручную и уже принят). */
-  uploaded: boolean;
-  uploadName: string | null;
-  /** Файл без метки и без плана докачки — положен на сервер вручную; загрузка примет его. */
-  manual: boolean;
-}
+export type BgsArchiveInfo = DumpArchiveInfo;
 
 export function bgsArchiveInfo(path = bgsArchivePath()): BgsArchiveInfo {
-  const exists = existsSync(path);
-  const meta = exists ? readArchiveMeta(path) : null;
-  const bytes = exists ? fileSize(path) : 0;
-  const plan = exists ? downloadedBytesOnDisk(path) : null;
-  const complete = archiveIsComplete(path, meta);
-  const manual = exists && !meta && !plan;
-  return {
-    path,
-    exists,
-    bytes,
-    downloaded: plan ? plan.done : bytes,
-    total: plan?.total ?? meta?.total ?? (complete || manual ? bytes : null),
-    partial: Boolean(plan) || (exists && !complete && !manual),
-    complete,
-    lastModified: meta?.lastModified ?? null,
-    freeBytes: freeBytes(dirname(path)),
-    uploaded: Boolean(meta?.uploaded),
-    uploadName: meta?.uploaded ? meta.uploadName ?? null : null,
-    manual,
-  };
-}
-
-/** Метка для архива, который не скачан с EDSM: размер и начало файла вместо ETag. */
-export function uploadedDumpEtag(size: number, head: Buffer): string {
-  return `"upload-${size.toString(16)}-${createHash('sha1').update(head).digest('hex').slice(0, 12)}"`;
-}
-
-/** Начало файла (для метки и проверки «это gzip»). */
-export function readFileHead(path: string, bytes = 1024 * 1024): Buffer {
-  let fd: number | null = null;
-  try {
-    fd = openSync(path, 'r');
-    const buffer = Buffer.alloc(bytes);
-    const read = readSync(fd, buffer, 0, bytes, 0);
-    return buffer.subarray(0, read);
-  } catch {
-    return Buffer.alloc(0);
-  } finally {
-    if (fd != null) closeSync(fd);
-  }
+  return dumpArchiveInfo(path);
 }
 
 /**
@@ -506,27 +387,7 @@ export function readFileHead(path: string, bytes = 1024 * 1024): Buffer {
  * получает метку, и дальше с ним работают как с архивом, загруженным в админке.
  */
 export function adoptManualBgsArchive(dest: string, url: string): ArchiveMeta | null {
-  if (!existsSync(dest) || existsSync(`${dest}${META_SUFFIX}`) || existsSync(segmentStatePath(dest))) return null;
-  const size = fileSize(dest);
-  const head = readFileHead(dest);
-  if (size <= 0 || head[0] !== 0x1f || head[1] !== 0x8b) return null;
-  let mtime = Date.now();
-  try {
-    mtime = statSync(dest).mtimeMs;
-  } catch {
-    // дата файла неизвестна — сейчас
-  }
-  const meta: ArchiveMeta = {
-    url,
-    etag: uploadedDumpEtag(size, head),
-    lastModified: new Date(mtime).toUTCString(),
-    total: size,
-    completedAt: new Date().toISOString(),
-    uploaded: true,
-    uploadName: 'положен на сервер вручную',
-  };
-  writeArchiveMeta(dest, meta);
-  return readArchiveMeta(dest);
+  return adoptManualArchive(dest, url);
 }
 
 export function bgsShardsStatus(dir = bgsShardsDir()): BgsShardsInfo {
@@ -740,7 +601,7 @@ function describeStats(stats: BgsDumpStats): string[] {
 /** Что есть на сервере для работы без EDSM: архив целиком или разбитые до конца куски. */
 function localDump(dest: string, shardsDir: string): BgsDumpSource | null {
   const meta = readArchiveMeta(dest);
-  if (archiveIsComplete(dest, meta)) return metaSource(meta);
+  if (archiveIsComplete(dest, meta)) return archiveMetaSource(meta);
   const manifest = readBgsShardManifest(shardsDir);
   return manifest?.complete ? manifest.source : null;
 }
@@ -750,8 +611,9 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
   const mode: BgsSyncMode = options.mode ?? 'full';
   const force = options.force === true;
   const url = options.url ?? bgsDumpUrl();
-  const dest = resolve(options.archivePath ?? bgsArchivePath());
-  const shardsDir = resolve(options.shardsDir ?? bgsShardsDirFor(dest));
+  // Пути данных на диске сервера, а не исходники: трассировка сборки (Turbopack) их не касается.
+  const dest = resolve(/*turbopackIgnore: true*/ options.archivePath ?? bgsArchivePath());
+  const shardsDir = resolve(/*turbopackIgnore: true*/ options.shardsDir ?? bgsShardsDirFor(dest));
   const fetchImpl = bgsEdsmFetch(options.fetchImpl);
   const stallTimeoutMs = options.stallTimeoutMs ?? bgsStallMs();
   const shortRequests = options.shortRequests ?? bgsShortRequests();
@@ -823,7 +685,7 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
     let source: BgsDumpSource | null = null;
     let probe: DumpProbe | null = null;
     const localMeta = readArchiveMeta(dest);
-    const uploaded = mode === 'full' && localMeta?.uploaded && archiveIsComplete(dest, localMeta) ? metaSource(localMeta) : null;
+    const uploaded = mode === 'full' && localMeta?.uploaded && archiveIsComplete(dest, localMeta) ? archiveMetaSource(localMeta) : null;
     if (uploaded && (force || !sameBgsDumpSource(uploaded, imported))) {
       // Архив загружен администратором с компьютера (серверу EDSM недоступен
       // или медленен) и ещё не в базе: ради этого его и загружали.
@@ -870,13 +732,13 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
       const meta = readArchiveMeta(dest);
       const partialManifest = readBgsShardManifest(shardsDir);
       if (mode === 'split' && !archiveIsComplete(dest, meta)) {
-        throw new Error(existsSync(dest)
+        throw new Error(existsSync(/*turbopackIgnore: true*/ dest)
           ? 'Архив на сервере скачан не полностью — сначала докачайте его («Скачать архив»)'
           : 'На сервере нет скачанного архива — сначала «Скачать архив»');
       }
-      const chosen = local ?? (partialManifest && archiveIsComplete(dest, meta) ? metaSource(meta) : null);
+      const chosen = local ?? (partialManifest && archiveIsComplete(dest, meta) ? archiveMetaSource(meta) : null);
       if (!chosen) {
-        throw new Error(existsSync(dest) || partialManifest
+        throw new Error(existsSync(/*turbopackIgnore: true*/ dest) || partialManifest
           ? 'Архив на сервере скачан не полностью, а куски разбиты не до конца — запустите «Загрузить данные» или «Скачать архив»'
           : 'На сервере нет ни архива, ни кусков — сначала «Скачать архив» или «Загрузить данные»');
       }
@@ -891,7 +753,7 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
 
     /* ── Файлы на сервере должны быть от этого дампа ── */
     const meta = readArchiveMeta(dest);
-    if (!sameBgsDumpSource(metaSource(meta), dump) && (existsSync(dest) || existsSync(segmentStatePath(dest)) || meta)) {
+    if (!sameBgsDumpSource(archiveMetaSource(meta), dump) && (existsSync(/*turbopackIgnore: true*/ dest) || existsSync(/*turbopackIgnore: true*/ segmentStatePath(dest)) || meta)) {
       // Часть другого (вчерашнего) дампа или файл без метки: дописывать к нему
       // нельзя — начать заново.
       const freed = removeArchive(dest);
@@ -902,7 +764,7 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
       const freed = clearBgsShards(shardsDir);
       log('info', `Куски другого дампа (${formatBgsCount(manifest.shards.length)} шт., ${formatBgsBytes(freed)}) удалены`);
       manifest = null;
-    } else if (!manifest && existsSync(shardsDir)) {
+    } else if (!manifest && existsSync(/*turbopackIgnore: true*/ shardsDir)) {
       clearBgsShards(shardsDir);
     }
     if (manifest && touchesDb && force && sameBgsDumpSource(dump, imported) && manifest.shards.some((entry) => entry.imported)) {
@@ -1308,7 +1170,7 @@ export function cleanupBgsArchive(
 ): { removed: boolean; freed: number; shards: number; reason?: string } {
   if (isBgsSyncRunning()) return { removed: false, freed: 0, shards: 0, reason: 'Идёт импорт — архив и куски нужны ему' };
   const manifest = readBgsShardManifest(shardsDir);
-  const exists = existsSync(path) || existsSync(segmentStatePath(path)) || existsSync(`${path}${META_SUFFIX}`) || Boolean(manifest);
+  const exists = archiveLeftovers(path) || Boolean(manifest);
   const freed = removeArchive(path) + clearBgsShards(shardsDir);
   return { removed: exists, freed, shards: manifest?.shards.length ?? 0 };
 }

@@ -3,12 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authFetch } from '@/lib/supabaseClient';
-import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconPower, IconRefresh, IconXCircle } from '@/components/Icons';
+import ArchiveUploadControl from '@/components/Admin/ArchiveUploadControl';
+import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconPower, IconRefresh, IconTrash, IconXCircle } from '@/components/Icons';
 import { POWER_ALLEGIANCE_LABEL, formatPowerplayDate, powerInfo } from '@/lib/powerplay';
 import {
+  POWERPLAY_MODE_LABEL,
   POWERPLAY_PHASE_LABEL,
   POWERPLAY_SYNC_STAGES,
   POWERPLAY_TRIGGER_LABEL,
+  formatPowerplayBytes,
   formatPowerplayCount,
   formatPowerplayDuration,
   powerplayStageFraction,
@@ -25,8 +28,12 @@ import {
  * Системы под контролем держав для вкладки «PowerPlay» в Atlas приходят из
  * ночного дампа EDSM (`powerPlay.json.gz`). Сайт обновляет их сам — задачей
  * планировщика `powerplay-sync` и при открытии вкладки, если данных нет, —
- * а здесь видно, загружено ли что-нибудь, и можно запустить загрузку вручную:
- * этапы с прогресс-барами, общий процент и журнал процесса.
+ * а здесь видно, загружено ли что-нибудь, и можно запустить загрузку вручную.
+ * Загрузка устроена как у фракций и «Каталога систем», шаги по очереди: архив
+ * скачивается на сервер целиком → разбивается на куски → куски пишутся в
+ * базу; каждый шаг можно запустить отдельно (карточки архива и кусков), а
+ * серверу, которому EDSM недоступен, архив можно загрузить с компьютера.
+ * Этапы с прогресс-барами, общий процент и журнал процесса.
  *
  * Таблица по державам показывает и то, откуда известен владелец системы:
  * дамп EDSM перечисляет у системы все державы, чьи зоны её накрывают, и не
@@ -89,8 +96,12 @@ interface EddnAdminStatus {
   heartbeatAt?: string | null;
 }
 
+type RunMode = 'full' | 'download' | 'split' | 'import';
+type Action = 'start' | 'force' | 'download' | 'split' | 'import' | 'cancel' | 'cleanup' | 'eddn-start' | 'eddn-stop';
+
 interface AdminStatus {
   running: boolean;
+  mode?: RunMode | null;
   interrupted: boolean;
   progress: PowerplaySyncProgress | null;
   log: PowerplayLogLine[];
@@ -122,8 +133,43 @@ interface AdminStatus {
   summaryError: string | null;
   eddn?: EddnAdminStatus;
   progressPersisted: boolean;
+  archive?: {
+    path: string;
+    exists: boolean;
+    bytes: number;
+    downloaded?: number;
+    total?: number | null;
+    partial: boolean;
+    complete: boolean;
+    lastModified: string | null;
+    freeBytes: number | null;
+    uploaded?: boolean;
+    uploadName?: string | null;
+    manual?: boolean;
+  };
+  upload?: { active: boolean; name: string | null; size: number; received: number; startedAt: string | null; chunkBytes?: number };
+  shards?: {
+    dir: string;
+    exists: boolean;
+    complete: boolean;
+    shards: number;
+    imported: number;
+    systems: number;
+    importedSystems: number;
+    files: number;
+    bytes: number;
+    completedAt: string | null;
+  };
+  writer?: { backend: 'pg' | 'postgrest'; host: string | null; disabled: boolean };
   config: {
     dumpUrl: string;
+    archiveKeep?: boolean;
+    segments?: number;
+    maxSegments?: number;
+    pieceBytes?: number;
+    stallSeconds?: number;
+    shortRequests?: 'auto' | 'off' | number;
+    shardSystems?: number;
     staleAfterHours: number;
     retryAfterMinutes: number;
     minRows: number;
@@ -158,6 +204,17 @@ const STAGE_COLORS: Record<PowerplayStageProgress['status'], string> = {
   skipped: '#6b7280',
   error: '#ef4444',
 };
+
+const SEGMENT_CHOICES = [1, 2, 4, 6, 8, 12, 16];
+
+const RUNNING_PILL: Record<RunMode, string> = {
+  full: 'идёт загрузка дампа',
+  download: 'идёт скачивание архива на сервер',
+  split: 'идёт разбивка архива на куски',
+  import: 'идёт запись кусков в базу',
+};
+
+const innerCardStyle = { background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px', fontSize: 12, color: MUTED } as const;
 
 function formatTime(value: string | null | undefined): string {
   if (!value) return '—';
@@ -202,8 +259,8 @@ function stageDuration(stage: PowerplayStageProgress, serverNow: number): string
 
 function phasePill(status: AdminStatus | null): { text: string; color: string } {
   if (!status) return { text: 'загрузка…', color: MUTED };
-  if (status.running) return { text: 'идёт загрузка', color: PP };
-  if (status.interrupted) return { text: 'прервана перезапуском сайта', color: '#e67e22' };
+  if (status.running) return { text: RUNNING_PILL[status.mode ?? 'full'] ?? RUNNING_PILL.full, color: PP };
+  if (status.interrupted) return { text: 'загрузка прервана перезапуском сайта', color: '#e67e22' };
   if (status.state.status === 'error') return { text: status.state.rows_total > 0 ? 'ошибка последней загрузки' : 'ошибка — данных нет', color: '#ef4444' };
   if (status.state.rows_total > 0) return { text: 'данные загружены', color: '#22c55e' };
   return { text: 'данных нет', color: MUTED };
@@ -241,6 +298,8 @@ export default function PowerplayAdminTab() {
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [segments, setSegments] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(false);
   const logRef = useRef<HTMLPreElement | null>(null);
   const stickToBottom = useRef(true);
 
@@ -280,15 +339,21 @@ export default function PowerplayAdminTab() {
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [logLength, lastLogAt]);
 
-  const act = async (action: 'start' | 'cancel' | 'eddn-start' | 'eddn-stop', force = false) => {
-    setBusy(force ? 'force' : action);
+  const connections = segments ?? status?.config.segments ?? 4;
+
+  const act = async (action: Action) => {
+    if (action === 'cleanup' && !window.confirm('Удалить архив дампа PowerPlay и куски с сервера? Следующая загрузка скачает дамп заново.')) return;
+    setBusy(action);
     setMessage('');
     setIsError(false);
+    const force = action === 'force';
+    const body: Record<string, unknown> = { action: force ? 'start' : action, force };
+    if (action === 'start' || action === 'force' || action === 'download') body.segments = connections;
     try {
       const response = await authFetch('/api/admin/powerplay', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, force }),
+        body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => null);
       if (response.status === 409) {
@@ -296,15 +361,29 @@ export default function PowerplayAdminTab() {
       } else if (!response.ok || payload?.success === false) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       } else if (action === 'cancel') {
-        setMessage(payload?.cancelled ? 'Останавливаю импорт…' : 'Импорт не выполнялся');
+        setMessage(payload?.cancelled
+          ? 'Останавливаю импорт… Скачанное и разбитое останется на сервере — следующий запуск продолжит с того же места.'
+          : 'Импорт не выполнялся');
+      } else if (action === 'cleanup') {
+        setMessage(payload?.removed
+          ? `Архив и куски удалены с сервера — освобождено ${formatPowerplayBytes(payload?.freed)}`
+          : 'На сервере нет ни архива, ни кусков');
       } else if (action === 'eddn-start') {
         setMessage('Живые данные EDDN включены: слушатель подключается к реле. Флаг сохранён — после перезапуска сайта слушатель поднимется сам.');
       } else if (action === 'eddn-stop') {
         setMessage('Живые данные EDDN выключены: накопленные наблюдения дописаны, подписка закрыта.');
+      } else if (action === 'download') {
+        setMessage(`Архив скачивается на сервер в ${connections} соедин. При обрыве или перезапуске скачивание продолжится с того же места.`);
+      } else if (action === 'split') {
+        setMessage('Разбивка архива на куски запущена — она не обращается к EDSM.');
+      } else if (action === 'import') {
+        setMessage('Запись в базу запущена: то, что уже на сервере, без обращения к EDSM.');
       } else {
         setMessage(force
-          ? 'Загрузка запущена принудительно: дамп скачивается заново и принимается, даже если он меньше прошлого.'
-          : 'Загрузка запущена. Если дамп не менялся с прошлого раза, EDSM ответит 304 — это значит «данные актуальны».');
+          ? 'Загрузка запущена принудительно: дамп загружается, даже если он тот же, что в прошлый раз, и принимается, даже если он заметно меньше прошлого.'
+          : status?.archive?.uploaded && status.archive.complete
+            ? 'Загрузка запущена: архив, загруженный с компьютера, разбивается на куски, затем куски пишутся в базу — без EDSM.'
+            : `Загрузка запущена: архив целиком скачивается на сервер (${connections} соедин.), затем разбивается на куски, затем куски пишутся в базу. Если дамп тот же, что в прошлый раз, загрузка закончится сразу — данные актуальны.`);
       }
       stickToBottom.current = true;
       await load();
@@ -355,6 +434,21 @@ export default function PowerplayAdminTab() {
   const pilotRows = Object.entries(summary?.sources ?? {})
     .filter(([source]) => source !== 'edsm')
     .reduce((sum, [, value]) => sum + value, 0);
+  const archive = status?.archive ?? null;
+  const shards = status?.shards ?? null;
+  const writer = status?.writer ?? null;
+  const maxSegments = status?.config.maxSegments ?? 16;
+  const segmentChoices = SEGMENT_CHOICES.filter((n) => n <= maxSegments);
+  if (!segmentChoices.includes(connections)) segmentChoices.push(connections);
+  segmentChoices.sort((a, b) => a - b);
+  const archiveDownloaded = archive ? archive.downloaded ?? archive.bytes : 0;
+  const archiveTotal = archive?.total ?? null;
+  const pieceBytes = status?.config.pieceBytes ?? 256 * 1024;
+  const shardSystems = status?.config.shardSystems ?? 2000;
+  const stallSeconds = status?.config.stallSeconds ?? 15;
+  const shortRequests = status?.config.shortRequests ?? 'auto';
+  const splitting = running && progress?.stages.find((stage) => stage.id === 'split')?.status === 'running';
+  const dumpUrl = status?.config.dumpUrl ?? 'https://www.edsm.net/dump/powerPlay.json.gz';
 
   return (
     <div data-powerplay-admin="">
@@ -424,8 +518,9 @@ export default function PowerplayAdminTab() {
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 13, color: '#fbbf24', marginBottom: 8 }}>
             <IconAlert size={14} color="#fbbf24" />
             <span>
-              Систем PowerPlay в базе нет — вкладка «PowerPlay» в Atlas пуста. Нажмите «Загрузить сейчас» ниже: загрузка
-              займёт несколько секунд, ход виден по этапам и в журнале.
+              Систем PowerPlay в базе нет — вкладка «PowerPlay» в Atlas пуста. Нажмите «Загрузить данные» ниже: дамп EDSM весит
+              ≈3,6 МБ, загрузка обычно занимает секунды, ход виден по этапам и в журнале. Если сеть сервера не пускает к EDSM —
+              загрузите архив с компьютера.
             </span>
           </div>
         )}
@@ -512,19 +607,25 @@ export default function PowerplayAdminTab() {
         )}
       </div>
 
-      {/* ── Загрузка ── */}
+      {/* ── Загрузка дампа EDSM: архив → куски → база ── */}
       <div style={cardStyle} data-pp-admin-sync="">
-        <div style={labelStyle}>Загрузка из EDSM</div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-          <button type="button" className="btn btn-cyan" disabled={busy !== null || running} onClick={() => void act('start')} data-pp-admin-action="start">
+        <div style={labelStyle}>Загрузка из EDSM (powerPlay.json.gz)</div>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
+          Как у фракций и в «Каталоге систем», шаги по очереди: <strong style={{ color: TEXT }}>архив скачивается на сервер целиком</strong> →{' '}
+          <strong style={{ color: TEXT }}>затем разбивается на куски</strong> по {formatPowerplayCount(shardSystems)} систем →{' '}
+          <strong style={{ color: TEXT }}>затем куски загружаются в базу</strong>. Каждый шаг начинается, когда предыдущий закончен, и
+          его можно запустить отдельно — кнопками в карточках ниже. Серверу, которому EDSM недоступен, архив можно загрузить с компьютера.
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+          <button type="button" className="btn btn-cyan" disabled={busy !== null || running || uploading} onClick={() => void act('start')} data-pp-admin-action="start">
             {total > 0 ? 'Загрузить сейчас' : 'Загрузить данные'}
           </button>
           <button
             type="button"
             className="btn"
-            disabled={busy !== null || running}
-            onClick={() => void act('start', true)}
-            title="Скачать дамп заново без условного запроса и принять его, даже если он заметно меньше прошлого"
+            disabled={busy !== null || running || uploading}
+            onClick={() => void act('force')}
+            title="Загрузить дамп, даже если он тот же, что в прошлый раз, и принять его, даже если он заметно меньше прошлого"
             data-pp-admin-action="force"
           >
             Перекачать принудительно
@@ -532,13 +633,173 @@ export default function PowerplayAdminTab() {
           <button type="button" className="btn btn-danger" disabled={busy !== null || !running} onClick={() => void act('cancel')} data-pp-admin-action="cancel">
             Остановить
           </button>
+          <label style={{ fontSize: 12, color: MUTED, display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Сколько параллельных соединений к EDSM открывать для скачивания архива: если сеть сервера режет соединения, несколько соединений коротких запросов качают быстрее">
+            Соединений к EDSM:
+            <select
+              value={connections}
+              disabled={busy !== null || running}
+              onChange={(event) => setSegments(Number(event.target.value))}
+              data-pp-admin-segments=""
+              style={{ background: '#101214', color: TEXT, border: '1px solid #323538', borderRadius: 3, padding: '2px 4px', fontSize: 12 }}
+            >
+              {segmentChoices.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10, marginBottom: 10 }}>
+          {archive && (
+            <div style={innerCardStyle} data-pp-admin-archive="">
+              <div style={{ ...labelStyle, marginBottom: 4 }}>1 · Архив на сервере</div>
+              {archive.exists ? (
+                archive.complete ? (
+                  <div style={{ color: '#22c55e' }} data-pp-admin-archive-state={archive.uploaded ? 'uploaded' : 'complete'}>
+                    {archive.uploaded
+                      ? <>Загружен с компьютера целиком: {formatPowerplayBytes(archive.bytes)}{archive.uploadName ? ` (${archive.uploadName})` : ''}</>
+                      : <>Скачан целиком: {formatPowerplayBytes(archive.bytes)}{archive.lastModified ? ` (дамп от ${archive.lastModified})` : ''}</>}
+                  </div>
+                ) : archive.manual ? (
+                  <div style={{ color: '#fbbf24' }} data-pp-admin-archive-state="manual">
+                    Файл архива без метки ({formatPowerplayBytes(archive.bytes)}) — похоже, положен на сервер вручную: «Загрузить данные» примет его
+                    как загруженный с компьютера
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ color: running ? PP : '#fbbf24' }} data-pp-admin-archive-state="partial">
+                      {running ? 'Качается' : 'Скачан не полностью'}: {formatPowerplayBytes(archiveDownloaded)}
+                      {archiveTotal ? ` из ${formatPowerplayBytes(archiveTotal)} (${Math.floor((archiveDownloaded / Math.max(1, archiveTotal)) * 100)} %)` : ''}
+                      {running ? '' : ' — следующий запуск докачает'}
+                    </div>
+                    {archiveTotal ? (
+                      <div style={{ marginTop: 4 }}>
+                        <ProgressBar fraction={archiveDownloaded / Math.max(1, archiveTotal)} color={running ? PP : '#fbbf24'} height={5} label="Скачано архива" />
+                      </div>
+                    ) : null}
+                  </>
+                )
+              ) : (
+                <div>Архива нет — «Загрузить данные» или «Скачать архив» скачают его (после удачной загрузки архив удаляется)</div>
+              )}
+              <div style={{ marginTop: 2 }}>
+                до {connections} соединений, куски файла по {formatPowerplayBytes(pieceBytes)}
+                {archive.freeBytes != null ? ` · свободно на диске ${formatPowerplayBytes(archive.freeBytes)}` : ''}
+              </div>
+              <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{archive.path}</code></div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: 12, padding: '3px 8px' }}
+                  disabled={busy !== null || running || uploading}
+                  onClick={() => void act('download')}
+                  title="Только скачать архив на сервер (в базу ничего не пишется)"
+                  data-pp-admin-action="download"
+                >
+                  {archive.exists && !archive.complete ? 'Докачать архив' : 'Скачать архив'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: 12, padding: '3px 8px' }}
+                  disabled={busy !== null || running || uploading || !(archive.exists || shards?.exists)}
+                  onClick={() => void act('cleanup')}
+                  title="Удалить архив и куски с сервера"
+                  data-pp-admin-action="cleanup"
+                >
+                  <IconTrash size={12} /> Удалить архив и куски
+                </button>
+              </div>
+              <ArchiveUploadControl
+                endpoint="/api/admin/powerplay/upload"
+                prefix="pp-admin"
+                sourceName="powerPlay.json.gz"
+                dumpUrl={dumpUrl}
+                disabled={busy !== null || running}
+                pending={status?.upload}
+                accent={PP}
+                onUploadingChange={setUploading}
+                onMessage={(text, error) => {
+                  setMessage(text);
+                  setIsError(error);
+                }}
+                onSettled={async () => {
+                  stickToBottom.current = true;
+                  await load();
+                }}
+              />
+            </div>
+          )}
+          <div style={innerCardStyle} data-pp-admin-shards="">
+            <div style={{ ...labelStyle, marginBottom: 4 }}>2 · Куски (шарды) → 3 · база</div>
+            {shards?.exists && (shards.shards > 0 || shards.complete) ? (
+              <>
+                <div style={{ color: shards.complete ? TEXT : splitting ? PP : '#fbbf24' }}>
+                  {formatPowerplayCount(shards.shards)} кусков · {formatPowerplayCount(shards.systems)} систем · {formatPowerplayBytes(shards.bytes)}
+                  {shards.complete ? ' — архив разбит до конца' : splitting ? ' — разбивка идёт' : ' — разбит не до конца, следующий запуск разобьёт заново'}
+                </div>
+                <div style={{ color: shards.imported === shards.shards && shards.complete ? '#22c55e' : MUTED, marginTop: 2 }}>
+                  В базе: {formatPowerplayCount(shards.imported)} из {formatPowerplayCount(shards.shards)} кусков ({formatPowerplayCount(shards.importedSystems)} систем)
+                </div>
+                {shards.shards > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    <ProgressBar fraction={shards.imported / Math.max(1, shards.shards)} color={shards.imported === shards.shards ? '#22c55e' : PP} height={5} label="Кусков в базе" />
+                  </div>
+                )}
+              </>
+            ) : (
+              <div>
+                {archive?.complete
+                  ? 'Кусков нет — архив на сервере: «Разбить на куски» или «Загрузить данные» разобьют его'
+                  : running
+                    ? 'Кусков пока нет — архив разобьётся на куски, когда будет на сервере целиком'
+                    : 'Кусков нет — они появятся, когда архив будет на сервере целиком'}
+              </div>
+            )}
+            <div style={{ marginTop: 2 }} data-pp-admin-writer="">
+              Запись в базу:{' '}
+              {writer?.backend === 'pg'
+                ? <>прямой Postgres{writer.host ? ` (${writer.host})` : ''} — кусок одним вызовом</>
+                : <>PostgREST — пачками по {formatPowerplayCount(status?.config.batchSize ?? 2000)} систем{writer?.disabled ? ' (POWERPLAY_DB_DIRECT=0)' : ''}</>}
+            </div>
+            {shards?.dir && <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{shards.dir}</code></div>}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn"
+                style={{ fontSize: 12, padding: '3px 8px' }}
+                disabled={busy !== null || running || uploading || !archive?.complete}
+                onClick={() => void act('split')}
+                title={archive?.complete ? 'Разбить архив на куски (без EDSM и без записи в базу)' : 'Сначала скачайте архив целиком или загрузите его с компьютера'}
+                data-pp-admin-action="split"
+              >
+                Разбить на куски
+              </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ fontSize: 12, padding: '3px 8px' }}
+                disabled={busy !== null || running || uploading || !(archive?.complete || shards?.complete)}
+                onClick={() => void act('import')}
+                title="Записать в базу то, что уже на сервере (архив или куски), без обращения к EDSM"
+                data-pp-admin-action="import"
+              >
+                Загрузить куски в базу
+              </button>
+            </div>
+          </div>
         </div>
 
         {progress ? (
           <div data-pp-admin-progress={progress.phase}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: MUTED, marginBottom: 4, flexWrap: 'wrap' }}>
               <span style={{ color: progress.phase === 'running' ? PP : progress.phase === 'error' ? '#ef4444' : progress.phase === 'cancelled' ? '#e67e22' : '#22c55e' }}>
-                {progress.phase === 'running' ? 'Идёт загрузка' : `Последняя загрузка: ${POWERPLAY_PHASE_LABEL[progress.phase]}`}
+                {progress.phase === 'running'
+                  ? 'Идёт загрузка'
+                  : progress.phase === 'ok' && progress.mode === 'download'
+                    ? 'Последний запуск: архив скачан'
+                    : progress.phase === 'ok' && progress.mode === 'split'
+                      ? 'Последний запуск: архив разбит на куски'
+                      : `Последняя загрузка: ${POWERPLAY_PHASE_LABEL[progress.phase]}`}
                 {' · '}{progress.percent.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} %
               </span>
               <span>
@@ -553,7 +814,7 @@ export default function PowerplayAdminTab() {
             />
             <div style={{ fontSize: 12, color: TEXT, marginTop: 6 }} data-pp-admin-message="">{progress.message}</div>
             <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>
-              Запуск: {POWERPLAY_TRIGGER_LABEL[progress.trigger]}{progress.force ? ' · принудительно' : ''}
+              Запуск: {POWERPLAY_TRIGGER_LABEL[progress.trigger]} · {POWERPLAY_MODE_LABEL[progress.mode] ?? POWERPLAY_MODE_LABEL.full}{progress.force ? ' · принудительно' : ''}
             </div>
 
             <ol style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 7 }} aria-label="Этапы загрузки">
@@ -563,7 +824,7 @@ export default function PowerplayAdminTab() {
                 const color = STAGE_COLORS[stage.status];
                 const indeterminate = stage.status === 'running' && !(stage.total && stage.total > 0);
                 return (
-                  <li key={def.id} data-pp-admin-stage={def.id} data-status={stage.status} style={{ display: 'grid', gridTemplateColumns: '150px minmax(0, 1fr) 90px', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                  <li key={def.id} data-pp-admin-stage={def.id} data-status={stage.status} style={{ display: 'grid', gridTemplateColumns: '205px minmax(0, 1fr) 90px', gap: 8, alignItems: 'center', fontSize: 12 }}>
                     <span style={{ color: stage.status === 'pending' ? DIM : TEXT, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       {stage.status === 'done' ? <IconCheckCircle size={12} color={color} /> : stage.status === 'error' ? <IconXCircle size={12} color={color} /> : (
                         <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: color, marginLeft: 2, marginRight: 2 }} />
@@ -571,8 +832,11 @@ export default function PowerplayAdminTab() {
                       {def.label}
                     </span>
                     <span style={{ minWidth: 0 }}>
-                      <ProgressBar fraction={powerplayStageFraction(stage)} color={color} height={6} indeterminate={indeterminate} label={def.label} />
-                      <span style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <ProgressBar fraction={stage.status === 'skipped' ? 0 : powerplayStageFraction(stage)} color={color} height={6} indeterminate={indeterminate} label={def.label} />
+                      <span
+                        style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={stage.detail || undefined}
+                      >
                         {stage.detail || stageStatusLabel(stage, progress.phase)}
                       </span>
                     </span>
@@ -585,17 +849,26 @@ export default function PowerplayAdminTab() {
               })}
             </ol>
 
-            {progress.phase === 'ok' && progress.result && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }}>
+            {progress.phase === 'ok' && progress.result && (progress.mode === 'download' || progress.mode === 'split') && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-pp-admin-result="">
+                <IconCheckCircle size={14} color="#22c55e" />
+                {progress.mode === 'download'
+                  ? <>Архив на сервере: {formatPowerplayBytes(progress.result.archiveBytes)} · за {formatPowerplayDuration(progress.result.durationMs)} — в базу пока ничего не записано</>
+                  : <>Кусков: {formatPowerplayCount(progress.result.shards)} · систем {formatPowerplayCount(progress.result.systems)} · за {formatPowerplayDuration(progress.result.durationMs)} — в базу пока ничего не записано</>}
+              </div>
+            )}
+            {progress.phase === 'ok' && progress.result && progress.mode !== 'download' && progress.mode !== 'split' && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-pp-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
                 Записано {formatPowerplayCount(progress.result.rows)} систем, удалено пропавших {formatPowerplayCount(progress.result.deleted)},
-                всего на карте {formatPowerplayCount(progress.result.total)} · за {formatPowerplayDuration(progress.result.durationMs)}
+                всего на карте {formatPowerplayCount(progress.result.total)}
+                {progress.result.shards ? <> · кусков {formatPowerplayCount(progress.result.shards)}</> : null} · за {formatPowerplayDuration(progress.result.durationMs)}
               </div>
             )}
             {progress.phase === 'not_modified' && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-pp-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
-                EDSM ответил 304: дамп не менялся с прошлой загрузки, данные на сайте актуальны.
+                Дамп EDSM тот же, что при прошлой загрузке, — данные на сайте актуальны. «Перекачать принудительно» загрузит его ещё раз.
               </div>
             )}
             {(progress.phase === 'error' || progress.phase === 'cancelled') && progress.result?.error && (
@@ -612,25 +885,40 @@ export default function PowerplayAdminTab() {
         )}
 
         {status?.interrupted && (
-          <div style={{ fontSize: 12, color: '#e67e22', marginTop: 8 }}>
-            Прошлая загрузка оборвалась вместе с процессом сайта (обновление или перезапуск). Данные в базе согласованы —
-            просто запустите загрузку ещё раз.
+          <div style={{ fontSize: 12, color: '#e67e22', marginTop: 8 }} data-pp-admin-interrupted="">
+            Прошлая загрузка оборвалась вместе с процессом сайта (обновление или перезапуск). Скачанное и разбитое осталось на
+            сервере — «Загрузить сейчас» продолжит с того же места (уже записанные куски повторно не пишутся); задача
+            powerplay-sync и открытие вкладки PowerPlay сделают это сами.
           </div>
         )}
 
         <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, marginTop: 12 }}>
-          Источник: <code>{status?.config.dumpUrl ?? 'https://www.edsm.net/dump/powerPlay.json.gz'}</code> — ночной дамп EDSM
-          (≈3–4 МБ gzip): все системы, о состоянии PowerPlay которых пилоты сообщали за последние ~30 дней. На сайт
-          попадают системы под контролем (оплоты, укреплённые, эксплуатируемые); Unoccupied отбрасываются.
+          Источник: <code>{dumpUrl}</code> — ночной дамп EDSM (≈3–4 МБ gzip): все системы, о состоянии PowerPlay которых пилоты
+          сообщали за последние ~30 дней. На сайт попадают системы под контролем (оплоты, укреплённые, эксплуатируемые);
+          Unoccupied отбрасываются. Архив качается на сервер целиком в{` ${connections} `}соединений (<code>POWERPLAY_DOWNLOAD_SEGMENTS</code>),
+          куски файла по {formatPowerplayBytes(pieceBytes)}; обрыв и перезапуск сайта не теряют скачанного. Соединение, молчащее
+          {` ${stallSeconds} `}с (<code>POWERPLAY_STALL_SECONDS</code>), переподключается сразу, а не через 70 с ожидания ОС.
+          {shortRequests === 'off'
+            ? ' Короткие запросы выключены (POWERPLAY_REQUEST_KB=off).'
+            : typeof shortRequests === 'number'
+              ? ` Запросы — по ${formatPowerplayBytes(shortRequests)}, каждый в новом соединении (POWERPLAY_REQUEST_KB).`
+              : ' Если соединения замирают, успев передать лишь несколько килобайт (так сеть сервера режет сессии к зарубежным CDN, а EDSM — за Cloudflare), загрузка сама переходит на короткие запросы меньше этого порога, каждый в новом соединении.'}
+          {' '}Когда архив на сервере, записи одной системы собираются вместе (EDSM пишет по записи на каждую державу в системе) и
+          системы раскладываются в куски по {formatPowerplayCount(shardSystems)}, затем куски пишутся в базу; кусок — единица
+          продолжения. Если EDSM пересоберёт дамп посреди скачивания, скачивание начнётся заново со свежим дампом. После удачной
+          загрузки архив и куски
+          {status?.config.archiveKeep ? ' остаются на сервере (POWERPLAY_ARCHIVE_KEEP=1)' : ' удаляются с сервера'}.
           <br />
           Автоматически: задача планировщика <code>powerplay-sync</code> раз в 12 часов
           {status?.config.nextScheduledRun ? <> (ближайший запуск — {formatUtc(status.config.nextScheduledRun)}, если задача включена в <code>JOBS_ENABLED</code>)</> : null},
           а также при открытии вкладки PowerPlay, если данных нет или они старше {status?.config.staleAfterHours ?? 26} ч
           (после неудачи — не чаще раза в {status?.config.retryAfterMinutes ?? 30} мин
           {status?.config.nextLazyAttempt ? <>, следующая попытка не раньше {formatTime(status.config.nextLazyAttempt)}</> : null}).
+          Тот же дамп, что в прошлый раз, второй раз не качается.
           <br />
           Защита данных: битый gzip, ошибка HTTP, меньше {status?.config.minRows ?? 100} систем или дамп меньше половины прошлого
-          таблицу не трогают — карта остаётся со вчерашними данными. «Перекачать принудительно» снимает проверку на «усохший» дамп.
+          таблицу не трогают — карта остаётся со вчерашними данными. «Перекачать принудительно» загружает тот же дамп ещё раз и
+          снимает проверку на «усохший» дамп.
         </div>
       </div>
 

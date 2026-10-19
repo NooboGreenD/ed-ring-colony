@@ -32,7 +32,7 @@ MarketID то TEXT, то BIGINT. Были свои пути приёма дан�
 
 | Часть | Объём | Где |
 |---|---|---|
-| Сайт (Next.js 16, React 19) | 59 страниц, 229 маршрутов API, 229 модулей `src/lib`, 166 компонентов | `src/` |
+| Сайт (Next.js 16, React 19) | 59 страниц, 230 маршрутов API, 237 модулей `src/lib`, 167 компонентов | `src/` |
 | База (Supabase / PostgreSQL) | 128 таблиц, 89 миграций, SQL-функции для тяжёлой логики | `supabase/` |
 | Фоновые задачи | 10 задач (9 по умолчанию) | `scripts/job-schedule.mjs`, контейнер `jobs` |
 | Colonial Helper (Python, Windows) | 36 модулей: журнал, оверлеи, Raven, EDSM/Inara/EDDN, авианосец, фракции, станции | `uploader/` |
@@ -112,7 +112,7 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
 | G11 | **Две модели проектов колонизации.** Проекты эскадрилий и «Проекты систем» — разные таблицы, права и расчёты | `projects*` и `architect_project*` | ◐ общий расчёт прогресса (`system_progress_sources` + `buildSystemProgress`): у проектов эскадрилий теперь тот же процент по каждой системе (`GET /api/projects/[id]/progress`), карточка системы показывает оба вида. Сведение моделей — решение за владельцем проекта |
 | G12 | **Нет навигации между разделами.** Поиск станций и проекты вели только во внешние сервисы, Атлас не открывал систему на слое по ссылке | `station-search/page.tsx`, `projects/[id]/page.tsx` | ✅ ссылки «Система», `focus_id64` для вкладок «Фракции» и PowerPlay, поиск станций принимает `?reference=` |
 | G13 | **Права проверяются по-разному.** В `/api/logs/*` своя копия проверки API-токена; модули прав `helperAuth`, `requestUser`, `cronAuth`, `billing/auth`, `wikiAuth`, `catalogAuth` | маршруты `logs` | ☐ |
-| G14 | **Три реализации «хода загрузки».** Каталог, PowerPlay и фракции — свои этапы, проценты и журналы | `galaxyCatalogStatus.ts`, `powerplayProgress.ts`, `bgsProgress.ts` | ☐ общий модуль хода импорта |
+| G14 | **Три реализации «хода загрузки».** Каталог, PowerPlay и фракции — свои этапы, проценты и журналы | `galaxyCatalogStatus.ts`, `powerplayProgress.ts`, `bgsProgress.ts` | ◐ web 2.24.0: PowerPlay и фракции — один механизм импорта дампа (`importProgress.ts` — этапы, проценты, журнал; `dumpArchive.ts`, `dumpShards.ts`, `dumpUpload.ts` — архив, куски, архив с компьютера). Осталось: каталог систем |
 | G15 | **Helper не видит знаний сайта о системе.** Проекты и карту системы он берёт у Raven напрямую | `uploader/system_map.py`, `raven_colonial_api.py` | ☐ Helper читает карточку системы сайта |
 | G16 | **Верфь не знает корабль пилота.** `Loadout` есть в журнале и CAPI, до `/outfitting` не доходит | `ship_tracker.py`, `capi/profile.ts` | ☐ |
 | G17 | **Android не собирается**, мобильная админка — свой набор маршрутов | `android-app/README.md` | ☐ |
@@ -163,6 +163,15 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
    во всех маршрутах. Копии проверки токена в `/api/logs/*` уходят.
 7. **Один модуль хода импорта** для каталога, PowerPlay и фракций: этапы,
    проценты, журнал, остановка. Сейчас это три реализации.
+   **Сделано в web 2.24.0 (PowerPlay и фракции):** загрузка дампа PowerPlay
+   устроена как у фракций — архив скачивается на сервер целиком, разбивается
+   на куски, куски пишутся в базу; архив можно загрузить с компьютера. Общие
+   модули: `importProgress.ts` (этапы, виды запуска, проценты, журнал, разбор
+   сохранённого хода), `dumpArchive.ts` (архив на диске и его метка),
+   `dumpShards.ts` (куски и манифест), `dumpUpload.ts` +
+   `archiveUploadClient.ts` + `ArchiveUploadControl.tsx` (архив с компьютера).
+   `bgs*` и `powerplay*` — тонкие обёртки со своими названиями и проверками.
+   Каталог систем (`galaxyCatalogStatus.ts`) — следующим шагом.
 8. **Страница `/account/journal`** сводится в общий загрузчик `/account`
    (тот же разбор, те же 4 маршрута, один экран прогресса).
 
@@ -219,7 +228,7 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
 9. **Миграции идемпотентны**, а снимок `supabase/full_schema.sql` дополняется
    в том же порядке (`migrations-sql.test.mjs`).
 
-## Приложение А. Модули `src/lib` по разделам (227)
+## Приложение А. Модули `src/lib` по разделам (235)
 
 Разобраны все модули серверной и общей логики. Чистые модули без
 node-зависимостей (их берут и браузер, и маршруты, и `node --test`)
@@ -228,6 +237,7 @@ node-зависимостей (их берут и браузер, и маршр�
 | Раздел | Модулей | Модули |
 |---|---|---|
 | Единый механизм (ключ системы, наблюдения, приём журнала, карточка, уведомления) | 5 | `journalIngest.ts`, `notify.ts`, `systemIdentity.ts`, `systemObservations.ts`, `systemOverview.ts` |
+| Импорт дампов: архив → куски → база, архив с компьютера (общий для фракций и PowerPlay, web 2.24.0) | 5 | `archiveUploadClient.ts`, `dumpArchive.ts`, `dumpShards.ts`, `dumpUpload.ts`, `importProgress.ts` |
 | Каталог систем и координаты | 25 | `coordinateResolveHandler.ts`, `ed3dCanon.ts`, `galaxyArchiveStore.ts`, `galaxyCatalogStatus.ts`, `galaxyCopyWriter.ts`, `galaxyDumpVariants.ts`, `galaxyImport.ts`, `galaxyImportJob.ts`, `galaxyImportSchedule.ts`, `galaxyNebulae.ts`, `galaxyPointsPick.ts`, `galaxyPointsPublish.ts`, `galaxyRegions.ts`, `galaxyShards.ts`, `galaxySpanshStream.ts`, `galaxySystems.ts`, `galaxySystemsDb.ts`, `nebulaClouds.ts`, `pgModule.ts`, `pgReachability.ts`, `readAllRows.ts`, `spanshClient.ts`, `systemCoordinateTypes.ts`, `systemCoordinates.ts`, `updateSystemCoordinates.ts` |
 | Атлас: поиски и кольцо | 12 | `atlas.ts`, `atlasNearby.ts`, `atlasNearbySearch.ts`, `atlasRingGeometry.ts`, `atlasRingHubSearch.ts`, `atlasRingMapGeometry.ts`, `atlasRingParams.ts`, `atlasRingPreview.ts`, `atlasRingSearch.ts`, `atlasSearchProgress.ts`, `atlasSystemCache.ts`, `atlasWorldSearch.ts` |
 | Кольцо колонизации, прогресс Raven | 7 | `raven/client.ts`, `raven/keyStore.ts`, `raven/keyVault.ts`, `ravenColonial.ts`, `ravenDepotSnapshots.ts`, `routeEngine.ts`, `systemProgress.ts` |
@@ -237,7 +247,7 @@ node-зависимостей (их берут и браузер, и маршр�
 | Авианосцы | 7 | `carrierMap.ts`, `carrierMapStore.ts`, `carrierMapView.ts`, `carrierTags.ts`, `fleetCarrierCollector.ts`, `fleetCarrierStore.ts`, `fleetCarriers.ts` |
 | Станции и рынки | 7 | `eddn/subscriber.ts`, `eddnClient.ts`, `marketDiscovery.ts`, `marketUpstream.ts`, `stationCommerce.ts`, `stationSearch.ts`, `stationSearchCatalog.ts` |
 | Минорные фракции | 9 | `bgs.ts`, `bgsDump.ts`, `bgsJournal.ts`, `bgsProgress.ts`, `bgsShards.ts`, `bgsStore.ts`, `bgsSync.ts`, `bgsUpload.ts`, `bgsWriter.ts` |
-| PowerPlay | 6 | `powerplay.ts`, `powerplayDump.ts`, `powerplayJournal.ts`, `powerplayProgress.ts`, `powerplayStore.ts`, `powerplaySync.ts` |
+| PowerPlay | 9 | `powerplay.ts`, `powerplayDump.ts`, `powerplayJournal.ts`, `powerplayProgress.ts`, `powerplayShards.ts`, `powerplayStore.ts`, `powerplaySync.ts`, `powerplayUpload.ts`, `powerplayWriter.ts` |
 | Frontier CAPI, Inara | 16 | `capi/client.ts`, `capi/entitlement.ts`, `capi/failure.ts`, `capi/fleetCarrier.ts`, `capi/journal.ts`, `capi/linkState.ts`, `capi/locationSync.ts`, `capi/messages.ts`, `capi/oauth.ts`, `capi/persist.ts`, `capi/platform.ts`, `capi/profile.ts`, `capi/profileBinding.ts`, `capi/session.ts`, `capi/syncPilot.ts`, `inara/client.ts` |
 | Орери системы | 9 | `orrery3d/camera.ts`, `orrery3d/index.ts`, `orrery3d/motion.ts`, `orrery3d/palette.ts`, `orrery3d/payload.ts`, `orrery3d/scene.ts`, `orrery3d/types.ts`, `orrery3d/viewer.ts`, `systemOrrery.ts` |
 | Вход, аккаунт, права | 24 | `authProfile.ts`, `authProviders/registry.ts`, `authProviders/settings.ts`, `avatarUrl.ts`, `cronAuth.ts`, `discordOAuth.ts`, `emailAuth.ts`, `ensureProfile.ts`, `helperAuth.ts`, `oauthFlow.ts`, `oauthProviders.ts`, `passwordPolicy.ts`, `passwordRecovery.ts`, `rateLimit.ts`, `requestUser.ts`, `userDisplay.ts`, `vkAccount.ts`, `vkId.ts`, `vkShared.ts`, `wikiAuth.ts`, `yandexAccount.ts`, `yandexId.ts`, `yandexShared.ts`, `zodSchemas.ts` |

@@ -19,6 +19,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { randomBytes } from 'node:crypto';
@@ -26,6 +28,10 @@ import { PGlite } from '@electric-sql/pglite';
 import { TEST_ROOT, bundleFile } from './helpers/bundle.mjs';
 import { SYSTEM_DATA_MIGRATIONS, SYSTEM_DATA_STUBS, readMigration } from './helpers/systemDataSchema.mjs';
 
+// Архив и куски PowerPlay (web 2.24.0) — во временном каталоге, а не в data/spansh репозитория.
+const PP_ARCHIVE_DIR = mkdtempSync(join(tmpdir(), 'pp-eddn-archive-'));
+process.env.POWERPLAY_ARCHIVE_DIR = PP_ARCHIVE_DIR;
+test.after(() => rmSync(PP_ARCHIVE_DIR, { recursive: true, force: true }));
 process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
 process.env.CRON_SECRET = 'eddn-cron-secret';

@@ -157,7 +157,12 @@ RPC (только `service_role`): `bgs_apply_snapshots` (пачка наблю�
 `src/lib/bgsSync.ts` (оркестратор, один запуск за раз на процесс),
 `bgsShards.ts` (куски), `bgsWriter.ts` (запись), `bgsUpload.ts` (архив с
 компьютера), скачивание — общий `downloadDump` из `galaxyImport.ts`, запросы к
-EDSM — `freshFetch.ts`:
+EDSM — `freshFetch.ts`. С web 2.24.0 так же грузится и дамп PowerPlay
+([POWERPLAY.md](POWERPLAY.md)), и механизм у них общий: `importProgress.ts`
+(этапы, виды запуска, проценты, журнал), `dumpArchive.ts` (архив на диске и
+его метка), `dumpShards.ts` (куски и манифест), `dumpUpload.ts` +
+`archiveUploadClient.ts` + `ArchiveUploadControl.tsx` (архив с компьютера);
+модули `bgs*` — обёртки со своими названиями и проверками:
 
 1. **Запрос к EDSM** — HEAD: размер, дата, ETag, поддержка Range. Тот же дамп,
    что в прошлый удачный импорт, второй раз не качается («без изменений»).
@@ -361,17 +366,20 @@ EDSM (`mode` = `download` / `split` / `import`; обычный запуск — 
 * `src/lib/bgs.ts` (справочники, формат слоя, выбор, точки карты),
   `bgsDump.ts`, `bgsJournal.ts`, `bgsProgress.ts`, `bgsSync.ts` (конвейер),
   `bgsShards.ts` (куски), `bgsWriter.ts` (прямой Postgres / PostgREST),
-  `bgsUpload.ts` (архив с компьютера), `bgsStore.ts`; скачивание —
+  `bgsUpload.ts` (архив с компьютера), `bgsStore.ts`; общие с PowerPlay —
+  `importProgress.ts`, `dumpArchive.ts`, `dumpShards.ts`, `dumpUpload.ts`,
+  `archiveUploadClient.ts`; скачивание —
   `downloadDump` в `galaxyImport.ts` (упорядоченные куски `pieceBytes`,
   `strictSource`, `stallTimeoutMs`, `shortRequests`), `freshFetch.ts` (новое
-  соединение на запрос);
+  соединение на запрос, один экземпляр на процесс для фракций и PowerPlay);
 * `src/app/api/factions/*`, `src/app/api/admin/factions/route.ts`,
   `src/app/api/admin/factions/upload/route.ts`,
   `src/app/api/cron/factions-sync/route.ts`;
 * `src/hooks/useFactionsLayer.ts`, `src/components/Atlas/AtlasFactionsPanel.tsx`,
   `src/components/GalaxyMap/FactionPoints.tsx`, `FactionSystemCard.tsx`
   (слой и PowerPlay — одно облако выбора `MapClickLayer` в `GalaxyScene.tsx`);
-* `src/components/Admin/FactionsAdminTab.tsx`;
+* `src/components/Admin/FactionsAdminTab.tsx`, `ArchiveUploadControl.tsx`
+  («Загрузить архив с компьютера», общий с PowerPlay);
 * `uploader/bgs_sync.py`, `uploader/api_client.py` (`sync_bgs_snapshots`),
   `uploader/colonial_helper.py` (`_bgs_sync_collector`, `_flush_bgs_sync`).
 
