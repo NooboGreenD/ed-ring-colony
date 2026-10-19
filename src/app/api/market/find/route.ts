@@ -1,1 +1,150 @@
-import { NextResponse } from 'next/server' ; export const maxDuration = 60 ; export const dynamic = 'force-dynamic' ; const EDSM_UA = 'ED-Ring-Colony/1.0 (https://edringcolony.ru)' ; const BUILD_COMMODITIES = [ 'Aluminium','Ceramic Composites','CMM Composite','Computer Components', 'Copper','Food Cartridges','Fruit and Vegetables','Insulating Membrane', 'Liquid oxygen','Medical Diagnostic Equipment','Non-Lethal Weapons', 'Polymers','Power Generators','Semiconductors','Steel','Superconductors', 'Titanium','Water','Water Purifiers','Structural Regulators', 'Building Fabricators','Thermal Cooling Units', ] ; interface EDSMCoords { x: number ; y: number ; z: number ; } interface EDSMSystem { name: string ; coords?: EDSMCoords ; distance?: number ; } interface EDSMStation { name: string ; type: string ; marketId?: number ; haveMarket?: boolean ; } interface EDSMCommodity { name: string ; buyPrice: number ; sellPrice: number ; stock: number ; demand: number ; stockBracket: number ; } interface EDSMSystemInfo { name: string ; information?: { population?: number } ; } interface StationWithMarket { station_name: string ; system_name: string ; distance: number ; market_id: number ; landing_pad: string ; station_type: string ; } interface MarketResult { station_name: string ; system_name: string ; distance: number ; commodity: string ; sell_price: number ; stock: number ; demand: number ; landing_pad: string ; station_type: string ; } interface StationBuildResult { station_name: string ; system_name: string ; distance: number ; landing_pad: string ; station_type: string ; commodities: { name: string ; stock: number ; sell_price: number }[] ; commodities_found: number ; commodities_total: number ; } async function getSystemCoords(systemName: string): Promise<EDSMCoords | null> { const res = await fetch( `https://www.edsm.net/api-v1/system?systemName=${encodeURIComponent(systemName)}&showCoordinates=1`, { headers: { 'User-Agent': EDSM_UA } } ) ; if (!res.ok) return null ; const data = await res.json() ; return data.coords || null ; } async function getSystemsInCube(systemName: string, size: number): Promise<EDSMSystem[]> { const res = await fetch( `https://www.edsm.net/api-v1/cube-systems?systemName=${encodeURIComponent(systemName)}&size=${size}&showCoordinates=1`, { headers: { 'User-Agent': EDSM_UA } } ) ; if (!res.ok) return [] ; return res.json() ; } async function getSystemsInfoBatch(systemNames: string[]): Promise<EDSMSystemInfo[]> { if (systemNames.length === 0) return [] ; const url = new URL('https://www.edsm.net/api-v1/systems') ; url.searchParams.set('showInformation', '1') ; for (const name of systemNames) { url.searchParams.append('systemName[]', name) ; } const res = await fetch(url.toString(), { headers: { 'User-Agent': EDSM_UA } }) ; if (!res.ok) return [] ; const data = await res.json() ; return Array.isArray(data) ? data : [] ; } async function getStations(systemName: string): Promise<EDSMStation[]> { const res = await fetch( `https://www.edsm.net/api-system-v1/stations?systemName=${encodeURIComponent(systemName)}`, { headers: { 'User-Agent': EDSM_UA } } ) ; if (!res.ok) return [] ; const data = await res.json() ; return data.stations || [] ; } async function getMarket(systemName: string, marketId: number): Promise<EDSMCommodity[]> { const res = await fetch( `https://www.edsm.net/api-system-v1/stations/market?systemName=${encodeURIComponent(systemName)}&marketId=${marketId}`, { headers: { 'User-Agent': EDSM_UA } } ) ; if (!res.ok) return [] ; const data = await res.json() ; return data.commodities || [] ; } function dist3d(a: EDSMCoords, b: EDSMCoords): number { const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z ; return Math.sqrt(dx*dx + dy*dy + dz*dz) ; } async function fetchWithConcurrency<T, R>( items: T[], fn: (item: T) => Promise<R>, concurrency: number ): Promise<R[]> { const results: R[] = [] ; for (let i = 0; i < items.length; i += concurrency) { const batch = items.slice(i, i + concurrency) ; const batchResults = await Promise.all(batch.map(fn)) ; results.push(...batchResults) ; } return results ; } export async function GET(request: Request) { const { searchParams } = new URL(request.url) ; const commodityName = searchParams.get('commodity') ; const refSystem = searchParams.get('reference_system') || searchParams.get('system') || 'Sol' ; const radius = Math.min(parseInt(searchParams.get('radius') || '500', 10), 500) ; const mode = searchParams.get('mode') || 'single' ; const commoditiesList = mode === 'build' ? BUILD_COMMODITIES : (commodityName ? [commodityName] : []) ; if (commoditiesList.length === 0) { return NextResponse.json({ error: 'commodity is required' }, { status: 400 }) ; } try { const refCoords = await getSystemCoords(refSystem) ; if (!refCoords) { return NextResponse.json({ error: `Cannot find coordinates for ${refSystem}` }, { status: 404 }) ; } const cubeSystems = await getSystemsInCube(refSystem, radius * 2) ; const inSphere: EDSMSystem[] = [] ; for (const sys of cubeSystems) { if (!sys.coords) continue ; const dist = dist3d(refCoords, sys.coords) ; if (dist <= radius) { inSphere.push({ ...sys, distance: dist }) ; } } inSphere.sort((a, b) => (a.distance || 0) - (b.distance || 0)) ; const BATCH_SIZE = 30 ; const POP_CONCURRENCY = 10 ; const systemsToCheck = inSphere ; const systemsWithPopulation: EDSMSystem[] = [] ; const nameChunks: string[][] = [] ; for (let i = 0; i < systemsToCheck.length; i += BATCH_SIZE) { nameChunks.push(systemsToCheck.slice(i, i + BATCH_SIZE).map(s => s.name)) ; } const populationResults = await fetchWithConcurrency( nameChunks, async (chunk) => getSystemsInfoBatch(chunk), POP_CONCURRENCY ) ; const allInfos = populationResults.flat() ; for (const sys of systemsToCheck) { const info = allInfos.find((inf: EDSMSystemInfo) => inf.name === sys.name) ; if (info?.information?.population && info.information.population > 0) { systemsWithPopulation.push(sys) ; } } const stationsInRange: StationWithMarket[] = [] ; const stationResults = await fetchWithConcurrency( systemsWithPopulation, async (sys) => { const stations = await getStations(sys.name) ; return stations .filter((st: EDSMStation) => st.haveMarket && st.marketId) .map((st: EDSMStation) => ({ station_name: st.name, system_name: sys.name, distance: sys.distance || 0, market_id: st.marketId!, landing_pad: st.type === 'Fleet Carrier' ? 'L' : 'L/M/S', station_type: st.type, })) ; }, 20 ) ; stationsInRange.push(...stationResults.flat()) ; stationsInRange.sort((a, b) => a.distance - b.distance) ; const limitedStations = stationsInRange.slice(0, mode === 'build' ? 15 : 25) ; const markets = await Promise.all( limitedStations.map(async (st) => ({ station: st, commodities: await getMarket(st.system_name, st.market_id), })) ) ; if (mode === 'build') { const results: StationBuildResult[] = [] ; for (const { station, commodities } of markets) { const found: { name: string ; stock: number ; sell_price: number }[] = [] ; for (const need of commoditiesList) { const match = commodities.find((c: EDSMCommodity) => c.name.toLowerCase() === need.toLowerCase()) ; if (match && match.stock > 0) { found.push({ name: match.name, stock: match.stock, sell_price: match.sellPrice }) ; } } if (found.length > 0) { results.push({ station_name: station.station_name, system_name: station.system_name, distance: station.distance, landing_pad: station.landing_pad, station_type: station.station_type, commodities: found, commodities_found: found.length, commodities_total: commoditiesList.length, }) ; } } results.sort((a, b) => b.commodities_found - a.commodities_found || a.distance - b.distance) ; return NextResponse.json({ mode: 'build', reference_system: refSystem, radius, commodities: commoditiesList, stations: results, count: results.length, }) ; } else { const results: MarketResult[] = [] ; for (const { station, commodities } of markets) { const match = commodities.find((c: EDSMCommodity) => c.name.toLowerCase() === commodityName!.toLowerCase()) ; if (match && match.stock > 0) { results.push({ station_name: station.station_name, system_name: station.system_name, distance: station.distance, commodity: match.name, sell_price: match.sellPrice, stock: match.stock, demand: match.demand, landing_pad: station.landing_pad, station_type: station.station_type, }) ; } } results.sort((a, b) => a.distance - b.distance) ; return NextResponse.json({ mode: 'single', commodity: commodityName, reference_system: refSystem, radius, stations: results, count: results.length, }) ; } } catch (e: any) { console.error('[Market Find] Error:', e) ; return NextResponse.json({ error: e.message || 'Search failed' }, { status: 500 }) ; } }
+/**
+ * GET /api/market/find — прежний поиск рынка, совместимый ответ из БД проекта.
+ *
+ * Параметры: `commodity` — английское название или символ товара;
+ * `reference_system` (или `system`, по умолчанию Sol); `radius` — 1–500 св. лет,
+ * по умолчанию 500; `mode=build` — станции со строительными товарами вместо
+ * одного товара.
+ *
+ * До web 2.25.2 маршрут на каждый вызов сам обходил EDSM: куб до 1000 св. лет,
+ * население пачками, станции и рынки — сотни запросов без тайм-аутов, цена
+ * покупки бралась из `sellPrice`, и ничего не сохранялось. Сайт давно ищет через
+ * `/api/market/find/{start,step,status}` и `/api/stations/search`; здесь остался
+ * прежний вид ответа, но данные — из `station_commerce` (ARCHITECTURE.md §6.1),
+ * без обращений к EDSM. Цена покупки — `buy_price`; `sell_price` — цена, по
+ * которой станция покупает товар (как поле `sellPrice` у EDSM).
+ */
+import { NextResponse } from 'next/server';
+import { createServiceClient } from '@/lib/supabaseServer';
+import { BUILD_COMMODITIES, resolveCommodity } from '@/lib/commodities';
+import { referenceSystemCoords } from '@/lib/referenceSystem';
+import { STATION_ITEM_LIMIT, stationItemKey, type StationSearchItem, type StationSearchStation } from '@/lib/stationSearch';
+import { marketPickByName, stationQueryAliases } from '@/lib/stationSearchCatalog';
+import { cleanSystemName } from '@/lib/systemIdentity';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 30;
+
+const LIST_FUNCTION = 'search_station_catalog_stations';
+const MAX_RADIUS = 500;
+/** Станций в ответе `mode=single` — прежний обход смотрел 25 ближайших рынков. */
+const SINGLE_LIMIT = 25;
+/** `mode=build`: ближайшие станции хоть с одним товаром, затем — по числу найденных. */
+const BUILD_POOL = 50;
+
+interface Goods {
+  needles: string[];
+  exactKeys: string[];
+}
+
+function radiusParam(value: string | null): number {
+  const radius = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(radius) && radius > 0 ? Math.min(radius, MAX_RADIUS) : MAX_RADIUS;
+}
+
+/** Товары запроса: точный выбор по справочнику, неизвестное название — по вхождению. */
+function goodsQuery(names: string[]): Goods {
+  const needles = new Set<string>();
+  const exactKeys = new Set<string>();
+  let exact = true;
+  for (const name of names) {
+    const pick = marketPickByName(name);
+    if (pick) {
+      pick.needles.forEach((needle) => needles.add(needle));
+      pick.exactKeys.forEach((key) => exactKeys.add(key));
+    } else {
+      exact = false;
+      stationQueryAliases('market', resolveCommodity(name)).forEach((needle) => needles.add(needle));
+    }
+  }
+  return { needles: [...needles], exactKeys: exact ? [...exactKeys] : [] };
+}
+
+/** Крупнейшая площадка — только где её однозначно задаёт тип станции. */
+function landingPad(stationType: string | null): string | null {
+  const type = (stationType || '').replace(/\s+/g, '').toLowerCase();
+  if (!type) return null;
+  if (type === 'outpost') return 'M';
+  return /^(fleetcarrier|coriolis|orbis|ocellus|dodec|bernal|asteroidbase|craterport|planetaryport)/.test(type) ? 'L' : null;
+}
+
+const price = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+
+function offer(item: StationSearchItem) {
+  return { name: item.name, stock: item.stock ?? 0, buy_price: price(item.buyPrice), sell_price: price(item.sellPrice) };
+}
+
+function stationFields(station: StationSearchStation) {
+  return {
+    station_name: station.station_name,
+    system_name: station.system_name,
+    distance: station.distance,
+    landing_pad: landingPad(station.station_type),
+    station_type: station.station_type,
+    market_id: station.market_id,
+    observed_at: station.observed_at,
+    source: station.source,
+  };
+}
+
+export async function GET(request: Request) {
+  const params = new URL(request.url).searchParams;
+  const mode = params.get('mode') === 'build' ? 'build' : 'single';
+  const commodity = (params.get('commodity') || '').trim().slice(0, 120);
+  const reference = cleanSystemName(params.get('reference_system') || params.get('system') || 'Sol').slice(0, 120) || 'Sol';
+  const radius = radiusParam(params.get('radius'));
+  if (mode === 'single' && !commodity) {
+    return NextResponse.json({ error: 'Укажите товар: commodity=<название>.' }, { status: 400 });
+  }
+  try {
+    const svc = createServiceClient();
+    const center = await referenceSystemCoords(svc, reference);
+    if (!center) {
+      return NextResponse.json({ error: `Координаты системы ${reference} не найдены в БД.` }, { status: 404 });
+    }
+    const names = mode === 'build' ? BUILD_COMMODITIES : [commodity];
+    const goods = goodsQuery(names);
+    const limit = mode === 'build' ? BUILD_POOL : SINGLE_LIMIT;
+    const { data, error } = await svc.rpc(LIST_FUNCTION, {
+      search_kind: 'market', needles: goods.needles, exact_keys: goods.exactKeys.length ? goods.exactKeys : null,
+      cx: center.x, cy: center.y, cz: center.z, radius_ly: radius, minimum_stock: 1,
+      filter_class: null, filter_rating: null, fresh_only: false, sort_by: 'distance',
+      page_offset: 0, row_limit: limit, item_limit: STATION_ITEM_LIMIT,
+    });
+    if (error) throw new Error(error.message);
+    const found = (data ?? {}) as { stations?: unknown };
+    const stations = (Array.isArray(found.stations) ? found.stations : []).slice(0, limit) as StationSearchStation[];
+    const itemsOf = (station: StationSearchStation) => (Array.isArray(station.items) ? station.items : []);
+
+    if (mode === 'build') {
+      const results = stations
+        .map((station) => {
+          const offers = itemsOf(station).map(offer);
+          const keys = new Set(itemsOf(station).map((item) => stationItemKey(item.name)));
+          return { ...stationFields(station), commodities: offers, commodities_found: keys.size, commodities_total: names.length };
+        })
+        .filter((station) => station.commodities_found > 0)
+        .sort((a, b) => b.commodities_found - a.commodities_found || (a.distance ?? Infinity) - (b.distance ?? Infinity));
+      return NextResponse.json({
+        mode: 'build', reference_system: reference, radius, commodities: names,
+        stations: results, count: results.length, source: 'project-db',
+      });
+    }
+
+    const results = stations.flatMap((station) => {
+      const item = itemsOf(station)[0];
+      if (!item) return [];
+      const { name, ...prices } = offer(item);
+      return [{ ...stationFields(station), commodity: name, ...prices, demand: item.demand ?? 0 }];
+    });
+    return NextResponse.json({
+      mode: 'single', commodity, reference_system: reference, radius,
+      stations: results, count: results.length, source: 'project-db',
+    });
+  } catch (error) {
+    console.error('[Market Find]', error);
+    return NextResponse.json({
+      error: 'Поиск рынков временно недоступен. Проверьте подключение БД и миграцию 20261022120000_station_search_by_station.sql.',
+    }, { status: 503 });
+  }
+}

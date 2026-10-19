@@ -781,13 +781,15 @@ https://edringcolony.ru/m-admin
 
 ```bash
 cd android-app
+gradle wrapper --gradle-version 8.4   # один раз: gradlew в репозитории нет
 ./gradlew assembleDebug
 # APK: app/build/outputs/apk/debug/app-debug.apk
 # Установка: adb install app/build/outputs/apk/debug/app-debug.apk
 
-# Для локальной разработки с npm run dev:
+# Для локальной разработки с npm run dev (HTTP разрешён только в debug-сборке):
 # В эмуляторе: baseUrl = http://10.0.2.2:3000
-# На устройстве в той же Wi-Fi: http://192.168.x.x:3000
+# На устройстве в той же Wi-Fi: http://192.168.x.x:3000 — адрес добавить в
+# app/src/debug/res/xml/network_security_config.xml или открыть сайт через HTTPS-туннель
 ```
 
 - **Логин**: `LoginScreen` → `POST /api/mobile/auth` с email/password → access_token → EncryptedSharedPreferences

@@ -131,9 +131,10 @@ fun DashboardScreen(
                         Text(formatBytes(disk?.availableBytes), fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = Text)
                     }
                 }
-                if (disk?.usedPercent != null) {
+                val usedPercent = disk?.usedPercent
+                if (usedPercent != null) {
                     Spacer(Modifier.height(10.dp))
-                    androidx.compose.foundation.layout.Box(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp)
@@ -142,8 +143,8 @@ fun DashboardScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxHeight()
-                                .fillMaxWidth((disk.usedPercent / 100.0).toFloat().coerceIn(0f, 1f))
-                                .background(if (disk.usedPercent > 90) Red else Orange)
+                                .fillMaxWidth((usedPercent / 100.0).toFloat().coerceIn(0f, 1f))
+                                .background(if (usedPercent > 90) Red else Orange)
                         )
                     }
                 }
@@ -157,9 +158,10 @@ fun DashboardScreen(
                 Text("CURRENT: ${proj?.currentSha?.take(7) ?: "—"} ${proj?.currentRef?.let { "($it)" } ?: ""}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Orange)
                 Text("UPSTREAM: ${proj?.upstreamSha?.take(7) ?: "—"} [${proj?.upstreamBranch ?: "main"}]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Cyan)
                 Text("AHEAD: ${proj?.aheadBy ?: "—"} коммитов • MIGRATIONS: ${proj?.pendingMigrations?.size ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Text)
-                if (!proj?.pendingMigrations.isNullOrEmpty()) {
+                val pending = proj?.pendingMigrations.orEmpty()
+                if (pending.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    Text(proj.pendingMigrations.joinToString(", "), fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Red, modifier = Modifier.background(Red.copy(alpha = 0.08f)).padding(6.dp))
+                    Text(pending.joinToString(", "), fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Red, modifier = Modifier.background(Red.copy(alpha = 0.08f)).padding(6.dp))
                 }
             }
         }

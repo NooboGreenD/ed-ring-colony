@@ -1195,7 +1195,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                 <IconDownload size={12} /> Скачать CSV
               </button>
               <button type="button" className="atlas-secondary-btn" onClick={() => void copyRoute()}>
-                <IconCopy size={12} /> Копировать
+                <IconCopy size={12} /> Копировать текстом
               </button>
               <button type="button" className="atlas-link-btn" onClick={() => clearAtlasSearchResult()}>
                 Убрать с карты

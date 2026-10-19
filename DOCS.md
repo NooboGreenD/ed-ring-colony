@@ -1,7 +1,8 @@
 # Документация ED Ring Colony — карта
 
-> Состояние на **19.10.2026**: сайт **2.25.1**, Colonial Helper **2.17.0**,
-> 90 SQL-миграций, 231 API-маршрут, 148 файлов автотестов (1581 проверка).
+> Состояние на **19.10.2026**: сайт **2.25.2**, Colonial Helper **2.17.0**,
+> 90 SQL-миграций, 231 API-маршрут, 150 файлов автотестов (1592 проверки, все
+> проходят), 1416 тестов Helper.
 > Документы лежат там же, где лежали всегда: на их имена ссылаются код, тесты и
 > админка, поэтому файлы не переносятся и не переименовываются.
 
@@ -82,7 +83,7 @@
 | Документ | О чём |
 |---|---|
 | [MOBILE-ADMIN.md](MOBILE-ADMIN.md) | `/m-admin` (PWA) и Android-приложение, общий агрегатор `/api/mobile/admin-summary` |
-| [android-app/README.md](android-app/README.md), [android-app/QUICKSTART.md](android-app/QUICKSTART.md) | Сборка APK. **Сейчас не собирается** — см. «Известная проблема» в README приложения |
+| [android-app/README.md](android-app/README.md), [android-app/QUICKSTART.md](android-app/QUICKSTART.md) | Сборка APK (Android Studio или `gradle wrapper` + `./gradlew`); ошибки сборки после #139 исправлены в 2.25.2 — см. «Сборка после #139» |
 
 ## Тесты
 

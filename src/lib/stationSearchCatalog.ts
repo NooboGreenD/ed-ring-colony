@@ -331,6 +331,16 @@ export function resolveStationPick(kind: StationSearchKind, id: string | null | 
   return engineer ? { id, label: engineer.name, needles: unique([engineer.name, ...(engineer.aliases ?? [])]), exactKeys: [] } : null;
 }
 
+/**
+ * Товар по английскому названию или символу Frontier («Liquid oxygen»,
+ * `CMMComposite`) → тот же точный выбор, что даёт подсказка `market:<Symbol>`.
+ * Нужен API, которые принимают название, а не id подсказки.
+ */
+export function marketPickByName(name: string): StationPick | null {
+  const entry = commodities().byKey.get(commodityKey(name));
+  return entry ? resolveStationPick('market', `market:${entry.symbol}`) : null;
+}
+
 /* ── Свободный ввод ── */
 
 /**

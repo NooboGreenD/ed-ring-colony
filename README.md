@@ -209,7 +209,7 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   Content, Users, Support, Backup, Auth), auto-refresh 20s, bottom nav —
   [MOBILE-ADMIN.md](MOBILE-ADMIN.md)
 - **Android App** — Native Kotlin + Jetpack Compose monitor app in `android-app/` (тот же агрегатор
-  `/api/mobile/admin-summary`). **Сейчас не собирается** — см. «Известная проблема» в
+  `/api/mobile/admin-summary`). Ошибки сборки после #139 исправлены в web 2.25.2 — см. «Сборка после #139» в
   [android-app/README.md](android-app/README.md)
 - **i18n** — интерфейс на 7 языках: ru, en, de, it, ko, zh, ja (свой контекст `lib/i18n/`); новости,
   Galnet и тексты главной переводятся Yandex Translate (задачи `translate` и `galnet-sync`)
@@ -298,11 +298,6 @@ python -m unittest discover -s uploader/tests   # тесты Colonial Helper
 Набор гоняется параллельно по файлам (`scripts/run-tests.mjs`), сборки esbuild для тестов кэшируются в
 `.cache/test-bundles`, база в тестах — PGlite. Тот же `npm test` выполняется при сборке Docker-образа `web`
 (`RUN_TESTS=1`). Подробности — [TEST-SUITE-SPEED.md](TEST-SUITE-SPEED.md).
-
-**Известные падения (на 18.10.2026):** 6 проверок галактического кольца, написанных до переработки кольца
-в #122–#128: 4 в `scripts/tests/atlas-ring-constraints.test.mjs` (выбор и шаг опоры, проверка маршрута)
-и по одной в `atlas-search-map.test.mjs` и `atlas-ui-dom.test.mjs` (подписи «Копировать текстом»). Они
-падают и на `main`; остальные 1514 проходят.
 
 ## Database Setup
 
@@ -608,8 +603,8 @@ Compose-профиль `monitoring` (сервис `monitor-agent`) и прове
   Биллинг, Системы, Контент, Юзеры, Поддержка, Бэкапы, Auth. Автообновление каждые 20 с, bottom nav,
   карточки вместо таблиц; требует роль admin.
 - **Android-приложение `android-app/`** — Kotlin + Jetpack Compose, логин через `POST /api/mobile/auth` →
-  Bearer JWT в EncryptedSharedPreferences, агрегатор `GET /api/mobile/admin-summary?period=30d`. Сборка
-  `cd android-app && ./gradlew assembleDebug` сейчас падает (см. [android-app/README.md](android-app/README.md)).
+  Bearer JWT в EncryptedSharedPreferences, агрегатор `GET /api/mobile/admin-summary?period=30d`. Сборка —
+  в Android Studio или `gradle wrapper` + `./gradlew assembleDebug` (см. [android-app/README.md](android-app/README.md)).
 
 Подробности: [MOBILE-ADMIN.md](MOBILE-ADMIN.md) и [MONITORING.md](MONITORING.md).
 

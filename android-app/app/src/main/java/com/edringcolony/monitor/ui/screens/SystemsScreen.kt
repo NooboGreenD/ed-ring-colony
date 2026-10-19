@@ -201,9 +201,10 @@ fun BackupScreen(summary: AdminSummaryResponse?) {
                 Text("CURRENT: ${proj?.currentSha?.take(7) ?: "—"} ${proj?.currentRef?.let { "($it)" } ?: ""}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Orange)
                 Text("UPSTREAM: ${proj?.upstreamSha?.take(7) ?: "—"} [${proj?.upstreamBranch ?: "main"}] (${proj?.aheadBy ?: 0} новых)", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Cyan)
                 Text("Updater: ${if (proj?.updater?.connected == true) "подключен" else "недоступен"} ${if (proj?.updater?.active == true) "• ACTIVE" else ""}", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = if (proj?.updater?.connected == true) Green else Red)
-                if (!proj?.pendingMigrations.isNullOrEmpty()) {
+                val pending = proj?.pendingMigrations.orEmpty()
+                if (pending.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
-                    Text("Миграции: ${proj.pendingMigrations.joinToString(", ")}", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Red)
+                    Text("Миграции: ${pending.joinToString(", ")}", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = Red)
                 } else {
                     Spacer(Modifier.height(6.dp))
                     Text("Миграций нет", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Green)

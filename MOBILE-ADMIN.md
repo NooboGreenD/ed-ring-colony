@@ -115,11 +115,15 @@ android-app/
 Как и веб-панель мониторинга — каждые 20 секунд (`delay(20000)` в `LaunchedEffect`).
 
 ### Сборка APK
+Проще всего — Android Studio (Build → Build APK). Скрипта `gradlew` в репозитории нет: для
+командной строки один раз создайте его локальным Gradle 8.4+.
 ```bash
 cd android-app
+gradle wrapper --gradle-version 8.4   # один раз
 ./gradlew assembleDebug   # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease # release (нужен keystore)
 ```
+HTTP к `10.0.2.2` / `localhost` разрешён только в debug-сборке (`app/src/debug/`), release — только HTTPS.
 
 Для локальной разработки с `npm run dev`:
 - В эмуляторе baseUrl = `http://10.0.2.2:3000`

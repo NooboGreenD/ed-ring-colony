@@ -429,8 +429,13 @@ test('EDSM scan persists the entire inventory, modules and ships, using source t
     calls.push(String(url));
     return { ok: true, json: async () => String(url).includes('/stations/market')
       ? { updateTime: stamp, commodities: [{ name: 'Steel', stock: 10, buyPrice: 100 }, { name: 'Water', stock: 20, buyPrice: 50 }] }
-      : String(url).includes('/stations/outfitting') ? { updateTime: stamp, modules: [{ name: 'int_hyperdrive_size5_class5' }] }
-      : String(url).includes('/stations/shipyard') ? { updateTime: stamp, ships: ['sidewinder'] }
+      // Настоящий формат EDSM: модули — в `outfitting` (id — символ), корабли — в `ships` (id — FDevID).
+      : String(url).includes('/stations/outfitting') ? { updateTime: stamp, marketId: 123, sName: 'Station', outfitting: [
+        { id: 'int_hyperdrive_size5_class5', name: '5A Frame Shift Drive' },
+        { id: 'hpt_pulselaser_gimbal_small', name: '1G Pulse Laser' },
+        { id: null, name: '1I Lightweight Alloy' },
+      ] }
+      : String(url).includes('/stations/shipyard') ? { updateTime: stamp, marketId: 123, sName: 'Station', ships: [{ id: 128049249, name: 'Sidewinder' }] }
       : { stations: [{ name: 'Station', marketId: 123, haveMarket: true, haveOutfitting: true, haveShipyard: true, type: 'Coriolis', distanceToArrival: 100 }] } };
   };
   globalThis.__marketDb = database({ job: job() });
@@ -440,8 +445,13 @@ test('EDSM scan persists the entire inventory, modules and ships, using source t
     const reports = globalThis.__marketDb.rpcCalls.filter((c) => c.rpc === 'save_station_commerce').map((c) => c.value.report);
     assert.equal(reports.find((r) => r.inventories.market).inventories.market.items.length, 2, 'also store goods not requested in this search');
     assert.equal(reports.find((r) => r.inventories.market).inventories.market.observed_at, stamp);
-    assert.equal(reports.find((r) => r.inventories.outfitting).inventories.outfitting.items[0].name, 'int_hyperdrive_size5_class5');
-    assert.equal(reports.find((r) => r.inventories.shipyard).inventories.shipyard.items[0].name, 'sidewinder');
+    // До 2.25.2 модули искались в несуществующем `modules`, и снимок модулей из EDSM не сохранялся никогда.
+    const outfitting = reports.find((r) => r.inventories.outfitting).inventories.outfitting;
+    assert.equal(outfitting.observed_at, stamp);
+    assert.deepEqual(outfitting.items[0], { name: '5A Frame Shift Drive', symbol: 'int_hyperdrive_size5_class5', class: 5, rating: 'A' });
+    assert.deepEqual(outfitting.items[1], { name: '1G Pulse Laser', symbol: 'hpt_pulselaser_gimbal_small', class: 1, rating: 'G' });
+    assert.deepEqual(outfitting.items[2], { name: '1I Lightweight Alloy' }, 'модуль без символа сохраняется по названию');
+    assert.deepEqual(reports.find((r) => r.inventories.shipyard).inventories.shipyard.items, [{ name: 'Sidewinder', id: 128049249 }]);
     assert.equal(calls.length, 4);
   } finally { globalThis.fetch = original; delete globalThis.__marketDb; }
 });

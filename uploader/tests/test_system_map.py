@@ -1407,9 +1407,13 @@ class ProjectDueTests(unittest.TestCase):
         builder.merge_projects(SYSTEM, [
             {"buildId": "guid-due", "buildName": "A 1", "marketId": SITE_MARKET,
              "timeDue": "2026-10-05T12:00:00Z"}])
-        report = map_report(builder.snapshot(), "2.10.6")
-        self.assertIn("дедлайн через", report)
-        self.assertIn("(05.10)", report)
+        # Момент фиксирован, как в test_due_note_wording: с реальной датой тест
+        # «протухал» 05.10.2026 и дальше видел «дедлайн просрочен».
+        report = map_report(builder.snapshot(), "2.10.6", now=self.NOW)
+        self.assertIn("дедлайн через 21 дн (05.10)", report)
+        overdue = map_report(builder.snapshot(), "2.10.6",
+                             now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc))
+        self.assertIn("дедлайн просрочен на 14 дн (05.10)", overdue)
 
 
 class DueTimestampTests(unittest.TestCase):

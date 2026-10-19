@@ -18,11 +18,11 @@ import com.edringcolony.monitor.ui.theme.*
 
 @Composable
 fun MonitorScreen(summary: AdminSummaryResponse?) {
-    if (summary?.monitor == null) {
+    val monitor = summary?.monitor
+    if (monitor == null) {
         LoadingView()
         return
     }
-    val monitor = summary.monitor
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(Bg).padding(12.dp),
@@ -100,9 +100,10 @@ fun MonitorScreen(summary: AdminSummaryResponse?) {
             HudCard {
                 SectionHeader(title = "Топ таблиц БД")
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    monitor.database?.size?.largest?.forEach { t ->
-                        val max = monitor.database.size.largest.firstOrNull()?.totalBytes ?: 1L
-                        val pct = if (max > 0) (t.totalBytes ?: 0L).toFloat() / max.toFloat() else 0f
+                    val tables = monitor.database?.size?.largest.orEmpty()
+                    val max = tables.firstOrNull()?.totalBytes ?: 1L
+                    tables.forEach { t ->
+                        val pct = if (max > 0) ((t.totalBytes ?: 0L).toFloat() / max.toFloat()).coerceIn(0f, 1f) else 0f
                         Column {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("${t.name} (${t.kind})", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Text, modifier = Modifier.weight(1f))

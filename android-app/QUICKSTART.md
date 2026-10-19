@@ -17,29 +17,26 @@ https://edringcolony.ru/m-admin
 
 ## Вариант 2: Нативное Android-приложение
 
-> ⚠️ На 18.10.2026 сборка падает (`MainActivity` вызывает удалённый
-> `RetrofitClient.create`) — см. «Известная проблема» в [README.md](README.md).
-> Пока проблема не исправлена, используйте вариант 1.
+> Ошибки сборки после #139 исправлены в web 2.25.2 — см. «Сборка после #139»
+> в [README.md](README.md). Проверьте сборку в Android Studio перед раздачей APK.
 
 ### Сборка в Android Studio
 
 1. Откройте папку `android-app` в Android Studio Hedgehog+
 2. Дождитесь Gradle Sync
-3. В `gradle.properties` или `TokenManager.kt` укажите URL:
-   ```
-   api.base.url=https://edringcolony.ru
-   # для эмулятора с локальным сервером:
-   # api.base.url=http://10.0.2.2:3000
-   ```
-4. Запустите на эмуляторе Pixel 7 API 34 или устройстве
-5. Введите email/пароль администратора сайта
-6. Приложение загрузит сводку через `/api/mobile/admin-summary`
+3. Запустите на эмуляторе Pixel 7 API 34 или устройстве
+4. Введите email/пароль администратора сайта и адрес сайта (поле API BASE URL,
+   по умолчанию `https://edringcolony.ru`; для эмулятора с локальным сервером —
+   `http://10.0.2.2:3000`, HTTP разрешён только в debug-сборке)
+5. Приложение загрузит сводку через `/api/mobile/admin-summary`
 
 ### Сборка APK вручную
 
+Скрипта `gradlew` в репозитории нет — один раз создайте его локальным Gradle 8.4+:
+
 ```bash
 cd android-app
-chmod +x gradlew
+gradle wrapper --gradle-version 8.4
 ./gradlew assembleDebug
 # APK: app/build/outputs/apk/debug/app-debug.apk
 # Установите на устройство: adb install app/build/outputs/apk/debug/app-debug.apk

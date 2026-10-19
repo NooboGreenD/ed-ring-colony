@@ -55,7 +55,8 @@ function readOptions(value: unknown): Partial<ResolvedSourcingOptions> {
  * Цены берутся из `market_prices` (EDDN-поток сайта), расстояния — из
  * каталога галактики `galaxy_systems`. Если в базе нет свежих цен по товару,
  * товар возвращается с нулевым покрытием и пометкой — интерфейс предлагает
- * поиск по EDSM (`/api/market/find`), а не выдумывает цены.
+ * поиск рынков Атласа (`/atlas?tab=market`, `/api/market/find/{start,step}`),
+ * а не выдумывает цены.
  */
 export async function POST(req: Request) {
   try {
