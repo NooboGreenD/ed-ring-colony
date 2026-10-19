@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
-import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
+import { uploadImageToStorage } from '@/lib/imageStorage';
+import { AVATAR_MAX_BYTES } from '@/lib/imageLimits';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,8 +26,7 @@ export const dynamic = 'force-dynamic';
  */
 
 const BUCKET = 'avatars';
-/** Аватар — маленькая картинка; 1 МБ хватает с запасом, а базу не раздувает. */
-const MAX_BYTES = 1024 * 1024;
+const MAX_BYTES = AVATAR_MAX_BYTES;
 const ALLOWED: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -36,76 +36,6 @@ const ALLOWED: Record<string, string> = {
 
 function json(body: unknown, status = 200) {
   return NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
-}
-
-function errorText(error: unknown): string {
-  if (!error) return 'неизвестная ошибка';
-  if (error instanceof Error) return error.message;
-  const record = error as { message?: unknown; error?: unknown };
-  if (typeof record.message === 'string') return record.message;
-  if (typeof record.error === 'string') return record.error;
-  return String(error);
-}
-
-/**
- * Недоступность хранилища (в отличие от «файл не подошёл»).
- * 503/502/504 приходят от шлюза, `fetch failed`/таймаут — от самого Node.
- */
-function looksUnavailable(error: unknown): boolean {
-  const status = Number((error as { statusCode?: unknown; status?: unknown })?.statusCode
-    ?? (error as { status?: unknown })?.status);
-  if (Number.isFinite(status) && status >= 500) return true;
-  const text = errorText(error).toLowerCase();
-  return (
-    text.includes('fetch failed') ||
-    text.includes('service unavailable') ||
-    text.includes('econnrefused') ||
-    text.includes('enotfound') ||
-    text.includes('timeout') ||
-    text.includes('aborted') ||
-    text.includes('network')
-  );
-}
-
-interface UploadOutcome {
-  url: string | null;
-  error: string | null;
-  unavailable: boolean;
-}
-
-/** Попытка положить файл в бакет; бакет создаётся, если его ещё нет. */
-async function uploadToStorage(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  svc: any,
-  path: string,
-  buffer: Buffer,
-  contentType: string,
-): Promise<UploadOutcome> {
-  const put = async () =>
-    svc.storage.from(BUCKET).upload(path, buffer, { contentType, upsert: true });
-
-  try {
-    let { error } = await put();
-
-    // «Bucket not found» — обычное состояние свежей установки, где SQL
-    // накатили раньше, чем подняли контейнеры storage.
-    if (error && /bucket not found/i.test(errorText(error))) {
-      const created = await svc.storage.createBucket(BUCKET, { public: true });
-      if (!created?.error) ({ error } = await put());
-    }
-
-    if (error) {
-      return { url: null, error: errorText(error), unavailable: looksUnavailable(error) };
-    }
-    // The service client may use an unencrypted Docker URL (`http://kong:8000`).
-    // Never persist that private host: browsers must receive the public
-    // same-origin gateway URL instead.
-    const url = `${getPublicSupabaseUrl()}/storage/v1/object/public/${BUCKET}/${path}`;
-    return { url, error: null, unavailable: false };
-  } catch (err) {
-    // Сеть до Storage вообще не установилась — это точно «недоступно».
-    return { url: null, error: errorText(err), unavailable: true };
-  }
 }
 
 export async function POST(req: NextRequest) {
@@ -128,7 +58,7 @@ export async function POST(req: NextRequest) {
   if (!(file instanceof File)) return json({ error: 'Файл не передан' }, 400);
   if (file.size <= 0) return json({ error: 'Файл пустой' }, 400);
   if (file.size > MAX_BYTES) {
-    return json({ error: `Файл больше ${Math.round(MAX_BYTES / 1024)} КБ — уменьшите картинку` }, 413);
+    return json({ error: `Файл больше ${MAX_BYTES / 1024 / 1024} МБ — уменьшите картинку` }, 413);
   }
 
   const mime = (file.type || '').toLowerCase();
@@ -138,14 +68,14 @@ export async function POST(req: NextRequest) {
   const buffer = Buffer.from(await file.arrayBuffer());
   // Размер из заголовка мультипарта мог соврать — проверяем фактический.
   if (buffer.byteLength <= 0 || buffer.byteLength > MAX_BYTES) {
-    return json({ error: `Файл больше ${Math.round(MAX_BYTES / 1024)} КБ — уменьшите картинку` }, 413);
+    return json({ error: `Файл больше ${MAX_BYTES / 1024 / 1024} МБ — уменьшите картинку` }, 413);
   }
 
   const svc = createServiceClient();
   const checksum = createHash('sha256').update(buffer).digest('hex');
   const path = `${user.id}/${Date.now()}.${ext}`;
 
-  const stored = await uploadToStorage(svc, path, buffer, mime);
+  const stored = await uploadImageToStorage(svc, BUCKET, MAX_BYTES, path, buffer, mime);
   let avatarUrl = stored.url;
   let backend: 'storage' | 'database' = 'storage';
   let warning: string | null = null;
@@ -168,7 +98,7 @@ export async function POST(req: NextRequest) {
     if (dbError) {
       console.error('[account/avatar] storage:', stored.error, '| database:', dbError.message);
       const detail = stored.unavailable
-        ? 'хранилище картинок недоступно (Storage отвечает 503), а запасная таблица profile_avatars не найдена — примените миграции'
+        ? 'хранилище картинок недоступно, и резервное сохранение в БД не удалось — администратору нужно проверить БД и миграции'
         : stored.error;
       return json({ error: `Не удалось сохранить аватар: ${detail}` }, 502);
     }

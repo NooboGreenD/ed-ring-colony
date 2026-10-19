@@ -498,3 +498,10 @@ cd /opt/supabase && docker compose pull && docker compose up -d
 | 5 | Docker-сервис jobs (без дублирующего cron) | фоновые задачи |
 | 6 | бэкап раз в неделю из Админка → Бэкапы (без cron) | копии базы |
 | 7 | чек-лист | всё работает |
+
+### Ошибка Storage при загрузке изображений
+
+Аватары поддерживают файлы до 5 МиБ. Для резервной загрузки логотипа/фона эскадры
+при недоступном Storage нужна миграция `20261024120000_profile_squadron_images.sql`.
+Порядок обновления и безопасная диагностика **Failed to retrieve buckets / Service
+Unavailable**: [STORAGE-UPLOAD-FIX.md](STORAGE-UPLOAD-FIX.md).

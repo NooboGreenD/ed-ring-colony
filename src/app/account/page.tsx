@@ -1,5 +1,6 @@
 "use client";
 
+import { AVATAR_MAX_BYTES } from '@/lib/imageLimits';
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { sendInChunks } from "@/lib/importRetry";
@@ -322,6 +323,7 @@ export default function AccountPage() {
    * (Storage или запасная таблица), и возвращает готовый адрес.
    */
   const uploadAvatar = async (file: File) => {
+    if (file.size > AVATAR_MAX_BYTES) { setMsg(t('account.avatarHint')); return; }
     setAvatarBusy(true);
     setMsg("");
     try {
