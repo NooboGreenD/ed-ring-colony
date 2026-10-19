@@ -1,5 +1,6 @@
 "use client";
 
+import { SQUADRON_IMAGE_LIMITS } from '@/lib/imageLimits';
 import { use, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
@@ -123,6 +124,10 @@ export default function SquadronPage() {
 
   const uploadBranding = async (kind: "logo" | "banner", file: File | null) => {
     if (!file) return;
+    if (file.size > SQUADRON_IMAGE_LIMITS[kind]) {
+      setMsg(`Изображение больше ${SQUADRON_IMAGE_LIMITS[kind] / 1024 / 1024} МБ — уменьшите файл`);
+      return;
+    }
     setBrandingBusy(kind); setMsg("");
     const data = new FormData();
     data.set("kind", kind);
@@ -133,7 +138,7 @@ export default function SquadronPage() {
       if (!res.ok) throw new Error(json.error || "Не удалось загрузить изображение");
       setSquadron(json.squadron);
       setForm(json.squadron);
-      setMsg(kind === "logo" ? "Логотип обновлён" : "Фоновое изображение обновлено");
+      setMsg(json.warning || (kind === "logo" ? "Логотип обновлён" : "Фоновое изображение обновлено"));
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "Ошибка загрузки");
     } finally { setBrandingBusy(null); }

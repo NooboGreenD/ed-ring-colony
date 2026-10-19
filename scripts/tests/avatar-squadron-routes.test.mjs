@@ -322,9 +322,9 @@ maybe('отсутствующий бакет создаётся, а не лом�
 maybe('неподходящий файл отклоняется понятным текстом, профиль не меняется', async () => {
   const { mod, dir } = await buildRoutes();
   try {
-    const tooBig = await mod.avatar.POST(avatarRequest(Buffer.alloc(1024 * 1024 + 10, 1)));
+    const tooBig = await mod.avatar.POST(avatarRequest(Buffer.alloc(5 * 1024 * 1024 + 1, 1)));
     assert.equal(tooBig.status, 413);
-    assert.match((await tooBig.json()).error, /больше 1024 КБ/);
+    assert.match((await tooBig.json()).error, /больше 5 МБ/);
 
     const wrongType = await mod.avatar.POST(avatarRequest(PNG, 'application/pdf', 'doc.pdf'));
     assert.equal(wrongType.status, 415);
@@ -460,4 +460,20 @@ maybe('вторая эскадрилья не создаётся, профиль
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+maybe('аватар ровно 5 МБ принимается Storage и резервной БД', async () => {
+  const { mod, dir } = await buildRoutes();
+  try {
+    const bytes = Buffer.alloc(5 * 1024 * 1024);
+    PNG.copy(bytes);
+    for (const mode of ['ok', 'unavailable']) {
+      mod.db.storage.mode = mode;
+      const response = await mod.avatar.POST(avatarRequest(bytes));
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.storage, mode === 'ok' ? 'storage' : 'database');
+    }
+    assert.equal(mod.db.tables.profile_avatars[0].byte_size, bytes.length);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
