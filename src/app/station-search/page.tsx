@@ -22,11 +22,11 @@ const STOCK_PRESETS = [1, 100, 500, 1000, 5000];
 
 interface FormState {
   kind: StationSearchKind; q: string; pick: StationPickRef | null; reference: string; radius: string; min_stock: string;
-  module_class: string; rating: string; fresh: boolean; sort: string;
+  module_class: string; rating: string; fresh: boolean; sort: string; pad: string; carriers: string;
 }
 
 export default function StationSearchPage() {
-  const [form, setForm] = useState<FormState>({ kind: 'market', q: '', pick: null, reference: '', radius: '500', min_stock: '1', module_class: '', rating: '', fresh: false, sort: 'distance' });
+  const [form, setForm] = useState<FormState>({ kind: 'market', q: '', pick: null, reference: '', radius: '500', min_stock: '1', module_class: '', rating: '', fresh: false, sort: 'distance', pad: 'any', carriers: 'include' });
   const [data, setData] = useState<StationSearchStationsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false);
@@ -44,8 +44,10 @@ export default function StationSearchPage() {
     const reference = cleanSystemName(params.get('reference') ?? '').slice(0, 200);
     const q = (params.get('q') ?? '').slice(0, 200);
     const kind = TABS.find((entry) => entry.id === params.get('kind'))?.id;
-    if (reference || q || kind) {
-      setForm((current) => ({ ...current, reference: reference || current.reference, q: q || current.q, kind: kind ?? current.kind }));
+    const pad = ['S', 'M', 'L'].includes(params.get('pad') ?? '') ? params.get('pad')! : 'any';
+    const carriers = ['exclude', 'only'].includes(params.get('carriers') ?? '') ? params.get('carriers')! : 'include';
+    if (reference || q || kind || pad !== 'any' || carriers !== 'include') {
+      setForm((current) => ({ ...current, pad, carriers, reference: reference || current.reference, q: q || current.q, kind: kind ?? current.kind }));
     }
     const item = params.get('item');
     if (item && pickMatchesKind(kind ?? 'market', item)) setLinkedItem(item);
@@ -83,7 +85,7 @@ export default function StationSearchPage() {
     const current = ++generation.current;
     const params = new URLSearchParams({ kind: form.kind, q: (pick?.label ?? form.q).trim(), group: 'station',
       radius: form.reference.trim() ? form.radius : '500', min_stock: form.kind === 'market' ? form.min_stock : '1',
-      fresh: String(form.fresh), sort: form.sort, page: String(page) });
+      pad: form.pad, carriers: form.carriers, fresh: String(form.fresh), sort: form.sort, page: String(page) });
     if (pick) params.set('item', pick.id);
     if (form.reference.trim()) params.set('reference', form.reference.trim());
     if (form.kind === 'outfitting' && form.module_class) params.set('module_class', form.module_class);
@@ -163,6 +165,24 @@ export default function StationSearchPage() {
             <div className="market-field"><label htmlFor="station-class">Класс модуля</label><select id="station-class" className="input" value={form.module_class} onChange={(event) => change({ module_class: event.target.value })}><option value="">Любой</option>{Array.from({ length: 9 }, (_, i) => <option key={i} value={i}>{i}</option>)}</select></div>
             <div className="market-field"><label htmlFor="station-rating">Рейтинг</label><select id="station-rating" className="input" value={form.rating} onChange={(event) => change({ rating: event.target.value })}><option value="">Любой</option>{'ABCDEFGHI'.split('').map((rating) => <option key={rating}>{rating}</option>)}</select></div>
           </>}
+          <div className="market-field">
+            <label htmlFor="station-pad">Площадка под корабль</label>
+            <select id="station-pad" className="input" value={form.pad} onChange={(event) => change({ pad: event.target.value })} aria-describedby="station-pad-help">
+              <option value="any">Любая / неизвестно</option>
+              <option value="S">S — малый корабль</option>
+              <option value="M">M — средний корабль (M или L)</option>
+              <option value="L">L — большой корабль</option>
+            </select>
+            <small id="station-pad-help" className="atlas-muted">При выборе размера станции с неизвестной площадкой исключаются.</small>
+          </div>
+          <div className="market-field">
+            <label htmlFor="station-carriers">Авианосцы</label>
+            <select id="station-carriers" className="input" value={form.carriers} onChange={(event) => change({ carriers: event.target.value })}>
+              <option value="include">Включать в поиск</option>
+              <option value="exclude">Исключить из поиска</option>
+              <option value="only">Только авианосцы</option>
+            </select>
+          </div>
           <div className="market-field"><label htmlFor="station-sort">Сортировка</label><select id="station-sort" className="input" value={form.sort} onChange={(event) => change({ sort: event.target.value })}>
             <option value="distance">Ближайшие станции</option>{form.kind !== 'services' && <option value="price">Цена покупки</option>}<option value="updated">Свежие наблюдения</option>
           </select></div>

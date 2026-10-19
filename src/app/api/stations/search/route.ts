@@ -43,6 +43,7 @@ export async function GET(request: Request) {
     const pick = resolveStationPick(query.kind, query.item);
     const text = pick?.label ?? (query.kind === 'market' ? resolveCommodity(query.q) : query.q);
     const filters = {
+      ...(query.pad !== 'any' || query.carriers !== 'include' ? { filter_pad: query.pad, filter_carriers: query.carriers } : {}),
       search_kind: query.kind, needles: pick?.needles ?? stationQueryAliases(query.kind, text),
       cx: center?.x ?? null, cy: center?.y ?? null, cz: center?.z ?? null,
       radius_ly: query.radius, minimum_stock: query.min_stock, filter_class: query.module_class ?? null,
@@ -62,7 +63,7 @@ export async function GET(request: Request) {
     }
 
     // Плоский ответ (станция + позиция) — прежний контракт API.
-    const { data, error } = await svc.rpc('search_station_catalog', {
+    const { data, error } = await svc.rpc(query.pad !== 'any' || query.carriers !== 'include' ? 'search_station_catalog_filtered' : 'search_station_catalog', {
       ...filters, page_offset: query.page * STATION_PAGE_SIZE, row_limit: STATION_PAGE_SIZE,
     });
     if (error) throw new Error(error.message);
@@ -86,8 +87,9 @@ async function searchByStation(
   pick: StationPick | null,
 ): Promise<Pick<StationSearchStationsResponse, 'stations' | 'has_more' | 'total' | 'grouping'>> {
   const display = (item: StationSearchResult['item']) => stationItemDisplay(query.kind, item);
-  if (Date.now() >= listMissingUntil) {
-    const { data, error } = await svc.rpc(LIST_FUNCTION, {
+  const filtered = query.pad !== 'any' || query.carriers !== 'include';
+  if (filtered || Date.now() >= listMissingUntil) {
+    const { data, error } = await svc.rpc(filtered ? 'search_station_catalog_stations_filtered' : LIST_FUNCTION, {
       ...filters,
       exact_keys: pick?.exactKeys.length ? pick.exactKeys : null,
       page_offset: query.page * STATION_PAGE_SIZE, row_limit: STATION_PAGE_SIZE, item_limit: STATION_ITEM_LIMIT,
@@ -105,7 +107,8 @@ async function searchByStation(
         grouping: 'station',
       };
     }
-    if (!isMissingListFunction(error)) throw new Error(error.message);
+    // Не подменяем фильтрованный поиск старым RPC: иначе фильтры будут молча потеряны.
+    if (filtered || !isMissingListFunction(error)) throw new Error(error.message);
     listMissingUntil = Date.now() + MISSING_TTL_MS;
     if (!warnedMissing) {
       warnedMissing = true;

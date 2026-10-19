@@ -299,3 +299,64 @@ test('station list migration is idempotent and stays service-only', async () => 
   } finally { await db.exec('RESET ROLE'); }
   assert.equal((await db.query("SELECT station_item_key('$Steel_Name;') AS key")).rows[0].key, 'steel');
 });
+
+const ACCESS_FILTERS = new URL('../../supabase/migrations/20261023120000_station_search_access_filters.sql', import.meta.url);
+await db.exec(readFileSync(ACCESS_FILTERS, 'utf8'));
+
+test('pad compatibility, carrier type variants and unknown sizes', async () => {
+  for (const [type, metadata, pad, carriers, expected] of [
+    ['Fleet Carrier', {}, 'L', 'only', true], ['FleetCarrier', {}, 'M', 'exclude', false],
+    ['Fleet_Carrier', {}, 'S', 'only', true], ['Outpost', {}, 'M', 'exclude', true],
+    ['Outpost', {}, 'L', 'include', false], ['Coriolis Starport', {}, 'L', 'exclude', true],
+    ['Odyssey Settlement', {}, 'S', 'include', false], [null, {}, 'any', 'include', true],
+    [null, {}, 'any', 'only', false], ['Settlement', { max_landing_pad: 'S' }, 'S', 'exclude', true],
+    ['Settlement', { max_landing_pad: 'S' }, 'M', 'include', false],
+    ['Settlement', { max_landing_pad: 'L' }, 'L', 'include', true],
+  ]) {
+    const result = await db.query('SELECT station_access_matches($1,$2,$3,$4) AS ok', [type, metadata, pad, carriers]);
+    assert.equal(result.rows[0].ok, expected, JSON.stringify([type, metadata, pad, carriers]));
+  }
+});
+
+test('filters precede station count, pagination and flat pagination in every category', async () => {
+  const types = ['Outpost', 'Fleet Carrier', 'Coriolis Starport', 'Orbis Starport', 'Unknown'];
+  for (const [i, type] of types.entries()) {
+    const items = [{ name: 'AccessFixture', stock: 100, price: i + 1 }];
+    await save({ ...base, station_name: `Access ${i}`, market_id: String(9800 + i), station_type: type,
+      metadata: { services: ['AccessFixture'] },
+      inventories: Object.fromEntries(['market', 'outfitting', 'shipyard'].map(kind => [kind, { observed_at: old, items }])) });
+  }
+  for (const kind of ['market', 'outfitting', 'shipyard', 'services']) {
+    const query = `SELECT search_station_catalog_stations_filtered($1, ARRAY['AccessFixture'],
+      filter_pad => 'L', filter_carriers => 'exclude', row_limit => 1, page_offset => $2) AS result`;
+    const first = (await db.query(query, [kind, 0])).rows[0].result;
+    assert.equal(first.total, 2);
+    assert.deepEqual(first.stations.map(s => s.station_type), ['Coriolis Starport', 'Orbis Starport']);
+    const next = (await db.query(query, [kind, 1])).rows[0].result;
+    assert.equal(next.total, 2);
+    assert.deepEqual(next.stations.map(s => s.station_type), ['Orbis Starport']);
+    const flat = (await db.query(`SELECT search_station_catalog_filtered($1, ARRAY['AccessFixture'],
+      filter_pad => 'L', filter_carriers => 'exclude', row_limit => 1, page_offset => 1) AS result`, [kind])).rows[0].result;
+    assert.deepEqual(flat.map(s => s.station_type), ['Orbis Starport']);
+    const only = (await db.query(`SELECT search_station_catalog_stations_filtered($1, ARRAY['AccessFixture'],
+      filter_carriers => 'only') AS result`, [kind])).rows[0].result;
+    assert.equal(only.total, 1);
+    assert.equal(only.stations[0].station_type, 'Fleet Carrier');
+  }
+});
+
+test('access filter migration is idempotent and service-only', async () => {
+  await db.exec(readFileSync(ACCESS_FILTERS, 'utf8'));
+  await db.exec('SET ROLE anon');
+  try {
+    await assert.rejects(db.query("SELECT search_station_catalog_stations_filtered('market', ARRAY['Steel'])"), /permission denied/);
+    await assert.rejects(db.query("SELECT search_station_catalog_filtered('market', ARRAY['Steel'])"), /permission denied/);
+  } finally { await db.exec('RESET ROLE'); }
+});
+
+test('explicit landing pad metadata survives source normalization', () => {
+  const payload = spanshCommercePayload({ name: 'Pads', coords: { x: 0, y: 0, z: 0 }, date: old,
+    stations: [{ name: 'Settlement', id: 9988, type: 'Settlement', updateTime: old, landingPads: { small: 2, medium: 1, large: 0 } }] });
+  assert.equal(payload.reports[0].metadata.max_landing_pad, 'M');
+  assert.equal(canonicalReport({ ...base, metadata: { max_landing_pad: 'L' } }, 'colonial-helper').metadata.max_landing_pad, 'L');
+});

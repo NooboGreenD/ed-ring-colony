@@ -96,6 +96,13 @@ async function renderPage({ search } = {}) {
       });
       await flush(15);
     },
+    async select(element, value) {
+      await act(async () => {
+        element.value = value;
+        element.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+      });
+      await flush(15);
+    },
     async focus(element) {
       await act(async () => { element.focus(); });
       await flush(30);
@@ -280,4 +287,31 @@ test('radius and stock presets fill the fields in one click', async () => {
   } finally {
     await ui.cleanup();
   }
+});
+
+
+test('pad and carrier filters are sent, retained across tabs and applied from page zero', async () => {
+  const ui = await renderPage();
+  try {
+    assert.equal(ui.document.getElementById('station-pad').value, 'any');
+    assert.equal(ui.document.getElementById('station-carriers').value, 'include');
+    await ui.select(ui.document.getElementById('station-pad'), 'M');
+    await ui.select(ui.document.getElementById('station-carriers'), 'exclude');
+    await ui.type(ui.query(), 'Steel');
+    await ui.submit();
+    let request = ui.requests.filter(url => url.pathname === '/api/stations/search').at(-1);
+    assert.equal(request.searchParams.get('pad'), 'M');
+    assert.equal(request.searchParams.get('carriers'), 'exclude');
+    assert.equal(request.searchParams.get('page'), '0');
+    await ui.click(ui.document.getElementById('station-tab-services'));
+    assert.equal(ui.document.getElementById('station-pad').value, 'M');
+    assert.equal(ui.document.getElementById('station-carriers').value, 'exclude');
+    await ui.select(ui.document.getElementById('station-carriers'), 'only');
+    await ui.type(ui.query(), 'repair');
+    await ui.submit();
+    request = ui.requests.filter(url => url.pathname === '/api/stations/search').at(-1);
+    assert.equal(request.searchParams.get('carriers'), 'only');
+    assert.equal(request.searchParams.get('pad'), 'M');
+    assert.equal(request.searchParams.get('kind'), 'services');
+  } finally { await ui.cleanup(); }
 });

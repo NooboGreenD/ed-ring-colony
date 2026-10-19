@@ -112,3 +112,16 @@ Services normalize source aliases (technology brokers, engineers/workshops, mate
 - `uploader/tests/test_station_commerce.py` covers current-dock matching, all three service files, empty vs unknown inventories, metadata-only visits and durable retry after restart.
 
 The full Node and Python suites pass (web 2.25.2 brought the ring tests to the tilted-ring API, removed the workflow test for the deleted `.github/workflows/build-*.yml` and gave the deadline test a fixed clock).
+
+## Station access filters
+
+`/station-search` supports the same filters on goods, modules, ships and services:
+
+- `pad=any|S|M|L` (default `any`) selects compatibility with the ship size, not an exact maximum pad. S accepts S/M/L, M accepts M/L, L accepts only L. Unknown sizes are excluded when a size is selected.
+- `carriers=include|exclude|only` (default `include`) includes fleet carriers, excludes them, or searches only them. Carrier classification uses the normalized station type (`Fleet Carrier`, `FleetCarrier`, `Fleet_Carrier`), not the station name or offered services. An unknown station type is not classified as a carrier.
+
+Explicit `metadata.max_landing_pad` takes precedence; station reports accept S/M/L, and EDSM/Spansh adapters retain `maxLandingPadSize` or the largest nonzero `landingPads` count. Without explicit data, known large starport/carrier types imply L and Outpost implies M. Settlements and other ambiguous types stay unknown. Existing records gain explicit pad information on subsequent imports/reports.
+
+Apply `supabase/migrations/20261023120000_station_search_access_filters.sql` after `20261022120000_station_search_by_station.sql` before deploying these filters. It is also included in `supabase/full_schema.sql`. New service-only RPCs `search_station_catalog_filtered` and `search_station_catalog_stations_filtered` apply both predicates before counting, ordering and pagination; previous RPC signatures remain unchanged. With default filters the old compatibility path is retained. If a non-default filter is selected but the migration is missing, the API returns 503 rather than silently ignoring it.
+
+Local verification: `npm test -- station-search station-commerce` and `npm run typecheck`. SQL tests use PGlite; they do not apply migrations to production.
