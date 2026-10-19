@@ -12,6 +12,8 @@ import { createHash } from 'node:crypto';
 import {
   EMPTY_POWERPLAY_META,
   encodePowerplayLayer,
+  normalizePowerName,
+  normalizePowerplayBasis,
   normalizePowerplayState,
   type PowerplayLayerMeta,
   type PowerplayRow,
@@ -42,9 +44,10 @@ interface CachedLayer {
   journalGeneration: number;
   builtAt: number;
   count: number;
-  /** Готовые JSON-фрагменты: `powers`, `states`, `systems`. */
+  /** Готовые JSON-фрагменты: `powers`, `states`, `bases`, `systems`. */
   powersJson: string;
   statesJson: string;
+  basesJson: string;
   systemsJson: string;
   oldest: string | null;
   newest: string | null;
@@ -57,18 +60,34 @@ export function resetPowerplayLayerCache(): void {
   shared.edrcPowerplayLayerCache = null;
 }
 
-function rowsFromRpc(value: unknown): PowerplayRow[] {
+/**
+ * Строки `powerplay_layer_rows`: `[id64, имя, x, y, z, владелец | null,
+ * состояние, наблюдение, основание | null, державы | null]`. Без миграции
+ * 20261021120000 последних двух элементов нет, а владелец всегда строка.
+ */
+export function rowsFromRpc(value: unknown): PowerplayRow[] {
   const list = Array.isArray(value) ? value : typeof value === 'string' ? JSON.parse(value) : [];
   const rows: PowerplayRow[] = [];
   for (const item of Array.isArray(list) ? list : []) {
     if (!Array.isArray(item)) continue;
-    const [id64, name, x, y, z, power, state, observed] = item as unknown[];
+    const [id64, name, x, y, z, rawPower, state, observed, rawBasis, rawPowers] = item as unknown[];
     const normalized = normalizePowerplayState(state);
     const px = Number(x);
     const py = Number(y);
     const pz = Number(z);
-    if (typeof name !== 'string' || typeof power !== 'string' || !normalized) continue;
+    if (typeof name !== 'string' || !normalized) continue;
     if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(pz)) continue;
+    const basis = normalizePowerplayBasis(rawBasis);
+    const power = typeof rawPower === 'string' && rawPower.trim() ? rawPower : null;
+    // Пустой владелец без основания «unknown» — битая строка, а не «не определена».
+    if (!power && basis !== 'unknown') continue;
+    const powers: string[] = [];
+    if (Array.isArray(rawPowers)) {
+      for (const item of rawPowers) {
+        const candidate = normalizePowerName(item);
+        if (candidate && !powers.includes(candidate)) powers.push(candidate);
+      }
+    }
     const seconds = observed == null ? NaN : Number(observed);
     rows.push({
       id64: id64 == null ? '' : String(id64),
@@ -76,9 +95,11 @@ function rowsFromRpc(value: unknown): PowerplayRow[] {
       x: px,
       y: py,
       z: pz,
-      power,
+      power: basis === 'unknown' ? null : power,
       state: normalized,
       observedAt: Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null,
+      basis,
+      powers,
     });
   }
   return rows;
@@ -104,6 +125,7 @@ async function buildLayer(svc: Svc, key: string, journalGeneration: number): Pro
     count: encoded.systems.length,
     powersJson: JSON.stringify(encoded.powers),
     statesJson: JSON.stringify(encoded.states),
+    basesJson: JSON.stringify(encoded.bases),
     systemsJson: JSON.stringify(encoded.systems),
     oldest: Number.isFinite(oldest) ? new Date(oldest * 1000).toISOString() : null,
     newest: Number.isFinite(newest) ? new Date(newest * 1000).toISOString() : null,
@@ -171,7 +193,7 @@ export async function loadPowerplayLayer(
   const version = cached.journalGeneration ? `${state.run_id ?? 'none'}.${cached.journalGeneration}` : (state.run_id ?? 'none');
   const metaJson = JSON.stringify(meta);
   const body = `{"status":${JSON.stringify(status)},"version":${JSON.stringify(version)},"meta":${metaJson},`
-    + `"powers":${cached.powersJson},"states":${cached.statesJson},"systems":${cached.systemsJson}}`;
+    + `"powers":${cached.powersJson},"states":${cached.statesJson},"bases":${cached.basesJson},"systems":${cached.systemsJson}}`;
   const etag = `"pp-${createHash('sha1').update(`${cached.key}|${cached.journalGeneration}|${metaJson}`).digest('hex').slice(0, 20)}"`;
   return { body, etag, status, refreshing: freshness.refreshing, count: cached.count, bytes: Buffer.byteLength(body) };
 }
@@ -185,10 +207,15 @@ export interface PilotPowerplayResult {
   created: number;
   /** Сколько систем пилоты увидели свободными (`Unoccupied`) — слой их больше не показывает. */
   vacated: number;
+  /**
+   * Сколько систем с неопределённым владельцем получили его из журнала, хоть
+   * и более старого, чем дамп (владелец — одна из держав, которые дамп перечислил).
+   */
+  resolved: number;
   systems: string[];
 }
 
-export const EMPTY_PILOT_POWERPLAY: PilotPowerplayResult = { received: 0, applied: 0, stale: 0, created: 0, vacated: 0, systems: [] };
+export const EMPTY_PILOT_POWERPLAY: PilotPowerplayResult = { received: 0, applied: 0, stale: 0, created: 0, vacated: 0, resolved: 0, systems: [] };
 
 /**
  * Наблюдения PowerPlay из журналов пилотов → `powerplay_apply_observations`.
@@ -213,6 +240,7 @@ export async function applyPilotPowerplay(
     result.stale += Number(raw.stale ?? 0) || 0;
     result.created += Number(raw.created ?? 0) || 0;
     result.vacated += Number(raw.vacated ?? 0) || 0;
+    result.resolved += Number(raw.resolved ?? 0) || 0;
     for (const name of Array.isArray(raw.systems) ? raw.systems : []) {
       if (typeof name === 'string' && result.systems.length < 20) result.systems.push(name);
     }

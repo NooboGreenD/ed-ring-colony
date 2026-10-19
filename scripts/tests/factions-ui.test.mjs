@@ -546,7 +546,7 @@ test('подключение: вкладка Atlas, слой карты, адм�
   assert.ok(schema.includes(migration.trim().slice(0, 2000)), 'миграция в снимке full_schema.sql');
 
   const compose = read('docker-compose.yml');
-  assert.equal((compose.match(/powerplay-sync,factions-sync\}/g) || []).length, 2, 'и в jobs, и в мониторинге');
+  assert.equal((compose.match(/powerplay-sync,factions-sync[,}]/g) || []).length, 2, 'и в jobs, и в мониторинге');
   assert.match(read('.env.example'), /^JOBS_ENABLED=.*factions-sync/m);
   assert.match(read('deploy/crontab.example'), /--once factions-sync/);
 

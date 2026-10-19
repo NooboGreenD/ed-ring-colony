@@ -27,6 +27,11 @@ import {
  * планировщика `powerplay-sync` и при открытии вкладки, если данных нет, —
  * а здесь видно, загружено ли что-нибудь, и можно запустить загрузку вручную:
  * этапы с прогресс-барами, общий процент и журнал процесса.
+ *
+ * Таблица по державам показывает и то, откуда известен владелец системы:
+ * дамп EDSM перечисляет у системы все державы, чьи зоны её накрывают, и не
+ * говорит, какая владелец, — у спорных систем его называют только журналы
+ * (Colonial Helper, сайт, CAPI) и живые данные EDDN.
  */
 
 interface PowerSummaryRow {
@@ -35,6 +40,53 @@ interface PowerSummaryRow {
   Fortified: number;
   Exploited: number;
   total: number;
+  journal?: number;
+  sole?: number;
+  kept?: number;
+  legacy?: number;
+  contested?: number;
+}
+
+interface UnknownSummary {
+  total: number;
+  Stronghold: number;
+  Fortified: number;
+  Exploited: number;
+}
+
+/** Слушатель живых данных EDDN (`src/lib/eddn/listener.ts`). */
+interface EddnAdminStatus {
+  enabled: boolean;
+  forbidden: boolean;
+  supported: boolean;
+  running: boolean;
+  status: 'off' | 'connecting' | 'connected' | 'waiting';
+  relay: string;
+  stats: {
+    startedAt?: string | null;
+    connectedAt?: string | null;
+    lastMessageAt?: string | null;
+    lastFlushAt?: string | null;
+    attempts?: number;
+    sessions?: number;
+    stalls?: number;
+    lastSessionBytes?: number;
+    bytes?: number;
+    messages?: number;
+    journal?: number;
+    observations?: number;
+    skipped?: { legacy?: number; test?: number; broken?: number; other?: number; overflow?: number };
+    powerplay?: { applied?: number; created?: number; resolved?: number; vacated?: number; stale?: number };
+    factions?: { applied?: number; created?: number; stale?: number };
+    flushes?: number;
+    flushErrors?: number;
+  };
+  log: PowerplayLogLine[];
+  error: string | null;
+  nextAttemptAt: string | null;
+  pending?: number;
+  enabledAt?: string | null;
+  heartbeatAt?: string | null;
 }
 
 interface AdminStatus {
@@ -60,12 +112,15 @@ interface AdminStatus {
     total: number;
     powers: PowerSummaryRow[];
     sources?: Record<string, number>;
+    unknown?: UnknownSummary;
+    bases?: Record<string, number>;
     vacated?: number;
     oldestObservation: string | null;
     newestObservation: string | null;
     lastChange: string | null;
   } | null;
   summaryError: string | null;
+  eddn?: EddnAdminStatus;
   progressPersisted: boolean;
   config: {
     dumpUrl: string;
@@ -225,7 +280,7 @@ export default function PowerplayAdminTab() {
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [logLength, lastLogAt]);
 
-  const act = async (action: 'start' | 'cancel', force = false) => {
+  const act = async (action: 'start' | 'cancel' | 'eddn-start' | 'eddn-stop', force = false) => {
     setBusy(force ? 'force' : action);
     setMessage('');
     setIsError(false);
@@ -242,6 +297,10 @@ export default function PowerplayAdminTab() {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       } else if (action === 'cancel') {
         setMessage(payload?.cancelled ? 'Останавливаю импорт…' : 'Импорт не выполнялся');
+      } else if (action === 'eddn-start') {
+        setMessage('Живые данные EDDN включены: слушатель подключается к реле. Флаг сохранён — после перезапуска сайта слушатель поднимется сам.');
+      } else if (action === 'eddn-stop') {
+        setMessage('Живые данные EDDN выключены: накопленные наблюдения дописаны, подписка закрыта.');
       } else {
         setMessage(force
           ? 'Загрузка запущена принудительно: дамп скачивается заново и принимается, даже если он меньше прошлого.'
@@ -275,16 +334,23 @@ export default function PowerplayAdminTab() {
   const elapsed = progress ? Math.max(0, (progress.finishedAt ? Date.parse(progress.finishedAt) : serverNow) - Date.parse(progress.startedAt)) : 0;
   const summary = status?.summary ?? null;
   const total = summary?.total ?? status?.state.rows_total ?? 0;
-  const maxPower = useMemo(() => Math.max(1, ...(summary?.powers ?? []).map((row) => row.total)), [summary]);
+  const maxPower = useMemo(
+    () => Math.max(1, summary?.unknown?.total ?? 0, ...(summary?.powers ?? []).map((row) => row.total)),
+    [summary],
+  );
   const stateTotals = useMemo(() => {
     const out = { Stronghold: 0, Fortified: 0, Exploited: 0 };
-    for (const row of summary?.powers ?? []) {
+    for (const row of [...(summary?.powers ?? []), ...(summary?.unknown ? [summary.unknown] : [])]) {
       out.Stronghold += row.Stronghold;
       out.Fortified += row.Fortified;
       out.Exploited += row.Exploited;
     }
     return out;
   }, [summary]);
+  const unknownOwners = summary?.unknown?.total ?? 0;
+  // Сводка старой базы (без миграции 20261021120000) не знает оснований.
+  const basesKnown = Boolean(summary?.bases && Object.keys(summary.bases).length > 0);
+  const legacyRows = summary?.bases?.legacy ?? 0;
   // Системы, где данные пилотов свежее дампа (Helper, сайт, CAPI) — не «edsm».
   const pilotRows = Object.entries(summary?.sources ?? {})
     .filter(([source]) => source !== 'edsm')
@@ -314,7 +380,10 @@ export default function PowerplayAdminTab() {
         <div style={labelStyle}>Данные на сайте</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 10 }}>
           <Stat label="Систем в базе" value={formatPowerplayCount(total)} color={total > 0 ? '#22c55e' : MUTED} />
-          <Stat label="Держав" value={summary ? String(summary.powers.length) : '—'} />
+          <Stat label="Держав" value={summary ? String(summary.powers.filter((row) => row.total > 0).length) : '—'} />
+          {basesKnown && (
+            <Stat label="Владелец не определён" value={formatPowerplayCount(unknownOwners)} color={unknownOwners > 0 ? '#fbbf24' : '#22c55e'} />
+          )}
           <Stat label="Дамп EDSM от" value={formatTime(status?.state.dump_generated_at)} small />
           <Stat label="Записано на сайт" value={formatTime(status?.state.synced_at)} small />
           <Stat label="Проверено источником" value={formatTime(status?.state.checked_at)} small />
@@ -325,6 +394,23 @@ export default function PowerplayAdminTab() {
             эксплуатируемые {formatPowerplayCount(stateTotals.Exploited)}
             {summary.oldestObservation && summary.newestObservation && (
               <> · наблюдения пилотов {formatPowerplayDate(summary.oldestObservation)} – {formatPowerplayDate(summary.newestObservation)}</>
+            )}
+          </div>
+        )}
+        {basesKnown && total > 0 && (
+          <div style={{ fontSize: 12, color: MUTED, marginBottom: 8, lineHeight: 1.5 }} data-pp-admin-bases="">
+            Владелец системы: по журналам (ControllingPower) {formatPowerplayCount(summary?.bases?.journal ?? 0)} ·
+            по дампу EDSM, где держава одна, {formatPowerplayCount(summary?.bases?.sole ?? 0)} ·
+            сохранён из прошлых точных данных {formatPowerplayCount(summary?.bases?.kept ?? 0)} ·
+            не определён {formatPowerplayCount(unknownOwners)}
+            {legacyRows > 0 && <> · по прежнему разбору (до перезагрузки) {formatPowerplayCount(legacyRows)}</>}
+            {unknownOwners > 0 && (
+              <div style={{ color: DIM, marginTop: 2 }}>
+                Дамп EDSM перечисляет у системы все державы, чьи зоны её накрывают, и не говорит, какая из них владелец.
+                У таких систем владельца называют только журналы пилотов и EDDN — включите «Живые данные EDDN» ниже, чтобы
+                число «не определён» таяло. «+N?» в таблице — в скольких таких системах держава среди претендентов: её
+                настоящее число систем — от «Всего» до «Всего + N».
+              </div>
             )}
           </div>
         )}
@@ -363,12 +449,24 @@ export default function PowerplayAdminTab() {
                 <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>Укреплённые</th>
                 <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>Эксплуат.</th>
                 <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>Всего</th>
-                <th style={{ padding: '4px 6px', width: '22%' }} aria-hidden="true" />
+                {basesKnown && (
+                  <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }} title="Систем с неопределённым владельцем, где держава среди претендентов">
+                    +спорных
+                  </th>
+                )}
+                {basesKnown && <th style={{ padding: '4px 6px', fontWeight: 500 }}>Откуда известно</th>}
+                <th style={{ padding: '4px 6px', width: '18%' }} aria-hidden="true" />
               </tr>
             </thead>
             <tbody>
               {summary.powers.map((row) => {
                 const info = powerInfo(row.power);
+                const basisParts = [
+                  row.journal ? `журнал ${formatPowerplayCount(row.journal)}` : '',
+                  row.sole ? `EDSM ${formatPowerplayCount(row.sole)}` : '',
+                  row.kept ? `прошлое ${formatPowerplayCount(row.kept)}` : '',
+                  row.legacy ? `старый разбор ${formatPowerplayCount(row.legacy)}` : '',
+                ].filter(Boolean);
                 return (
                   <tr key={row.power} data-pp-admin-power={row.power} style={{ borderTop: '1px solid #24272a' }}>
                     <td style={{ padding: '4px 6px', color: TEXT, whiteSpace: 'nowrap' }}>
@@ -380,12 +478,35 @@ export default function PowerplayAdminTab() {
                     <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(row.Fortified)}</td>
                     <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(row.Exploited)}</td>
                     <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: TEXT, fontWeight: 600 }}>{formatPowerplayCount(row.total)}</td>
+                    {basesKnown && (
+                      <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: row.contested ? '#fbbf24' : DIM }} data-pp-admin-contested={row.contested ?? 0}>
+                        {row.contested ? `+${formatPowerplayCount(row.contested)}` : '—'}
+                      </td>
+                    )}
+                    {basesKnown && <td style={{ padding: '4px 6px', color: DIM, fontSize: 11 }}>{basisParts.join(' · ') || '—'}</td>}
                     <td style={{ padding: '4px 6px' }}>
                       <ProgressBar fraction={row.total / maxPower} color={info.color} height={6} label={`${info.label}: ${row.total}`} />
                     </td>
                   </tr>
                 );
               })}
+              {basesKnown && unknownOwners > 0 && summary.unknown && (
+                <tr data-pp-admin-power="unknown" style={{ borderTop: '1px solid #24272a', color: '#fbbf24' }}>
+                  <td style={{ padding: '4px 6px', whiteSpace: 'nowrap', fontStyle: 'italic' }}>
+                    <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: powerInfo('?').color, marginRight: 6, verticalAlign: 'middle' }} />
+                    Владелец не определён
+                  </td>
+                  <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(summary.unknown.Stronghold)}</td>
+                  <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(summary.unknown.Fortified)}</td>
+                  <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(summary.unknown.Exploited)}</td>
+                  <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{formatPowerplayCount(summary.unknown.total)}</td>
+                  <td style={{ padding: '4px 6px' }} />
+                  <td style={{ padding: '4px 6px', color: DIM, fontSize: 11 }}>EDSM: несколько держав</td>
+                  <td style={{ padding: '4px 6px' }}>
+                    <ProgressBar fraction={summary.unknown.total / maxPower} color={powerInfo('?').color} height={6} label={`Не определён: ${summary.unknown.total}`} />
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         )}
@@ -513,6 +634,16 @@ export default function PowerplayAdminTab() {
         </div>
       </div>
 
+      {/* ── Живые данные EDDN ── */}
+      {status?.eddn && (
+        <EddnCard
+          eddn={status.eddn}
+          busy={busy}
+          onStart={() => void act('eddn-start')}
+          onStop={() => void act('eddn-stop')}
+        />
+      )}
+
       {/* ── Журнал ── */}
       <div style={cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -574,6 +705,107 @@ export default function PowerplayAdminTab() {
       )}
     </div>
   );
+}
+
+const EDDN_STATUS: Record<EddnAdminStatus['status'], { text: string; color: string }> = {
+  off: { text: 'выключено', color: MUTED },
+  connecting: { text: 'подключение к реле…', color: PP },
+  connected: { text: 'получает данные', color: '#22c55e' },
+  waiting: { text: 'ждёт переподключения', color: '#fbbf24' },
+};
+
+function EddnCard({ eddn, busy, onStart, onStop }: { eddn: EddnAdminStatus; busy: string | null; onStart: () => void; onStop: () => void }) {
+  const stats = eddn.stats ?? {};
+  const pill = eddn.running ? EDDN_STATUS[eddn.status] ?? EDDN_STATUS.off : eddn.enabled ? { text: 'включено, слушатель не запущен', color: '#fbbf24' } : EDDN_STATUS.off;
+  const log = (eddn.log ?? []).slice(-15);
+  const count = (value: number | undefined) => formatPowerplayCount(value ?? 0);
+  return (
+    <div style={cardStyle} data-pp-admin-eddn={eddn.running ? eddn.status : eddn.enabled ? 'enabled' : 'off'}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <div style={{ ...labelStyle, marginBottom: 0 }}>Живые данные EDDN — владелец систем из журналов пилотов</div>
+        <span style={{ fontSize: 12, color: pill.color }}>● {pill.text}</span>
+      </div>
+      <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
+        Дамп EDSM не говорит, какая держава владеет спорной системой. Это знает журнал игры (поле ControllingPower), а его шлют
+        в EDDN тысячи пилотов — оттуда же данные у EDSM, Spansh и Inara. Слушатель берёт из потока прыжки и входы в игру и
+        обновляет PowerPlay (владелец, состояние) и фракции — тем же разбором, что журналы Colonial Helper.
+        <br />
+        <span style={{ color: DIM }}>
+          Трафик — около 2–5 ГБ в сутки (реле не фильтрует по типу данных). Сервер в России: долгие соединения к зарубежным
+          хостингам ТСПУ может «замораживать» — слушатель тогда сам переподключается, а журнал ниже покажет, сколько данных
+          успевает прийти до замирания.
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        {eddn.enabled ? (
+          <button type="button" className="btn btn-danger" disabled={busy !== null} onClick={onStop} data-pp-admin-action="eddn-stop">
+            Выключить EDDN
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-cyan"
+            disabled={busy !== null || !eddn.supported || eddn.forbidden}
+            onClick={onStart}
+            data-pp-admin-action="eddn-start"
+          >
+            Включить EDDN
+          </button>
+        )}
+        <span style={{ fontSize: 11, color: DIM, alignSelf: 'center' }}>реле {eddn.relay}</span>
+      </div>
+      {!eddn.supported && (
+        <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 8 }}>
+          Нет таблицы <code>eddn_listener_state</code>: примените миграцию <code>20261021130000_eddn_listener.sql</code> (Мониторинг → «Обновить сейчас»).
+        </div>
+      )}
+      {eddn.forbidden && (
+        <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 8 }}>
+          На сервере задано <code>EDDN_LISTENER=off</code> — слушатель запрещён, пока переменную не уберут.
+        </div>
+      )}
+      {(eddn.running || (stats.messages ?? 0) > 0) && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8, marginBottom: 8 }} data-pp-admin-eddn-stats="">
+          <Stat label="Сообщений" value={count(stats.messages)} small />
+          <Stat label="Прыжков в слои" value={count(stats.observations)} small />
+          <Stat label="PowerPlay применено" value={count(stats.powerplay?.applied)} small color="#22c55e" />
+          <Stat label="Владельцев названо" value={count(stats.powerplay?.resolved)} small color="#22c55e" />
+          <Stat label="Фракции применено" value={count(stats.factions?.applied)} small />
+          <Stat label="Трафик" value={formatBytesShort(stats.bytes ?? 0)} small />
+          <Stat label="Сессий / «тишин»" value={`${count(stats.sessions)} / ${count(stats.stalls)}`} small />
+          <Stat label="Последнее сообщение" value={formatTime(stats.lastMessageAt)} small />
+        </div>
+      )}
+      {eddn.running && (eddn.pending ?? 0) > 0 && (
+        <div style={{ fontSize: 11, color: DIM, marginBottom: 6 }}>В очереди на запись: {count(eddn.pending)} систем (пачка — раз в минуту)</div>
+      )}
+      {eddn.running && eddn.status === 'waiting' && eddn.nextAttemptAt && (
+        <div style={{ fontSize: 11, color: DIM, marginBottom: 6 }}>Следующая попытка: {formatTime(eddn.nextAttemptAt)}</div>
+      )}
+      {eddn.error && <div style={{ fontSize: 12, color: '#f87171', marginBottom: 6 }} data-pp-admin-eddn-error="">{eddn.error}</div>}
+      {log.length > 0 && (
+        <pre
+          data-pp-admin-eddn-log=""
+          style={{
+            margin: 0, maxHeight: 200, overflow: 'auto', background: '#0f1113', border: '1px solid #262a2e', borderRadius: 4,
+            padding: 8, fontSize: 11, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}
+        >
+          {log.map((line, index) => (
+            <div key={`${line.at}-${index}`} data-level={line.level} style={{ color: line.level === 'error' ? '#f87171' : line.level === 'warn' ? '#fbbf24' : MUTED }}>
+              <span style={{ color: DIM }}>{formatClock(line.at)}</span> {line.text}
+            </div>
+          ))}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function formatBytesShort(value: number): string {
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} КБ`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1).replace('.', ',')} МБ`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2).replace('.', ',')} ГБ`;
 }
 
 function Stat({ label, value, color, small = false }: { label: string; value: string; color?: string; small?: boolean }) {

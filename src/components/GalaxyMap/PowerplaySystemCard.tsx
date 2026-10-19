@@ -1,9 +1,14 @@
 'use client';
 
 /**
- * Карточка системы слоя «PowerPlay» на карте Atlas: чья система, в каком
- * состоянии, когда это видели, и чьи зоны влияния её накрывают (оплоты в
- * 30 св. лет и укреплённые системы в 20 св. лет — и своей державы, и чужих).
+ * Карточка системы слоя «PowerPlay» на карте Atlas: чья система, откуда это
+ * известно, в каком состоянии, когда это видели, и чьи зоны влияния её
+ * накрывают (оплоты в 30 св. лет и укреплённые системы в 20 св. лет — и своей
+ * державы, и чужих).
+ *
+ * Владелец бывает не определён: дамп EDSM перечисляет у системы все державы,
+ * чьи зоны её накрывают, но не говорит, какая из них владелец. Тогда карточка
+ * так и пишет и показывает претендентов.
  */
 
 import Link from 'next/link';
@@ -15,11 +20,18 @@ import {
   POWERPLAY_STATE_ZONE,
   formatLy,
   formatPowerplayDate,
+  isUnknownPower,
   powerInfo,
   powerplayAge,
+  powerplayBasisText,
   type PowerplayInfluence,
   type PowerplaySystem,
 } from '@/lib/powerplay';
+
+/** Чьё это наблюдение — подпись к дате. */
+function observationLabel(system: PowerplaySystem): string {
+  return system.basis === 'journal' ? 'Журнал игры' : 'Данные EDSM';
+}
 import { PowerSwatch, PowerplayGlyph } from './PowerplayGlyph';
 
 const MUTED = '#9ca3af';
@@ -46,6 +58,10 @@ export interface PowerplaySystemCardProps {
 export function PowerplaySystemCard({ system, influence, onClose, onFocus, onShowSystem, now = Date.now() }: PowerplaySystemCardProps) {
   const info = powerInfo(system.power);
   const color = info.color;
+  const unknown = isUnknownPower(system.power);
+  const basisText = powerplayBasisText(system);
+  // Соседи владельца (державы, чьи зоны тоже накрывают систему) или претенденты.
+  const others = (system.candidates ?? []).filter((candidate) => candidate !== system.power);
   const shown = influence.slice(0, INFLUENCE_SHOWN);
   const hidden = influence.length - shown.length;
   const systemHref = `/system/${encodeURIComponent(system.name)}`;
@@ -83,18 +99,37 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
         </button>
       </div>
 
-      <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: TEXT }}>
+      <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: TEXT }} data-powerplay-owner={unknown ? 'unknown' : system.power}>
         <PowerSwatch color={color} />
         <span style={{ fontWeight: 600 }}>{info.label}</span>
         {info.allegiance && <span style={{ fontSize: 11, color: MUTED }}>· {POWER_ALLEGIANCE_LABEL[info.allegiance]}</span>}
       </div>
+      {basisText && (
+        <div style={{ marginTop: 2, fontSize: 11, color: unknown ? '#fbbf24' : DIM, lineHeight: 1.35 }} data-powerplay-basis={unknown ? 'unknown' : system.basis ?? ''}>
+          {unknown ? 'Владелец не определён: EDSM перечисляет несколько держав и не говорит, какая из них владеет системой' : `Держава ${basisText}`}
+        </div>
+      )}
+      {others.length > 0 && (
+        <div style={{ marginTop: 4, fontSize: 11, color: MUTED, lineHeight: 1.5 }} data-powerplay-candidates={others.join('|')}>
+          {unknown ? 'Претенденты: ' : 'Зоны соседей: '}
+          {others.map((candidate, index) => {
+            const other = powerInfo(candidate);
+            return (
+              <span key={candidate} style={{ whiteSpace: 'nowrap' }}>
+                {index > 0 ? ', ' : ''}
+                <PowerSwatch color={other.color} /> <span style={{ color: other.color }}>{other.label}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
       <div style={{ marginTop: 4, fontSize: 12, color: TEXT }} title={POWERPLAY_STATE_HINT[system.state]}>
         {POWERPLAY_STATE_LABEL[system.state]}
         <span style={{ color: MUTED }}> · {system.state}</span>
       </div>
       <div style={{ marginTop: 2, fontSize: 11, color: MUTED }}>{POWERPLAY_STATE_ZONE[system.state]}</div>
       <div style={{ marginTop: 6, fontSize: 11, color: DIM }}>
-        Данные EDSM: {formatPowerplayDate(system.observedAt)} ({powerplayAge(system.observedAt, now)})
+        {observationLabel(system)}: {formatPowerplayDate(system.observedAt)} ({powerplayAge(system.observedAt, now)})
       </div>
       <div style={{ marginTop: 2, fontSize: 11, color: DIM }}>
         <IconMapPin size={11} /> {formatCoordinate(system.x)}, {formatCoordinate(system.y)}, {formatCoordinate(system.z)}
@@ -112,7 +147,7 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
           <ul aria-label="Зоны влияния" style={{ margin: 0, padding: 0, listStyle: 'none' }}>
             {shown.map((item) => {
               const other = powerInfo(item.power);
-              const own = item.power === system.power;
+              const own = item.power === system.power && !unknown;
               return (
                 <li key={item.power} data-powerplay-influence={item.power} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 11, color: MUTED, marginTop: 3 }}>
                   <PowerplayGlyph state={item.nearest.state} color={other.color} size={12} style={{ marginTop: 1 }} />

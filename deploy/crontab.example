@@ -19,3 +19,4 @@ PATH=/usr/local/bin:/usr/bin:/bin
 40 */6 * * * flock -n /opt/ed-ring-colony/jobs/translation.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once translate
 20 5,17 * * * flock -n /opt/ed-ring-colony/jobs/powerplay.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once powerplay-sync
 10 7 * * * flock -n /opt/ed-ring-colony/jobs/factions.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once factions-sync
+2-59/5 * * * * flock -n /opt/ed-ring-colony/jobs/eddn-listener.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once eddn-listener

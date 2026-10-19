@@ -18,6 +18,15 @@ import {
   readPowerplaySyncState,
   startPowerplaySync,
 } from '@/lib/powerplaySync';
+import {
+  eddnListenerForbidden,
+  ensureEddnListener,
+  getEddnListener,
+  setEddnEnabled,
+  startEddnListener,
+  stopEddnListener,
+  type EddnEnsureResult,
+} from '@/lib/eddn/listener';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -43,9 +52,35 @@ const headers = { 'Cache-Control': 'no-store' };
  *                                          304, если дамп не менялся);
  *   * `{ action: 'start', force: true }` — перекачать заново и принять дамп,
  *                                          даже если он заметно меньше прошлого;
- *   * `{ action: 'cancel' }`             — остановить идущий импорт.
+ *   * `{ action: 'cancel' }`             — остановить идущий импорт;
+ *   * `{ action: 'eddn-start' }`         — включить живые данные EDDN
+ *                                          (флаг в базе, слушатель — сразу);
+ *   * `{ action: 'eddn-stop' }`          — выключить их.
  * Импорт идёт фоном в веб-процессе; ответ возвращается сразу, ход виден в GET.
+ *
+ * GET заодно приводит слушатель EDDN к флагу из базы (`eddn`): после
+ * перезапуска сайта открытая админка поднимет его сразу, не ожидая задачи.
  */
+
+function eddnStatus(result: EddnEnsureResult | null, error: string | null) {
+  if (!result) {
+    const snapshot = getEddnListener();
+    return { ...snapshot, enabled: false, forbidden: eddnListenerForbidden(), supported: false, error: error ?? snapshot.error };
+  }
+  const { snapshot, settings } = result;
+  return {
+    enabled: result.enabled,
+    forbidden: result.forbidden,
+    supported: result.supported,
+    enabledAt: settings.enabledAt,
+    heartbeatAt: settings.heartbeatAt,
+    ...snapshot,
+    // Процесс только что поднялся — история прошлого запуска есть только в базе.
+    log: snapshot.log.length ? snapshot.log : settings.log,
+    stats: snapshot.running || !settings.stats ? snapshot.stats : { ...snapshot.stats, ...settings.stats },
+    error: snapshot.error ?? (snapshot.running ? null : settings.error) ?? error,
+  };
+}
 export async function GET(req: Request) {
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
@@ -71,6 +106,13 @@ export async function GET(req: Request) {
       ? last.progress
       : persisted;
     const log = last?.log?.length ? last.log : state.log;
+    let eddn: EddnEnsureResult | null = null;
+    let eddnError: string | null = null;
+    try {
+      eddn = await ensureEddnListener(svc);
+    } catch (error) {
+      eddnError = `Состояние EDDN недоступно: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
+    }
     return NextResponse.json(
       {
         success: true,
@@ -94,6 +136,7 @@ export async function GET(req: Request) {
         },
         summary,
         summaryError,
+        eddn: eddnStatus(eddn, eddnError),
         progressPersisted: state.progress_supported,
         config: {
           dumpUrl: powerplayDumpUrl(),
@@ -151,5 +194,24 @@ export async function POST(req: Request) {
     const cancelled = cancelPowerplaySync();
     return NextResponse.json({ success: true, cancelled }, { headers });
   }
-  return NextResponse.json({ success: false, error: 'Неизвестное действие: нужен start или cancel' }, { status: 400, headers });
+  if (action === 'eddn-start' || action === 'eddn-stop') {
+    const enable = action === 'eddn-start';
+    if (enable && eddnListenerForbidden()) {
+      return NextResponse.json({ success: false, error: 'На сервере задано EDDN_LISTENER=off — слушатель запрещён' }, { status: 409, headers });
+    }
+    try {
+      const svc = createServiceClient();
+      await setEddnEnabled(svc, enable, auth.actor.userId);
+      const snapshot = enable ? startEddnListener(svc) : await stopEddnListener('остановлен: выключен в админке');
+      return NextResponse.json({ success: true, enabled: enable, eddn: snapshot }, { headers });
+    } catch (error) {
+      const message = String((error as Error)?.message ?? error);
+      const missing = /eddn_listener_state|schema cache|does not exist/i.test(message);
+      return NextResponse.json(
+        { success: false, error: missing ? 'Нет таблицы eddn_listener_state: примените миграцию 20261021130000_eddn_listener.sql' : `Не удалось переключить EDDN: ${message.slice(0, 200)}` },
+        { status: 503, headers },
+      );
+    }
+  }
+  return NextResponse.json({ success: false, error: 'Неизвестное действие: нужен start, cancel, eddn-start или eddn-stop' }, { status: 400, headers });
 }

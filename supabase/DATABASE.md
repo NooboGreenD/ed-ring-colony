@@ -1,11 +1,15 @@
 # База данных ED Ring Colony — полный комплект
 
-> Обновлено 19.10.2026: 87 миграций, ~127 таблиц в `public`. Таблицы по
+> Обновлено 19.10.2026: 89 миграций, ~128 таблиц в `public`. Таблицы по
 > разделам — [CONTEXT.md §4](../CONTEXT.md#4-database-schema), карта документов —
-> [DOCS.md](../DOCS.md). Последняя миграция `20261020120000_unified_system_data.sql`
-> новых таблиц не создаёт. Она добавляет общие для разделов функции: карточку
-> системы, прогресс любых систем, журнал → проекты эскадрилий и PowerPlay из
-> журналов пилотов ([ARCHITECTURE.md](../ARCHITECTURE.md)).
+> [DOCS.md](../DOCS.md). `20261020120000_unified_system_data.sql` добавляет общие
+> для разделов функции: карточку системы, прогресс любых систем, журнал →
+> проекты эскадрилий и PowerPlay из журналов пилотов
+> ([ARCHITECTURE.md](../ARCHITECTURE.md)). Последние —
+> `20261021120000_powerplay_owner.sql` (владелец системы PowerPlay: основание
+> `power_basis`, `power` NULL — «не определена») и
+> `20261021130000_eddn_listener.sql` (таблица `eddn_listener_state` для живых
+> данных EDDN) — [POWERPLAY.md](../POWERPLAY.md).
 
 Комплект для развёртывания БД с нуля (новый Supabase или self-hosted
 Supabase) и для приведения существующей базы в соответствие с кодом.
@@ -42,6 +46,8 @@ Supabase) и для приведения существующей базы в с
 | `20261017120000_architect_projects.sql` | «Проекты систем» | ARCHITECT.md |
 | `20261018120000_powerplay_systems.sql`, `20261018180000_powerplay_sync_progress.sql` | слой PowerPlay, прогресс и журнал загрузки | POWERPLAY.md |
 | `20261019120000_minor_factions.sql` | минорные фракции (`bgs_*`) | FACTIONS.md |
+| `20261020120000_unified_system_data.sql` | общие функции разделов: карточка системы, прогресс, журнал → проекты, PowerPlay из журналов | ARCHITECTURE.md |
+| `20261021120000_powerplay_owner.sql`, `20261021130000_eddn_listener.sql` | владелец системы PowerPlay (`power_basis`, «не определена»), живые данные EDDN (`eddn_listener_state`) | POWERPLAY.md |
 
 ## Как применяются миграции на рабочем сервере
 

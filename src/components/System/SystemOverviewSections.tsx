@@ -369,12 +369,21 @@ function PowerplaySection({ overview }: { overview: SystemOverview }) {
       action={<Link href={overview.links.powerplay} style={chip('var(--cyan)')}><IconAtlas size={12} /> На карте PowerPlay</Link>}
     >
       <div style={grid}>
-        <Fact name="Держава"><span style={{ color }}>{pp.power ? powerLabel(pp.power) : '—'}</span></Fact>
+        <Fact name="Держава">
+          <span style={{ color }}>{pp.power ? powerLabel(pp.power) : 'не определена'}</span>
+          {!pp.power && (
+            <div style={muted}>
+              Дамп EDSM перечисляет у системы несколько держав и не говорит, какая владелец; его уточнит журнал пилота или EDDN
+            </div>
+          )}
+        </Fact>
         <Fact name="Состояние">{POWERPLAY_STATE_LABEL[state] ?? pp.state}<div style={muted}>{POWERPLAY_STATE_ZONE[state] ?? ''}</div></Fact>
         {pp.controlProgress != null && <Fact name="Шкала контроля">{number(pp.controlProgress * 100, 1)}%</Fact>}
         {pp.reinforcement != null && <Fact name="Подкрепление">{number(pp.reinforcement)}</Fact>}
         {pp.undermining != null && <Fact name="Подрыв">{number(pp.undermining)}</Fact>}
-        {pp.powers.length > 1 && <Fact name="Державы в системе">{pp.powers.map((power) => powerLabel(power)).join(', ')}</Fact>}
+        {(pp.powers.length > 1 || (!pp.power && pp.powers.length > 0)) && (
+          <Fact name={pp.power ? 'Державы в системе' : 'Претенденты'}>{pp.powers.map((power) => powerLabel(power)).join(', ')}</Fact>
+        )}
       </div>
       <p style={{ ...muted, marginBottom: 0 }}>Наблюдение: {when(pp.observedAt)} · {SOURCE_LABEL[pp.source] ?? pp.source}</p>
     </Section>

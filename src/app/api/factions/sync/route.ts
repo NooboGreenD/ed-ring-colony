@@ -70,6 +70,8 @@ export async function POST(request: Request) {
         stale: result.powerplay.stale,
         created: result.powerplay.created,
         vacated: result.powerplay.vacated,
+        // Владелец системы, который дамп EDSM не знал, взят из этого журнала.
+        resolved: result.powerplay.resolved,
         rejected: result.powerplay.rejected,
         error: result.powerplay.error,
       },

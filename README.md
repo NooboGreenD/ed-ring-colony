@@ -76,8 +76,11 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   - «PowerPlay»: все системы под контролем держав PowerPlay 2.0 на 3D-карте (цвет — держава, форма —
     оплот / укреплённая / эксплуатируемая), фильтр по державам и состояниям, список с поиском и CSV,
     карточка системы с зонами влияния и проверка «чья зона?» для любой системы. Данные — ночной дамп EDSM
-    (задача `powerplay-sync`) и журналы пилотов: Helper 2.17.0, загрузчик в кабинете, CAPI. Свежее
-    наблюдение побеждает. Управление — Админка → Игровые данные → PowerPlay — [POWERPLAY.md](POWERPLAY.md).
+    (задача `powerplay-sync`) и журналы пилотов: Helper 2.17.0, загрузчик в кабинете, CAPI; по желанию —
+    живые данные EDDN. Свежее наблюдение побеждает. Дамп EDSM не знает владельца спорной системы (у неё он
+    перечисляет все державы, чьи зоны её накрывают) — такие системы серые, «держава не определена», а у
+    держав рядом со счётчиком «+N?»; владельца называют журналы и EDDN (web 2.23.0). Управление —
+    Админка → Игровые данные → PowerPlay — [POWERPLAY.md](POWERPLAY.md).
   - «Фракции»: все населённые системы с минорными фракциями на 3D-карте (цвет — принадлежность), поиск
     фракций и показ систем одной или нескольких выбранных (у власти / несколько / присутствует), карточка
     системы со всеми фракциями и их влиянием. Данные — в базе проекта: дамп EDSM `systemsPopulated`
@@ -260,7 +263,7 @@ NEXT_PUBLIC_VAPID_PUBLIC_KEY=your-vapid-public-key
 VAPID_PRIVATE_KEY=your-vapid-private-key
 YANDEX_TRANSLATE_API_KEY=your-yandex-key
 INARA_API_KEY=...                      # Community Goals
-JOBS_ENABLED=capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync,factions-sync
+JOBS_ENABLED=capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync,factions-sync,eddn-listener
 ```
 
 Группы переменных (каталог систем `GALAXY_*`, PowerPlay `POWERPLAY_*`, фракции `FACTIONS_*`, обновление
@@ -280,7 +283,7 @@ npm run typecheck  # next typegen + tsc --noEmit
 
 ```bash
 npm run test:quick    # быстрый контур: без jsdom-рендеров и shell-интеграций (1263 проверки, ~1 мин)
-npm test              # весь набор: 145 файлов, 1536 проверок (~1,5–2 мин на 2 ядрах)
+npm test              # весь набор: 147 файлов, 1549 проверок (~1,5–2 мин на 2 ядрах)
 npm run test:list     # какие файлы есть и к какому контуру они относятся
 node scripts/run-tests.mjs atlas ring    # только файлы про Atlas и кольцо
 npm run test:browser  # Playwright-сценарии tests/browser/*.spec.ts (нужен запущенный сайт)
@@ -304,7 +307,7 @@ python -m unittest discover -s uploader/tests   # тесты Colonial Helper
 `deploy/update-project.sh` накатывает все файлы `supabase/migrations/*.sql`, которых ещё нет в
 `migrations.mark`, по алфавиту, после бэкапа БД.
 
-**Новая установка.** `supabase/full_schema.sql` (все 87 миграций одним файлом) или
+**Новая установка.** `supabase/full_schema.sql` (все 89 миграций одним файлом) или
 `npx supabase db push` — подробно в [supabase/DATABASE.md](supabase/DATABASE.md). Каталог систем
 требует отдельной загрузки дампа — [SPANSH-IMPORT.md](SPANSH-IMPORT.md).
 
@@ -344,7 +347,7 @@ ed-ring-colony/
       layout.tsx            # topbar (статус System Online/Update) + sidebar + footer
       atlas/ map/ system/ systems/ architect/ outfitting/ engineers/ station-search/ ...
       admin/ m-admin/       # админка и мобильная админка (PWA)
-      api/                  # 228 маршрутов API (полный список — CONTEXT.md §5)
+      api/                  # 229 маршрутов API (полный список — CONTEXT.md §5)
     components/
       GalaxyMap/            # 3D-карта галактики и её слои (INTEGRATION.md)
       SystemMap/            # карта системы: SystemOrrery3D + список тел
@@ -361,7 +364,7 @@ ed-ring-colony/
     types/
   scripts/                  # run-tests.mjs, server-jobs.mjs + job-schedule.mjs, update-agent.mjs,
                             #   monitor-agent.mjs, импорт Spansh, Galnet, EDDN, сборка данных верфи
-    tests/                  # 145 файлов автотестов (+ helpers, fixtures)
+    tests/                  # 147 файлов автотестов (+ helpers, fixtures)
   uploader/                 # Colonial Helper (Python): программа, лаунчер, сборка пакета, тесты
   android-app/              # Android-монитор (Kotlin + Compose)
   supabase/                 # migrations/ (86), full_schema.sql, maintenance/, templates/, DATABASE.md
@@ -375,7 +378,7 @@ ed-ring-colony/
 
 ## API Routes
 
-228 маршрутов в `src/app/api/`. Полная таблица с методами и доступом — [CONTEXT.md §5](CONTEXT.md#5-api-routes).
+229 маршрутов в `src/app/api/`. Полная таблица с методами и доступом — [CONTEXT.md §5](CONTEXT.md#5-api-routes).
 Основные группы:
 
 | Группа | Префикс | Доступ |
@@ -409,10 +412,11 @@ ed-ring-colony/
 | `translate` | каждые 6 ч, :40 | `/api/cron/translate` | очередь переводов `news` и `galnet_news` |
 | `powerplay-sync` | 05:20 и 17:20 | `/api/cron/powerplay-sync` | дамп EDSM PowerPlay (условный запрос — второй за сутки обычно 304) |
 | `factions-sync` | 07:10 | `/api/cron/factions-sync` | обновляет фракции старше `FACTIONS_REFRESH_DAYS` и продолжает прерванный импорт; **первую** загрузку делает админ |
+| `eddn-listener` | каждые 5 мин | `/api/cron/eddn-listener` | держит слушатель живых данных EDDN в веб-процессе по флагу из админки (PowerPlay → «Живые данные EDDN»); выключено — ничего не делает |
 | `galaxy-import` | 02:00, **выключена по умолчанию** | `/api/cron/galaxy-import` | дельта каталога Spansh; включается осознанно |
 
-Если в `.env.production` задан свой `JOBS_ENABLED`, новые задачи (`powerplay-sync`, `factions-sync`) нужно
-дописать в него вручную.
+Если в `.env.production` задан свой `JOBS_ENABLED`, новые задачи (`powerplay-sync`, `factions-sync`,
+`eddn-listener`) нужно дописать в него вручную.
 
 ## Spansh: все системы галактики
 
