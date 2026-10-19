@@ -32,8 +32,8 @@ MarketID то TEXT, то BIGINT. Были свои пути приёма дан�
 
 | Часть | Объём | Где |
 |---|---|---|
-| Сайт (Next.js 16, React 19) | 59 страниц, 230 маршрутов API, 237 модулей `src/lib`, 167 компонентов | `src/` |
-| База (Supabase / PostgreSQL) | 128 таблиц, 89 миграций, SQL-функции для тяжёлой логики | `supabase/` |
+| Сайт (Next.js 16, React 19) | 59 страниц, 231 маршрут API, 238 модулей `src/lib`, 169 компонентов | `src/` |
+| База (Supabase / PostgreSQL) | 128 таблиц, 90 миграций, SQL-функции для тяжёлой логики | `supabase/` |
 | Фоновые задачи | 10 задач (9 по умолчанию) | `scripts/job-schedule.mjs`, контейнер `jobs` |
 | Colonial Helper (Python, Windows) | 36 модулей: журнал, оверлеи, Raven, EDSM/Inara/EDDN, авианосец, фракции, станции | `uploader/` |
 | Мобильная админка и Android | PWA `/m-admin`, приложение (сейчас не собирается) | `src/app/m-admin`, `android-app/` |
@@ -129,7 +129,7 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
 | Один канал уведомлений | `src/lib/notify.ts` | Строка в колокольчике (Realtime) и push, если настроен VAPID. Участники проекта узнают, что стройка началась или завершена |
 | Один расчёт прогресса | SQL `system_progress_sources(keys)` + `architect/projectProgress.buildSystemProgress`, `systemOverview.loadSystemsProgress`, `GET /api/projects/[id]/progress` | Тот же расчёт, что у «Проектов систем», для любых систем. Страница проекта эскадрильи показывает процент по каждой системе, в подсказке — площадки и остаток |
 | Карточка системы | SQL `system_overview_sources`, `src/lib/systemOverview.ts`, `GET /api/systems/overview`, `src/components/System/SystemOverviewSections.tsx`, `/system/[name]` | Всё о системе одним запросом с правами зрителя. Чужие «Проекты систем» и черновики планов не видны даже числом. Авианосцы показываются по правилам слоя карты. Есть свежесть каждого источника и ссылки во все разделы |
-| Навигация туда и обратно | `atlas/page.tsx`, `station-search/page.tsx`, `projects/[id]/page.tsx`, `carrierMapStore.loadSystemCarriers` | Атлас открывает систему на слое по `focus_id64`. Поиск станций принимает `?reference=&kind=&q=`. Результаты поиска и проекты ведут в карточку |
+| Навигация туда и обратно | `atlas/page.tsx`, `station-search/page.tsx`, `projects/[id]/page.tsx`, `carrierMapStore.loadSystemCarriers` | Атлас открывает систему на слое по `focus_id64`. Поиск станций принимает `?reference=&kind=&q=` (с web 2.25.0 и `&item=` — точный выбор). Строки результатов поиска и проекты ведут в карточку, в Атлас — через `atlasSystemHref` |
 
 Тесты: `system-identity.test.mjs`, `unified-system-data.test.mjs` (PGlite
 с настоящими миграциями), `system-overview-ui.test.mjs` (jsdom), Python
@@ -228,7 +228,7 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
 9. **Миграции идемпотентны**, а снимок `supabase/full_schema.sql` дополняется
    в том же порядке (`migrations-sql.test.mjs`).
 
-## Приложение А. Модули `src/lib` по разделам (235)
+## Приложение А. Модули `src/lib` по разделам (236)
 
 Разобраны все модули серверной и общей логики. Чистые модули без
 node-зависимостей (их берут и браузер, и маршруты, и `node --test`)
@@ -245,7 +245,7 @@ node-зависимостей (их берут и браузер, и маршр�
 | Проекты эскадрилий и эскадрильи | 5 | `projects/autoProgress.ts`, `projects/projectSync.ts`, `squadronConstants.ts`, `squadronData.ts`, `squadronForm.ts` |
 | Архитектор и «Проекты систем» | 19 | `architect/bodyNames.ts`, `architect/bodySync.ts`, `architect/catalogue.ts`, `architect/dataQuality.ts`, `architect/economy.ts`, `architect/existing.ts`, `architect/governance.ts`, `architect/insights.ts`, `architect/planner.ts`, `architect/progress.ts`, `architect/projectLeaders.ts`, `architect/projectProgress.ts`, `architect/projectRouteKit.ts`, `architect/projectStore.ts`, `architect/projects.ts`, `architect/ravenCreate.ts`, `architect/sourcing.ts`, `architect/store.ts`, `architect/types.ts` |
 | Авианосцы | 7 | `carrierMap.ts`, `carrierMapStore.ts`, `carrierMapView.ts`, `carrierTags.ts`, `fleetCarrierCollector.ts`, `fleetCarrierStore.ts`, `fleetCarriers.ts` |
-| Станции и рынки | 7 | `eddn/subscriber.ts`, `eddnClient.ts`, `marketDiscovery.ts`, `marketUpstream.ts`, `stationCommerce.ts`, `stationSearch.ts`, `stationSearchCatalog.ts` |
+| Станции и рынки | 8 | `eddn/subscriber.ts`, `eddnClient.ts`, `marketDiscovery.ts`, `marketUpstream.ts`, `stationCommerce.ts`, `stationSearch.ts`, `stationSearchCatalog.ts`, `stationSearchOptions.ts` (быстрый выбор: формат, отбор и ранжирование подсказок — для браузера и сервера, web 2.25.0) |
 | Минорные фракции | 9 | `bgs.ts`, `bgsDump.ts`, `bgsJournal.ts`, `bgsProgress.ts`, `bgsShards.ts`, `bgsStore.ts`, `bgsSync.ts`, `bgsUpload.ts`, `bgsWriter.ts` |
 | PowerPlay | 9 | `powerplay.ts`, `powerplayDump.ts`, `powerplayJournal.ts`, `powerplayProgress.ts`, `powerplayShards.ts`, `powerplayStore.ts`, `powerplaySync.ts`, `powerplayUpload.ts`, `powerplayWriter.ts` |
 | Frontier CAPI, Inara | 16 | `capi/client.ts`, `capi/entitlement.ts`, `capi/failure.ts`, `capi/fleetCarrier.ts`, `capi/journal.ts`, `capi/linkState.ts`, `capi/locationSync.ts`, `capi/messages.ts`, `capi/oauth.ts`, `capi/persist.ts`, `capi/platform.ts`, `capi/profile.ts`, `capi/profileBinding.ts`, `capi/session.ts`, `capi/syncPilot.ts`, `inara/client.ts` |

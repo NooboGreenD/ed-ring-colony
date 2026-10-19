@@ -2,7 +2,7 @@
 
 ## Deployment
 
-1. Apply `supabase/migrations/20261014000000_station_commerce.sql`, then `supabase/migrations/20261014010000_station_search.sql` **before** deploying the new server/Helper. Both migrations are included in `supabase/full_schema.sql` for clean installations.
+1. Apply `supabase/migrations/20261014000000_station_commerce.sql`, then `supabase/migrations/20261014010000_station_search.sql` **before** deploying the new server/Helper. Both migrations are included in `supabase/full_schema.sql` for clean installations. The station list (web 2.25.0) adds `supabase/migrations/20261022120000_station_search_by_station.sql`; until it is applied the page still works through the fallback described in «Station finder».
 2. Deploy the server and publish an updated Colonial Helper code bundle using the project's normal signed-bundle procedure. This change does not itself publish a bundle or deploy a database.
 3. For bulk station data, import a **rich Spansh galaxy dump containing stations** from a local gzip file, e.g.:
    ```sh
@@ -55,21 +55,56 @@ The fallback inherits the existing bounded search volume/candidate limits. Neith
 
 ## Station finder (Tools → Station search)
 
-`/station-search` adds four tabs in the site's existing panel/button style: commodities, modules, ships and services. The sidebar entry is translated in all seven navigation locales. The page supports a query, optional reference system/radius, minimum commodity stock, module class/rating, one-hour freshness, distance/price/update sorting and 50-result pagination. Without a reference system, stations with unknown coordinates can still appear; they cannot be opened on the map.
+`/station-search` adds four tabs in the site's existing panel/button style: commodities, modules, ships and services. The sidebar entry is translated in all seven navigation locales. The page supports a query, optional reference system/radius, minimum commodity stock, module class/rating, one-hour freshness and distance/price/update sorting. Without a reference system, stations with unknown coordinates can still appear; they cannot be opened on the map.
 
-`GET /api/stations/search` validates filters and calls the service-role-only `search_station_catalog` RPC. Availability comes exclusively from persisted station rows and current complete inventories. Reference coordinates come from the project DB; this route never contacts EDSM or Spansh. The outfitting catalog supplies display names and symbol aliases only, **not availability**. Helper module symbols are enriched with class/rating when recognizable; the RPC also extracts those fields from standard persisted symbols. Unknown prices/timestamps remain unknown. Cards include station/system, source, observation time, stale status, stock/demand, actual prices and known arrival/body metadata.
+### Results as a list (web 2.25.0)
 
-Services normalize source aliases (technology brokers, engineers/workshops, material traders, Interstellar Factors, etc.). Named engineer references are attached only to actually observed matching station/system rows, including a migration backfill; the static engineer list does not fabricate station records. Broker subtype and a commander's unlocks/permits are not inferred. Service presence is not a guarantee of personal access.
+Results are a **list of stations, one row per station** — not one card per station/item pair. A collapsed row shows the station and its type, the system, the distance from the reference system, a short summary (single match: buy price and stock; several: «N товаров · от X CR») and the observation age with a fresh/stale dot. Clicking the row (a disclosure button with `aria-expanded`) opens what this station has **from the current search**:
 
-“Показать систему в Атласе” opens a new tab and preserves the original search. It passes a validated `focus_system` and finite `x/y/z` coordinates (including zero); Atlas displays the target marker/notice and passes a mount-safe camera focus to GalaxyMap. Missing coordinates disable the map action. Changing filters or categories aborts pending requests and invalidates stale responses; tabs support arrow/Home/End navigation. Initial interactive search controls stay disabled until hydration to prevent a native form submission before the client handler is ready.
+- commodities: buy price, sell price, stock and demand per matched commodity;
+- modules: class + rating, name (Russian group name where the shipyard has one, English otherwise, with a mount for weapons) and price;
+- ships: name and price;
+- services: the matched services and named engineers.
+
+The expanded row also shows the body, distance to arrival and the engineers attached to the station, the source and the exact observation time (with «отчёт старше часа» for stale snapshots), and links to the system card (`systemPageHref`) and the Atlas (new tab, unchanged focus parameters; disabled without coordinates). «Развернуть все / Свернуть все» toggles every row; a single result opens by itself. Pages are 50 **stations**; the heading shows the total («Найдено 132 станции · страница 1 из 3»).
+
+### Quick pick («быстрый выбор»)
+
+Every query field is a combobox (`src/components/StationSearch/StationItemPicker.tsx`, the same look and keyboard as the Atlas system field): the list is filtered while typing, ↑/↓ moves, Enter picks, Escape/Tab closes; recent picks are remembered per tab in `localStorage`. Before typing, the commodities tab lists all construction materials. Suggestions come from `GET /api/stations/search/options?kind=…` (cached for an hour) and are filtered in the browser (`src/lib/stationSearchOptions.ts`) by the Russian and English names, the Frontier symbol and common abbreviations (FSD, AFMU, SCB, DSS):
+
+| Tab | Source | Russian names |
+|---|---|---|
+| Commodities | EDCD/FDevIDs `commodity.csv`, `rare_commodity.csv` (412) | construction materials (`COMMODITY_LABELS_RU`, as in «Проекты систем»); category names |
+| Modules | EDCD/FDevIDs `outfitting.csv`, one entry per in-game name (125; bulkheads and removed items skipped, MercGear only with its own symbols) | the main family of a shipyard group gets the group name (`GROUP_NAMES`), variants keep the English name with the group as a hint |
+| Ships | EDCD/FDevIDs `shipyard.csv` (48) + manufacturer and pad size from `outfitting.json` | — (proper names) |
+| Services | `SERVICE_OPTIONS` (22) + `ENGINEERS` (38, with system and station) | yes |
+
+No Russian name is invented: an item without one shows its English in-game name. The FDevIDs snapshot lives in `src/lib/stationSearchItems.json` (source commit recorded in the file) and is rebuilt with `node scripts/build-station-search-items.mjs` (`--from <dir>` for local CSV files).
+
+A picked suggestion is searched **exactly**: the page sends `item=<id>` (`market:Steel`, `module:frame-shift-drive`, `ship:python_nx`, `service:techbroker`, `engineer:farseer`), and the server turns it into `exact_keys` — the English name and the Frontier symbol(s). The key (`station_item_key` in SQL, `stationItemKey` in TypeScript, the same rule as `commodityKey`) drops `$…_name;` and keeps `a-z0-9`, so `$steel_name;` (Helper), `steel` (EDDN) and `Steel` (Spansh) are one item. «Вода» therefore does not return Water Purifiers, a plain shield generator does not return prismatic or Bi-Weave shields, and Python does not return Python Mk II. Typing a full name (in Russian, English or as a symbol) and pressing «Найти станции» counts as a pick. Free text that is not a full name keeps the old substring search; Russian commodity names are translated to the English name and symbol for it. Services and engineers are always matched by their aliases.
+
+### API and database
+
+`GET /api/stations/search` validates filters (`item` must look like `prefix:value`; a pick from another tab is ignored) and reads only the project DB; it never contacts EDSM or Spansh. With `group=station` (the page) it calls the service-role-only RPC `search_station_catalog_stations` and answers `{kind, query, reference, page, has_more, total, stations: [{…station, items, item_count, best_price}], pick, grouping, source}`; each item carries a `display` label and an optional `hint`. Without `group` the old flat response `results: [{…station, item, item_display}]` is unchanged.
+
+Migration `20261022120000_station_search_by_station.sql` moves the matching into one function, `station_catalog_matches`, used by both the old `search_station_catalog` (same signature and response — an overload would break PostgREST) and the new `search_station_catalog_stations`. The new RPC groups matches by station, orders items (modules from the highest class and best rating, goods and ships by price), caps them at `item_limit` (100) while reporting `item_count`, counts stations for `total`, and pages by station with one extra row as the «has more» lookahead; sorting by distance, best price or observation time.
+
+Without the migration the route falls back to the old RPC: it groups one page of 100 station/item rows on the server, trims exact picks there, answers `grouping: 'page'` with `total: null` (the page says so), remembers the missing function for five minutes and logs one warning naming the migration.
+
+Availability comes exclusively from persisted station rows and current complete inventories. The catalogs supply names, symbols and aliases only, **not availability**. Helper module symbols are enriched with class/rating when recognizable; the RPC also extracts those fields from standard persisted symbols. Unknown prices/timestamps remain unknown.
+
+Services normalize source aliases (technology brokers, engineers/workshops, material traders, Interstellar Factors, search and rescue, crew lounge, Pioneer Supplies, Frontline Solutions, Apex, bartender, carrier administration, redemption office, etc.). Named engineer references are attached only to actually observed matching station/system rows, including a migration backfill; the static engineer list does not fabricate station records. Broker subtype and a commander's unlocks/permits are not inferred. Service presence is not a guarantee of personal access.
+
+“Показать систему в Атласе” opens a new tab and preserves the original search. It passes a validated `focus_system` and finite `x/y/z` coordinates (including zero); Atlas displays the target marker/notice and passes a mount-safe camera focus to GalaxyMap. Missing coordinates disable the map action. Changing filters or categories aborts pending requests and invalidates stale responses; tabs support arrow/Home/End navigation. Initial interactive search controls stay disabled until hydration to prevent a native form submission before the client handler is ready. Deep links accept `?reference=&kind=&q=` and, new, `&item=<id>` for an exact pick. Radius and minimum stock have one-click presets.
 
 ## Validation
 
 - TypeScript: `npm run typecheck`.
 - Targeted Node tests cover station upload authorization/validation, local-first and delayed-fallback search, snapshot removal, source timestamps/priorities, offline stale reports, equipment persistence, rich Spansh normalization, SQL migration parsing and schema snapshot consistency.
-- `scripts/tests/station-search.test.mjs` covers query validation, catalog aliases, DB-only API filters/pagination, service aliases and finite Atlas links.
-- `tests/browser/station-search.spec.ts` covers result cards and actual prices, pagination, unknown-coordinate actions, cancellation/category reset, keyboard tabs, mobile overflow and the Atlas focus notice, with fixture API responses. Run `npx playwright test tests/browser/station-search.spec.ts` against the dev server.
-- `scripts/tests/station-commerce-db.test.mjs` executes both real migrations and RPCs in embedded PostgreSQL: complete/empty snapshots, stale updates, independent services, population-only candidates, carrier moves, identity reconciliation, standalone commodity search, unified four-kind search, module filters, observed-only engineer matching, radius/price/pagination and RLS.
+- `scripts/tests/station-search.test.mjs` covers query validation, catalog aliases, DB-only API filters/pagination, service aliases and finite Atlas links; the quick-pick lists (sources, Russian names, no bulkheads), ranking and exact-name detection, item keys, the station list call (`exact_keys`, paging, labels), picks from another tab, the flat contract and the fallback without the migration.
+- `scripts/tests/station-search-ui.test.mjs` renders the page in jsdom with the real suggestion lists: typing and keyboard picks, recent picks, exact search, the list with collapsed rows, expanded prices/stock/links, «Развернуть все», pagination, services with engineers and the presets.
+- `tests/browser/station-search.spec.ts` covers the station list, an expanded row with actual prices, the quick-pick list and its exact search, pagination, unknown-coordinate actions, cancellation/category reset, keyboard tabs, mobile overflow (also with the open list) and the Atlas focus notice, with fixture API responses. Run `npx playwright test tests/browser/station-search.spec.ts` against the dev server.
+- `scripts/tests/station-commerce-db.test.mjs` executes the real migrations and RPCs in embedded PostgreSQL: complete/empty snapshots, stale updates, independent services, population-only candidates, carrier moves, identity reconciliation, standalone commodity search, unified four-kind search (run against the rewritten flat RPC), module filters, observed-only engineer matching, radius/price/pagination, RLS; and the station list: one row per station, exact keys (Water vs Water Purifiers, Helper `$gold_name;`, plain vs prismatic shields), station paging with lookahead and total, price/update sorting, the item cap, idempotent re-application and service-only access.
 - `uploader/tests/test_station_commerce.py` covers current-dock matching, all three service files, empty vs unknown inventories, metadata-only visits and durable retry after restart.
 
 The full quick suite has existing unrelated ring geometry/label failures. The full Python suite additionally references absent `.github/workflows/build-*.yml` files and has a fixed-date deadline expectation now in the past; targeted commerce tests pass.

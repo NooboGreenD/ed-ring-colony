@@ -126,6 +126,10 @@ test('migration can be reapplied without erasing inventories', async () => {
 });
 
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261014010000_station_search.sql', import.meta.url), 'utf8'));
+// Поиск списком (2.25.0) переписывает плоский поиск поверх общей функции
+// совпадений: все проверки `search_station_catalog` ниже идут уже по нему.
+const BY_STATION = new URL('../../supabase/migrations/20261022120000_station_search_by_station.sql', import.meta.url);
+await db.exec(readFileSync(BY_STATION, 'utf8'));
 async function searchStations(kind, needles, overrides = {}) {
   const p = { cx: null, cy: null, cz: null, radius: 500, min_stock: 1, module_class: null, rating: null, fresh: false, sort: 'distance', offset: 0, limit: 50, ...overrides };
   return (await db.query('SELECT search_station_catalog($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) AS rows',
@@ -165,4 +169,90 @@ test('station search preserves zero coordinates, real distance, price order, and
   assert.equal(limit.length, 2, 'one extra row is returned for has_more');
   const priceRows = await searchStations('market', ['Steel'], { sort: 'price' });
   assert.equal(priceRows[0].item.buyPrice, 90);
+});
+
+async function stationList(kind, needles, overrides = {}) {
+  const p = { exact: null, cx: null, cy: null, cz: null, radius: 500, min_stock: 1, module_class: null, rating: null,
+    fresh: false, sort: 'distance', offset: 0, limit: 50, items: 100, ...overrides };
+  return (await db.query('SELECT search_station_catalog_stations($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) AS result',
+    [kind, needles, p.exact, p.cx, p.cy, p.cz, p.radius, p.min_stock, p.module_class, p.rating, p.fresh, p.sort, p.offset, p.limit, p.items])).rows[0].result;
+}
+
+test('station list returns one row per station with every match, counts stations and keeps a picked item exact', async () => {
+  await save({ ...base, market_id: '3000', station_name: 'List Dock', x: 1, y: 0, z: 0, observed_at: newer,
+    inventories: {
+      market: { observed_at: newer, items: [
+        { name: 'water', stock: 50, buyPrice: 300, sellPrice: 280, demand: 0 },
+        { name: 'waterpurifiers', stock: 20, buyPrice: 500 },
+        { name: '$gold_name;', stock: 5, buyPrice: 9000 },
+      ] },
+      outfitting: { observed_at: newer, items: [
+        { name: 'int_shieldgenerator_size5_class5', price: 1000 },
+        { name: 'int_shieldgenerator_size5_class5_strong', price: 2000 },
+        { name: 'Int_ShieldGenerator_Size4_Class3_Fast', price: 3000 },
+      ] },
+    } });
+  const loose = await stationList('market', ['Water'], { cx: 0, cy: 0, cz: 0, radius: 20 });
+  const dock = loose.stations.find((s) => s.station_name === 'List Dock');
+  assert.equal(dock.item_count, 2, 'free text still finds every name containing the query');
+  assert.deepEqual(dock.items.map((item) => item.name).sort(), ['Water', 'Water Purifiers']);
+  assert.equal(dock.best_price, 300);
+  assert.equal(dock.distance, 1);
+  assert.equal(dock.stale, true);
+  assert.equal(loose.total, loose.stations.length, 'total counts stations, not station/item pairs');
+
+  const exact = await stationList('market', ['Water'], { exact: ['Water', 'water'] });
+  const exactDock = exact.stations.find((s) => s.station_name === 'List Dock');
+  assert.equal(exactDock.item_count, 1);
+  assert.deepEqual(exactDock.items.map((item) => item.name), ['Water']);
+  assert.equal(exactDock.items[0].sellPrice, 280);
+
+  const gold = await stationList('market', [], { exact: ['Gold'] });
+  assert.deepEqual(gold.stations.map((s) => s.station_name), ['List Dock'], 'Helper $gold_name; matches the English name key');
+
+  const shields = await stationList('outfitting', [], { exact: ['Int_ShieldGenerator_Size5_Class5'] });
+  assert.deepEqual(shields.stations.find((s) => s.station_name === 'List Dock').items.map((item) => item.name),
+    ['int_shieldgenerator_size5_class5'], 'a plain shield pick does not return prismatic or bi-weave shields');
+  const prismatic = await stationList('outfitting', [], { exact: ['$int_shieldgenerator_size5_class5_strong_name;'] });
+  assert.equal(prismatic.stations[0].items[0].name, 'int_shieldgenerator_size5_class5_strong');
+});
+
+test('station list pages by station with a lookahead, sorts by best price and caps the items of a row', async () => {
+  await save({ ...base, market_id: '3001', station_name: 'Cheap Dock', x: 3, y: 0, z: 0, observed_at: newer,
+    inventories: { market: { observed_at: newer, items: [{ name: 'Steel', stock: 40, buyPrice: 50 }] } } });
+  await save({ ...base, market_id: '3002', station_name: 'Far Dock', x: 9, y: 0, z: 0, observed_at: old,
+    inventories: { market: { observed_at: old, items: [{ name: 'Steel', stock: 40, buyPrice: 120 }] } } });
+  const all = await stationList('market', ['Steel'], { cx: 0, cy: 0, cz: 0, radius: 20 });
+  assert.ok(all.total >= 3);
+  const distances = all.stations.map((s) => s.distance);
+  assert.deepEqual(distances, [...distances].sort((a, b) => a - b), 'default order is by distance');
+  const page = await stationList('market', ['Steel'], { cx: 0, cy: 0, cz: 0, radius: 20, limit: 1 });
+  assert.equal(page.stations.length, 2, 'one extra station tells the API that there is a next page');
+  assert.equal(page.total, all.total);
+  const second = await stationList('market', ['Steel'], { cx: 0, cy: 0, cz: 0, radius: 20, limit: 1, offset: 1 });
+  assert.equal(second.stations[0].station_key, page.stations[1].station_key);
+  const cheap = await stationList('market', ['Steel'], { sort: 'price' });
+  assert.equal(cheap.stations[0].station_name, 'Cheap Dock');
+  assert.equal(cheap.stations[0].best_price, 50);
+  const updated = await stationList('market', ['Steel'], { sort: 'updated' });
+  assert.notEqual(updated.stations[0].station_name, 'Far Dock', 'the oldest snapshot is not first when sorting by update');
+  const capped = await stationList('outfitting', ['shieldgenerator'], { items: 1 });
+  const row = capped.stations.find((s) => s.station_name === 'List Dock');
+  assert.equal(row.items.length, 1);
+  assert.equal(row.item_count, 3);
+  const beyond = await stationList('market', ['Steel'], { offset: 4000 });
+  assert.deepEqual(beyond.stations, []);
+  assert.equal(beyond.total, cheap.total, 'an empty page still reports the total');
+});
+
+test('station list migration is idempotent and stays service-only', async () => {
+  const before = await searchStations('market', ['Steel']);
+  await db.exec(readFileSync(BY_STATION, 'utf8'));
+  assert.deepEqual(await searchStations('market', ['Steel']), before);
+  await db.exec('SET ROLE authenticated');
+  try {
+    await assert.rejects(db.query("SELECT search_station_catalog_stations('market', ARRAY['Steel'])"), /permission denied/);
+    await assert.rejects(db.query("SELECT * FROM station_catalog_matches('market', ARRAY['Steel'])"), /permission denied/);
+  } finally { await db.exec('RESET ROLE'); }
+  assert.equal((await db.query("SELECT station_item_key('$Steel_Name;') AS key")).rows[0].key, 'steel');
 });

@@ -7065,33 +7065,107 @@ html[data-hud-effect="glow"]::before {
   .station-search-error { padding:14px; margin:12px 0; border:1px solid var(--red); color:var(--red); border-radius:4px; }
   .station-results-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin:20px 0 12px; }
   .station-results-heading h2 { font-size:15px; margin:0; overflow-wrap:anywhere; }
-  .station-results-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
-  .station-result-card { min-width:0; padding:18px; border:1px solid var(--line); border-radius:4px; background:var(--panel); }
-  .station-result-card h3 { margin:14px 0 3px; font-size:16px; overflow-wrap:anywhere; }
-  .station-result-top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; }
-  .station-item-name { color:var(--orange); font-size:13px; font-weight:600; overflow-wrap:anywhere; }
-  .station-report-badge { font-size:10px; padding:3px 7px; border:1px solid var(--line); border-radius:3px; color:var(--green); white-space:nowrap; }
-  .station-report-badge.stale { color:var(--orange); }
-  .station-system-name { font-size:12px; color:var(--cyan); overflow-wrap:anywhere; }
-  .station-result-facts { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:20px 0; }
-  .station-result-facts dt { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.6px; }
-  .station-result-facts dd { font-size:12px; margin:5px 0 0; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
-  .station-report-time { color:var(--muted); font-size:10px; padding-top:12px; border-top:1px solid var(--line); }
-  .station-result-footer { margin-top:14px; }
-  .station-result-footer .btn { max-width:100%; white-space:normal; text-align:center; }
+  .station-results-meta { display:flex; align-items:center; flex-wrap:wrap; gap:12px; font-size:12px; }
+  .station-expand-all { background:none; border:none; padding:0; min-height:auto; min-width:auto; color:var(--cyan); font-size:12px; cursor:pointer; }
+  .station-expand-all:hover { color:var(--orange); }
+  .station-results-exact { display:flex; align-items:center; gap:6px; margin:-4px 0 12px; color:var(--muted); font-size:12px; }
+  .station-results-exact svg { color:var(--orange); flex-shrink:0; }
+  .station-sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; }
+
+  /* Быстрый выбор: оформление поля системы Atlas, своя высота списка. */
+  .station-pick { min-width:0; display:flex; flex-direction:column; gap:5px; }
+  .station-pick-field { position:relative; min-width:0; }
+  .station-pick-label { color:var(--muted); font-size:10px; letter-spacing:1px; text-transform:uppercase; }
+  .station-pick-box { display:flex; align-items:center; gap:8px; padding:0 9px; background:#141618; border:1px solid var(--line); border-radius:3px; min-width:0; }
+  .station-pick-box.focused { border-color:var(--orange); }
+  .station-pick-box.picked { border-color:rgba(46,204,113,.55); }
+  .station-pick-box.picked.focused { border-color:var(--orange); }
+  .station-pick-icon { color:var(--muted); flex-shrink:0; }
+  .station-pick-icon.picked { color:var(--green); }
+  .station-pick-box input { flex:1; min-width:0; margin:0; padding:8px 0; background:transparent; border:none; color:var(--text); font-size:13px; outline:none; }
+  .station-pick-clear { background:none; border:none; color:var(--muted); cursor:pointer; padding:2px; min-width:auto; min-height:auto; }
+  .station-pick-clear:hover { color:var(--text); }
+  .station-pick-list { position:absolute; z-index:30; left:0; right:0; top:calc(100% + 4px); margin:0; padding:4px; list-style:none; background:#16181a; border:1px solid rgba(230,126,34,.35); border-radius:4px; box-shadow:0 12px 28px rgba(0,0,0,.5); max-height:320px; overflow-y:auto; }
+  .station-pick-group, .station-pick-empty { padding:7px 8px 4px; color:var(--muted); font-size:10px; letter-spacing:.5px; text-transform:uppercase; }
+  .station-pick-empty { text-transform:none; letter-spacing:0; font-size:11px; }
+  .station-pick-option { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:3px; color:var(--text); font-size:12px; cursor:pointer; }
+  .station-pick-option.active { background:rgba(230,126,34,.14); }
+  .station-pick-recent { color:var(--muted); flex-shrink:0; }
+  .station-pick-text { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+  .station-pick-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .station-pick-name mark { background:none; color:var(--orange); font-weight:600; }
+  .station-pick-hint { color:var(--muted); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .station-pick-badge { flex-shrink:0; padding:1px 6px; border:1px solid rgba(230,126,34,.45); border-radius:3px; color:var(--orange); font-size:9px; letter-spacing:.5px; text-transform:uppercase; }
+  .station-pick-tag { flex-shrink:0; max-width:40%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#6b7480; font-size:10px; font-family:ui-monospace,monospace; }
+  .station-pick-note { margin:0; color:#5b6470; font-size:10px; line-height:1.5; min-height:15px; }
+  .station-presets { margin:2px 0 0; gap:4px; }
+  .station-presets .atlas-preset { min-height:auto; min-width:auto; padding:3px 7px; letter-spacing:.3px; }
+  .station-presets .atlas-preset:disabled { opacity:.4; cursor:default; }
+
+  /* Результаты списком: строка — станция, по нажатию — что на ней нашлось. */
+  .station-list-wrap { border:1px solid var(--line); border-radius:4px; background:var(--panel); overflow:hidden; }
+  .station-list-columns, .station-row-head { display:grid; grid-template-columns:18px minmax(0,2.2fr) minmax(0,1.5fr) minmax(84px,.8fr) minmax(0,2fr) minmax(104px,.9fr); gap:12px; align-items:center; }
+  .station-list-columns { padding:9px 14px; border-bottom:1px solid var(--line); color:var(--muted); font-family:ui-monospace,monospace; font-size:10px; letter-spacing:1.5px; text-transform:uppercase; }
+  .station-list { list-style:none; margin:0; padding:0; }
+  .station-row + .station-row { border-top:1px solid var(--line); }
+  .station-row-head { width:100%; margin:0; padding:11px 14px; min-height:auto; background:transparent; border:none; border-radius:0; color:var(--text); text-align:left; font:inherit; font-size:13px; letter-spacing:0; text-transform:none; cursor:pointer; }
+  .station-row-head:hover { background:rgba(230,126,34,.06); }
+  .station-row-head:focus-visible { outline:1px solid var(--orange); outline-offset:-1px; }
+  .station-row.open > .station-row-head { background:rgba(230,126,34,.08); }
+  .station-row-chevron { color:var(--muted); transition:transform .15s; }
+  .station-row.open .station-row-chevron { transform:rotate(90deg); color:var(--orange); }
+  .station-row-name { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .station-row-name strong { font-weight:600; overflow-wrap:anywhere; }
+  .station-row-type { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .station-row-system { color:var(--cyan); font-size:12px; overflow-wrap:anywhere; }
+  .station-row-distance { font-family:ui-monospace,monospace; font-size:12px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .station-row-summary { color:var(--orange); font-size:12px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+  .station-row-age { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:11px; white-space:nowrap; }
+  .station-row-dot { width:7px; height:7px; border-radius:50%; background:var(--green); flex-shrink:0; }
+  .station-row-age.stale .station-row-dot { background:var(--orange); }
+  .station-row-panel { padding:4px 14px 16px 44px; border-top:1px dashed var(--line); background:rgba(0,0,0,.12); }
+  .station-items-scroll { overflow-x:auto; margin:10px 0 4px; }
+  .station-items { width:100%; border-collapse:collapse; font-size:12px; }
+  .station-items th, .station-items td { position:static; padding:7px 10px; border-bottom:1px solid var(--line); background:none; text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .station-items thead th { color:var(--muted); font-family:ui-monospace,monospace; font-size:10px; font-weight:400; letter-spacing:1.5px; text-transform:uppercase; }
+  .station-items th:first-child { text-align:left; white-space:normal; width:100%; }
+  .station-items tbody th { font-family:inherit; font-size:12px; font-weight:400; letter-spacing:0; text-transform:none; color:var(--text); }
+  .station-items tbody tr:hover { background:rgba(230,126,34,.06); }
+  .station-items-name { display:block; color:var(--text); overflow-wrap:anywhere; }
+  .station-items-hint { display:block; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
+  .station-row-services { display:flex; flex-wrap:wrap; gap:6px; list-style:none; margin:12px 0 4px; padding:0; }
+  .station-row-services li { padding:4px 9px; border:1px solid var(--line); border-radius:3px; font-size:12px; }
+  .station-row-more { margin:6px 0 0; color:var(--muted); font-size:11px; }
+  .station-row-facts { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px 16px; margin:14px 0 10px; }
+  .station-row-facts dt { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.6px; }
+  .station-row-facts dd { margin:4px 0 0; font-size:12px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+  .station-report-time { margin:0; padding-top:10px; border-top:1px solid var(--line); color:var(--muted); font-size:11px; }
+  .station-row-stale { color:var(--orange); }
+  .station-row-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .station-row-actions .btn { max-width:100%; padding:8px 14px; font-size:11px; letter-spacing:2px; white-space:normal; text-align:center; }
   .station-search-pagination { display:flex; justify-content:center; align-items:center; gap:14px; margin:24px 0; font-size:12px; }
   .station-atlas-focus { position:absolute; z-index:10; bottom:18px; left:16px; right:16px; max-width:500px; background:var(--panel); border:1px solid var(--orange); padding:12px 16px; border-radius:4px; font-size:12px; }
   .station-atlas-focus strong { color:var(--orange); }
   .station-atlas-focus a { display:block; margin-top:7px; color:var(--muted); }
+  @media (max-width:900px) {
+    .station-list-columns { display:none; }
+    .station-row-head { grid-template-columns:18px minmax(0,1fr) auto; grid-template-areas:'chevron name distance' '. system age' '. summary summary'; gap:4px 10px; }
+    .station-row-chevron { grid-area:chevron; }
+    .station-row-name { grid-area:name; }
+    .station-row-system { grid-area:system; }
+    .station-row-distance { grid-area:distance; text-align:right; }
+    .station-row-summary { grid-area:summary; }
+    .station-row-age { grid-area:age; justify-self:end; }
+    .station-row-panel { padding:4px 12px 14px; }
+  }
   @media (max-width:760px) {
     .station-search-form { grid-template-columns:repeat(2,minmax(0,1fr)); padding:14px; }
-    .station-results-grid { grid-template-columns:1fr; }
     .station-search-page { padding:18px 12px; }
+    .station-items th, .station-items td { padding:6px 6px; }
   }
   @media (max-width:380px) {
     .station-search-heading > .btn { width:100%; }
     .station-search-tabs .btn { flex:1 1 40%; }
-    .station-result-facts { grid-template-columns:1fr; }
     .station-search-actions > .btn { width:100%; }
   }
 }

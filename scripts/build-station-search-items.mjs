@@ -1,0 +1,147 @@
+#!/usr/bin/env node
+/**
+ * Справочник быстрого выбора для поиска станций (`/station-search`).
+ *
+ * Источник — EDCD/FDevIDs: внутренние имена Frontier (`symbol`) и названия «как
+ * в игре на английском» для товаров, модулей и кораблей. Этот же набор
+ * используют EDMC, EDDN и Inara, поэтому символы совпадают с тем, что приходит
+ * от Colonial Helper (`$steel_name;`), EDDN (`steel`) и Spansh (`Steel`).
+ *
+ * Зачем свой файл, а не `public/data/outfitting.json`: в справочнике верфи нет
+ * символов модулей (скрипт его сборки их выбрасывает), а точный поиск «выбрал
+ * из списка — нашёл ровно это» сравнивает именно символы.
+ *
+ * Результат — `src/lib/stationSearchItems.json` (только сервер: список
+ * подсказок отдаёт `/api/stations/search/options`).
+ *
+ * Использование:
+ *   node scripts/build-station-search-items.mjs                 # скачать master с GitHub
+ *   node scripts/build-station-search-items.mjs --from /tmp/fdev  # CSV из каталога
+ *   node scripts/build-station-search-items.mjs --ref <commit>     # конкретная ревизия
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+const OUTPUT = join(ROOT, 'src', 'lib', 'stationSearchItems.json');
+const FILES = ['commodity.csv', 'rare_commodity.csv', 'outfitting.csv', 'shipyard.csv'];
+
+function argument(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+/** CSV FDevIDs: запятые, кавычки только вокруг полей с запятой. */
+export function parseCsv(text) {
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line.trim() !== '');
+  const split = (line) => {
+    const values = [];
+    let current = '';
+    let quoted = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      if (char === '"') {
+        if (quoted && line[i + 1] === '"') { current += '"'; i += 1; } else quoted = !quoted;
+      } else if (char === ',' && !quoted) {
+        values.push(current);
+        current = '';
+      } else current += char;
+    }
+    values.push(current);
+    return values;
+  };
+  const [header, ...rows] = lines.map(split);
+  return rows.map((row) => Object.fromEntries(header.map((key, index) => [key.trim(), (row[index] ?? '').trim()])));
+}
+
+async function load(ref, from) {
+  const out = {};
+  for (const file of FILES) {
+    if (from) {
+      out[file] = readFileSync(join(from, file), 'utf8');
+      continue;
+    }
+    const url = `https://raw.githubusercontent.com/EDCD/FDevIDs/${ref}/${file}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+    out[file] = await response.text();
+  }
+  return out;
+}
+
+/** Модули без брони корпуса (она своя у каждого корабля) и без снятых из игры. */
+export function buildItems(sources, meta = {}) {
+  const commodities = parseCsv(sources['commodity.csv'])
+    .filter((row) => row.symbol && row.name)
+    .map((row) => ({ symbol: row.symbol, name: row.name, category: row.category }));
+  const rare = parseCsv(sources['rare_commodity.csv'])
+    .filter((row) => row.symbol && row.name)
+    .map((row) => ({ symbol: row.symbol, name: row.name, category: row.category }));
+  const byName = new Map();
+  const seen = new Set();
+  const rows = parseCsv(sources['outfitting.csv'])
+    .filter((row) => row.symbol && row.name && !/_armour_/i.test(row.symbol) && row.entitlement !== 'removed')
+    // Предзаряженные модули MercGear продаются под теми же символами, что и
+    // обычные: в ассортименте станции их не отличить. Обычный модуль получает
+    // символ первым, а у MercGear остаются только собственные символы.
+    .sort((a, b) => Number(a.category === 'mercgear') - Number(b.category === 'mercgear'));
+  const dropped = [];
+  for (const row of rows) {
+    const symbol = row.symbol.toLowerCase();
+    if (seen.has(symbol)) {
+      dropped.push(`${row.name} (${row.symbol})`);
+      continue;
+    }
+    seen.add(symbol);
+    const key = row.name;
+    if (!byName.has(key)) byName.set(key, { name: row.name, category: row.category, items: [] });
+    byName.get(key).items.push([row.symbol, Number(row.class) || 0, row.rating || '', row.mount || '']);
+  }
+  if (dropped.length && meta.log) meta.log(`skipped ${dropped.length} module rows sharing a symbol: ${dropped.join('; ')}`);
+  const modules = [...byName.values()]
+    .map((module) => ({ ...module, items: module.items.sort((a, b) => a[1] - b[1] || a[2].localeCompare(b[2]) || a[0].localeCompare(b[0])) }));
+  const ships = parseCsv(sources['shipyard.csv'])
+    .filter((row) => row.symbol && row.name)
+    .map((row) => ({ symbol: row.symbol, name: row.name }));
+  return {
+    source: 'https://github.com/EDCD/FDevIDs',
+    ref: meta.ref || 'master',
+    retrieved: meta.retrieved || new Date().toISOString().slice(0, 10),
+    note: 'Generated by scripts/build-station-search-items.mjs. Module items: [symbol, class, rating, mount].',
+    commodities,
+    rare,
+    modules,
+    ships,
+  };
+}
+
+/** Одна запись — одна строка: файл вдвое меньше, а разница ревизий читается. */
+export function formatItems(items) {
+  const lines = ['{'];
+  const entries = Object.entries(items);
+  entries.forEach(([key, value], index) => {
+    const comma = index < entries.length - 1 ? ',' : '';
+    if (!Array.isArray(value)) {
+      lines.push(` ${JSON.stringify(key)}: ${JSON.stringify(value)}${comma}`);
+      return;
+    }
+    lines.push(` ${JSON.stringify(key)}: [`);
+    value.forEach((entry, entryIndex) => lines.push(`  ${JSON.stringify(entry)}${entryIndex < value.length - 1 ? ',' : ''}`));
+    lines.push(` ]${comma}`);
+  });
+  lines.push('}');
+  return `${lines.join('\n')}\n`;
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const ref = argument('--ref') || 'master';
+  const from = argument('--from');
+  const sources = await load(ref, from);
+  const items = buildItems(sources, { ref, retrieved: argument('--date'), log: (line) => console.log(line) });
+  writeFileSync(OUTPUT, formatItems(items));
+  console.log(`station search items: ${items.commodities.length} commodities, ${items.rare.length} rare, `
+    + `${items.modules.length} module names (${items.modules.reduce((sum, m) => sum + m.items.length, 0)} symbols), `
+    + `${items.ships.length} ships → ${OUTPUT}`);
+}

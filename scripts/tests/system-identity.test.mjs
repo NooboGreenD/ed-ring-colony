@@ -124,7 +124,10 @@ test('ссылки между разделами строятся одинако
 
 test('страницы ведут в карточку системы и обратно', () => {
   const read = (path) => readFileSync(join(ROOT, path), 'utf8');
-  assert.ok(read('src/app/station-search/page.tsx').includes('systemPageHref(row.system_name)'), 'поиск станций → карточка системы');
+  // Строка списка поиска станций (web 2.25.0) ведёт в карточку системы и в Атлас общей ссылкой.
+  const stationRows = read('src/components/StationSearch/StationResultsList.tsx');
+  assert.ok(stationRows.includes('systemPageHref(station.system_name)'), 'поиск станций → карточка системы');
+  assert.ok(read('src/lib/stationSearch.ts').includes('atlasSystemHref(row.system_name'), 'поиск станций → Атлас через atlasSystemHref');
   assert.ok(read('src/app/station-search/page.tsx').includes("params.get('reference')"), 'поиск станций принимает систему из ссылки');
   assert.ok(read('src/app/projects/[id]/page.tsx').includes('systemPageHref(s.system_name)'), 'проект эскадрильи → карточка системы');
   const atlas = read('src/app/atlas/page.tsx');
