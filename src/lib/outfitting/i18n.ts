@@ -476,15 +476,21 @@ export const BLUEPRINT_PREFIX: Record<string, Record<string, string>> = {
   },
 };
 
-/** Тип подвеса орудия: турель, наводящееся, фиксированное. */
+/**
+ * Тип подвеса орудия. Буквы — как в игровых символах модулей (`fdnames.ts`):
+ * F — `Hpt_…_Fixed_…`, фиксированное; G — `Hpt_…_Gimbal_…`, наводящееся;
+ * T — `Hpt_…_Turret_…`, турель. Админка подписывает буквы по-русски через
+ * `CATALOG_MOUNTS` (`catalog.ts`), поиск по станциям — через `mountName`.
+ * Тесты `outfitting-i18n` и `outfitting-catalog` сверяют все подписи с символами.
+ */
 export const MOUNT_NAMES: Record<string, Record<string, string>> = {
-  ru: { G: '(турель)', T: '(наводящееся)', F: '(фикс.)' },
-  en: { G: '(turret)', T: '(gimballed)', F: '(fixed)' },
-  de: { G: '(Geschützturm)', T: '(kardanisch)', F: '(fix)' },
-  it: { G: '(torretta)', T: '(cardanico)', F: '(fisso)' },
-  ko: { G: '(터렛)', T: '(짐벌)', F: '(고정)' },
-  zh: { G: '（炮塔）', T: '（万向）', F: '（固定）' },
-  ja: { G: '（タレット）', T: '（ジンバル）', F: '（固定）' },
+  ru: { F: '(фикс.)', G: '(наводящееся)', T: '(турель)' },
+  en: { F: '(fixed)', G: '(gimballed)', T: '(turret)' },
+  de: { F: '(fix)', G: '(kardanisch)', T: '(Geschützturm)' },
+  it: { F: '(fisso)', G: '(cardanico)', T: '(torretta)' },
+  ko: { F: '(고정)', G: '(짐벌)', T: '(터렛)' },
+  zh: { F: '（固定）', G: '（万向）', T: '（炮塔）' },
+  ja: { F: '（固定）', G: '（ジンバル）', T: '（タレット）' },
 };
 
 /** Язык без перевода откатывается на английский, затем на русский. */

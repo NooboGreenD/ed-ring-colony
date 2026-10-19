@@ -37,7 +37,7 @@ writeFileSync(join(dir, 'entry.ts'), `
 export * from '@/lib/outfitting/catalog';
 export * from '@/lib/outfitting/catalogStore';
 export {requireCatalogAdmin} from '@/lib/outfitting/catalogAuth';
-export {catalogGroupName} from '@/lib/outfitting/i18n';
+export {catalogGroupName, MOUNT_NAMES} from '@/lib/outfitting/i18n';
 export {moduleLabel, defaultBuild} from '@/lib/outfitting/build';
 export {modulesForSlot, buildSlots, computeStats} from '@/lib/outfitting/calc';
 export * as admin from '@/app/api/admin/outfitting/route';
@@ -364,6 +364,33 @@ test('validation rejects invalid types, renamed technical IDs, unknown groups/sh
   }
   assert.throws(() => lib.validateCatalogValue('module', 'unknown:test_module', { ...value, grp: 'unknown' }, base), /Группа не найдена/);
   assert.throws(() => lib.validateCatalogValue('bulkhead', 'unknown:test_module', { id: 'test_module', grp: 'bh' }, base), /Корабль не найден/);
+});
+
+test('admin mount labels follow game symbols and the public shipyard: G is gimballed, T is turret', () => {
+  // Буквы — из игровых символов (Hpt_…_Gimbal_… → G, Hpt_…_Turret_… → T);
+  // до web 2.25.1 таблица и редактор админки подписывали G и T наоборот.
+  assert.deepEqual(Object.keys(lib.CATALOG_MOUNTS), ['F', 'G', 'T']);
+  assert.match(lib.CATALOG_MOUNTS.G.title, /наводящ/);
+  assert.match(lib.CATALOG_MOUNTS.T.title, /турел/);
+  for (const [mount, label] of Object.entries(lib.CATALOG_MOUNTS)) {
+    // «(фикс.)» → «фикс», «(наводящееся)» → «наво»: у админки и публичной верфи одна основа слова.
+    const stem = lib.MOUNT_NAMES.ru[mount].replace(/[().]/g, '').slice(0, 4);
+    assert.ok(label.title.startsWith(stem), `${mount}: «${label.title}» расходится с верфью «${lib.MOUNT_NAMES.ru[mount]}»`);
+    assert.ok(label.short.toLowerCase().startsWith(stem), `${mount}: «${label.short}» расходится с верфью «${lib.MOUNT_NAMES.ru[mount]}»`);
+  }
+  // Запись принимает ровно эти буквы.
+  for (const mount of Object.keys(lib.CATALOG_MOUNTS)) {
+    assert.equal(lib.validateCatalogValue('module', 'pp:test_module', { ...moduleValue(), mount }, base).mount, mount);
+  }
+  for (const mount of ['', 'X', 'g', 'toString', 'constructor']) {
+    assert.throws(() => lib.validateCatalogValue('module', 'pp:test_module', { ...moduleValue(), mount }, base), /Крепление: F, G или T/, JSON.stringify(mount));
+  }
+  // Таблица и редактор не держат своих слов для букв — только CATALOG_MOUNTS.
+  for (const file of ['src/components/Admin/OutfittingAdmin.tsx', 'src/components/Admin/OutfittingEditor.tsx']) {
+    const source = readFileSync(join(ROOT, file), 'utf8');
+    assert.match(source, /CATALOG_MOUNTS/, file);
+    assert.doesNotMatch(source, /'Турель'|'Навод\.'|'Фикс\.'|— наводящееся|— турель|— фиксированное/, file);
+  }
 });
 
 test('prototype pollution, malicious keys, unbounded nesting and invalid commands are rejected', () => {

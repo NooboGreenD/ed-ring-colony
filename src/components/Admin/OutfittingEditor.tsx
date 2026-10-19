@@ -2,7 +2,7 @@
 import { cloneElement, useId, useMemo, useState, type ReactElement, type ReactNode } from 'react';
 import { IconPlus, IconSave, IconWrench } from '@/components/Icons';
 import type { OutfittingData, PreEngineered } from '@/lib/outfitting/types';
-import { CATALOG_CATEGORIES, isRecord, validateCatalogValue, type CatalogKind, type CatalogValue } from '@/lib/outfitting/catalog';
+import { CATALOG_CATEGORIES, CATALOG_MOUNTS, isRecord, validateCatalogValue, type CatalogKind, type CatalogValue } from '@/lib/outfitting/catalog';
 import { MODULE_SPECS, specFor, specName } from '@/lib/outfitting/specs';
 import OutfittingDialog from './OutfittingDialog';
 import styles from './OutfittingAdmin.module.css';
@@ -185,7 +185,8 @@ export default function OutfittingEditor({ item, data, onClose, onSave }: {
                 <Field label="Класс"><input type="number" min={0} max={8} step={1} required value={String(draft.class ?? '')} onChange={(event) => set('class', event.target.value === '' ? undefined : Number(event.target.value))} /></Field>
                 <Field label="Рейтинг"><select value={String(draft.rating ?? 'A')} onChange={(event) => set('rating', event.target.value)}>{'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((rating) => <option key={rating}>{rating}</option>)}</select></Field>
                 <Field label="Крепление"><select value={String(draft.mount ?? '')} onChange={(event) => set('mount', event.target.value)}>
-                  <option value="">Не применяется</option><option value="F">F — фиксированное</option><option value="T">T — наводящееся</option><option value="G">G — турель</option>
+                  <option value="">Не применяется</option>
+                  {Object.entries(CATALOG_MOUNTS).map(([key, mount]) => <option key={key} value={key}>{key} — {mount.title}</option>)}
                 </select></Field>
               </>}
               {numberInput('mass', kind === 'bulkhead')}{numberInput('cost', kind === 'bulkhead')}

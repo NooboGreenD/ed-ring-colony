@@ -1,7 +1,7 @@
 # Документация ED Ring Colony — карта
 
-> Состояние на **19.10.2026**: сайт **2.25.0**, Colonial Helper **2.17.0**,
-> 90 SQL-миграций, 231 API-маршрут, 148 файлов автотестов (1578 проверок).
+> Состояние на **19.10.2026**: сайт **2.25.1**, Colonial Helper **2.17.0**,
+> 90 SQL-миграций, 231 API-маршрут, 148 файлов автотестов (1581 проверка).
 > Документы лежат там же, где лежали всегда: на их имена ссылаются код, тесты и
 > админка, поэтому файлы не переносятся и не переименовываются.
 
@@ -36,7 +36,7 @@
 | [ATLAS-MARKET-FIX.md](ATLAS-MARKET-FIX.md) | Вкладка Atlas «Рынок»: поиск товаров для стройки, материалы стройплощадки |
 | [SYSTEM-COORDINATE-FALLBACK.md](SYSTEM-COORDINATE-FALLBACK.md) | Координаты хабов, маршрута и проектов: EDSM → каталог → Spansh |
 | [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md) | Данные стройплощадок: одна строка на площадку (`colonisation_sites`), снимки прогресса, очистка |
-| [OUTFITTING-ADMIN.md](OUTFITTING-ADMIN.md) | Админка верфи: модули, корабли, броня, заводская инженерия |
+| [OUTFITTING-ADMIN.md](OUTFITTING-ADMIN.md) | Админка верфи: модули, корабли, броня, заводская инженерия, буквы креплений (F/G/T) |
 | [src/components/GalaxyMap/INTEGRATION.md](src/components/GalaxyMap/INTEGRATION.md) | Слои 3D-карты галактики: какие есть, откуда данные, где подключаются |
 | [public/wiki/colonization-guide/article.md](public/wiki/colonization-guide/article.md) | Текст гайда по колонизации для вики (с картинками рядом) |
 

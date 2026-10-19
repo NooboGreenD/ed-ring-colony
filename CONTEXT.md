@@ -2,8 +2,8 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-10-19** (checked against the code).
-> Web release: **2.25.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
-> 90 SQL migrations · 231 API routes · 59 pages · 148 test files (1578 checks).
+> Web release: **2.25.1** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
+> 90 SQL migrations · 231 API routes · 59 pages · 148 test files (1581 checks).
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony

@@ -55,6 +55,19 @@ export const CATALOG_CATEGORIES = {
   utility: 'Вспомогательные',
 } as const;
 
+/**
+ * Крепление орудия в админке: буквы — как в игровых символах модулей
+ * (`Hpt_…_Fixed_…` / `_Gimbal_` / `_Turret_`, см. `fdnames.ts`). Таблица и
+ * редактор берут подписи только отсюда; подписи публичной верфи на всех языках —
+ * `MOUNT_NAMES` (`i18n.ts`), тест `outfitting-catalog` сверяет обе таблицы.
+ */
+export const CATALOG_MOUNTS = {
+  F: { title: 'фиксированное', short: 'Фикс.' },
+  G: { title: 'наводящееся', short: 'Навод.' },
+  T: { title: 'турель', short: 'Турель' },
+} as const;
+export type CatalogMount = keyof typeof CATALOG_MOUNTS;
+
 // These groups are tied to fixed core/planetary slots by the calculator.
 export const PROTECTED_GROUPS = ['pp', 't', 'fsd', 'ls', 'pd', 's', 'ft', 'pas'];
 export const EMPTY_CATALOG_STATE: CatalogState = { revision: 0, changes: {}, history: [], updatedAt: null };
@@ -315,7 +328,7 @@ export function validateCatalogValue(kind: CatalogKind, key: string, input: unkn
   check(Number.isInteger(value.class) && Number(value.class) >= 0 && Number(value.class) <= 8, 'Класс должен быть целым числом от 0 до 8');
   check(typeof value.rating === 'string' && /^[A-Z]$/.test(value.rating), 'Рейтинг: одна заглавная латинская буква');
   if (value.name !== undefined) value.name = text(value.name, 'Название модуля', 160, false);
-  if (value.mount !== undefined) check(['F', 'G', 'T'].includes(String(value.mount)), 'Крепление: F, G или T');
+  if (value.mount !== undefined) check(Object.hasOwn(CATALOG_MOUNTS, String(value.mount)), 'Крепление: F, G или T');
   for (const [field, entry] of Object.entries(value)) {
     if (NUMBER_FIELDS.has(field)) number(entry, field, ['mass', 'cost', 'power', 'integrity', 'coins'].includes(field));
   }
