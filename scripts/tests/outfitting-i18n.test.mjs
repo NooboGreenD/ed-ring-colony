@@ -10,7 +10,8 @@
  *    единицы измерения, аббревиатуры).
  * 3. Плейсхолдеры (`{value}`, `{mass}`) не потерялись при переводе.
  * 4. Названия групп модулей покрывают весь справочник на всех языках.
- * 5. Слова инженерных чертежей переведены на всех языках одинаковым набором.
+ * 5. Слова инженерных чертежей переведены на всех языках одинаковым набором;
+ *    подвесы подписаны по игровым символам: G — наводящееся, T — турель.
  * 6. Экспериментальные эффекты: у каждого вида эффекта, боевого эффекта и
  *    изменяемой характеристики есть название и описание на всех языках.
  * 7. Словарь расширенной верфи (вкладки атаки и защиты, графики, обмен
@@ -52,6 +53,7 @@ async function loadLib() {
       "export * from '@/lib/i18n/outfittingAnalysis';",
       "export * from '@/lib/i18n/outfittingSpecials';",
       "export * from '@/lib/outfitting/i18n';",
+      "export { moduleSymbol } from '@/lib/outfitting/fdnames';",
       '',
     ].join('\n'),
   );
@@ -143,6 +145,52 @@ maybe('слова чертежей и подвесов переведены на
   }
 });
 
+maybe('подвес назван по игровому символу: G — наводящееся, T — турель (на всех языках)', async () => {
+  const { MOUNT_NAMES, mountName, moduleSymbol } = await libPromise;
+  // Буква справочника — слово игрового символа: Hpt_PulseLaser_Gimbal_Small → G.
+  const pulse = Object.fromEntries((data.modules.pl ?? []).filter((module) => module.class === 1).map((module) => [module.mount, module]));
+  assert.match(moduleSymbol(pulse.F), /^Hpt_PulseLaser_Fixed_Small$/);
+  assert.match(moduleSymbol(pulse.G), /^Hpt_PulseLaser_Gimbal_Small$/);
+  assert.match(moduleSymbol(pulse.T), /^Hpt_PulseLaser_Turret_Small$/);
+  // И с игрой: турель всегда дороже наводящегося, наводящееся — фиксированного
+  // (импульсный лазер 1 класса: 2 200 / 6 600 / 26 000 CR).
+  let compared = 0;
+  for (const [group, modules] of Object.entries(data.modules)) {
+    const cheapest = {};
+    for (const module of modules) {
+      if (!module.mount || module.pp || module.preEngineered || !(module.cost > 0)) continue;
+      const key = `${group}${module.class}`;
+      cheapest[key] ??= {};
+      cheapest[key][module.mount] = Math.min(cheapest[key][module.mount] ?? Infinity, module.cost);
+    }
+    for (const [key, cost] of Object.entries(cheapest)) {
+      if (!(cost.F && cost.G && cost.T)) continue;
+      compared += 1;
+      assert.ok(cost.F < cost.G && cost.G < cost.T, `${key}: F ${cost.F}, G ${cost.G}, T ${cost.T}`);
+    }
+  }
+  assert.ok(compared >= 20, `сравнений по цене должно быть не меньше 20, а их ${compared}`);
+
+  const expected = {
+    ru: { F: /фикс/, G: /наводящ/, T: /турел/ },
+    en: { F: /fixed/, G: /gimbal/, T: /turret/ },
+    de: { F: /fix/, G: /kardan/, T: /Geschützturm/ },
+    it: { F: /fisso/, G: /cardanic/, T: /torrett/ },
+    ko: { F: /고정/, G: /짐벌/, T: /터렛/ },
+    zh: { F: /固定/, G: /万向/, T: /炮塔/ },
+    ja: { F: /固定/, G: /ジンバル/, T: /タレット/ },
+  };
+  assert.deepEqual(Object.keys(expected), LOCALES);
+  for (const locale of LOCALES) {
+    assert.deepEqual(Object.keys(MOUNT_NAMES[locale]).sort(), ['F', 'G', 'T'], locale);
+    for (const [mount, pattern] of Object.entries(expected[locale])) {
+      assert.match(mountName(locale, mount), pattern, `${locale}: подпись буквы ${mount}`);
+    }
+  }
+  assert.equal(mountName('ru', undefined), '');
+  assert.equal(mountName('fr', 'G'), '(gimballed)', 'неизвестный язык откатывается на английский');
+});
+
 maybe('подписи чертежей и модулей собираются на языке интерфейса', async () => {
   const dir = mkdtempSync(join(ROOT, '.tmp-outfitting-build-'));
   tempDirs.push(dir);
@@ -170,6 +218,14 @@ maybe('подписи чертежей и модулей собираются н
   assert.match(moduleLabel(data, shieldGenerator, 'ru'), /Генератор щита/);
   assert.match(moduleLabel(data, shieldGenerator, 'en'), /Shield Generator/);
   assert.equal(moduleLabel(data, null, 'ja'), '—');
+
+  // Подвес в подписи слота: наводящийся и турельный импульсные лазеры не путаются.
+  const pulse = (mount) => (data.modules.pl ?? []).find((module) => module.class === 1 && module.mount === mount);
+  assert.match(moduleLabel(data, pulse('G'), 'ru'), /^1G .+ \(наводящееся\)$/);
+  assert.match(moduleLabel(data, pulse('T'), 'ru'), /^1G .+ \(турель\)$/);
+  assert.match(moduleLabel(data, pulse('G'), 'en'), /^1G .+ \(gimballed\)$/);
+  assert.match(moduleLabel(data, pulse('T'), 'en'), /^1G .+ \(turret\)$/);
+  assert.match(moduleLabel(data, pulse('F'), 'ru'), /^1F .+ \(фикс\.\)$/);
 });
 
 // ── 6. Экспериментальные эффекты ───────────────────────────────────────

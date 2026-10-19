@@ -71,6 +71,14 @@ test('friendly module and ship names map to actual Frontier symbols, not invente
   await api.GET(request({ kind: 'shipyard', q: 'Python' }));
   assert.ok(calls[0].params.needles.some((value) => value.toLowerCase() === 'python'));
 });
+test('weapon mounts in results use the shipyard dictionary: Gimbal is gimballed, Turret is turret', async () => {
+  db({ rows: ['Fixed', 'Gimbal', 'Turret'].map((mount) => ({ ...row, item: { name: `hpt_pulselaser_${mount.toLowerCase()}_small`, symbol: `Hpt_PulseLaser_${mount}_Small` } })) });
+  const response = await api.GET(request({ kind: 'outfitting', q: 'Pulse Laser' }));
+  const [fixed, gimballed, turret] = response.body.results.map((result) => result.item_display);
+  assert.match(fixed, /^1F .+ \(фикс\.\)$/);
+  assert.match(gimballed, /^1G .+ \(наводящееся\)$/);
+  assert.match(turret, /^1G .+ \(турель\)$/);
+});
 test('service aliases include Tech Broker, named engineers, workshop and material trader reports', async () => {
   assert.ok(serviceAliases('Технологический брокер').includes('techbroker'));
   assert.ok(serviceAliases('Инженер / мастерская').includes('workshop'));

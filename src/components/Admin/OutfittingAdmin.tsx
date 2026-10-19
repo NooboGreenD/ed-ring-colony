@@ -8,8 +8,8 @@ import {
 import { authFetch } from '@/lib/supabaseClient';
 import type { Bulkhead, OutfittingModule, OutfittingShip } from '@/lib/outfitting/types';
 import {
-  CATALOG_CATEGORIES, changeId, groupDeletionReason, type CatalogCommand,
-  type CatalogGroup, type CatalogKind, type CatalogSnapshot, type CatalogValue,
+  CATALOG_CATEGORIES, CATALOG_MOUNTS, changeId, groupDeletionReason, type CatalogCommand,
+  type CatalogGroup, type CatalogKind, type CatalogMount, type CatalogSnapshot, type CatalogValue,
 } from '@/lib/outfitting/catalog';
 import { publishOutfittingData } from '@/lib/outfitting/useOutfittingData';
 import { bulkheadName } from '@/lib/outfitting/i18n';
@@ -326,7 +326,7 @@ export default function OutfittingAdmin() {
             const hull = row.value as OutfittingShip;
             return <tr key={row.key} className={`${selected.has(row.key) ? styles.selectedRow : ''} ${row.status === 'deleted' ? styles.deletedRow : ''}`}>
               {view !== 'group' && <td className={styles.selectionCell}><input type="checkbox" aria-label={`Выбрать ${row.key}`} checked={selected.has(row.key)} disabled={!canWrite || row.status === 'deleted' || !!deletionReason(row)} onChange={(event) => setSelected((previous) => { const next = new Set(previous); if (event.target.checked) next.add(row.key); else next.delete(row.key); return next; })} /></td>}
-              <td className={styles.nameCell} data-label="Запись"><div className={styles.moduleName}>{view === 'module' && <span className={styles.classBadge}>{value.class}{value.rating}</span>}<span>{rowName(row)}</span></div><small>{row.key}{view === 'module' && value.mount ? ` · ${value.mount === 'F' ? 'Фикс.' : value.mount === 'G' ? 'Турель' : 'Навод.'}` : ''}{view === 'module' && value.preEngineered ? ' · Pre-eng' : ''}{view === 'module' && value.merc ? ' · Merc Coin' : ''}</small></td>
+              <td className={styles.nameCell} data-label="Запись"><div className={styles.moduleName}>{view === 'module' && <span className={styles.classBadge}>{value.class}{value.rating}</span>}<span>{rowName(row)}</span></div><small>{row.key}{view === 'module' && value.mount ? ` · ${CATALOG_MOUNTS[value.mount as CatalogMount]?.short ?? value.mount}` : ''}{view === 'module' && value.preEngineered ? ' · Pre-eng' : ''}{view === 'module' && value.merc ? ' · Merc Coin' : ''}</small></td>
               <td data-label={view === 'bulkhead' ? 'Корабль' : view === 'ship' ? 'Производитель' : 'Категория / группа'}>{view === 'bulkhead' ? `${data?.ships[row.owner]?.properties.name ?? row.owner}${data?.ships[row.owner]?.archived ? ' (архив корабля)' : ''}` : view === 'ship' ? hull.properties.manufacturer : view === 'group' ? CATALOG_CATEGORIES[(row.value as CatalogGroup).category] : data?.groups[row.owner]?.name ?? row.owner}{view === 'module' && <small>{CATALOG_CATEGORIES[data!.groups[row.owner]?.category] ?? 'Архив группы'}</small>}</td>
               {view === 'group' ? <td className={styles.numberCell} data-label="Модулей">{data?.modules[row.key]?.length ?? 0}</td>
                 : view === 'ship' ? <><td data-label="Размер">{['', 'Малый', 'Средний', 'Большой'][hull.properties.class] ?? hull.properties.class}</td>

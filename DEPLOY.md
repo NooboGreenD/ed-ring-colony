@@ -456,11 +456,12 @@ curl -H "Authorization: Bearer <admin-jwt>" https://ваш-домен/api/mobile
 
 ```bash
 cd android-app
+gradle wrapper --gradle-version 8.4   # один раз: gradlew в репозитории нет (Android Studio он не нужен)
 ./gradlew assembleDebug   # debug APK
 ./gradlew assembleRelease # release (нужен keystore в app/build.gradle.kts)
 ```
 
-- **Base URL**: по умолчанию `https://edringcolony.ru` (в `gradle.properties` `api.base.url` и в `TokenManager.kt` fallback). Для эмулятора с локальным `npm run dev` — `http://10.0.2.2:3000`, для устройства в той же Wi-Fi — `http://192.168.x.x:3000` (указывается на экране логина).
+- **Base URL**: по умолчанию `https://edringcolony.ru` (`TokenManager.DEFAULT_BASE_URL`), меняется на экране логина. Для эмулятора с локальным `npm run dev` — `http://10.0.2.2:3000`: HTTP разрешён только в debug-сборке и только для `10.0.2.2`/`localhost`/`127.0.0.1` (`app/src/debug/res/xml/network_security_config.xml`); устройство в той же Wi-Fi (`http://192.168.x.x:3000`) — добавить адрес туда же или открыть сайт через HTTPS-туннель.
 - **Логин**: email/password администратора сайта → `POST /api/mobile/auth` → Bearer JWT в EncryptedSharedPreferences
 - **Безопасность**: токены в `secure_prefs` (excluded from backup), `usesCleartextTraffic=false`, никаких секретов в APK
 - **Распространение**: загрузите APK в релизы GitHub, в Telegram-канал, или в Google Play (требует signing + Play Console). В `README.md` и `MOBILE-ADMIN.md` уже есть инструкция.
@@ -480,7 +481,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { java-version: '17', distribution: 'temurin' }
-      - run: cd android-app && ./gradlew assembleDebug
+      - uses: gradle/actions/setup-gradle@v4   # gradlew в репозитории нет
+        with: { gradle-version: '8.4' }
+      - run: gradle -p android-app assembleDebug
       - uses: actions/upload-artifact@v4
         with: { name: apk, path: android-app/app/build/outputs/apk/debug/*.apk }
 ```

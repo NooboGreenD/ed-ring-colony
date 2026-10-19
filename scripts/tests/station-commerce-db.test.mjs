@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
-import { canonicalReport, spanshCommercePayload } from '../../src/lib/stationCommerce.ts';
+import { canonicalReport, edsmInventoryItems, spanshCommercePayload } from '../../src/lib/stationCommerce.ts';
 
 const db = new PGlite();
 const old = '2026-01-01T00:00:00Z';
@@ -148,6 +148,49 @@ test('station finder searches goods, module symbols with class/rating, ships and
   assert.ok((await searchStations('shipyard', ['Python'])).some((r) => r.station_name === 'Search Dock'));
   assert.ok((await searchStations('services', ['techbroker','technologybroker'])).some((r) => r.station_name === 'Search Dock'));
   assert.deepEqual(await searchStations('shipyard', ['Python'], { fresh: true }), [], 'old snapshots are not promoted to fresh');
+});
+
+test('EDSM outfitting and shipyard responses reach the station search with symbol, class and rating', async () => {
+  // Формат ответов EDSM /api-system-v1/stations/{outfitting,shipyard}: до 2.25.2 модули
+  // читались из несуществующего `modules`, и снимок модулей из EDSM не доходил до поиска.
+  const outfitting = edsmInventoryItems('outfitting', { marketId: 2100, sName: 'EDSM Dock', outfitting: [
+    { id: 'int_hyperdrive_size5_class5', name: '5A Frame Shift Drive' },
+    { id: 'hpt_pulselaser_gimbal_small', name: '1G Pulse Laser' },
+    { id: null, name: '1I Lightweight Alloy' },
+  ] });
+  const shipyard = edsmInventoryItems('shipyard', { marketId: 2100, ships: [{ id: 128049249, name: 'Sidewinder' }] });
+  await save({ ...base, market_id: '2100', station_name: 'EDSM Dock', observed_at: newer,
+    inventories: { outfitting: { observed_at: newer, items: outfitting }, shipyard: { observed_at: newer, items: shipyard } } }, 'edsm');
+  const modules = await searchStations('outfitting', ['hyperdrive'], { module_class: 5, rating: 'A' });
+  assert.ok(modules.some((r) => r.station_name === 'EDSM Dock' && r.item.symbol === 'int_hyperdrive_size5_class5'));
+  assert.ok((await searchStations('outfitting', ['Lightweight Alloy'])).some((r) => r.station_name === 'EDSM Dock'), 'модуль без символа ищется по названию');
+  // В символе орудия рейтинга нет: 1G берётся из справочника FDevIDs, а не заглушкой E.
+  const dock = (rows) => rows.some((r) => r.station_name === 'EDSM Dock');
+  assert.ok(dock(await searchStations('outfitting', ['Pulse Laser'], { module_class: 1, rating: 'G' })), 'фильтр 1G находит 1G Pulse Laser');
+  assert.ok(!dock(await searchStations('outfitting', ['Pulse Laser'], { module_class: 1, rating: 'E' })), 'фильтр 1E его не находит');
+  assert.ok((await searchStations('shipyard', ['Sidewinder'])).some((r) => r.station_name === 'EDSM Dock'));
+
+  // Пустой список — честный пустой снимок; нет списка (в том числе выдуманного `modules`) — «данных нет».
+  assert.deepEqual(edsmInventoryItems('outfitting', { outfitting: [] }), []);
+  assert.equal(edsmInventoryItems('outfitting', { modules: [{ name: 'int_hyperdrive_size5_class5' }] }), null);
+  assert.equal(edsmInventoryItems('shipyard', null), null);
+  assert.deepEqual(edsmInventoryItems('outfitting', { outfitting: [{ id: 'bad symbol!', name: 'X' }, ' Y ', { id: 5 }] }), [{ name: 'X' }, { name: 'Y' }]);
+  assert.deepEqual(edsmInventoryItems('shipyard', { ships: [{ id: 'x', name: 'Anaconda' }] }), [{ name: 'Anaconda' }]);
+});
+
+test('station reports grade modules from the FDevIDs catalogue: weapons get their real rating, source values win', () => {
+  const report = canonicalReport({ ...base, inventories: { outfitting: { observed_at: old, items: [
+    { name: 'Hpt_PulseLaser_Gimbal_Small' }, // EDDN: только символ
+    { name: '$hpt_beamlaser_turret_large_name;' }, // журнал/CAPI
+    { name: 'Hpt_MultiCannon_Fixed_Small_Advanced' },
+    { name: 'Int_Hyperdrive_Size5_Class5' },
+    { name: 'Int_GuardianFSDBooster_Size5' },
+    { name: 'Hpt_Railgun_Fixed_Medium', class: 2, rating: 'X' }, // значение источника (Spansh) не переписываем
+    { name: 'Hpt_Unknown_Fixed_Small' },
+    { name: 'Not a module' },
+  ] } } }, 'eddn');
+  const grades = report.inventories.outfitting.items.map((item) => `${item.class ?? ''}${item.rating ?? ''}`);
+  assert.deepEqual(grades, ['1G', '3D', '1F', '5A', '5H', '2X', '', '']);
 });
 
 test('named engineer search requires an observed database station, with coordinates included', async () => {

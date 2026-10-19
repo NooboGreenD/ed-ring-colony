@@ -461,10 +461,11 @@ export function ringPointAtDistance(
   const b = dx * basis.vx + dy * basis.vy + dz * basis.vz;
   const c = dx * basis.nx + dy * basis.ny + dz * basis.nz;
   const m = Math.hypot(a, b);
-  if (m < 1e-9 || ringRadius <= 0) return null;
+  // Неполный базис или координаты дают NaN: отвечаем «точки нет», а не точкой NaN.
+  if (!Number.isFinite(m) || m < 1e-9 || ringRadius <= 0) return null;
   const fMagSq = a * a + b * b + c * c;
   const k = (ringRadius * ringRadius + fMagSq - distance * distance) / (2 * ringRadius * m);
-  if (k < -1 || k > 1) return null;
+  if (!Number.isFinite(k) || k < -1 || k > 1) return null;
   const phi = Math.atan2(b, a);
   const delta = Math.acos(k);
   const normalise = (value: number) => Math.atan2(Math.sin(value), Math.cos(value));

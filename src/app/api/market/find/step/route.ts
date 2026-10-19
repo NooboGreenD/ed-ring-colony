@@ -3,7 +3,7 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { constructionCommodities } from '@/lib/constructionBlueprints';
 import { commodityKey, resolveCommodity } from '@/lib/commodities';
 import { marketUpstream, marketError } from '@/lib/marketUpstream';
-import { edsmStationReport, saveStationReport, validTime, INVENTORY_TTL_MS, COMMERCE_SOURCE_RANK } from '@/lib/stationCommerce';
+import { edsmInventoryItems, edsmStationReport, saveStationReport, validTime, INVENTORY_TTL_MS, COMMERCE_SOURCE_RANK } from '@/lib/stationCommerce';
 import { discoverMarketSystems } from '@/lib/marketDiscovery';
 
 export const dynamic = 'force-dynamic';
@@ -232,12 +232,13 @@ export async function POST(request: Request) {
               if (saved && Date.now() - Date.parse(saved.observed_at) < INVENTORY_TTL_MS) continue;
               try {
                 const inventory = await marketUpstream(`/api-system-v1/stations/${kind}?systemName=${encodeURIComponent(sys.name)}&marketId=${station.marketId}`, deadline);
-                const items = inventory?.[kind === 'outfitting' ? 'modules' : 'ships'];
-                if (!Array.isArray(items)) continue;
+                // EDSM отдаёт модули в `outfitting`, корабли — в `ships` (см. edsmInventoryItems).
+                const items = edsmInventoryItems(kind, inventory);
+                if (!items) continue;
                 const inventoryReport = edsmStationReport(sys, station);
                 inventoryReport.inventories[kind] = {
                   observed_at: validTime(inventory.updateTime || station.updateTime?.[kind]) || '1970-01-01T00:00:00.000Z',
-                  items: items.map((item: any) => typeof item === 'string' ? { name: item } : item),
+                  items,
                 };
                 await saveStationReport(svc, inventoryReport, 'edsm');
               } catch (error) {

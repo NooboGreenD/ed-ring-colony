@@ -2439,11 +2439,13 @@ def commodity_label(key: str) -> str:
     return COMMODITY_LABELS_RU.get(name.lower(), name)
 
 
-def map_report(snapshot: MapSnapshot, app_version: str = "") -> str:
+def map_report(snapshot: MapSnapshot, app_version: str = "", now=None) -> str:
     """Многострочная сводка системы: её удобно кинуть в чат флот-крыла.
 
     В отличие от `map_summary` (одна строка состояния) здесь список строек с
     процентами и остатками по товарам, построенные объекты и где пилот.
+    `now` — момент, от которого считаются дедлайны (по умолчанию — сейчас);
+    тесты передают его явно, чтобы сводка не зависела от даты запуска.
     """
     if not snapshot.system:
         return "Система неизвестна — включите Watcher или загрузите журналы"
@@ -2468,7 +2470,7 @@ def map_report(snapshot: MapSnapshot, app_version: str = "") -> str:
                 progress = "план"
             rest = f" (осталось {station.remaining_tons:,} t)".replace(",", " ")
             line = f"  {station.title} — {progress}{rest if station.remaining_tons else ''}"
-            note = due_note(station.due_at)
+            note = due_note(station.due_at, now=now)
             if note:
                 line += f" · {note}"
             if station.remaining_by_commodity:

@@ -48,18 +48,20 @@ class MainActivity : ComponentActivity() {
 
                 val scope = rememberCoroutineScope()
 
+                // RetrofitClient сам пересоздаёт клиент, когда в TokenManager меняется адрес сайта.
                 var repository by remember {
-                    mutableStateOf(
-                        MonitorRepository(
-                            RetrofitClient.create(tokenManager.getBaseUrl(), tokenManager)
-                        )
-                    )
+                    mutableStateOf(MonitorRepository(RetrofitClient.getApiService(tokenManager)))
                 }
 
                 fun refreshRepository() {
-                    repository = MonitorRepository(
-                        RetrofitClient.create(tokenManager.getBaseUrl(), tokenManager)
-                    )
+                    repository = MonitorRepository(RetrofitClient.getApiService(tokenManager))
+                }
+
+                fun signOut() {
+                    tokenManager.clearSession()
+                    RetrofitClient.invalidate()
+                    isLoggedIn = false
+                    summary = null
                 }
 
                 fun loadSummary(period: String = "30d") {
@@ -77,8 +79,7 @@ class MainActivity : ComponentActivity() {
                             loading = false
                             val msg = it.message ?: ""
                             if (msg.contains("401") || msg.contains("403") || msg.contains("Не авторизован") || msg.contains("Unauthorized")) {
-                                tokenManager.clear()
-                                isLoggedIn = false
+                                signOut()
                             }
                         }
                     }
@@ -104,21 +105,18 @@ class MainActivity : ComponentActivity() {
                                     loginLoading = true
                                     loginError = null
                                     tokenManager.setBaseUrl(baseUrl)
-                                    refreshRepository()
-                                    val repo = MonitorRepository(
-                                        RetrofitClient.create(baseUrl, tokenManager)
-                                    )
+                                    val repo = MonitorRepository(RetrofitClient.getApiService(tokenManager))
                                     val res = repo.login(email, password)
                                     res.onSuccess { auth ->
-                                        if (auth.accessToken != null) {
-                                            tokenManager.saveTokens(auth.accessToken, auth.refreshToken)
-                                            auth.user?.let {
-                                                tokenManager.saveUser(
-                                                    it.email ?: email,
-                                                    it.role ?: "admin",
-                                                    it.cmdrName ?: "CMDR"
-                                                )
-                                            }
+                                        val accessToken = auth.accessToken
+                                        if (accessToken != null) {
+                                            tokenManager.saveSession(
+                                                accessToken = accessToken,
+                                                refreshToken = auth.refreshToken,
+                                                email = auth.user?.email ?: email,
+                                                cmdrName = auth.user?.cmdrName,
+                                                role = auth.user?.role
+                                            )
                                             repository = repo
                                             isLoggedIn = true
                                             loginLoading = false
@@ -165,7 +163,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                         Column {
                                             Text("ED RING COLONY", fontFamily = FontFamily.Monospace, fontSize = 12.sp, letterSpacing = 3.sp, color = Orange)
-                                            Text("MOBILE ADMIN • ${tokenManager.getCmdr() ?: "CMDR"}", fontFamily = FontFamily.Monospace, fontSize = 9.sp, letterSpacing = 1.sp, color = Muted)
+                                            Text("MOBILE ADMIN • ${tokenManager.getCmdrName() ?: "CMDR"}", fontFamily = FontFamily.Monospace, fontSize = 9.sp, letterSpacing = 1.sp, color = Muted)
                                         }
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -188,11 +186,7 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
                                         TextButton(
-                                            onClick = {
-                                                tokenManager.clear()
-                                                isLoggedIn = false
-                                                summary = null
-                                            },
+                                            onClick = { signOut() },
                                             colors = ButtonDefaults.textButtonColors(contentColor = Muted)
                                         ) {
                                             Text("ВЫЙТИ", fontFamily = FontFamily.Monospace, fontSize = 9.sp, letterSpacing = 1.sp)

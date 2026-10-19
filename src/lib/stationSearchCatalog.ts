@@ -20,7 +20,7 @@ import { COMMODITY_LABELS_RU } from '@/lib/architect/catalogue';
 import { BUILD_COMMODITIES, commodityKey } from '@/lib/commodities';
 import { ENGINEERS } from '@/lib/engineers/data';
 import { moduleSymbol, parseSymbol, shipFdName, shipCoriolisId } from '@/lib/outfitting/fdnames';
-import { groupName } from '@/lib/outfitting/i18n';
+import { groupName, mountName } from '@/lib/outfitting/i18n';
 import type { OutfittingData } from '@/lib/outfitting/types';
 import {
   SERVICE_OPTIONS, searchKey, serviceAliases, serviceLabel, stationItemKey,
@@ -52,7 +52,8 @@ const MODULE_CATEGORY_RU: Record<string, string> = {
   hardpoint: 'Орудия', mercgear: 'MercGear',
 };
 const MODULE_CATEGORY_ORDER = ['standard', 'internal', 'utility', 'hardpoint', 'mercgear'];
-const MOUNT_RU: Record<string, string> = { Fixed: 'фикс.', Gimballed: 'наводящееся', Turreted: 'турель' };
+/** Крепление в FDevIDs → буква верфи; подпись общая с верфью (`mountName`, `MOUNT_NAMES`). */
+const FDEV_MOUNT_LETTERS: Record<string, string> = { Fixed: 'F', Gimballed: 'G', Turreted: 'T' };
 /** Как пилоты пишут группы в чате. */
 const GROUP_TERMS: Record<string, string> = {
   fsd: 'фсд прыжок', sg: 'щит', bsg: 'щит', psg: 'щит', fs: 'scoop скуп', am: 'afmu', ss: 'dss',
@@ -330,6 +331,16 @@ export function resolveStationPick(kind: StationSearchKind, id: string | null | 
   return engineer ? { id, label: engineer.name, needles: unique([engineer.name, ...(engineer.aliases ?? [])]), exactKeys: [] } : null;
 }
 
+/**
+ * Товар по английскому названию или символу Frontier («Liquid oxygen»,
+ * `CMMComposite`) → тот же точный выбор, что даёт подсказка `market:<Symbol>`.
+ * Нужен API, которые принимают название, а не id подсказки.
+ */
+export function marketPickByName(name: string): StationPick | null {
+  const entry = commodities().byKey.get(commodityKey(name));
+  return entry ? resolveStationPick('market', `market:${entry.symbol}`) : null;
+}
+
 /* ── Свободный ввод ── */
 
 /**
@@ -391,9 +402,9 @@ export function stationItemDisplay(kind: StationSearchKind, item: StationSearchR
     const { bySymbol } = modules();
     const known = bySymbol.get(stationItemKey(item.symbol)) ?? bySymbol.get(stationItemKey(item.name)) ?? bySymbol.get(stationItemKey(item.id));
     if (known) {
-      const mount = MOUNT_RU[known.mount];
+      const mount = mountName('ru', FDEV_MOUNT_LETTERS[known.mount]);
       return {
-        display: `${known.size}${known.rating} ${known.module.label}${mount ? ` (${mount})` : ''}`.trim(),
+        display: `${known.size}${known.rating} ${known.module.label}${mount ? ` ${mount}` : ''}`.trim(),
         ...(known.module.hint ? { hint: known.module.hint } : {}),
       };
     }

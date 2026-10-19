@@ -2,8 +2,8 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-10-19** (checked against the code).
-> Web release: **2.25.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
-> 90 SQL migrations · 231 API routes · 59 pages · 148 test files (1578 checks).
+> Web release: **2.25.2** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
+> 90 SQL migrations · 231 API routes · 59 pages · 150 test files (1592 checks) · Helper tests: 1416.
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -428,7 +428,7 @@ checks itself:
 | `/api/hubs/resolve` | GET · — | Координаты хабов (EDSM → каталог → Spansh) |
 | `/api/map/carriers` | GET · — (сессия — своё/эскадрилья) | Слой «Авианосцы»: публичные отметки (без груза и финансов), отношение к зрителю |
 | `/api/map/pilots` | GET · — (с сессией — больше) | Пилоты на карте (только разрешившие показ позиции) |
-| `/api/market/find` | GET · — | Старый поиск рынка напрямую по EDSM (`?commodity=&reference_system=&mode=build`) |
+| `/api/market/find` | GET · — | Прежний поиск рынка — совместимый ответ из `station_commerce`, без EDSM (`?commodity=&reference_system=&radius=&mode=build`, web 2.25.2) |
 | `/api/market/find/start` | POST · — | Поиск рынка (вкладка «Рынок»): создать задание |
 | `/api/market/find/status` | GET · — | Поиск рынка: состояние задания |
 | `/api/market/find/step` | POST · — | Поиск рынка: следующий шаг (бюджет 35 с на внешние запросы) |

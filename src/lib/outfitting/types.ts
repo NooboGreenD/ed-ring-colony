@@ -60,7 +60,7 @@ export interface OutfittingModule {
   power?: number;
   cost?: number;
   integrity?: number;
-  /** Крепление орудия: F — фиксированное, G — турель, T — наводящееся. */
+  /** Крепление орудия, как в игровых символах: F — Fixed (фиксированное), G — Gimbal (наводящееся), T — Turret (турель). */
   mount?: string;
   /** Пассивный модуль (утилиты, которые не требуют развёртывания). */
   passive?: number;

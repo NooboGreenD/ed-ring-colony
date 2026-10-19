@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
-import { findSystemByName } from '@/lib/galaxySystemsDb';
+import { referenceSystemCoords, type ReferencePoint } from '@/lib/referenceSystem';
 import { resolveCommodity } from '@/lib/commodities';
 import {
   STATION_ITEM_LIMIT, STATION_PAGE_SIZE, groupStationRows, stationItemMatchesKeys, stationSearchSchema,
@@ -33,17 +33,9 @@ export async function GET(request: Request) {
   const query = parsed.data;
   try {
     const svc = createServiceClient();
-    let center: { x: number; y: number; z: number } | null = null;
+    let center: ReferencePoint | null = null;
     if (query.reference) {
-      const name = query.reference.toLowerCase();
-      const { data, error } = await svc.from('commerce_systems').select('x,y,z').eq('name_lc', name).maybeSingle();
-      if (error) throw new Error(error.message);
-      if (data && [data.x, data.y, data.z].every((v) => v != null && Number.isFinite(Number(v)))) {
-        center = { x: Number(data.x), y: Number(data.y), z: Number(data.z) };
-      } else {
-        const row = await findSystemByName(query.reference);
-        if (row) center = { x: row.x, y: row.y, z: row.z };
-      }
+      center = await referenceSystemCoords(svc, query.reference);
       if (!center) return NextResponse.json({ error: 'Координаты опорной системы не найдены в БД. Выберите известную систему или ищите без ограничения расстояния.' }, { status: 404 });
     }
     // Подсказка из быстрого выбора ищется точно; свободный ввод — по вхождению

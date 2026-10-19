@@ -440,7 +440,9 @@ immutable`, и nginx/CDN отдаёт его без участия Next.js. Од
 | `deploy/web-entrypoint.sh` | — | права тома и устранение HTTP 500 при первой записи |
 
 Тесты: `uploader/tests/test_bundle.py` (26), `test_bundle_updater.py` (20),
-`test_launcher.py` (13), `test_build_bundle.py` (14), `test_build_workflow.py` (16);
+`test_launcher.py` (13), `test_build_bundle.py` (14) — `test_build_workflow.py` проверял
+GitHub-workflow, удалённые в Helper 2.13.1 (релизы идут из «Админка → Обновления Helper»),
+и убран в web 2.25.2;
 `scripts/tests/uploader-store.test.mjs` (13), `uploader-routes.test.mjs` (11).
 Отдельно проверяется побайтовое совпадение канонизации манифеста в Python и
 TypeScript и то, что подпись, поставленная питоном, проверяется сервером:

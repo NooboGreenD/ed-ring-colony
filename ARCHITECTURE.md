@@ -32,13 +32,13 @@ MarketID то TEXT, то BIGINT. Были свои пути приёма дан�
 
 | Часть | Объём | Где |
 |---|---|---|
-| Сайт (Next.js 16, React 19) | 59 страниц, 231 маршрут API, 238 модулей `src/lib`, 169 компонентов | `src/` |
+| Сайт (Next.js 16, React 19) | 59 страниц, 231 маршрут API, 240 модулей `src/lib`, 169 компонентов | `src/` |
 | База (Supabase / PostgreSQL) | 128 таблиц, 90 миграций, SQL-функции для тяжёлой логики | `supabase/` |
 | Фоновые задачи | 10 задач (9 по умолчанию) | `scripts/job-schedule.mjs`, контейнер `jobs` |
 | Colonial Helper (Python, Windows) | 36 модулей: журнал, оверлеи, Raven, EDSM/Inara/EDDN, авианосец, фракции, станции | `uploader/` |
-| Мобильная админка и Android | PWA `/m-admin`, приложение (сейчас не собирается) | `src/app/m-admin`, `android-app/` |
+| Мобильная админка и Android | PWA `/m-admin`, приложение (ошибки сборки после #139 исправлены в web 2.25.2; собрать и проверить — в Android Studio) | `src/app/m-admin`, `android-app/` |
 | Развёртывание | Docker Compose, агент обновлений, мониторинг | `docker-compose.yml`, `deploy/` |
-| Автотесты | 147 файлов (`node --test`), 44 файла Python | `scripts/tests/`, `uploader/tests/` |
+| Автотесты | 150 файлов (`node --test`), 42 файла Python | `scripts/tests/`, `uploader/tests/` |
 
 ### 2.1 Разделы и их данные
 
@@ -115,7 +115,7 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
 | G14 | **Три реализации «хода загрузки».** Каталог, PowerPlay и фракции — свои этапы, проценты и журналы | `galaxyCatalogStatus.ts`, `powerplayProgress.ts`, `bgsProgress.ts` | ◐ web 2.24.0: PowerPlay и фракции — один механизм импорта дампа (`importProgress.ts` — этапы, проценты, журнал; `dumpArchive.ts`, `dumpShards.ts`, `dumpUpload.ts` — архив, куски, архив с компьютера). Осталось: каталог систем |
 | G15 | **Helper не видит знаний сайта о системе.** Проекты и карту системы он берёт у Raven напрямую | `uploader/system_map.py`, `raven_colonial_api.py` | ☐ Helper читает карточку системы сайта |
 | G16 | **Верфь не знает корабль пилота.** `Loadout` есть в журнале и CAPI, до `/outfitting` не доходит | `ship_tracker.py`, `capi/profile.ts` | ☐ |
-| G17 | **Android не собирается**, мобильная админка — свой набор маршрутов | `android-app/README.md` | ☐ |
+| G17 | **Android не собирается**, мобильная админка — свой набор маршрутов | `android-app/README.md` | ◐ web 2.25.2: вызовы `MainActivity` приведены к `RetrofitClient`/`TokenManager` после #139, debug-сборка ходит к локальному серверу по HTTP, тест `android-app.test.mjs` сверяет вызовы с классами и пути `ApiService` с маршрутами сайта (собрать здесь нельзя — проверить в Android Studio). Свой набор маршрутов и решение §6.4 — ☐ |
 
 ## 5. Что сделано в 2.22.0 / Helper 2.17.0
 
@@ -152,6 +152,11 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
    читают `station_commerce`. `market_prices` и `colonisation_market_systems`
    остаются только для совместимости, потом удаляются. `commodity_needs`
    удаляется (нет читателей).
+   **Сделано в web 2.25.2 (`market/find`):** прежний `GET /api/market/find`
+   больше не обходит EDSM сотнями запросов, а отвечает из `station_commerce`
+   (тот же вид ответа, цена покупки — `buy_price`); снимки модулей и кораблей
+   из EDSM теперь доходят до `station_commerce` (ключи `outfitting` и `ships`).
+   Архитектор и наличие на стройку — следующим шагом.
 4. **«Что ещё нужно» в проектах эскадрилий** — список товаров по системе и
    проекту целиком (процент уже есть, 2.22.0) и ссылка «где купить» в Атлас.
 
@@ -201,7 +206,9 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
     проект эскадрильи = «Проект системы» с владельцем-эскадрильей. Меняет
     права и страницы, поэтому нужно решение.
 12. **Верфь из корабля пилота**: импорт `Loadout` (журнал/CAPI) в `/outfitting`.
-13. **Android**: починка сборки или отказ в пользу PWA `/m-admin`.
+13. **Android**: развитие приложения или отказ в пользу PWA `/m-admin`.
+    Ошибки компиляции после #139 исправлены в web 2.25.2 (по коду — собрать
+    и проверить в Android Studio).
 
 ## 7. Правила единого механизма
 
@@ -228,7 +235,7 @@ EDSM-дампы ─► фракции, PowerPlay (свежие данные пи
 9. **Миграции идемпотентны**, а снимок `supabase/full_schema.sql` дополняется
    в том же порядке (`migrations-sql.test.mjs`).
 
-## Приложение А. Модули `src/lib` по разделам (236)
+## Приложение А. Модули `src/lib` по разделам (240)
 
 Разобраны все модули серверной и общей логики. Чистые модули без
 node-зависимостей (их берут и браузер, и маршруты, и `node --test`)
@@ -245,7 +252,7 @@ node-зависимостей (их берут и браузер, и маршр�
 | Проекты эскадрилий и эскадрильи | 5 | `projects/autoProgress.ts`, `projects/projectSync.ts`, `squadronConstants.ts`, `squadronData.ts`, `squadronForm.ts` |
 | Архитектор и «Проекты систем» | 19 | `architect/bodyNames.ts`, `architect/bodySync.ts`, `architect/catalogue.ts`, `architect/dataQuality.ts`, `architect/economy.ts`, `architect/existing.ts`, `architect/governance.ts`, `architect/insights.ts`, `architect/planner.ts`, `architect/progress.ts`, `architect/projectLeaders.ts`, `architect/projectProgress.ts`, `architect/projectRouteKit.ts`, `architect/projectStore.ts`, `architect/projects.ts`, `architect/ravenCreate.ts`, `architect/sourcing.ts`, `architect/store.ts`, `architect/types.ts` |
 | Авианосцы | 7 | `carrierMap.ts`, `carrierMapStore.ts`, `carrierMapView.ts`, `carrierTags.ts`, `fleetCarrierCollector.ts`, `fleetCarrierStore.ts`, `fleetCarriers.ts` |
-| Станции и рынки | 8 | `eddn/subscriber.ts`, `eddnClient.ts`, `marketDiscovery.ts`, `marketUpstream.ts`, `stationCommerce.ts`, `stationSearch.ts`, `stationSearchCatalog.ts`, `stationSearchOptions.ts` (быстрый выбор: формат, отбор и ранжирование подсказок — для браузера и сервера, web 2.25.0) |
+| Станции и рынки, EDDN | 11 | `eddn/listener.ts`, `eddn/subscriber.ts`, `eddn/zmtp.ts`, `eddnClient.ts`, `marketDiscovery.ts`, `marketUpstream.ts`, `referenceSystem.ts` (опорная система поисков — только из БД, web 2.25.2), `stationCommerce.ts`, `stationSearch.ts`, `stationSearchCatalog.ts`, `stationSearchOptions.ts` (быстрый выбор: формат, отбор и ранжирование подсказок — для браузера и сервера, web 2.25.0) |
 | Минорные фракции | 9 | `bgs.ts`, `bgsDump.ts`, `bgsJournal.ts`, `bgsProgress.ts`, `bgsShards.ts`, `bgsStore.ts`, `bgsSync.ts`, `bgsUpload.ts`, `bgsWriter.ts` |
 | PowerPlay | 9 | `powerplay.ts`, `powerplayDump.ts`, `powerplayJournal.ts`, `powerplayProgress.ts`, `powerplayShards.ts`, `powerplayStore.ts`, `powerplaySync.ts`, `powerplayUpload.ts`, `powerplayWriter.ts` |
 | Frontier CAPI, Inara | 16 | `capi/client.ts`, `capi/entitlement.ts`, `capi/failure.ts`, `capi/fleetCarrier.ts`, `capi/journal.ts`, `capi/linkState.ts`, `capi/locationSync.ts`, `capi/messages.ts`, `capi/oauth.ts`, `capi/persist.ts`, `capi/platform.ts`, `capi/profile.ts`, `capi/profileBinding.ts`, `capi/session.ts`, `capi/syncPilot.ts`, `inara/client.ts` |
@@ -253,7 +260,7 @@ node-зависимостей (их берут и браузер, и маршр�
 | Вход, аккаунт, права | 24 | `authProfile.ts`, `authProviders/registry.ts`, `authProviders/settings.ts`, `avatarUrl.ts`, `cronAuth.ts`, `discordOAuth.ts`, `emailAuth.ts`, `ensureProfile.ts`, `helperAuth.ts`, `oauthFlow.ts`, `oauthProviders.ts`, `passwordPolicy.ts`, `passwordRecovery.ts`, `rateLimit.ts`, `requestUser.ts`, `userDisplay.ts`, `vkAccount.ts`, `vkId.ts`, `vkShared.ts`, `wikiAuth.ts`, `yandexAccount.ts`, `yandexId.ts`, `yandexShared.ts`, `zodSchemas.ts` |
 | Supabase-клиенты | 5 | `supabaseAdmin.ts`, `supabaseClient.ts`, `supabaseServer.ts`, `supabaseServerUrl.ts`, `supabaseUrl.ts` |
 | Магазин и платежи | 7 | `billing/auth.ts`, `billing/catalogSeed.ts`, `billing/profiles.ts`, `billing/providers.ts`, `billing/storage.ts`, `billing/tbank.ts`, `billingData.ts` |
-| Верфь и инженеры | 24 | `engineers/data.ts`, `engineers/i18n.ts`, `engineers/locales/de.ts`, `engineers/locales/en.ts`, `engineers/locales/it.ts`, `engineers/locales/ja.ts`, `engineers/locales/ko.ts`, `engineers/locales/zh.ts`, `outfitting/analysis.ts`, `outfitting/build.ts`, `outfitting/calc.ts`, `outfitting/catalog.ts`, `outfitting/catalogAuth.ts`, `outfitting/catalogStore.ts`, `outfitting/exchange.ts`, `outfitting/factory.ts`, `outfitting/fdnames.ts`, `outfitting/i18n.ts`, `outfitting/merccoin.ts`, `outfitting/origins.ts`, `outfitting/specials.ts`, `outfitting/specs.ts`, `outfitting/types.ts`, `outfitting/useOutfittingData.ts` |
+| Верфь и инженеры | 25 | `engineers/data.ts`, `engineers/i18n.ts`, `engineers/locales/de.ts`, `engineers/locales/en.ts`, `engineers/locales/it.ts`, `engineers/locales/ja.ts`, `engineers/locales/ko.ts`, `engineers/locales/zh.ts`, `outfitting/analysis.ts`, `outfitting/build.ts`, `outfitting/calc.ts`, `outfitting/catalog.ts`, `outfitting/catalogAuth.ts`, `outfitting/catalogStore.ts`, `outfitting/exchange.ts`, `outfitting/factory.ts`, `outfitting/fdnames.ts`, `outfitting/i18n.ts`, `outfitting/merccoin.ts`, `outfitting/moduleGrades.ts` (класс и рейтинг модуля по символу из FDevIDs, web 2.25.2), `outfitting/origins.ts`, `outfitting/specials.ts`, `outfitting/specs.ts`, `outfitting/types.ts`, `outfitting/useOutfittingData.ts` |
 | Контент, i18n, перевод | 15 | `discordWebhook.ts`, `i18n/I18nContext.tsx`, `i18n/engineers.ts`, `i18n/outfitting.ts`, `i18n/outfittingAnalysis.ts`, `i18n/outfittingSpecials.ts`, `i18n/translations.ts`, `i18n/types.ts`, `localizedContent.ts`, `markdown.tsx`, `pushNotifications.ts`, `siteFooter.ts`, `siteUrl.ts`, `supportTickets.ts`, `translate.ts` |
 | Обслуживание, обновления, мониторинг | 11 | `freshFetch.ts`, `helperReleaseJobs.ts`, `launcherChunkUpload.ts`, `launcherUploadProtocol.ts`, `launcherUploadSessions.ts`, `maintenance.ts`, `maintenanceEdge.ts`, `maintenanceFlag.ts`, `serverMonitor.ts`, `updateAgent.ts`, `uploaderStore.ts` |
 

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { resolveCommodity } from './commodities.ts';
 import { ENGINEERS } from './engineers/data.ts';
 import { parseSymbol } from './outfitting/fdnames.ts';
+import { moduleGrade } from './outfitting/moduleGrades.ts';
 
 const name = z.string().trim().min(1).max(200);
 const time = z.string().datetime({ offset: true }).refine((s) => Date.parse(s) <= Date.now() + 300_000, 'Future observation');
@@ -58,8 +59,10 @@ export function canonicalReport(input: unknown, source: CommerceSource) {
   }
   if (report.inventories.outfitting) {
     report.inventories.outfitting.items = report.inventories.outfitting.items.map((item) => {
-      const parsed = parseSymbol(item.symbol || item.name);
-      return parsed ? { ...item, class: item.class ?? parsed.class, rating: item.rating ?? parsed.rating } : item;
+      // Справочник FDevIDs раньше разбора символа: у орудий в символе нет рейтинга.
+      const symbol = item.symbol || item.name;
+      const grade = moduleGrade(symbol) ?? parseSymbol(symbol);
+      return grade ? { ...item, class: item.class ?? grade.class, rating: item.rating ?? grade.rating } : item;
     });
   }
   return { ...report, station_key: stationKey(report), source };
@@ -98,6 +101,29 @@ export function edsmStationReport(system: { name: string; x: number; y: number; 
     },
   });
 }
+
+type InventoryItem = z.infer<typeof item>;
+
+/**
+ * Список модулей или кораблей из ответа EDSM `/api-system-v1/stations/{outfitting|shipyard}`.
+ * Модули лежат в `outfitting: [{ id: 'int_hyperdrive_size5_class5', name: '5A Frame Shift Drive' }]`
+ * (id — игровой символ, бывает null), корабли — в `ships: [{ id: 128049249, name: 'Sidewinder' }]`
+ * (id — FDevID). Символ модуля идёт в `symbol`: по нему `canonicalReport` берёт класс и рейтинг,
+ * а поиск по станциям — точное совпадение. Без списка в ответе — null (данных нет), [] — пустой снимок.
+ */
+export function edsmInventoryItems(kind: 'outfitting' | 'shipyard', response: unknown): InventoryItem[] | null {
+  const list = (response as Record<string, unknown> | null)?.[kind === 'outfitting' ? 'outfitting' : 'ships'];
+  if (!Array.isArray(list)) return null;
+  return list.flatMap((entry: any): InventoryItem[] => {
+    if (typeof entry === 'string') return entry.trim() ? [{ name: entry.trim().slice(0, 200) }] : [];
+    const symbol = kind === 'outfitting' && typeof entry?.id === 'string' && /^[A-Za-z0-9_]{1,200}$/.test(entry.id) ? entry.id : undefined;
+    const name = (typeof entry?.name === 'string' && entry.name.trim() ? entry.name.trim() : symbol ?? '').slice(0, 200);
+    if (!name) return [];
+    if (kind === 'outfitting') return [{ name, ...(symbol ? { symbol } : {}) }];
+    return [{ name, ...(Number.isSafeInteger(entry?.id) ? { id: entry.id as number } : {}) }];
+  });
+}
+
 export function validTime(value: unknown): string | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined;
   // EDSM uses UTC dates without an explicit zone.

@@ -263,24 +263,37 @@ test('кольцо: отклонение от окружности считае�
   }
 });
 
+/**
+ * Плоское кольцо (наклон 0) в API наклонённого кольца (#122–#128): центр
+ * `ringCenter` и 3D-базис от направления центр → старт. Для плоского кольца
+ * отклонение и точки совпадают с прежней 2D-геометрией.
+ */
+function flatRing(mod, center, start) {
+  return { ringCenter: center, basis3D: mod.ringBasis3D(start, center, 0) };
+}
+
 test('кольцо: выбор опоры отсекает дальше 100 св.л. и шаг больше 500', async () => {
   const { mod, cleanup } = await loadRingModule();
   try {
     const center = { x: 0, y: 0, z: 0 };
     const target = { x: 5000, y: 0, z: 0 };
+    const ring = flatRing(mod, center, target);
     const previous = { x: 5000, y: 0, z: -485 };
     const candidates = [
       { name: 'Far radial', x: 5000, y: 0, z: 100, source: 'catalog' }, // отклонение 0 (на окружности), но шаг от предыдущей ~ 585
       { name: 'Off ring 150', x: 5150, y: 0, z: -10, source: 'catalog' }, // отклонение 150 — отсечь
       { name: 'Good', x: 5000, y: 0, z: -485 + 485, source: 'catalog' }, // шаг 485 от previous
     ];
-    const choice = mod.chooseAnchor({ target, center, ringRadius: 5000, previous, candidates, used: new Set() });
+    const choice = mod.chooseAnchor({ target, ...ring, ringRadius: 5000, previous, candidates, used: new Set() });
     assert.ok(choice, 'кандидат найден');
     assert.equal(choice.system.name, 'Good', 'выбрана опора с шагом 480–490 и отклонением в норме');
     assert.equal(choice.tier, 0);
+    assert.ok(Math.abs(choice.spacing - 485) < 1e-9, `шаг ${choice.spacing}`);
 
-    const onlyBad = mod.chooseAnchor({ target, center, ringRadius: 5000, previous, candidates: [candidates[1]], used: new Set() });
+    const onlyBad = mod.chooseAnchor({ target, ...ring, ringRadius: 5000, previous, candidates: [candidates[1]], used: new Set() });
     assert.equal(onlyBad, null, 'опора дальше 100 св.л. от окружности отбрасывается');
+    const onlyFar = mod.chooseAnchor({ target, ...ring, ringRadius: 5000, previous, candidates: [candidates[0]], used: new Set() });
+    assert.equal(onlyFar, null, 'опора с шагом больше 500 от предыдущей отбрасывается, даже на окружности');
   } finally {
     cleanup();
   }
@@ -290,10 +303,10 @@ test('кольцо: расчётная опора стоит точно на ш�
   const { mod, cleanup } = await loadRingModule();
   try {
     const center = { x: 0, y: 0, z: 0 };
-    const basis = { ux: 1, uz: 0 };
+    const { basis3D } = flatRing(mod, center, { x: 5000, y: 0, z: 0 });
     // Предыдущая опора сместилась на 80 св.л. наружу — цель на окружности слишком далеко.
     const previous = { x: 5080, y: 0, z: -200 };
-    const point = mod.ringPointAtDistance(center, basis, 5000, previous, 0.05, 485);
+    const point = mod.ringPointAtDistance(center, basis3D, 5000, previous, 0.05, 485);
     assert.ok(point, 'точка на окружности найдена');
     assert.ok(Math.abs(mod.distance3(point, previous) - 485) < 1e-6, 'шаг равен 485');
     assert.ok(Math.abs(mod.ringDeviation(point, center, 5000)) < 1e-6, 'точка лежит на окружности');
@@ -306,21 +319,25 @@ test('кольцо: расчётная опора при недоступнос�
   const { mod, cleanup } = await loadRingModule();
   try {
     const center = { x: 0, y: 0, z: 0 };
-    const basis = { ux: 1, uz: 0 };
+    const { basis3D } = flatRing(mod, center, { x: 5000, y: 0, z: 0 });
     const ringRadius = 5000;
 
-    // Проверяем, что ringPointAtDistance может возвращать null для крайних случаев
-    // когда previous слишком далеко от окружности
-    const previousFar = { x: 10000, y: 0, z: 0 }; // на 5000 выше окружности
-    
-    // Для большого расстояния (500) функция должна найти точку
-    const point500 = mod.ringPointAtDistance(center, basis, ringRadius, previousFar, 0.5, 500);
-    if (point500) {
-      const spacing = mod.distance3(previousFar, point500);
-      assert.ok(spacing <= 500 + 1e-6, `шаг ${spacing.toFixed(2)} не превышает 500 для d=500`);
-    }
+    // Предыдущая точка в 5000 св.л. от окружности: точки кольца в 500 св.л. от
+    // неё нет — функция честно отвечает null, и опора берётся запасным путём
+    // (точка цели), а не точкой с выдуманным шагом.
+    const previousFar = { x: 10000, y: 0, z: 0 };
+    assert.equal(mod.ringPointAtDistance(center, basis3D, ringRadius, previousFar, 0.5, 500), null);
 
-    // Проверяем, что шаг между previous и результатом не превышает 500
+    // Достижимый случай: от опоры на окружности точка с шагом ровно 500 есть.
+    const onRing = { x: 5000, y: 0, z: 0 };
+    const point500 = mod.ringPointAtDistance(center, basis3D, ringRadius, onRing, 0.5, 500);
+    assert.ok(point500, 'точка с шагом 500 найдена');
+    assert.ok(Math.abs(mod.distance3(onRing, point500) - 500) < 1e-6, `шаг ${mod.distance3(onRing, point500)}`);
+    assert.ok(mod.ringDeviation3D(point500, center, basis3D, ringRadius) < 1e-6, 'точка лежит на окружности');
+
+    // Базис неверной формы (прежний 2D) не превращается в координаты NaN.
+    assert.equal(mod.ringPointAtDistance(center, { ux: 1, uz: 0 }, ringRadius, onRing, 0.5, 500), null);
+
     const result = mod.computeSectorCount(23000);
     assert.ok(result >= 3 && result <= 720, `сегментов ${result}`);
   } finally {
@@ -333,6 +350,7 @@ test('кольцо: проверка маршрута видит нарушен�
   try {
     const center = { x: 0, y: 0, z: 0 };
     const start = { name: 'Sol', x: 7000, y: 0, z: 0 }; // на 2000 св.л. вне окружности 5000
+    const ring = flatRing(mod, center, start);
     const anchor = (name, x, z) => ({ name, x, y: 0, z, source: 'catalog', isAnchor: true });
     // Цепочка прыжков по 10 св.л. между точками: прыжки в норме по построению.
     const line = (a, b) => {
@@ -353,7 +371,7 @@ test('кольцо: проверка маршрута видит нарушен�
     const back = line(B, start);
     const route = [start, ...approachPts, A, ...aToBridge, bridgeEnd, ...bridgeToB, B, ...back, start];
     const approach = route.map((_, index) => index <= approachPts.length || index >= route.length - back.length - 1);
-    const validation = mod.validateRingRoute({ route, approach, center, ringRadius: 5000, start });
+    const validation = mod.validateRingRoute({ route, approach, ...ring, ringRadius: 5000, start });
     assert.equal(validation.jumpViolations, 0, 'все прыжки в норме');
     assert.ok(validation.maxJump <= 14.99, `максимальный прыжок ${validation.maxJump}`);
     assert.ok(validation.deviationViolations > 0, 'точка моста вне допуска обнаружена');
@@ -365,7 +383,7 @@ test('кольцо: проверка маршрута видит нарушен�
     const broken = mod.validateRingRoute({
       route: [start, A, { name: 'far', x: 4000, y: 0, z: 0, source: 'catalog' }],
       approach: [true, false, true],
-      center,
+      ...ring,
       ringRadius: 5000,
       start,
     });
