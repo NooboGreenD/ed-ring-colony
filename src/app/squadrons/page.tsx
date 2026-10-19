@@ -290,7 +290,7 @@ export default function SquadronsListPage() {
               <span style={{ color: createForm.color, fontSize: 13, fontWeight: 600, fontFamily: "ui-monospace, monospace" }}>{createForm.color}</span>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 12 }}>
               <div>
                 <label style={fieldLabel}>Принадлежность</label>
                 <select value={createForm.allegiance} onChange={(e) => setCreateForm((p) => ({ ...p, allegiance: e.target.value }))} style={{ width: "100%" }}>

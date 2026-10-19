@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import type { ShopItem, UserInventoryItem, EquippedCosmetics, UserBalance, UserSubscription, BillingPlan, CreditPack, PublicPaymentProvider } from "@/types/billing";
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
@@ -68,6 +68,8 @@ export default function PremiumShopPage() {
   const [buyingItem, setBuyingItem] = useState<ShopItem | null>(null);
   const [buyingPlan, setBuyingPlan] = useState<BillingPlan | null>(null);
   const [busy, setBusy] = useState(false);
+  const equipLock = useRef(false);
+  const [equipping, setEquipping] = useState(false);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
 
   const showToast = (text: string, ok = true) => {
@@ -154,7 +156,8 @@ export default function PremiumShopPage() {
   useEffect(() => () => previewSkin(null), []);
 
   const toggleEquip = async (item: ShopItem, on: boolean) => {
-    if (!requireAuth()) return;
+    if (!requireAuth() || equipLock.current) return;
+    equipLock.current = true; setEquipping(true);
     try {
       const res = await authFetch("/api/shop/equip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: item.category, itemId: on ? item.id : null }) });
       const data = await res.json();
@@ -168,7 +171,7 @@ export default function PremiumShopPage() {
       load();
     } catch (e: any) {
       showToast(e.message, false);
-    }
+    } finally { equipLock.current = false; setEquipping(false); }
   };
 
   const buyWithCredits = async () => {
@@ -257,9 +260,9 @@ export default function PremiumShopPage() {
     );
 
   return (
-    <div style={{ width: "100%", maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 22, padding: "10px 0 40px" }}>
+    <div className="shop-page" style={{ width: "100%", maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 22, padding: "10px 0 40px" }}>
       {toast && (
-        <div style={{ position: "fixed", top: 24, right: 24, zIndex: 9999, padding: "12px 18px", borderRadius: 3, background: toast.ok ? "rgba(46,204,113,0.2)" : "rgba(231,76,60,0.2)", border: `1px solid ${toast.ok ? "#2ecc71" : "#e74c3c"}`, color: toast.ok ? "#2ecc71" : "#e74c3c", fontSize: 13, display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.5)", maxWidth: 420 }}>
+        <div className="shop-toast" style={{ position: "fixed", top: 24, right: 24, zIndex: 9999, padding: "12px 18px", borderRadius: 3, background: toast.ok ? "rgba(46,204,113,0.2)" : "rgba(231,76,60,0.2)", border: `1px solid ${toast.ok ? "#2ecc71" : "#e74c3c"}`, color: toast.ok ? "#2ecc71" : "#e74c3c", fontSize: 13, display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.5)", maxWidth: 420 }}>
           {toast.ok ? <IconCheck size={16} /> : <IconX size={16} />}
           <span>{toast.text}</span>
         </div>
@@ -335,7 +338,7 @@ export default function PremiumShopPage() {
           <button type="button" onClick={resetPreview} style={{ fontSize: 11, padding: "4px 10px", borderColor: "var(--line)", color: "var(--muted)" }}>Сбросить к текущему</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 20, padding: "16px 20px", background: "#181a1c", border: "1px dashed rgba(230,126,34,0.4)", borderRadius: 4 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+          <div className="shop-fitting-identity" style={{ display: "flex", alignItems: "center", gap: 18 }}>
             <CosmeticAvatar frameId={preview.frame} framePreview={pFrame?.preview_data} size={76} showScanlines />
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -364,7 +367,7 @@ export default function PremiumShopPage() {
 
       {/* Plans */}
       {category === "plans" && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 18 }}>
           {plans.map((plan) => {
             const active = subscription?.plan_id === plan.id;
             return (
@@ -402,7 +405,7 @@ export default function PremiumShopPage() {
           {inventory.length === 0 ? (
             <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>Пока ничего не куплено.</div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 16 }}>
               {inventory.map((inv) => {
                 const item = inv.item || byId.get(inv.item_id);
                 if (!item) return null;
@@ -425,9 +428,9 @@ export default function PremiumShopPage() {
                     <div style={{ display: "flex", gap: 8 }}>
                       <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "var(--line)" }}>Примерить</button>
                       {active ? (
-                        <button type="button" onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
+                        <button type="button" disabled={equipping} onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
                       ) : (
-                        <button type="button" className="btn-orange" onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 6, fontSize: 11 }}>Экипировать</button>
+                        <button type="button" className="btn-orange" disabled={equipping} onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 6, fontSize: 11 }}>Экипировать</button>
                       )}
                     </div>
                   </div>
@@ -445,7 +448,7 @@ export default function PremiumShopPage() {
             <input type="text" placeholder="Поиск по каталогу..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", paddingLeft: 32 }} />
             <span style={{ position: "absolute", left: 10, top: 12, pointerEvents: "none" }}><IconSearch size={14} color="#9ca3af" /></span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 18 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))", gap: 18 }}>
             {loading ? (
               <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted)" }}>Загрузка каталога...</div>
             ) : filtered.length === 0 ? (
@@ -493,9 +496,9 @@ export default function PremiumShopPage() {
                         <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "var(--line)", color: "var(--text)" }}>Примерить</button>
                         {owned ? (
                           eq ? (
-                            <button type="button" onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
+                            <button type="button" disabled={equipping} onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
                           ) : (
-                            <button type="button" className="btn-orange" onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Надеть</button>
+                            <button type="button" className="btn-orange" disabled={equipping} onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Надеть</button>
                           )
                         ) : item.is_locked_for_user ? (
                           <button type="button" onClick={() => setCategory("plans")} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: reqPlan?.color || "#c084fc", color: reqPlan?.color || "#c084fc" }}>Нужна подписка</button>

@@ -435,7 +435,7 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        <div style={{
+        <div className="notification-popover" style={{
           position: "absolute",
           top: "calc(100% + 8px)",
           right: 0,

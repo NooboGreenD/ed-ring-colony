@@ -14,6 +14,9 @@ let pending = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | null = null;
 const waiters = new Set<() => void>();
 let generation = 0;
+const revisions = new Map<string, number>();
+const inflight = new Map<string, number>();
+const retryAfter = new Map<string, number>();
 
 function notify() {
   generation++;
@@ -25,19 +28,27 @@ function flush() {
   const ids = Array.from(pending);
   pending = new Set();
   if (!ids.length) return;
-  fetch("/api/billing/cosmetics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) })
-    .then((r) => (r.ok ? r.json() : null))
-    .then((json) => {
-      const now = Date.now();
+  const versions = new Map(ids.map(id => [id, revisions.get(id) || 0]));
+  ids.forEach(id => inflight.set(id, versions.get(id)!));
+  fetch("/api/billing/cosmetics", { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) })
+    .then(async r => {
+      if (!r.ok) throw new Error('Cosmetics unavailable');
+      const json = await r.json();
       for (const id of ids) {
+        // An equip may have completed while this request was in flight.
+        if ((revisions.get(id) || 0) !== versions.get(id)) continue;
         const data = json?.cosmetics?.[id];
-        cache.set(id, { data: data || { user_id: id, frame: null, badge: null, skin: null, glow: null, title: null, tier: null }, ts: now });
+        if (!data) { retryAfter.set(id, Date.now() + 5000); continue; }
+        cache.set(id, { data, ts: Date.now() });
+        retryAfter.delete(id);
       }
-      notify();
     })
     .catch(() => {
-      const now = Date.now();
-      for (const id of ids) cache.set(id, { data: { user_id: id, frame: null, badge: null, skin: null, glow: null, title: null, tier: null }, ts: now });
+      // A network failure is not a successful "no skin equipped" response.
+      for (const id of ids) if ((revisions.get(id) || 0) === versions.get(id)) retryAfter.set(id, Date.now() + 5000);
+    })
+    .finally(() => {
+      for (const id of ids) if (inflight.get(id) === versions.get(id)) inflight.delete(id);
       notify();
     });
 }
@@ -48,6 +59,8 @@ function request(ids: string[]) {
   for (const id of ids) {
     const hit = cache.get(id);
     if (hit && now - hit.ts < TTL) continue;
+    if ((retryAfter.get(id) || 0) > now) continue;
+    if (inflight.get(id) === (revisions.get(id) || 0)) continue;
     if (!pending.has(id)) {
       pending.add(id);
       added = true;
@@ -58,8 +71,13 @@ function request(ids: string[]) {
 
 /** Invalidate cached cosmetics (call after equip/purchase). */
 export function invalidateCosmetics(userId?: string) {
-  if (userId) cache.delete(userId);
-  else cache.clear();
+  const ids = userId ? [userId] : [...new Set([...cache.keys(), ...pending, ...inflight.keys()])];
+  for (const id of ids) {
+    revisions.set(id, (revisions.get(id) || 0) + 1);
+    const hit = cache.get(id);
+    if (hit) hit.ts = 0; // Keep the current theme until a successful response.
+    retryAfter.delete(id);
+  }
   notify();
 }
 
@@ -70,10 +88,12 @@ export function useCosmetics(userIds: (string | null | undefined)[]): Record<str
   idsRef.current = key ? key.split(",") : [];
 
   useEffect(() => {
-    const w = () => setTick((t) => t + 1);
+    const w = () => { request(idsRef.current); setTick((t) => t + 1); };
     waiters.add(w);
     if (idsRef.current.length) request(idsRef.current);
+    const refresh = setInterval(() => request(idsRef.current), 5000);
     return () => {
+      clearInterval(refresh);
       waiters.delete(w);
     };
   }, [key]);

@@ -17,6 +17,7 @@ export type TranslationKey =
   | 'nav.leaderboard'
   | 'nav.systems'
   | 'nav.cmdrs'
+  | 'nav.squadronsShort'
   | 'nav.squadrons'
   | 'nav.projects'
   | 'nav.architect'
