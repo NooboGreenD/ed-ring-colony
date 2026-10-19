@@ -14,6 +14,14 @@
  *   * Exploited   — эксплуатируемая: под контролем, но своей зоны не даёт;
  *   * Unoccupied  — никем не контролируется (державы могут её захватывать).
  * Слой показывает три первых: у них есть `ControllingPower`.
+ *
+ * Чья система — отдельный вопрос (`PowerplayBasis`). Журнал игры пишет и
+ * `ControllingPower` (владелец), и `Powers` — все державы, чьи зоны влияния
+ * накрывают систему. Ночной дамп EDSM хранит только второе: по строке на
+ * каждую державу из `Powers` с одним и тем же состоянием и датой. Поэтому
+ * владелец по дампу ясен, лишь когда держава в списке одна; в пограничье, где
+ * зоны нескольких держав пересекаются, он «не определён», пока его не скажет
+ * журнал (Colonial Helper, загрузка журналов, CAPI, EDDN).
  */
 
 import { sanitizePublicPowerplayProgress, type PowerplayPublicProgress } from './powerplayProgress.ts';
@@ -178,8 +186,64 @@ function hslToHex(h: number, s: number, l: number): string {
   return `#${channel(0)}${channel(8)}${channel(4)}`;
 }
 
+/* ── Как определена держава системы ──────────────────────────────────────── */
+
+/**
+ * Откуда известно, чья система:
+ *   * `journal` — поле `ControllingPower` журнала игры (Colonial Helper,
+ *     загрузка журналов на сайте, CAPI, EDDN) — точно;
+ *   * `sole`    — дамп EDSM перечисляет у системы одну державу: владелец она;
+ *   * `kept`    — EDSM перечисляет несколько держав, и среди них та, что
+ *     раньше была владельцем точно (по журналу или единственной в дампе):
+ *     смена владельца в PowerPlay 2.0 идёт через «свободную» систему, и
+ *     такое наблюдение её бы сняло;
+ *   * `unknown` — EDSM перечисляет несколько держав, владелец среди них, но
+ *     какой именно — дамп не знает.
+ * `null` — строка записана до разбора по владельцу (старый импорт) и будет
+ * заменена следующей загрузкой.
+ */
+export const POWERPLAY_BASES = ['journal', 'sole', 'kept', 'unknown'] as const;
+export type PowerplayBasis = (typeof POWERPLAY_BASES)[number];
+
+export const POWERPLAY_BASIS_LABEL: Record<PowerplayBasis, string> = {
+  journal: 'по журналу игры (ControllingPower)',
+  sole: 'по дампу EDSM: других держав в системе нет',
+  kept: 'по прошлому точному наблюдению; сейчас EDSM видит здесь несколько держав',
+  unknown: 'не определена: EDSM перечисляет несколько держав',
+};
+
+/** Коротко — для таблиц и CSV. */
+export const POWERPLAY_BASIS_SHORT: Record<PowerplayBasis, string> = {
+  journal: 'журнал',
+  sole: 'EDSM, одна держава',
+  kept: 'прошлое наблюдение',
+  unknown: 'не определена',
+};
+
+export function normalizePowerplayBasis(value: unknown): PowerplayBasis | null {
+  return typeof value === 'string' && (POWERPLAY_BASES as readonly string[]).includes(value) ? (value as PowerplayBasis) : null;
+}
+
+/**
+ * Держава системы не определена. В браузере это обычный ключ: фильтр,
+ * счётчики, цвет точки и карточка работают с ним как с ещё одной «державой».
+ */
+export const POWERPLAY_UNKNOWN_POWER = '?';
+
+export const POWERPLAY_UNKNOWN_INFO: PowerInfo = {
+  name: POWERPLAY_UNKNOWN_POWER,
+  label: 'Держава не определена',
+  allegiance: null,
+  color: '#8b95a7',
+};
+
+export function isUnknownPower(power: string | null | undefined): boolean {
+  return !power || power === POWERPLAY_UNKNOWN_POWER;
+}
+
 /** Справочник державы; неизвестной — подпись из имени и стабильный цвет. */
 export function powerInfo(name: string): PowerInfo {
+  if (isUnknownPower(name)) return POWERPLAY_UNKNOWN_INFO;
   const known = POWER_BY_KEY.get(powerKey(name));
   if (known) return known;
   return { name, label: name, allegiance: null, color: hslToHex(hashHue(name), 0.75, 0.62) };
@@ -205,10 +269,27 @@ export function hexToRgbUnit(hex: string): [number, number, number] {
 
 /**
  * Одна система в ответе API: `[id64, имя, x, y, z, индекс державы,
- * индекс состояния, наблюдение (unix-секунды) | null]`. Кортеж вместо объекта
- * втрое короче на ~50 тысячах систем; id64 строкой — он шире 2^53.
+ * индекс состояния, наблюдение (unix-секунды) | null, индекс основания | null,
+ * [индексы держав в системе]]`. Кортеж вместо объекта втрое короче на ~50
+ * тысячах систем; id64 строкой — он шире 2^53.
+ *
+ * Индекс державы −1 — владелец не определён (дамп EDSM перечисляет несколько
+ * держав). Старый клиент такой кортеж просто пропускает. Основание (`bases`)
+ * и список держав — в конце кортежа и необязательны: держав в системе больше
+ * одной или владелец неизвестен — тогда список есть.
  */
-export type PowerplaySystemTuple = [string, string, number, number, number, number, number, number | null];
+export type PowerplaySystemTuple = [
+  string,
+  string,
+  number,
+  number,
+  number,
+  number,
+  number,
+  number | null,
+  (number | null)?,
+  number[]?,
+];
 
 export type PowerplayLayerStatus = 'ready' | 'empty';
 
@@ -239,6 +320,8 @@ export interface PowerplayLayerResponse {
   version: string;
   powers: string[];
   states: PowerplayState[];
+  /** Словарь оснований (`PowerplayBasis`) для девятого элемента кортежа. */
+  bases: PowerplayBasis[];
   systems: PowerplaySystemTuple[];
   meta: PowerplayLayerMeta;
 }
@@ -251,10 +334,18 @@ export interface PowerplaySystem {
   x: number;
   y: number;
   z: number;
+  /** Держава-владелец; `POWERPLAY_UNKNOWN_POWER`, если не определена. */
   power: string;
   state: PowerplayState;
   /** Когда источник видел систему в этом состоянии (мс), если известно. */
   observedAt: number | null;
+  /** Откуда известен владелец; null — старый импорт. */
+  basis: PowerplayBasis | null;
+  /**
+   * Державы в системе (поле журнала `Powers`): у неопределённой — претенденты
+   * на роль владельца. Пусто, если держава в системе одна.
+   */
+  candidates: string[];
 }
 
 export interface PowerplayLayerData {
@@ -271,14 +362,20 @@ export interface PowerplayRow {
   x: number;
   y: number;
   z: number;
-  power: string;
+  /** Держава-владелец или null, если не определена. */
+  power: string | null;
   state: PowerplayState;
   observedAt: string | null;
+  /** Откуда известен владелец; null — старый импорт. */
+  basis?: PowerplayBasis | null;
+  /** Державы в системе (`Powers`); у неопределённой — претенденты. */
+  powers?: string[];
 }
 
 /**
- * Сборка ответа слоя. Державы — по числу систем (крупные первыми), системы —
- * в порядке строк (сервер отдаёт их отсортированными по имени).
+ * Сборка ответа слоя. Державы — по числу систем (крупные первыми; державы,
+ * которые только присутствуют в чужих системах, — в конце), системы — в
+ * порядке строк (сервер отдаёт их отсортированными по имени).
  */
 export function encodePowerplayLayer(
   rows: PowerplayRow[],
@@ -286,27 +383,44 @@ export function encodePowerplayLayer(
   version: string,
 ): PowerplayLayerResponse {
   const counts = new Map<string, number>();
-  for (const row of rows) counts.set(row.power, (counts.get(row.power) ?? 0) + 1);
+  for (const row of rows) {
+    if (row.power) counts.set(row.power, (counts.get(row.power) ?? 0) + 1);
+  }
+  for (const row of rows) {
+    for (const power of row.powers ?? []) {
+      if (power && !counts.has(power)) counts.set(power, 0);
+    }
+  }
   const powers = Array.from(counts.keys()).sort((a, b) => (counts.get(b)! - counts.get(a)!) || a.localeCompare(b, 'en'));
   const powerIndex = new Map(powers.map((power, index) => [power, index]));
   const systems: PowerplaySystemTuple[] = rows.map((row) => {
     const observed = row.observedAt ? Date.parse(row.observedAt) : NaN;
-    return [
+    const tuple: PowerplaySystemTuple = [
       row.id64,
       row.name,
       row.x,
       row.y,
       row.z,
-      powerIndex.get(row.power)!,
+      row.power ? powerIndex.get(row.power)! : -1,
       POWERPLAY_STATES.indexOf(row.state),
       Number.isFinite(observed) ? Math.round(observed / 1000) : null,
     ];
+    const basis = row.basis ? POWERPLAY_BASES.indexOf(row.basis) : -1;
+    const present = row.powers ?? [];
+    // Список держав нужен, когда он что-то добавляет к владельцу.
+    const others = !row.power || present.length > 1
+      ? present.map((power) => powerIndex.get(power)).filter((index): index is number => index != null)
+      : [];
+    if (basis >= 0 || others.length > 0) tuple.push(basis >= 0 ? basis : null);
+    if (others.length > 0) tuple.push(others);
+    return tuple;
   });
   return {
     status: rows.length > 0 ? 'ready' : 'empty',
     version,
     powers,
     states: [...POWERPLAY_STATES],
+    bases: [...POWERPLAY_BASES],
     systems,
     meta,
   };
@@ -334,18 +448,29 @@ export function decodePowerplayLayer(payload: unknown): PowerplayLayerData {
   const body = (payload && typeof payload === 'object' ? payload : {}) as Partial<PowerplayLayerResponse>;
   const powers = Array.isArray(body.powers) ? body.powers.map((power) => String(power)) : [];
   const states = Array.isArray(body.states) ? body.states : [...POWERPLAY_STATES];
+  const bases = Array.isArray(body.bases) ? body.bases : [...POWERPLAY_BASES];
   const systems: PowerplaySystem[] = [];
   if (Array.isArray(body.systems)) {
     for (const tuple of body.systems) {
       if (!Array.isArray(tuple) || tuple.length < 7) continue;
-      const [id64, name, x, y, z, powerIndex, stateIndex, observed] = tuple as unknown[];
-      const power = typeof powerIndex === 'number' ? powers[powerIndex] : undefined;
+      const [id64, name, x, y, z, powerIndex, stateIndex, observed, basisIndex, presentIndexes] = tuple as unknown[];
+      // −1 — владелец не определён: система всё равно под контролем и видна на карте.
+      const power = powerIndex === -1
+        ? POWERPLAY_UNKNOWN_POWER
+        : typeof powerIndex === 'number' ? powers[powerIndex] : undefined;
       const state = typeof stateIndex === 'number' ? normalizePowerplayState(states[stateIndex]) : null;
       const px = finite(x);
       const py = finite(y);
       const pz = finite(z);
       if (typeof name !== 'string' || !name || !power || !state || px == null || py == null || pz == null) continue;
       const observedSeconds = finite(observed);
+      const candidates: string[] = [];
+      if (Array.isArray(presentIndexes)) {
+        for (const index of presentIndexes) {
+          const candidate = typeof index === 'number' ? powers[index] : undefined;
+          if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+        }
+      }
       systems.push({
         id64: id64 == null ? '' : String(id64),
         name,
@@ -356,6 +481,8 @@ export function decodePowerplayLayer(payload: unknown): PowerplayLayerData {
         power,
         state,
         observedAt: observedSeconds == null ? null : observedSeconds * 1000,
+        basis: typeof basisIndex === 'number' ? normalizePowerplayBasis(bases[basisIndex]) : null,
+        candidates,
       });
     }
   }
@@ -367,10 +494,13 @@ export function decodePowerplayLayer(payload: unknown): PowerplayLayerData {
     progress: sanitizePublicPowerplayProgress(rawMeta.progress),
   };
   const present = new Set(systems.map((system) => system.power));
+  const listed = powers.filter((power) => present.has(power));
+  // «Не определена» — в конце фильтра, как отдельная строка.
+  if (present.has(POWERPLAY_UNKNOWN_POWER)) listed.push(POWERPLAY_UNKNOWN_POWER);
   return {
     status: body.status === 'ready' && systems.length > 0 ? 'ready' : 'empty',
     version: typeof body.version === 'string' ? body.version : '',
-    powers: powers.filter((power) => present.has(power)),
+    powers: listed,
     systems,
     meta,
   };
@@ -477,15 +607,23 @@ export function filterPowerplaySystems(systems: PowerplaySystem[], filter: Power
 
 export interface PowerplayPowerCount {
   power: string;
+  /** Систем, где держава — владелец (точно или по прошлому наблюдению). */
   total: number;
   states: Record<PowerplayState, number>;
+  /**
+   * Систем с неопределённым владельцем, где эта держава — среди претендентов.
+   * Настоящее число её систем — от `total` до `total + contested`.
+   */
+  contested: number;
 }
 
 export interface PowerplayCounts {
   total: number;
   states: Record<PowerplayState, number>;
-  /** По державам, крупные первыми. */
+  /** По державам, крупные первыми; «не определена» — последней. */
   powers: PowerplayPowerCount[];
+  /** Систем, у которых владелец не определён. */
+  unknown: number;
 }
 
 function emptyStateCounts(): Record<PowerplayState, number> {
@@ -494,20 +632,41 @@ function emptyStateCounts(): Record<PowerplayState, number> {
 
 export function countPowerplay(systems: PowerplaySystem[], powersOrder: string[] = []): PowerplayCounts {
   const byPower = new Map<string, PowerplayPowerCount>();
-  for (const power of powersOrder) byPower.set(power, { power, total: 0, states: emptyStateCounts() });
-  const states = emptyStateCounts();
-  for (const system of systems) {
-    let entry = byPower.get(system.power);
+  const entryFor = (power: string): PowerplayPowerCount => {
+    let entry = byPower.get(power);
     if (!entry) {
-      entry = { power: system.power, total: 0, states: emptyStateCounts() };
-      byPower.set(system.power, entry);
+      entry = { power, total: 0, states: emptyStateCounts(), contested: 0 };
+      byPower.set(power, entry);
     }
+    return entry;
+  };
+  for (const power of powersOrder) entryFor(power);
+  const states = emptyStateCounts();
+  let unknown = 0;
+  for (const system of systems) {
+    const entry = entryFor(system.power);
     entry.total += 1;
     entry.states[system.state] += 1;
     states[system.state] += 1;
+    if (isUnknownPower(system.power)) {
+      unknown += 1;
+      for (const candidate of system.candidates ?? []) {
+        if (!isUnknownPower(candidate)) entryFor(candidate).contested += 1;
+      }
+    }
   }
-  const powers = Array.from(byPower.values()).sort((a, b) => (b.total - a.total) || a.power.localeCompare(b.power, 'en'));
-  return { total: systems.length, states, powers };
+  const powers = Array.from(byPower.values()).sort((a, b) => {
+    const unknownA = isUnknownPower(a.power) ? 1 : 0;
+    const unknownB = isUnknownPower(b.power) ? 1 : 0;
+    return (unknownA - unknownB) || (b.total - a.total) || a.power.localeCompare(b.power, 'en');
+  });
+  return { total: systems.length, states, powers, unknown };
+}
+
+/** Строка «откуда известен владелец» для карточки системы. */
+export function powerplayBasisText(system: Pick<PowerplaySystem, 'power' | 'basis'>): string | null {
+  if (isUnknownPower(system.power)) return POWERPLAY_BASIS_LABEL.unknown;
+  return system.basis ? POWERPLAY_BASIS_LABEL[system.basis] : null;
 }
 
 /**

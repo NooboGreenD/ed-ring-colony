@@ -7157,6 +7157,10 @@ html[data-hud-effect="glow"]::before {
     font-variant-numeric: tabular-nums; white-space: nowrap;
   }
   .powerplay-power-counts > span { display: inline-flex; align-items: center; gap: 2px; }
+  /* «+N?» — в скольких системах с неопределённым владельцем держава среди претендентов. */
+  .powerplay-power-counts > .powerplay-power-contested { color: #fbbf24; cursor: help; }
+  .powerplay-power.unknown { background: rgba(139,149,167,0.06); }
+  .powerplay-power.unknown .powerplay-power-name { font-style: italic; }
   .powerplay-solo {
     padding: 1px 5px; font-size: 9px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px;
     background: transparent; text-transform: none; letter-spacing: normal; font-family: inherit; min-height: 0;

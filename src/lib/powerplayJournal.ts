@@ -132,12 +132,11 @@ export function journalEventToPowerplay(
 
   let power: string | null = null;
   if (controlled) {
+    // Только ControllingPower. `Powers` — державы, чьи зоны накрывают систему:
+    // владельца там может и не быть (система под угрозой потери), а
+    // единственная держава в списке бывает соседом. Угадывать по нему — та же
+    // ошибка, из-за которой дамп EDSM раздавал пограничье не тем державам.
     power = normalizePowerName(event.ControllingPower);
-    // Старые клиенты PowerPlay 2.0 без ControllingPower: единственная держава в Powers.
-    if (!power) {
-      const powers = powerList(event.Powers);
-      if (powers.length === 1) power = powers[0];
-    }
     if (!power) return { reject: 'power' };
   }
 

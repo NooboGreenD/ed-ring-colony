@@ -49,7 +49,8 @@ export * as cronRoute from '@/app/api/cron/powerplay-sync/route';
 export { state } from '@/lib/supabaseServer';
 export { createServiceClient } from '@/lib/supabaseServer';
 export {
-  runPowerplaySync, isPowerplaySyncRunning, powerplayNeedsRefresh, readPowerplaySyncState, decodePowerplayDump,
+  runPowerplaySync, isPowerplaySyncRunning, powerplayNeedsRefresh, powerplayParserCurrent, readPowerplaySyncState, decodePowerplayDump,
+  getPowerplayLastRun,
   powerplayDumpUrl, DEFAULT_POWERPLAY_DUMP_URL, POWERPLAY_STALE_AFTER_MS, POWERPLAY_RETRY_AFTER_MS,
 } from '@/lib/powerplaySync';
 export { resetPowerplayLayerCache, loadPowerplayLayer } from '@/lib/powerplayStore';
@@ -207,6 +208,22 @@ test('импорт: повтор с ETag получает 304 и ничего н
   assert.equal(state.run_id, runBefore, 'версия набора не сменилась');
 });
 
+test('импорт прежним разбором: тот же файл EDSM качается без условного запроса и перечитывается', async () => {
+  // Так база выглядит после обновления сайта: импорт записан до web 2.23.0 (stats без parser).
+  await db.exec(`UPDATE powerplay_sync_state SET stats = '{"kept": 12}'::jsonb WHERE id = 1`);
+  assert.equal((await syncState()).etag, '"dump-1"', 'заголовки прошлой загрузки на месте');
+  requests.length = 0;
+  const result = await mod.runPowerplaySync(svc, { fetchImpl: edsm(gzipReply(BASE_TEXT)), minRows: 1 });
+  assert.equal(result.status, 'ok', 'EDSM не спросили «не менялся ли файл» — иначе 304 оставил бы старый разбор');
+  assert.equal(requests[0].headers['if-none-match'], undefined);
+  assert.equal(requests[0].headers['if-modified-since'], undefined);
+  const state = await syncState();
+  assert.equal(state.stats.parser, 2, 'теперь данные записаны текущим разбором');
+  assert.equal(mod.powerplayParserCurrent(state), true);
+  // Без миграции хода импорта журнал живёт в памяти процесса.
+  assert.match(mod.getPowerplayLastRun().log.map((line) => line.text).join('\n'), /прежним разбором дампа/);
+});
+
 test('импорт: новый дамп пересобирает таблицу — пропавшие удаляются, изменённые обновляются', async () => {
   const before = Object.fromEntries((await rows()).map((row) => [row.name, row]));
   const next = BASE
@@ -295,8 +312,13 @@ test('настройка источника: POWERPLAY_DUMP_URL проверяе
 test('ленивое обновление: когда данные устарели и когда можно пробовать снова', () => {
   const now = Date.parse('2026-10-18T12:00:00Z');
   const iso = (ms) => new Date(now - ms).toISOString();
-  const fresh = { status: 'ok', rows_total: 100, checked_at: iso(3600_000), attempt_at: iso(3600_000) };
+  const fresh = { status: 'ok', rows_total: 100, checked_at: iso(3600_000), attempt_at: iso(3600_000), stats: { parser: 2 } };
   assert.deepEqual(mod.powerplayNeedsRefresh(fresh, now), { stale: false, allowed: true });
+  // Импорт прежним разбором приписывал спорные системы одной державе — данные устарели, даже свежие.
+  assert.equal(mod.powerplayParserCurrent(fresh), true);
+  assert.equal(mod.powerplayParserCurrent({ stats: null }), false);
+  assert.equal(mod.powerplayNeedsRefresh({ ...fresh, stats: {} }, now).stale, true, 'импорт до web 2.23.0 — перезагрузить');
+  assert.equal(mod.powerplayNeedsRefresh({ ...fresh, stats: { parser: 1 } }, now).stale, true);
   assert.equal(mod.powerplayNeedsRefresh({ ...fresh, rows_total: 0 }, now).stale, true, 'пустая таблица — устарела');
   assert.equal(mod.powerplayNeedsRefresh({ ...fresh, checked_at: iso(mod.POWERPLAY_STALE_AFTER_MS + 1000) }, now).stale, true);
   assert.equal(mod.powerplayNeedsRefresh({ ...fresh, checked_at: null }, now).stale, true);

@@ -225,13 +225,20 @@ test('ход импорта: все этапы, журнал процесса и
   assert.match(text, /Ответ EDSM: HTTP 200/);
   assert.match(text, /Скачано /);
   assert.match(text, /Распаковано: .* JSON/);
-  assert.match(text, /Разобрано записей: 8 · под контролем держав: 7 \(оплоты 2, укреплённые 2, эксплуатируемые 3\)/);
+  assert.match(text, /Разобрано записей: 8 → систем под контролем: 7 \(оплоты 2, укреплённые 2, эксплуатируемые 3\)/);
+  assert.match(text, /Запись дампа — «система \+ одна из держав в ней»/);
+  assert.match(text, /Держава в системе одна — владелец ясен: 7 · держав несколько — владелец по дампу не определён: 0/);
   assert.match(text, /Отброшено: Unoccupied \(никем не контролируются\) 1/);
-  assert.match(text, /Державы в дампе: 3 — Edmund Mahon 3, Nakato Kaine 3, Li Yong-Rui 1/);
+  assert.match(text, /Владелец по дампу \(одна держава в системе\): Edmund Mahon 3, Nakato Kaine 3, Li Yong-Rui 1/);
+  // База этого теста — без миграции 20261021120000: импорт работает, но админ видит, чего не хватает.
+  assert.match(text, /База без миграции 20261021120000_powerplay_owner\.sql/);
   assert.match(text, /Пачка 1\/1: записано 7 из 7/);
   assert.match(text, /Удалено систем, пропавших из дампа: 0 · всего в таблице: 7/);
   assert.match(text, /Готово за .*: на карте 7 систем держав/);
-  assert.ok(log.every((line) => line.level === 'info'), 'удачный прогон — без предупреждений');
+  assert.ok(log.every((line) => line.level !== 'error'), 'удачный прогон — без ошибок');
+  const warnings = log.filter((line) => line.level === 'warn');
+  assert.equal(warnings.length, 1, 'единственное предупреждение — о недостающей миграции (полный путь — powerplay-owner.test.mjs)');
+  assert.match(warnings[0].text, /^База без миграции 20261021120000_powerplay_owner\.sql/);
   assert.equal((text.match(/Запуск импорта/g) || []).length, 1, 'строки прогона не задваиваются через копию в базе');
 
   // Копия — в базе: админка увидит её и после перезапуска сайта.

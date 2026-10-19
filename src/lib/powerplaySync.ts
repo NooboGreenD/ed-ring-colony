@@ -28,7 +28,7 @@ import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
 import { POWERPLAY_STATE_PLURAL, formatPowerplayDate } from './powerplay.ts';
-import { parseEdsmPowerplayDump, type PowerplayDumpRow, type PowerplayDumpStats } from './powerplayDump.ts';
+import { POWERPLAY_PARSER_VERSION, parseEdsmPowerplayDump, type PowerplayDumpRow, type PowerplayDumpStats } from './powerplayDump.ts';
 import {
   POWERPLAY_TRIGGER_LABEL,
   createPowerplayProgress,
@@ -245,7 +245,11 @@ function toDbRow(row: PowerplayDumpRow) {
     x: row.x,
     y: row.y,
     z: row.z,
-    power: row.power,
+    // Пусто — держав в дампе несколько, владельца решит база (прежний точный
+    // владелец или «не определён»). База без миграции 20261021120000 такие
+    // строки просто пропустит, а не припишет системе случайную державу.
+    power: row.power ?? '',
+    powers: row.powers,
     power_state: row.state,
     allegiance: row.allegiance,
     government: row.government,
@@ -380,19 +384,29 @@ async function persistRun(svc: Svc, run: LiveRun, force = false): Promise<void> 
 }
 
 function describeStats(stats: PowerplayDumpStats): string[] {
+  const count = formatPowerplayCount;
+  const list = (values: Record<string, number>) => Object.entries(values)
+    .sort((a, b) => b[1] - a[1])
+    .map(([power, value]) => `${power} ${count(value)}`)
+    .join(', ');
   const lines = [
-    `Разобрано записей: ${formatPowerplayCount(stats.records)} · под контролем держав: ${formatPowerplayCount(stats.kept)}`
-      + ` (${POWERPLAY_STATE_PLURAL.Stronghold.toLowerCase()} ${formatPowerplayCount(stats.states.Stronghold)},`
-      + ` ${POWERPLAY_STATE_PLURAL.Fortified.toLowerCase()} ${formatPowerplayCount(stats.states.Fortified)},`
-      + ` ${POWERPLAY_STATE_PLURAL.Exploited.toLowerCase()} ${formatPowerplayCount(stats.states.Exploited)})`,
-    `Отброшено: Unoccupied (никем не контролируются) ${formatPowerplayCount(stats.skipped.unoccupied)},`
-      + ` неизвестное состояние ${formatPowerplayCount(stats.skipped.unknown_state)},`
-      + ` битых записей ${formatPowerplayCount(stats.skipped.invalid)},`
-      + ` повторов ${formatPowerplayCount(stats.skipped.duplicate)}`,
+    `Разобрано записей: ${count(stats.records)} → систем под контролем: ${count(stats.kept)}`
+      + ` (${POWERPLAY_STATE_PLURAL.Stronghold.toLowerCase()} ${count(stats.states.Stronghold)},`
+      + ` ${POWERPLAY_STATE_PLURAL.Fortified.toLowerCase()} ${count(stats.states.Fortified)},`
+      + ` ${POWERPLAY_STATE_PLURAL.Exploited.toLowerCase()} ${count(stats.states.Exploited)})`,
+    'Запись дампа — «система + одна из держав в ней»: EDSM пишет по записи на каждую державу, чьи зоны накрывают систему,'
+      + ' а владельца (ControllingPower) не указывает',
+    `Держава в системе одна — владелец ясен: ${count(stats.sole)} · держав несколько — владелец по дампу не определён: ${count(stats.contested)}`
+      + ` · записей «ещё одна держава той же системы»: ${count(stats.listings)}`,
+    `Отброшено: Unoccupied (никем не контролируются) ${count(stats.skipped.unoccupied)},`
+      + ` неизвестное состояние ${count(stats.skipped.unknown_state)},`
+      + ` битых записей ${count(stats.skipped.invalid)},`
+      + ` от более старого события ${count(stats.skipped.stale ?? 0)},`
+      + ` повторов ${count(stats.skipped.duplicate)}`,
   ];
-  const powers = Object.entries(stats.powers).sort((a, b) => b[1] - a[1]);
-  if (powers.length) {
-    lines.push(`Державы в дампе: ${powers.length} — ${powers.map(([power, count]) => `${power} ${formatPowerplayCount(count)}`).join(', ')}`);
+  if (Object.keys(stats.powers).length) lines.push(`Владелец по дампу (одна держава в системе): ${list(stats.powers)}`);
+  if (Object.keys(stats.presence ?? {}).length) {
+    lines.push(`Присутствие (в скольких системах держава есть в списке EDSM, владелец или сосед): ${list(stats.presence)}`);
   }
   if (stats.oldestObservation && stats.newestObservation) {
     lines.push(`Наблюдения пилотов: ${formatPowerplayDate(stats.oldestObservation)} – ${formatPowerplayDate(stats.newestObservation)} (EDSM хранит ~30 дней)`);
@@ -454,7 +468,10 @@ async function syncOnce(svc: Svc, options: PowerplaySyncOptions): Promise<Powerp
 
     const headers: Record<string, string> = { 'User-Agent': USER_AGENT, Accept: 'application/gzip, application/json;q=0.9, */*;q=0.5' };
     // Условный запрос — только если прошлые данные на месте: иначе 304 оставил бы пустую карту.
-    const haveData = previous.rows_total > 0 && previous.source_url === url;
+    // И только если их записал текущий разбор: файл EDSM мог не меняться, а
+    // прочитать его теперь нужно иначе (web 2.23.0 — владелец системы).
+    const parserCurrent = powerplayParserCurrent(previous);
+    const haveData = previous.rows_total > 0 && previous.source_url === url && parserCurrent;
     if (!options.force && haveData) {
       if (previous.etag) headers['If-None-Match'] = previous.etag;
       if (previous.last_modified) headers['If-Modified-Since'] = previous.last_modified;
@@ -462,7 +479,11 @@ async function syncOnce(svc: Svc, options: PowerplaySyncOptions): Promise<Powerp
     if (headers['If-None-Match'] || headers['If-Modified-Since']) {
       log('info', `Условный запрос: в таблице ${formatPowerplayCount(previous.rows_total)} систем; если дамп не менялся, EDSM ответит 304`);
     } else if (!options.force) {
-      log('info', previous.rows_total > 0 ? 'Безусловный запрос: источник сменился или нет заголовков прошлой загрузки' : 'Безусловный запрос: в таблице пока нет систем');
+      log('info', previous.rows_total === 0
+        ? 'Безусловный запрос: в таблице пока нет систем'
+        : !parserCurrent
+          ? 'Безусловный запрос: данные записаны прежним разбором дампа, который приписывал спорные системы одной державе — загружаю заново'
+          : 'Безусловный запрос: источник сменился или нет заголовков прошлой загрузки');
     }
 
     const signal = AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS), run.controller.signal]);
@@ -558,11 +579,23 @@ async function syncOnce(svc: Svc, options: PowerplaySyncOptions): Promise<Powerp
     if (finishError) throw new Error(`Завершение импорта PowerPlay: ${finishError.message}`);
 
     shared.edrcPowerplayLayerVersion = powerplayLayerGeneration() + 1;
-    const summary = (finished ?? {}) as { deleted?: number; total?: number };
+    const summary = (finished ?? {}) as { deleted?: number; total?: number; journal?: number; sole?: number; kept?: number; unknown?: number };
     const deleted = Number(summary.deleted ?? 0);
     const total = Number(summary.total ?? rows.length);
     complete('finish', `удалено ${formatPowerplayCount(deleted)} · всего ${formatPowerplayCount(total)}`);
     log('info', `Удалено систем, пропавших из дампа: ${formatPowerplayCount(deleted)} · всего в таблице: ${formatPowerplayCount(total)}`);
+    if (summary.unknown != null) {
+      log(
+        Number(summary.unknown) > 0 ? 'warn' : 'info',
+        `Владелец системы: по журналам (ControllingPower) ${formatPowerplayCount(Number(summary.journal ?? 0))},`
+          + ` по дампу (одна держава) ${formatPowerplayCount(Number(summary.sole ?? 0))},`
+          + ` сохранён из прошлых точных данных ${formatPowerplayCount(Number(summary.kept ?? 0))},`
+          + ` не определён ${formatPowerplayCount(Number(summary.unknown ?? 0))}`
+          + (Number(summary.unknown) > 0 ? ' — их уточнят журналы пилотов и живые данные EDDN' : ''),
+      );
+    } else {
+      log('warn', 'База без миграции 20261021120000_powerplay_owner.sql: записаны только системы с одной державой в дампе — примените миграции');
+    }
     const durationMs = Date.now() - started;
     log('info', `Готово за ${formatPowerplayDuration(durationMs)}: на карте ${formatPowerplayCount(total)} систем держав`);
     finishPowerplayProgress(run.progress, 'ok', {
@@ -614,11 +647,30 @@ export interface PowerplayPowerSummary {
   Fortified: number;
   Exploited: number;
   total: number;
+  /** Откуда известен владелец этих систем (без миграции 20261021120000 — нули). */
+  journal: number;
+  sole: number;
+  kept: number;
+  /** Строки старого импорта (владелец по прежнему разбору, до перезагрузки). */
+  legacy: number;
+  /** Систем с неопределённым владельцем, где держава — среди претендентов. */
+  contested: number;
+}
+
+export interface PowerplayUnknownSummary {
+  total: number;
+  Stronghold: number;
+  Fortified: number;
+  Exploited: number;
 }
 
 export interface PowerplayTableSummary {
   total: number;
   powers: PowerplayPowerSummary[];
+  /** Системы под контролем с неопределённым владельцем. */
+  unknown: PowerplayUnknownSummary;
+  /** Системы по основанию: journal, sole, kept, unknown, legacy. */
+  bases: Record<string, number>;
   /** Системы под контролем по источнику: edsm (дамп), helper, web (журнал/CAPI через сайт), eddn. */
   sources: Record<string, number>;
   /** Системы, которые пилоты увидели свободными после дампа (слой их не показывает). */
@@ -653,8 +705,20 @@ export async function readPowerplaySummary(svc: Svc): Promise<PowerplayTableSumm
           Fortified: count(item.Fortified),
           Exploited: count(item.Exploited),
           total: count(item.total),
+          journal: count(item.journal),
+          sole: count(item.sole),
+          kept: count(item.kept),
+          legacy: count(item.legacy),
+          contested: count(item.contested),
         }))
     : [];
+  const rawUnknown = raw.unknown && typeof raw.unknown === 'object' ? (raw.unknown as Record<string, unknown>) : {};
+  const bases: Record<string, number> = {};
+  if (raw.bases && typeof raw.bases === 'object' && !Array.isArray(raw.bases)) {
+    for (const [basis, value] of Object.entries(raw.bases as Record<string, unknown>)) {
+      if (/^[a-z]{1,16}$/.test(basis)) bases[basis] = count(value);
+    }
+  }
   const sources: Record<string, number> = {};
   if (raw.sources && typeof raw.sources === 'object' && !Array.isArray(raw.sources)) {
     for (const [source, value] of Object.entries(raw.sources as Record<string, unknown>)) {
@@ -664,6 +728,13 @@ export async function readPowerplaySummary(svc: Svc): Promise<PowerplayTableSumm
   return {
     total: count(raw.total),
     powers,
+    unknown: {
+      total: count(rawUnknown.total),
+      Stronghold: count(rawUnknown.Stronghold),
+      Fortified: count(rawUnknown.Fortified),
+      Exploited: count(rawUnknown.Exploited),
+    },
+    bases,
     sources,
     vacated: count(raw.vacated),
     oldestObservation: isoOrNull(raw.oldest_observation),
@@ -693,8 +764,20 @@ function age(value: string | null, nowMs: number): number {
   return Number.isFinite(ms) ? nowMs - ms : Infinity;
 }
 
+/**
+ * Данные записал текущий разбор дампа (`POWERPLAY_PARSER_VERSION` в
+ * `stats.parser`). Импорт старым разбором приписывал спорные системы державе
+ * с самым большим номером в EDSM — такие данные устарели, даже если свежие.
+ */
+export function powerplayParserCurrent(state: Pick<PowerplaySyncState, 'stats'>): boolean {
+  const stats = state.stats && typeof state.stats === 'object' ? (state.stats as Record<string, unknown>) : null;
+  return Number(stats?.parser) === POWERPLAY_PARSER_VERSION;
+}
+
 export function powerplayNeedsRefresh(state: PowerplaySyncState, nowMs = Date.now()): { stale: boolean; allowed: boolean } {
-  const stale = state.rows_total === 0 || age(state.checked_at, nowMs) > POWERPLAY_STALE_AFTER_MS;
+  const stale = state.rows_total === 0
+    || age(state.checked_at, nowMs) > POWERPLAY_STALE_AFTER_MS
+    || !powerplayParserCurrent(state);
   const runningElsewhere = state.status === 'running' && age(state.attempt_at, nowMs) < RUNNING_STALE_MS;
   const allowed = !runningElsewhere && age(state.attempt_at, nowMs) > POWERPLAY_RETRY_AFTER_MS;
   return { stale, allowed };

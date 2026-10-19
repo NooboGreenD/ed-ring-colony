@@ -21,6 +21,10 @@ export const JOBS = [
   // refreshes data older than FACTIONS_REFRESH_DAYS and resumes an import cut
   // off by a restart. The request returns at once; the import runs in `web`.
   { name: 'factions-sync', period: 24 * HOUR, offset: 7 * HOUR + 10 * MINUTE, path: '/api/cron/factions-sync', timeout: 5 * MINUTE },
+  // Live EDDN data (PowerPlay owner + factions) is opt-in from the admin panel;
+  // this job only keeps the listener in `web` aligned with that flag (restarts
+  // it after a redeploy, stops it when switched off). Disabled flag — no-op.
+  { name: 'eddn-listener', period: 5 * MINUTE, offset: 2 * MINUTE, path: '/api/cron/eddn-listener', timeout: 1 * MINUTE },
   // The full Spansh import is deliberately opt-in: it downloads a ~6 GiB dump.
   { name: 'galaxy-import', period: 24 * HOUR, offset: 2 * HOUR, path: '/api/cron/galaxy-import', timeout: 10 * MINUTE },
 ];

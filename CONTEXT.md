@@ -2,8 +2,8 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-10-19** (checked against the code).
-> Web release: **2.22.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
-> 87 SQL migrations · 228 API routes · 59 pages · 145 test files (1536 checks).
+> Web release: **2.23.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
+> 89 SQL migrations · 229 API routes · 59 pages · 147 test files (1549 checks).
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -278,7 +278,7 @@ Invariants that must stay identical in both languages:
 
 ## 4. Database Schema
 
-127 tables are created by the 87 migrations in `supabase/migrations/` (a few of
+128 tables are created by the 89 migrations in `supabase/migrations/` (a few of
 them are legacy and empty on fresh installs). Grouped by area — the migration
 named in brackets introduced the group; everything else comes from
 `000_base_schema.sql` / early migrations. Full schema in one file:
@@ -296,7 +296,7 @@ named in brackets introduced the group; everything else comes from
 | Fleet carriers | `fleet_carriers`, `fleet_carrier_cargo`, `fleet_carrier_events` (`20261017000000`, claims — `20261018000000`) |
 | Atlas and the galaxy catalog | `galaxy_systems` (~2×10⁸ rows, GiST `cube` index), `galaxy_systems_meta` (`20260921120000` … `20261009000000`), `atlas_candidates`, `atlas_favorites`, `atlas_routes`, `atlas_searches`, `atlas_ring_system_cache`, `atlas_system_cache`, `atlas_body_cache`, `atlas_ring_sessions` (`20261011000000`), `market_search_jobs`, `market_search_cache` |
 | Markets and stations | `eddn_messages`, `market_prices`, `commodity_needs`, `commerce_systems`, `station_commerce`, `station_inventory_snapshots` (`20261014000000`) |
-| PowerPlay and minor factions | `powerplay_systems`, `powerplay_sync_state` (`20261018120000`, `20261018180000`); `bgs_systems`, `bgs_factions`, `bgs_faction_presence`, `bgs_sync_state`, `bgs_updates` (`20261019120000`) |
+| PowerPlay and minor factions | `powerplay_systems`, `powerplay_sync_state` (`20261018120000`, `20261018180000`; owner basis — `20261021120000`); `bgs_systems`, `bgs_factions`, `bgs_faction_presence`, `bgs_sync_state`, `bgs_updates` (`20261019120000`); live EDDN listener — `eddn_listener_state` (`20261021130000`) |
 | Community Goals | `community_goals` |
 | Forum, wiki, content | `forum_categories`, `forum_threads`, `forum_posts`, `forum_reactions`, `forum_reports`, `forum_subscriptions`, `forum_notifications`, `forum_moderation_logs`, `forum_post_history`, `forum_tags`, `thread_tags`; `wiki_articles`, `wiki_categories`, `wiki_tags`, `wiki_article_tags`, `wiki_revisions`, `wiki_favorites`, `wiki_redirects`; `news`, `galnet_news`, `galnet_sync_log`, `site_content` (+ `<field>_<lang>` columns), `comments` |
 | Messaging | `messages`, `friends`, `notifications`, `user_notifications`, `push_subscriptions` |
@@ -640,7 +640,7 @@ checks itself:
 | `/api/admin/monitor` | GET · admin | Снимок мониторинга: приложение, БД, диск, Docker, задачи, версия (через monitor-agent) |
 | `/api/admin/monitor/update` | GET/POST/DELETE · admin | Обновление проекта через update-agent: статус, запуск (`confirm: true`), остановка |
 | `/api/admin/outfitting` | GET/POST · admin | Админка верфи: справочник с правками и журналом; POST — пакет CRUD/архив/сброс |
-| `/api/admin/powerplay` | GET/POST · admin | PowerPlay: статус и журнал загрузки; POST — `start`/`force`/`cancel` |
+| `/api/admin/powerplay` | GET/POST · admin | PowerPlay: статус и журнал загрузки, слушатель EDDN; POST — `start`/`force`/`cancel`/`eddn-start`/`eddn-stop` |
 | `/api/admin/smtp` | GET/POST/DELETE · admin | Настройки SMTP для GoTrue (через update-agent) |
 | `/api/admin/smtp/apply` | POST · admin | Применить SMTP: пересоздать `auth` Supabase и `web` |
 | `/api/admin/uploader/build-kit` | GET · admin | Комплект для первой Windows-сборки Helper (ключи встроены в `bundle.py`) |
@@ -660,6 +660,7 @@ checks itself:
 | `/api/cron/cg-check` | GET/POST · cron | Задача `cg-check` |
 | `/api/cron/colonisation-cleanup` | GET/POST · cron | Задача `colonisation-cleanup` |
 | `/api/cron/eddn-cleanup` | GET/POST · cron | Задача `eddn-cleanup` |
+| `/api/cron/eddn-listener` | GET/POST · cron | Задача `eddn-listener`: слушатель EDDN в веб-процессе — по флагу из админки |
 | `/api/cron/factions-sync` | GET/POST · cron | Задача `factions-sync` (запускает импорт в фоне и сразу отвечает) |
 | `/api/cron/galaxy-import` | GET/POST · cron | Задача `galaxy-import` |
 | `/api/cron/powerplay-sync` | GET/POST · cron | Задача `powerplay-sync` |
@@ -844,7 +845,20 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
   the ISP — see FACTIONS.md for the stall/short-request downloader.
 
 ### 8.2 EDDN (Elite Dangerous Data Network)
-- Subscriber (optional, not part of the default Compose stack — the
+- **Live listener (web 2.23.0, opt-in from Admin → «Игровые данные» →
+  «PowerPlay»):** `src/lib/eddn/listener.ts` runs inside `web`, subscribes to
+  `tcp://eddn.edcd.io:9500` through a dependency-free ZMTP 3.0 client
+  (`src/lib/eddn/zmtp.ts`), keeps FSDJump / Location / CarrierJump of the live
+  game (`gameversion` 4.x / CAPI-Live; Legacy 3.8 has PowerPlay 1.0 fields) and
+  every minute feeds them to `applySystemObservations` with source `eddn` —
+  PowerPlay owner (`ControllingPower`) + state and minor factions. A silence
+  watchdog (30 s) reopens the session (ISP «freeze» protection + diagnostics in
+  the log), errors back off up to 5 min. Flag and state — `eddn_listener_state`;
+  job `eddn-listener` (5 min, default-enabled, no-op when off), the admin page
+  and the PowerPlay layer (≤ 1 check / 5 min) restart it after a redeploy.
+  `EDDN_LISTENER=off` forbids it; `EDDN_RELAY`, `EDDN_STALL_MS`, `EDDN_FLUSH_MS`.
+  ~2–5 GB/day of traffic.
+- Older market subscriber (optional, not part of the default Compose stack — the
   `eddn-worker` service in `docker-compose.yml` is a commented-out example):
   `scripts/eddn-worker.ts` (ZeroMQ) → `POST /api/eddn/ingest` with
   `x-eddn-secret` (`EDDN_INGEST_SECRET`, `EDDN_INGEST_URL`); the older
@@ -1291,15 +1305,33 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
 
 ### 8.16 PowerPlay layer in Atlas (EDSM nightly dump)
 Full description: **POWERPLAY.md**.
+- **Owner of a system (web 2.23.0).** An EDSM dump record is «a system + ONE of
+  the powers present» — one row per power from the journal's `Powers` (every
+  power whose zone covers the system), all with the same state and date;
+  `ControllingPower` is not stored (EDSM-NET/EDDN-Events `System/PowerPlay.php`),
+  and the dump is sorted by EDSM power id. The old parser kept the last record,
+  so contested systems went to the highest id (Nakato Kaine 13): 3144 vs 1819 in
+  game, Aisling Duval (3) 1580 vs 3121. Now `powerplayDump.ts` groups a system's
+  records (`power` only when one power is listed, `powers` = all), the table has
+  `power_basis` — `journal` (ControllingPower), `sole`, `kept` (an earlier exact
+  owner still listed), `unknown` (`power` NULL — not '' so the 20261020120000
+  CHECK passes on replays). The layer tuple gains `basisIdx` and present-power
+  indexes, owner index −1 = unknown (old clients skip it); the UI shows grey
+  «Держава не определена» points, a filter row and «+N?» per power. An older
+  journal (≤ 7 days before the dump observation) names an unknown owner that is
+  among the listed powers (`resolved`). A run stored by the old parser
+  (`stats.parser` ≠ 2) is re-read without the conditional request.
 - Atlas tab «PowerPlay» (7th, `?tab=powerplay`, Alt+7) + a 3D layer: every system
   controlled by a PowerPlay 2.0 power (Stronghold / Fortified / Exploited). Colour =
   power (`POWERPLAY_POWERS` in `src/lib/powerplay.ts`), shape = state. Filter by
   power and state, list with search, CSV, map card with influence zones, and
   «Чья зона?» for any system (Stronghold 30 ly, Fortified 20 ly).
 - Source: EDSM `https://www.edsm.net/dump/powerPlay.json.gz` (~3.6 MB, daily,
-  systems reported via EDDN in the last ~30 days). Unoccupied rows are dropped:
-  EDSM keeps one power out of several contenders. Spansh `galaxy_populated` is
-  4+ GiB — too big for the production link; EDDN is not deployed.
+  systems reported via EDDN in the last ~30 days). Unoccupied rows are dropped
+  (EDSM lists the contenders there). Spansh has `controllingPower` only in the
+  `galaxy*` dumps with bodies (1.2–4.3 GiB) — too big for the production link;
+  its light `systems_*` dumps carry no PowerPlay. The live EDDN listener (8.2) is
+  opt-in.
 - Pilot journals (web 2.22.0, Helper 2.17.0): the system observation that
   updates factions (`POST /api/factions/sync`, browser loader, CAPI daily
   journal) also carries `ControllingPower` / `Powers` / `PowerplayState` /
@@ -1326,8 +1358,9 @@ Full description: **POWERPLAY.md**.
 - Triggers: job `powerplay-sync` (12 h, default-enabled) and lazy refresh from
   `GET /api/powerplay/systems` when the table is empty or unchecked for 26 h
   (≤ 1 attempt / 30 min). The API answers compact tuples
-  `[id64, name, x, y, z, powerIdx, stateIdx, observedSec]`, ETag = import + meta,
-  cached in memory until the next import.
+  `[id64, name, x, y, z, powerIdx (−1 = unknown), stateIdx, observedSec, basisIdx?,
+  presentPowerIdx[]?]` plus `bases`, ETag = import + meta, cached in memory until
+  the next import.
 - Progress (2.18.0, `src/lib/powerplayProgress.ts`): every run records six weighted
   stages (request, download in bytes, gunzip, parse, batched write, finish), an
   overall percent and a log; the live run lives in `globalThis`, a copy goes to

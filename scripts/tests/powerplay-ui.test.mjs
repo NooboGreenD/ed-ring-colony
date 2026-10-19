@@ -130,6 +130,26 @@ test('карточка системы PowerPlay: держава, состоян�
     assert.match(lonelyText, /дата наблюдения неизвестна/);
     assert.match(lonelyText, /Ни один оплот \(30 св\. лет\) или укреплённая система \(20 св\. лет\) сюда не дотягивается/);
     assert.equal(ui.document.querySelector('.powerplay-system-card button')?.textContent?.includes('К системе'), false, 'без onFocus кнопки нет');
+
+    // Владелец не определён: дамп EDSM перечисляет несколько держав — карточка так и пишет.
+    const contested = { ...SYSTEMS[2], power: '?', basis: 'unknown', candidates: ['Aisling Duval', 'Nakato Kaine'] };
+    await ui.render(ui.React.createElement(ui.mod.PowerplaySystemCard, { system: contested, influence: [], now: NOW, onClose: () => {} }));
+    const contestedCard = ui.document.querySelector('.powerplay-system-card');
+    assert.equal(contestedCard.querySelector('[data-powerplay-owner]').getAttribute('data-powerplay-owner'), 'unknown');
+    assert.match(contestedCard.textContent, /Держава не определена/);
+    assert.match(contestedCard.textContent, /EDSM перечисляет несколько держав и не говорит, какая из них владеет системой/);
+    assert.equal(contestedCard.querySelector('[data-powerplay-candidates]').getAttribute('data-powerplay-candidates'), 'Aisling Duval|Nakato Kaine');
+    assert.match(contestedCard.querySelector('[data-powerplay-candidates]').textContent, /Претенденты: .*Aisling Duval.*Nakato Kaine/);
+
+    // Владелец из журнала: откуда известно и чьи ещё зоны накрывают систему.
+    const journal = { ...SYSTEMS[2], basis: 'journal', candidates: ['Edmund Mahon', 'Nakato Kaine'] };
+    await ui.render(ui.React.createElement(ui.mod.PowerplaySystemCard, { system: journal, influence: [], now: NOW, onClose: () => {} }));
+    const journalCard = ui.document.querySelector('.powerplay-system-card');
+    assert.equal(journalCard.querySelector('[data-powerplay-basis]').getAttribute('data-powerplay-basis'), 'journal');
+    assert.match(journalCard.textContent, /Держава по журналу игры \(ControllingPower\)/);
+    assert.match(journalCard.textContent, /Журнал игры: 18\.10\.2026/);
+    assert.match(journalCard.querySelector('[data-powerplay-candidates]').textContent, /Зоны соседей: .*Nakato Kaine/);
+    assert.doesNotMatch(journalCard.querySelector('[data-powerplay-candidates]').textContent, /Edmund Mahon/, 'сам владелец в соседях не значится');
   } finally {
     await ui.cleanup();
   }

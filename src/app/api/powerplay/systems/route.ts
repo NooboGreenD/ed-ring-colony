@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { loadPowerplayLayer } from '@/lib/powerplayStore';
+import { ensureEddnListenerSoon } from '@/lib/eddn/listener';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,10 +17,16 @@ export const runtime = 'nodejs';
  * Пустая таблица или данные старше суток запускают импорт фоном; ответ его не
  * ждёт и сообщает `meta.refreshing`, чтобы клиент перезапросил позже.
  * ETag — версия набора: повторный визит получает 304 без тела.
+ *
+ * Заодно (не чаще раза в 5 минут на процесс) — проверка, включены ли живые
+ * данные EDDN и запущен ли их слушатель: после перезапуска сайта он
+ * поднимется, даже если задача `eddn-listener` не включена в JOBS_ENABLED.
  */
 export async function GET(request: Request) {
   try {
-    const layer = await loadPowerplayLayer(createServiceClient());
+    const svc = createServiceClient();
+    ensureEddnListenerSoon(svc);
+    const layer = await loadPowerplayLayer(svc);
     // Пока набор пуст или обновляется, кэшировать нечего: клиент вернётся за свежим.
     const cacheControl = layer.status === 'ready' && !layer.refreshing
       ? 'public, max-age=300, stale-while-revalidate=3600'

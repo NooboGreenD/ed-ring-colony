@@ -11,6 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  POWERPLAY_PARSER_VERSION,
   edsmDateToIso,
   edsmRecordToRow,
   parseEdsmPowerplayDump,
@@ -47,7 +48,11 @@ import {
   togglePowerVisible,
   togglePowerplayState,
   POWERPLAY_ACTIVE_POWERS,
+  POWERPLAY_BASES,
+  POWERPLAY_UNKNOWN_POWER,
   isAllegianceSolo,
+  isUnknownPower,
+  powerplayBasisText,
   powerplayFilterPowers,
   soloAllegiance,
 } from '../../src/lib/powerplay.ts';
@@ -79,7 +84,7 @@ const DUMP = [
   ' {"power":"Edmund Mahon","powerState":"Stronghold","id":12273,"id64":2557888041682,"name":"Prajan","coords":{"x":56.59375,"y":139.59375,"z":10.78125},"allegiance":"Independent","government":"Corporate","state":"None","date":"2026-10-16 05:04:59"},',
   ' {"power":"Li Yong-Rui","powerState":"Fortified","id":916,"id64":671222801825,"name":"LHS 154a","coords":{"x":15.03125,"y":-42.8125,"z":-7.0625},"allegiance":"Independent","government":"Cooperative","state":"None","date":"2026-10-16 15:19:57"},',
   ' {"power":"Nakato Kaine","powerState":"Stronghold","id":6584,"id64":2656194005355,"name":"LTT 4428","coords":{"x":75.15625,"y":15.1875,"z":33.34375},"allegiance":"Federation","government":"Corporate","state":"Expansion","date":"2026-10-16 23:55:50"},',
-  // Та же система у другой державы и с более старой датой — побеждает свежая запись выше.
+  // Та же система у другой державы и с более старой датой — запись от старого события, побеждает свежая выше.
   ' {"power":"Zemina Torval","powerState":"Exploited","id":6584,"id64":2656194005355,"name":"LTT 4428","coords":{"x":75.15625,"y":15.1875,"z":33.34375},"allegiance":"Federation","government":"Corporate","state":"None","date":"2026-10-01 10:00:00"},',
   // id64 шире 2^53: JSON.parse потерял бы младшие разряды.
   ' {"power":"Arissa Lavigny-Duval","powerState":"fortified","id":1,"id64":36028797018963971,"name":"Huge Address","coords":{"x":1,"y":2,"z":3},"allegiance":null,"government":null,"state":null,"date":"2026-10-15 12:00:00"},',
@@ -98,23 +103,91 @@ test('дамп EDSM: под контролем — только Stronghold/Forti
     'Col 285 Sector UZ-N c7-7', 'Huge Address', 'LHS 154a', 'LTT 4428', 'Last Line', 'Prajan',
   ]);
   assert.equal(stats.records, 11, 'каждая строка-запись посчитана, включая битую');
+  assert.equal(stats.parser, POWERPLAY_PARSER_VERSION);
   assert.equal(stats.kept, 6);
-  assert.deepEqual(stats.skipped, { unoccupied: 1, unknown_state: 1, invalid: 2, duplicate: 1 });
+  assert.equal(stats.sole, 6, 'у каждой системы фикстуры одна держава');
+  assert.equal(stats.contested, 0);
+  assert.deepEqual(stats.skipped, { unoccupied: 1, unknown_state: 1, invalid: 2, duplicate: 0, stale: 1 });
   assert.deepEqual(stats.states, { Stronghold: 2, Fortified: 2, Exploited: 2 });
   assert.equal(stats.powers['Edmund Mahon'], 2);
   assert.equal(stats.powers['A. Lavigny-Duval'], 1, 'Арисса приведена к имени из журнала');
+  assert.equal(stats.presence['Zemina Torval'], undefined, 'запись старого события не делает державу присутствующей');
   assert.equal(stats.oldestObservation, '2026-09-17T00:46:16.000Z');
   assert.equal(stats.newestObservation, '2026-10-16T23:59:03.000Z');
 
   assert.deepEqual(byName['Prajan'], {
-    id64: '2557888041682', name: 'Prajan', x: 56.59375, y: 139.59375, z: 10.78125, power: 'Edmund Mahon', state: 'Stronghold',
-    allegiance: 'Independent', government: 'Corporate', observedAt: '2026-10-16T05:04:59.000Z',
+    id64: '2557888041682', name: 'Prajan', x: 56.59375, y: 139.59375, z: 10.78125, power: 'Edmund Mahon', powers: ['Edmund Mahon'],
+    state: 'Stronghold', allegiance: 'Independent', government: 'Corporate', observedAt: '2026-10-16T05:04:59.000Z',
   });
-  assert.equal(byName['LTT 4428'].power, 'Nakato Kaine', 'повтор системы: остаётся свежее наблюдение');
+  assert.equal(byName['LTT 4428'].power, 'Nakato Kaine', 'запись старого события отброшена, остаётся свежее наблюдение');
+  assert.equal(byName['LTT 4428'].state, 'Stronghold');
   assert.equal(byName['Huge Address'].id64, '36028797018963971', 'id64 из текста строки, без округления до 2^53');
   assert.equal(byName['Huge Address'].state, 'Fortified', 'регистр состояния не важен');
   assert.equal(byName['Huge Address'].allegiance, null);
   assert.equal(byName['Last Line'].x, -1.5, 'последняя строка без запятой и скобка на своей строке');
+});
+
+/*
+ * Настоящая причина расхождения с игрой. EDSM пишет по записи на каждую
+ * державу из поля журнала `Powers` (все, чьи зоны накрывают систему) с одним
+ * состоянием и датой, а дамп сортирует записи по номеру державы в EDSM:
+ * Aisling Duval — 3, Nakato Kaine — 13. Прежний разбор оставлял последнюю
+ * запись, и спорная система всегда доставалась Nakato.
+ */
+const CONTESTED_DUMP = [
+  '[',
+  // Пограничье Aisling и Nakato: две записи одной системы, одна дата.
+  ' {"power":"Aisling Duval","powerState":"Exploited","id":77,"id64":3107442165442,"name":"Border One","coords":{"x":60.1,"y":-40.2,"z":12.5},"allegiance":"Empire","government":"Patronage","state":"None","date":"2026-10-17 11:22:33"},',
+  ' {"power":"Aisling Duval","powerState":"Fortified","id":78,"id64":3107442165443,"name":"Border Two","coords":{"x":61.1,"y":-40.2,"z":12.5},"allegiance":"Empire","government":"Patronage","state":"None","date":"2026-10-17 12:00:00"},',
+  ' {"power":"Aisling Duval","powerState":"Exploited","id":79,"id64":3107442165444,"name":"Aisling Only","coords":{"x":70,"y":-40,"z":12},"allegiance":"Empire","government":"Patronage","state":"None","date":"2026-10-17 13:00:00"},',
+  // Свободная система с тремя претендентами — не под контролем.
+  ' {"power":"Aisling Duval","powerState":"Unoccupied","id":80,"id64":3107442165445,"name":"Free Border","coords":{"x":65,"y":-41,"z":12},"date":"2026-10-17 14:00:00"},',
+  ' {"power":"Jerome Archer","powerState":"Fortified","id":78,"id64":3107442165443,"name":"Border Two","coords":{"x":61.1,"y":-40.2,"z":12.5},"allegiance":"Empire","government":"Patronage","state":"None","date":"2026-10-17 12:00:00"},',
+  ' {"power":"Jerome Archer","powerState":"Unoccupied","id":80,"id64":3107442165445,"name":"Free Border","coords":{"x":65,"y":-41,"z":12},"date":"2026-10-17 14:00:00"},',
+  ' {"power":"Nakato Kaine","powerState":"Exploited","id":77,"id64":3107442165442,"name":"Border One","coords":{"x":60.1,"y":-40.2,"z":12.5},"allegiance":"Empire","government":"Patronage","state":"None","date":"2026-10-17 11:22:33"},',
+  ' {"power":"Nakato Kaine","powerState":"Fortified","id":78,"id64":3107442165443,"name":"Border Two","coords":{"x":61.1,"y":-40.2,"z":12.5},"allegiance":"Empire","government":"Patronage","state":"None","date":"2026-10-17 12:00:00"},',
+  ' {"power":"Nakato Kaine","powerState":"Unoccupied","id":80,"id64":3107442165445,"name":"Free Border","coords":{"x":65,"y":-41,"z":12},"date":"2026-10-17 14:00:00"},',
+  ' {"power":"Nakato Kaine","powerState":"Stronghold","id":81,"id64":3107442165446,"name":"Nakato Only","coords":{"x":50,"y":-40,"z":12},"allegiance":"Alliance","government":"Democracy","state":"None","date":"2026-10-17 15:00:00"}',
+  ']',
+].join('\n');
+
+test('дамп EDSM: система у нескольких держав — владелец не определён, а не «последняя в файле» (Nakato против Aisling)', () => {
+  const { rows, stats } = parseEdsmPowerplayDump(CONTESTED_DUMP);
+  const byName = Object.fromEntries(rows.map((row) => [row.name, row]));
+  assert.deepEqual(Object.keys(byName).sort(), ['Aisling Only', 'Border One', 'Border Two', 'Nakato Only']);
+
+  assert.equal(byName['Border One'].power, null, 'две державы — владелец по дампу неизвестен');
+  assert.deepEqual(byName['Border One'].powers, ['Aisling Duval', 'Nakato Kaine']);
+  assert.equal(byName['Border One'].state, 'Exploited');
+  assert.equal(byName['Border One'].observedAt, '2026-10-17T11:22:33.000Z');
+  assert.equal(byName['Border Two'].power, null);
+  assert.deepEqual(byName['Border Two'].powers, ['Aisling Duval', 'Jerome Archer', 'Nakato Kaine']);
+  assert.equal(byName['Aisling Only'].power, 'Aisling Duval', 'одна держава — она и владелец');
+  assert.equal(byName['Nakato Only'].power, 'Nakato Kaine');
+
+  assert.equal(stats.records, 10);
+  assert.equal(stats.kept, 4);
+  assert.equal(stats.sole, 2);
+  assert.equal(stats.contested, 2);
+  assert.equal(stats.listings, 3, 'записи «ещё одна держава той же системы» — не повторы');
+  assert.equal(stats.skipped.duplicate, 0);
+  assert.equal(stats.skipped.unoccupied, 3, 'у свободной системы три претендента — три записи');
+  assert.deepEqual(stats.powers, { 'Aisling Duval': 1, 'Nakato Kaine': 1 }, 'владельцем держава считается только там, где она одна');
+  assert.deepEqual(stats.presence, { 'Aisling Duval': 3, 'Jerome Archer': 1, 'Nakato Kaine': 3 });
+
+  // Порядок записей не важен: раньше победителя решал именно он.
+  const lines = CONTESTED_DUMP.split('\n');
+  const reversed = ['[', ...lines.slice(1, -1).map((line) => line.replace(/,$/, '')).reverse().map((line, i, all) => (i < all.length - 1 ? `${line},` : line)), ']'].join('\n');
+  const again = parseEdsmPowerplayDump(reversed);
+  assert.deepEqual(
+    again.rows.map((row) => [row.name, row.power, row.powers.join('|')]).sort(),
+    rows.map((row) => [row.name, row.power, row.powers.join('|')]).sort(),
+  );
+
+  // Повтор той же державы у той же системы (в настоящем дампе не бывает).
+  const dup = parseEdsmPowerplayDump(['[', lines[1], lines[1].replace(/,$/, ''), ']'].join('\n'));
+  assert.equal(dup.stats.skipped.duplicate, 1);
+  assert.equal(dup.rows[0].power, 'Aisling Duval');
 });
 
 test('дамп EDSM: не построчный JSON и мусор', () => {
@@ -206,7 +279,8 @@ test('ответ API: кортежи со словарём держав, раз�
   assert.equal(encoded.version, 'run-1');
   assert.deepEqual(encoded.powers, ['Yuri Grom', 'Archon Delaine'], 'крупные державы первыми');
   assert.deepEqual(encoded.states, ['Stronghold', 'Fortified', 'Exploited']);
-  assert.deepEqual(encoded.systems[0], ['10', 'Alpha', 0, 0, 0, 0, 0, 1792108800]);
+  assert.deepEqual(encoded.bases, ['journal', 'sole', 'kept', 'unknown']);
+  assert.deepEqual(encoded.systems[0], ['10', 'Alpha', 0, 0, 0, 0, 0, 1792108800], 'без основания и списка держав — прежний кортеж');
   assert.deepEqual(encoded.systems[1], ['11', 'Beta', 10, 0, 0, 0, 2, null]);
   assert.equal(encodePowerplayLayer([], meta, 'run-2').status, 'empty');
 
@@ -217,11 +291,73 @@ test('ответ API: кортежи со словарём держав, раз�
   assert.equal(decoded.systems.length, ROWS.length, 'битые кортежи пропущены');
   assert.deepEqual(decoded.systems[0], {
     id64: '10', name: 'Alpha', nameLc: 'alpha', x: 0, y: 0, z: 0, power: 'Yuri Grom', state: 'Stronghold', observedAt: Date.parse('2026-10-16T00:00:00Z'),
+    basis: null, candidates: [],
   });
   assert.equal(decoded.systems[4].id64, '36028797018963971', 'id64 строкой — без потери точности');
   assert.equal(decoded.meta.syncedAt, '2026-10-17T05:20:00.000Z');
   assert.equal(decodePowerplayLayer(null).status, 'empty');
   assert.equal(decodePowerplayLayer({ status: 'ready', systems: [] }).status, 'empty', 'ready без систем — пусто');
+});
+
+const OWNER_ROWS = [
+  { id64: '20', name: 'Known', x: 0, y: 0, z: 0, power: 'Aisling Duval', state: 'Fortified', observedAt: null, basis: 'journal', powers: ['Aisling Duval', 'Nakato Kaine'] },
+  { id64: '21', name: 'Sole', x: 5, y: 0, z: 0, power: 'Aisling Duval', state: 'Exploited', observedAt: null, basis: 'sole', powers: ['Aisling Duval'] },
+  { id64: '22', name: 'Contested', x: 10, y: 0, z: 0, power: null, state: 'Exploited', observedAt: null, basis: 'unknown', powers: ['Jerome Archer', 'Nakato Kaine'] },
+  { id64: '23', name: 'Contested Fort', x: 12, y: 0, z: 0, power: null, state: 'Fortified', observedAt: null, basis: 'unknown', powers: ['Aisling Duval', 'Nakato Kaine'] },
+  { id64: '24', name: 'Kept', x: 15, y: 0, z: 0, power: 'Nakato Kaine', state: 'Stronghold', observedAt: null, basis: 'kept', powers: ['Aisling Duval', 'Nakato Kaine'] },
+];
+
+test('ответ API: неопределённый владелец — индекс −1, основание и претенденты; старый клиент такую систему пропускает', () => {
+  const encoded = encodePowerplayLayer(OWNER_ROWS, EMPTY_POWERPLAY_META, 'v2');
+  assert.deepEqual(encoded.powers, ['Aisling Duval', 'Nakato Kaine', 'Jerome Archer'], 'держава только из списков претендентов — в конце');
+  const [known, sole, contested] = encoded.systems;
+  assert.deepEqual(known, ['20', 'Known', 0, 0, 0, 0, 1, null, POWERPLAY_BASES.indexOf('journal'), [0, 1]]);
+  assert.deepEqual(sole, ['21', 'Sole', 5, 0, 0, 0, 2, null, POWERPLAY_BASES.indexOf('sole')], 'одна держава — без списка');
+  assert.deepEqual(contested, ['22', 'Contested', 10, 0, 0, -1, 2, null, POWERPLAY_BASES.indexOf('unknown'), [2, 1]]);
+  assert.equal(encoded.powers[contested[5]], undefined, 'старый клиент берёт powers[-1] → undefined и пропускает кортеж');
+
+  const decoded = decodePowerplayLayer(JSON.parse(JSON.stringify(encoded)));
+  const byName = Object.fromEntries(decoded.systems.map((system) => [system.name, system]));
+  assert.equal(decoded.systems.length, OWNER_ROWS.length, 'неопределённые видны на карте');
+  assert.equal(byName['Contested'].power, POWERPLAY_UNKNOWN_POWER);
+  assert.equal(byName['Contested'].basis, 'unknown');
+  assert.deepEqual(byName['Contested'].candidates, ['Jerome Archer', 'Nakato Kaine']);
+  assert.equal(byName['Known'].basis, 'journal');
+  assert.deepEqual(byName['Known'].candidates, ['Aisling Duval', 'Nakato Kaine']);
+  assert.deepEqual(byName['Sole'].candidates, []);
+  assert.equal(byName['Kept'].basis, 'kept');
+  assert.deepEqual(decoded.powers, ['Aisling Duval', 'Nakato Kaine', POWERPLAY_UNKNOWN_POWER], '«не определена» — в конце фильтра');
+
+  assert.ok(isUnknownPower(POWERPLAY_UNKNOWN_POWER) && isUnknownPower(null) && !isUnknownPower('Nakato Kaine'));
+  assert.equal(powerInfo(POWERPLAY_UNKNOWN_POWER).label, 'Держава не определена');
+  assert.equal(powerInfo(POWERPLAY_UNKNOWN_POWER).allegiance, null);
+  assert.match(powerplayBasisText(byName['Contested']), /не определена/);
+  assert.match(powerplayBasisText(byName['Known']), /ControllingPower/);
+  assert.equal(powerplayBasisText({ power: 'Yuri Grom', basis: null }), null, 'старый импорт — без подписи');
+
+  // Счётчики: у державы — свои системы и «+N?» претендента; «не определена» последней.
+  const counts = countPowerplay(decoded.systems, powerplayFilterPowers(decoded.powers));
+  const row = (power) => counts.powers.find((item) => item.power === power);
+  assert.equal(counts.unknown, 2);
+  assert.equal(row('Aisling Duval').total, 2);
+  assert.equal(row('Aisling Duval').contested, 1);
+  assert.equal(row('Nakato Kaine').total, 1);
+  assert.equal(row('Nakato Kaine').contested, 2);
+  assert.equal(row('Jerome Archer').total, 0);
+  assert.equal(row('Jerome Archer').contested, 1);
+  assert.equal(counts.powers.at(-1).power, POWERPLAY_UNKNOWN_POWER, 'строка «не определена» — последняя, сколько бы систем в ней ни было');
+  assert.equal(row(POWERPLAY_UNKNOWN_POWER).total, 2);
+
+  // Фильтр: «не определена» скрывается и показывается как держава; переживает localStorage.
+  const hidden = togglePowerVisible(DEFAULT_POWERPLAY_FILTER, POWERPLAY_UNKNOWN_POWER);
+  assert.deepEqual(filterPowerplaySystems(decoded.systems, hidden).map((system) => system.name), ['Known', 'Sole', 'Kept']);
+  assert.deepEqual(parsePowerplayFilter(JSON.parse(JSON.stringify(hidden))).hiddenPowers, [POWERPLAY_UNKNOWN_POWER]);
+  assert.ok(!soloAllegiance(DEFAULT_POWERPLAY_FILTER, 'Empire', powerplayFilterPowers(decoded.powers)).hiddenPowers.includes('Aisling Duval'));
+  assert.ok(soloAllegiance(DEFAULT_POWERPLAY_FILTER, 'Empire', powerplayFilterPowers(decoded.powers)).hiddenPowers.includes(POWERPLAY_UNKNOWN_POWER));
+
+  // Зоны неопределённой укреплённой системы тоже видны — под «не определена».
+  const zones = powerplayInfluenceAt({ x: 20, y: 0, z: 0 }, decoded.systems);
+  assert.ok(zones.some((zone) => zone.power === POWERPLAY_UNKNOWN_POWER && zone.nearest.name === 'Contested Fort'));
 });
 
 function decodedSystems() {
@@ -262,6 +398,8 @@ test('счётчики, порядок списка, поиск по имени'
   assert.equal(counts.total, 5);
   assert.deepEqual(counts.states, { Stronghold: 1, Fortified: 2, Exploited: 2 });
   assert.deepEqual(counts.powers.map((p) => [p.power, p.total]), [['Yuri Grom', 3], ['Archon Delaine', 2], ['Nakato Kaine', 0]]);
+  assert.equal(counts.unknown, 0);
+  assert.ok(counts.powers.every((p) => p.contested === 0));
   assert.deepEqual(counts.powers[0].states, { Stronghold: 1, Fortified: 1, Exploited: 1 });
 
   assert.deepEqual(orderPowerplaySystems(systems).map((s) => s.name), ['Alpha', 'Gamma', 'Epsilon', 'Beta', 'Delta'], 'оплоты, укреплённые, эксплуатируемые');
@@ -289,7 +427,7 @@ test('зоны влияния: оплот — 30 св. лет, укреплён�
   // Две зоны одной державы: ближайшая и счётчик.
   const both = powerplayInfluenceAt({ x: 85, y: 0, z: 0 }, [
     ...systems,
-    { id64: '99', name: 'Zeta', nameLc: 'zeta', x: 95, y: 0, z: 0, power: 'Yuri Grom', state: 'Stronghold', observedAt: null },
+    { id64: '99', name: 'Zeta', nameLc: 'zeta', x: 95, y: 0, z: 0, power: 'Yuri Grom', state: 'Stronghold', observedAt: null, basis: null, candidates: [] },
   ]);
   assert.equal(both[0].power, 'Yuri Grom');
   assert.equal(both[0].nearest.name, 'Zeta');

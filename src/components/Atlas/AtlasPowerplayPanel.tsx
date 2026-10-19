@@ -15,7 +15,11 @@
  *    открывает её карточку (по самой точке на карте тоже можно кликнуть);
  *  * «Чья зона?» — любая система галактики: под чьим она контролем и чьи
  *    оплоты и укреплённые системы до неё дотягиваются. Имена систем в ответе
- *    кликабельны.
+ *    кликабельны;
+ *  * системы, чей владелец не определён (дамп EDSM перечисляет несколько
+ *    держав), — отдельная строка фильтра «Держава не определена» и серые
+ *    точки; у каждой державы рядом с числом систем — «+N?»: в скольких таких
+ *    системах она среди претендентов.
  *
  * Состояние (данные, фильтр, выбор) живёт в `useAtlasPowerplay` на странице:
  * им же пользуется 3D-слой карты.
@@ -42,6 +46,7 @@ import type { SystemSuggestion } from '@/hooks/useSystemAutocomplete';
 import { downloadCsv } from '@/lib/atlas';
 import {
   POWER_ALLEGIANCE_LABEL,
+  POWERPLAY_BASIS_SHORT,
   POWERPLAY_STATE_HINT,
   POWERPLAY_STATE_LABEL,
   POWERPLAY_STATE_PLURAL,
@@ -54,6 +59,7 @@ import {
   isAllegianceSolo,
   isDefaultPowerplayFilter,
   isPowerVisible,
+  isUnknownPower,
   orderPowerplaySystems,
   powerInfo,
   powerplayInfluenceAt,
@@ -176,7 +182,7 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
   const meta = data?.meta;
   const filtered = !isDefaultPowerplayFilter(filter);
   const shownPowers = filterPowers.filter((power) => isPowerVisible(filter, power)).length;
-  const powersWithSystems = counts.powers.filter((item) => item.total > 0).length;
+  const powersWithSystems = counts.powers.filter((item) => item.total > 0 && !isUnknownPower(item.power)).length;
 
   const runCheck = async (name: string, suggestion?: SystemSuggestion) => {
     const clean = name.trim();
@@ -213,10 +219,12 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
   const exportList = () => {
     if (listed.length === 0) return;
     downloadCsv(`powerplay-${new Date().toISOString().slice(0, 10)}`, [
-      ['Система', 'Держава', 'Состояние', 'X', 'Y', 'Z', 'id64', 'Данные EDSM'],
+      ['Система', 'Держава', 'Как определена', 'Державы в системе', 'Состояние', 'X', 'Y', 'Z', 'id64', 'Наблюдение'],
       ...listed.map((system) => [
         system.name,
         powerInfo(system.power).label,
+        isUnknownPower(system.power) ? POWERPLAY_BASIS_SHORT.unknown : system.basis ? POWERPLAY_BASIS_SHORT[system.basis] : '',
+        (system.candidates ?? []).map((candidate) => powerInfo(candidate).label).join('; '),
         POWERPLAY_STATE_LABEL[system.state],
         system.x,
         system.y,
@@ -302,6 +310,14 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
           {' · '}
           <a href={meta?.sourceUrl || 'https://www.edsm.net/en/nightly-dumps'} target="_blank" rel="noopener noreferrer">EDSM</a>
         </div>
+        {counts.unknown > 0 && (
+          <div className="powerplay-status-hint" data-powerplay-unknown={counts.unknown}>
+            У {formatCount(counts.unknown)} систем владелец не определён (серые точки): дамп EDSM перечисляет все державы,
+            чьи зоны накрывают систему, но не говорит, какая из них владеет. Владельца уточняют журналы пилотов
+            (Colonial Helper, загрузка журналов, CAPI) и живые данные EDDN; «+N?» у державы — в скольких таких системах
+            она среди претендентов.
+          </div>
+        )}
         {meta?.refreshing && (
           <div className="powerplay-status-hint">
             Сервер обновляет данные{meta.progress ? `: ${meta.progress.stageLabel.toLowerCase()}, ${Math.round(meta.progress.percent)} %` : '…'} —
@@ -378,9 +394,16 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
           {counts.powers.map((item) => {
             const info = powerInfo(item.power);
             const on = isPowerVisible(filter, item.power);
+            const unknownRow = isUnknownPower(item.power);
+            const title = !loaded
+              ? info.label
+              : unknownRow
+                ? `${info.label}: ${formatCount(item.total)} систем — EDSM перечисляет у них несколько держав и не говорит, какая владелец`
+                : `${info.label}: ${formatCount(item.total)} систем`
+                  + (item.contested > 0 ? `; ещё в ${formatCount(item.contested)} системах владелец не определён, и эта держава — среди претендентов` : '');
             return (
-              <li key={item.power} className={`powerplay-power${on ? '' : ' off'}`} data-power={item.power}>
-                <label className="powerplay-power-main" title={loaded ? `${info.label}: ${formatCount(item.total)} систем` : info.label}>
+              <li key={item.power} className={`powerplay-power${on ? '' : ' off'}${unknownRow ? ' unknown' : ''}`} data-power={item.power}>
+                <label className="powerplay-power-main" title={title}>
                   <input type="checkbox" checked={on} onChange={() => setFilter(togglePowerVisible(filter, item.power))} />
                   <PowerSwatch color={info.color} />
                   <span className="powerplay-power-name">{info.label}</span>
@@ -391,6 +414,11 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                     <span title="Оплоты"><PowerplayGlyph state="Stronghold" color={info.color} size={9} /> {formatCount(item.states.Stronghold)}</span>
                     <span title="Укреплённые"><PowerplayGlyph state="Fortified" color={info.color} size={9} /> {formatCount(item.states.Fortified)}</span>
                     <span title="Эксплуатируемые"><PowerplayGlyph state="Exploited" color={info.color} size={9} /> {formatCount(item.states.Exploited)}</span>
+                    {item.contested > 0 && (
+                      <span className="powerplay-power-contested" title={`Ещё в ${formatCount(item.contested)} системах владелец не определён, и ${info.label} — среди претендентов`} data-powerplay-contested={item.contested}>
+                        +{formatCount(item.contested)}?
+                      </span>
+                    )}
                   </span>
                 ) : (
                   <span className="powerplay-power-counts" aria-hidden="true">—</span>
@@ -534,8 +562,15 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                 {check.controlled ? (
                   <div>
                     Под контролем:{' '}
-                    <span style={{ color: powerInfo(check.controlled.power).color, fontWeight: 600 }}>{powerInfo(check.controlled.power).label}</span>
+                    <span style={{ color: powerInfo(check.controlled.power).color, fontWeight: 600 }}>
+                      {isUnknownPower(check.controlled.power) ? 'держава не определена' : powerInfo(check.controlled.power).label}
+                    </span>
                     {' · '}{POWERPLAY_STATE_LABEL[check.controlled.state].toLowerCase()}
+                    {isUnknownPower(check.controlled.power) && (check.controlled.candidates ?? []).length > 0 && (
+                      <span style={{ color: MUTED }}>
+                        {' '}— одна из: {(check.controlled.candidates ?? []).map((candidate) => powerInfo(candidate).label).join(', ')}
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <div style={{ color: MUTED }}>Не под контролем держав (по данным слоя).</div>

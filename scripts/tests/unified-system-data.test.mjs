@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { TEST_ROOT, bundleFile } from './helpers/bundle.mjs';
+import { SYSTEM_DATA_STUBS } from './helpers/systemDataSchema.mjs';
 
 process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
@@ -78,53 +79,7 @@ export { loadSystemOverview, loadSystemsProgress } from '@/lib/systemOverview';
 /* ── База: заглушки соседних таблиц + настоящие миграции ───────────────── */
 
 const db = new PGlite();
-await db.exec(`
-CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;
-CREATE TABLE public.profiles(id uuid PRIMARY KEY, cmdr_name text, role text DEFAULT 'user', privacy_settings jsonb);
-CREATE TABLE public.galaxy_systems(id bigserial, id64 text UNIQUE, name text, name_lc text UNIQUE, x float8, y float8, z float8,
-  main_star text, star_type text, star_giant_class text, needs_permit boolean, distance_from_sols float8, distance_from_sgra float8);
-CREATE TABLE public.system_progress(system_name text PRIMARY KEY, progress int, updated_at timestamptz DEFAULT now(), data jsonb);
-CREATE TABLE public.colonisation_sites(market_id bigint PRIMARY KEY, system_name text NOT NULL, construction_id bigint, construction_name text,
-  construction_progress numeric(5,2), resources_total jsonb NOT NULL DEFAULT '[]', event_timestamp timestamptz NOT NULL, user_id uuid);
-CREATE TABLE public.system_plans(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), system_name text NOT NULL,
-  system_name_lc text GENERATED ALWAYS AS (lower(trim(system_name))) STORED, title text DEFAULT '', author_id uuid NOT NULL,
-  author_name text DEFAULT '', visibility text DEFAULT 'private', plan jsonb NOT NULL DEFAULT '{}', site_count int DEFAULT 0,
-  haul_tons bigint DEFAULT 0, catalogue_version int DEFAULT 0, updated_at timestamptz DEFAULT now());
-CREATE TABLE public.system_architects(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), system_name text, system_name_lc text UNIQUE,
-  user_id uuid, architect_name text DEFAULT '', assigned_by_name text DEFAULT '', updated_at timestamptz DEFAULT now());
-CREATE TABLE public.squadrons(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text, tag text, created_by uuid);
-CREATE TABLE public.squadron_members(user_id uuid, squadron_id bigint, rank_id bigint);
-CREATE TABLE public.squadron_ranks(id bigint PRIMARY KEY, squadron_id bigint, can_edit_squadron boolean);
-CREATE TABLE public.projects(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text, status text DEFAULT 'active', color text,
-  squadron_id bigint, created_by uuid, created_at timestamptz DEFAULT now());
-CREATE TABLE public.project_members(project_id bigint, user_id uuid, role text DEFAULT 'member');
-CREATE TABLE public.project_systems(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, project_id bigint, system_name text NOT NULL,
-  route_system_id bigint, planned_status text NOT NULL DEFAULT 'planned', priority int DEFAULT 1, target_date date, assigned_to uuid);
-CREATE TABLE public.architect_projects(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text, status text DEFAULT 'active', color text,
-  progress_summary jsonb, progress_at timestamptz, created_at timestamptz DEFAULT now());
-CREATE TABLE public.architect_project_members(project_id uuid, user_id uuid, role text DEFAULT 'member');
-CREATE TABLE public.architect_project_systems(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), project_id uuid, system_name text NOT NULL,
-  system_name_lc text GENERATED ALWAYS AS (lower(btrim(system_name))) STORED, stage text DEFAULT 'planned', priority smallint DEFAULT 2, target_date date);
-CREATE TABLE public.route_systems(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, system_name text, sort_order int, status text DEFAULT 'planned',
-  progress int DEFAULT 0, x float8, y float8, z float8);
-CREATE TABLE public.hubs(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text, system_name text NOT NULL, status text, progress int,
-  segment_order int, x float8, y float8, z float8);
-CREATE TABLE public.station_commerce(station_key text PRIMARY KEY, market_id text, system_name text, system_lc text, station_name text,
-  station_type text, metadata jsonb DEFAULT '{}', observed_at timestamptz, source text);
-CREATE TABLE public.station_inventory_snapshots(station_key text, kind text, items jsonb, observed_at timestamptz, source text);
-CREATE TABLE public.community_goals(id serial, cg_id int, title text, system_name text, station_name text, objective text, tier_current int,
-  tier_max int, contributors int, expiry_date timestamptz, is_complete boolean DEFAULT false, is_colonisation_related boolean DEFAULT false);
-CREATE TABLE public.deliveries(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, user_id uuid, system_name text, amount int,
-  delivered_at timestamptz, is_construction boolean);
-CREATE TABLE public.system_scans(id bigserial, system_name text, body_name text, updated_at timestamptz DEFAULT now());
-CREATE TABLE public.user_notifications(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, user_id uuid NOT NULL, type text NOT NULL,
-  title text NOT NULL, body text, href text, metadata jsonb NOT NULL DEFAULT '{}', is_read boolean DEFAULT false, created_at timestamptz DEFAULT now());
-CREATE TABLE public.fleet_carriers(carrier_id bigint PRIMARY KEY, carrier_type text DEFAULT 'FleetCarrier', callsign text, name text,
-  owner_id uuid, squadron_id bigint, system_name text, system_address bigint, body_name text, x float8, y float8, z float8,
-  location_at timestamptz, location_source text, jump_system_name text, jump_system_address bigint, jump_body_name text,
-  jump_departure_at timestamptz, jump_requested_at timestamptz, docking_access text, allow_notorious boolean,
-  pending_decommission boolean DEFAULT false, decommission_at timestamptz, services jsonb, station_services jsonb, updated_at timestamptz DEFAULT now());
-`);
+await db.exec(SYSTEM_DATA_STUBS);
 const migration = (file) => readFileSync(join(TEST_ROOT, 'supabase', 'migrations', file), 'utf8');
 await db.exec(migration('20261018120000_powerplay_systems.sql'));
 await db.exec(migration('20261018180000_powerplay_sync_progress.sql'));
@@ -133,6 +88,10 @@ const UNIFIED = migration('20261020120000_unified_system_data.sql');
 await db.exec(UNIFIED);
 // Снимок full_schema.sql и повторный прогон update-project.sh накатывают миграцию ещё раз.
 await db.exec(UNIFIED);
+// Владелец системы PowerPlay (web 2.23.0): старые вызовы apply_batch без списка держав работают как раньше.
+const OWNER = migration('20261021120000_powerplay_owner.sql');
+await db.exec(OWNER);
+await db.exec(OWNER);
 
 const bundle = await bundleFile({
   entrySource: ENTRY,
@@ -177,7 +136,7 @@ function jump(overrides = {}) {
 }
 
 const post = (body) => new Request('https://edringcolony.ru/api/factions/sync', { method: 'POST', body: JSON.stringify(body) });
-const ppRow = async (id64) => (await db.query('SELECT name, power, power_state, powers, control_progress, reinforcement, undermining, source, sync_run FROM powerplay_systems WHERE id64 = $1', [id64])).rows[0];
+const ppRow = async (id64) => (await db.query('SELECT name, power, power_state, power_basis, powers, control_progress, reinforcement, undermining, source, sync_run FROM powerplay_systems WHERE id64 = $1', [id64])).rows[0];
 
 test('PowerPlay из журнала: держава, состояние, отказы старых и PowerPlay 1.0', () => {
   const ok = mod.journalEventToPowerplay(jump(), NOW);
@@ -192,9 +151,12 @@ test('PowerPlay из журнала: держава, состояние, отк�
   assert.equal(free.observation.state, 'Unoccupied');
   assert.equal(free.observation.power, null);
 
-  // Клиент PowerPlay 2.0 без ControllingPower — единственная держава из Powers.
-  const legacy = mod.journalEventToPowerplay(jump({ ControllingPower: undefined, Powers: ['Nakato Kaine'], PowerplayState: 'Exploited' }), NOW);
-  assert.equal(legacy.observation.power, 'Nakato Kaine');
+  // Без ControllingPower владелец неизвестен, даже если в Powers одна держава:
+  // Powers — державы, чьи зоны накрывают систему, владельца там может не быть.
+  assert.deepEqual(
+    mod.journalEventToPowerplay(jump({ ControllingPower: undefined, Powers: ['Nakato Kaine'], PowerplayState: 'Exploited' }), NOW),
+    { reject: 'power' },
+  );
 
   assert.deepEqual(mod.journalEventToPowerplay(jump({ timestamp: '2023-05-01T00:00:00Z' }), NOW), { reject: 'before_pp2' });
   assert.deepEqual(mod.journalEventToPowerplay(jump({ PowerplayState: 'Controlled' }), NOW), { reject: 'state' });
@@ -302,7 +264,10 @@ test('ночной дамп не перетирает свежие данные 
   const latest = await ppRow(ID64);
   assert.equal(latest.power_state, 'Stronghold');
   assert.equal(latest.source, 'edsm');
-  assert.equal(latest.powers, null, 'счётчики журнала после более свежего дампа устарели');
+  // Счётчики журнала после более свежего дампа устарели; список держав — тот, что перечислил дамп.
+  assert.equal(latest.control_progress, null, 'счётчики журнала после более свежего дампа устарели');
+  assert.deepEqual(latest.powers, ['Jerome Archer']);
+  assert.equal(latest.power_basis, 'sole', 'держава в дампе одна — она и владелец');
   assert.equal(await ppRow('5031654855386'), undefined, 'отметка старше дампа удалена');
   assert.ok(finished.deleted >= 2);
 });
