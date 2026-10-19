@@ -9,6 +9,8 @@ export const stationSearchSchema = z.object({
   min_stock: z.coerce.number().int().min(1).max(1e12).default(1),
   module_class: z.coerce.number().int().min(0).max(8).optional(),
   rating: z.enum(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']).optional(),
+  pad: z.enum(['any', 'S', 'M', 'L']).default('any'),
+  carriers: z.enum(['include', 'exclude', 'only']).default('include'),
   fresh: z.enum(['true', 'false']).default('false'),
   sort: z.enum(['distance', 'price', 'updated']).default('distance'),
   page: z.coerce.number().int().min(0).max(100).default(0),
@@ -25,6 +27,7 @@ export interface StationSearchItem {
   buyPrice?: number; sellPrice?: number; price?: number; stock?: number; demand?: number;
 }
 export interface StationMetadata {
+  max_landing_pad?: 'S' | 'M' | 'L';
   body_name?: string; distance_to_arrival?: number; latitude?: number; longitude?: number; services?: string[]; engineers?: string[];
 }
 export interface StationSearchResult {

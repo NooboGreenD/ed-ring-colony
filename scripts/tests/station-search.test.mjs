@@ -268,3 +268,31 @@ test('FDevIDs snapshot generator skips bulkheads, removed items and MercGear dup
   assert.equal(new Set(symbols).size, symbols.length, 'one module name per symbol');
   assert.equal(readFileSync('src/lib/stationSearchItems.json', 'utf8'), formatItems(committed), 'file is in generator format');
 });
+
+test('access filters validate input and use filtered RPCs for both response formats', async () => {
+  for (const params of [{ pad: 'XL' }, { carriers: 'yes' }]) {
+    const calls = db();
+    assert.equal((await api.GET(request({ kind: 'market', q: 'Steel', ...params }))).status, 400);
+    assert.equal(calls.length, 0);
+  }
+  for (const group of [undefined, 'station']) {
+    for (const carriers of ['include', 'exclude', 'only']) {
+      const calls = db({ rows: group ? { total: 0, stations: [] } : [] });
+      const response = await api.GET(request({ kind: 'market', q: 'Steel', pad: 'L', carriers, ...(group ? { group } : {}) }));
+      assert.equal(response.status, 200);
+      assert.equal(calls[0].name, group ? 'search_station_catalog_stations_filtered' : 'search_station_catalog_filtered');
+      assert.equal(calls[0].params.filter_pad, 'L');
+      assert.equal(calls[0].params.filter_carriers, carriers);
+    }
+  }
+});
+
+test('missing filtered RPC never falls back to unfiltered results', async () => {
+  const calls = [];
+  globalThis.__stationSearchDb = { rpc: async (name) => {
+    calls.push(name);
+    return { error: { code: 'PGRST202', message: 'could not find the function' } };
+  } };
+  assert.equal((await api.GET(request({ kind: 'market', q: 'Steel', group: 'station', carriers: 'exclude' }))).status, 503);
+  assert.deepEqual(calls, ['search_station_catalog_stations_filtered']);
+});

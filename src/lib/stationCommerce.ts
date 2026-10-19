@@ -28,6 +28,7 @@ export const stationReportSchema = z.object({
   population: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   station_type: z.string().max(100).optional(),
   metadata: z.object({
+    max_landing_pad: z.enum(['S', 'M', 'L']).optional(),
     body_name: z.string().max(200).optional(), body_id: z.number().int().optional(),
     distance_to_arrival: quantity.optional(),
     latitude: z.number().min(-90).max(90).optional(), longitude: z.number().min(-180).max(180).optional(),
@@ -84,6 +85,19 @@ export async function knownMarketSystems(client: CommerceClient, center: { x: nu
   return (data || []).map((row: any) => ({ name: row.system_name, coords: { x: row.x, y: row.y, z: row.z }, distance: row.distance }));
 }
 
+/** Explicit pad information; unknown is not a small pad. */
+export function stationLandingPad(station: any): 'S' | 'M' | 'L' | undefined {
+  const value = String(station.maxLandingPadSize ?? '').toUpperCase();
+  if (value === 'S' || value === 'M' || value === 'L') return value;
+  const pads = station.landingPads;
+  if (pads && typeof pads === 'object') {
+    if (Number(pads.large) > 0) return 'L';
+    if (Number(pads.medium) > 0) return 'M';
+    if (Number(pads.small) > 0) return 'S';
+  }
+  return undefined;
+}
+
 /** Normalize EDSM metadata; updateTime is observation time, never the HTTP fetch time. */
 export function edsmStationReport(system: { name: string; x: number; y: number; z: number }, station: any): StationReport {
   const date = station.updateTime?.information || station.updateTime?.market || station.updateTime;
@@ -94,6 +108,7 @@ export function edsmStationReport(system: { name: string; x: number; y: number; 
     x: system.x, y: system.y, z: system.z, station_type: station.type,
     observed_at,
     metadata: {
+      max_landing_pad: stationLandingPad(station),
       body_name: station.body?.name, body_id: station.body?.id,
       latitude: station.body?.latitude ?? station.latitude ?? undefined, longitude: station.body?.longitude ?? station.longitude ?? undefined,
       distance_to_arrival: station.distanceToArrival ?? undefined,
@@ -159,7 +174,7 @@ export function spanshStationReports(system: any): StationReport[] {
     const parsed = stationReportSchema.safeParse({
       system_name: system.name, station_name: station.name, market_id: (station.marketId ?? station.id) != null ? String(station.marketId ?? station.id) : undefined,
       ...coords, population: system.population ?? undefined, station_type: station.type, observed_at, inventories,
-      metadata: { body_name: station.bodyName, body_id: station.bodyId, // Spansh's published full-dump schema specifies kilometres; our field is light-seconds.
+      metadata: { max_landing_pad: stationLandingPad(station), body_name: station.bodyName, body_id: station.bodyId, // Spansh's published full-dump schema specifies kilometres; our field is light-seconds.
         distance_to_arrival: station.distanceToArrival != null ? station.distanceToArrival / 299792.458 : undefined,
         latitude: station.latitude ?? undefined, longitude: station.longitude ?? undefined, services: station.services },
     });
