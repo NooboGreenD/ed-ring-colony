@@ -143,8 +143,10 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md),
   [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md)
 - **Станции и товары** — станции, рынки и снимки ассортимента в базе проекта (`station_commerce`), поиск
-  товаров `/station-search` с фокусом на карте Atlas; данные приходят из Colonial Helper и дампов —
-  [STATION-COMMERCE.md](STATION-COMMERCE.md)
+  `/station-search`: товары, модули, корабли, услуги и инженеры; результаты — список станций, строка
+  раскрывается и показывает найденное (цены, запас, спрос), в каждом поле — быстрый выбор из справочника
+  на русском и английском с точным поиском выбранного (web 2.25.0), фокус на карте Atlas; данные приходят из
+  Colonial Helper и дампов — [STATION-COMMERCE.md](STATION-COMMERCE.md)
 - **Community Goals** — `/cg`: цели сообщества из Inara (задача `cg-check`)
 
 ### Пилот
@@ -310,7 +312,7 @@ python -m unittest discover -s uploader/tests   # тесты Colonial Helper
 `deploy/update-project.sh` накатывает все файлы `supabase/migrations/*.sql`, которых ещё нет в
 `migrations.mark`, по алфавиту, после бэкапа БД.
 
-**Новая установка.** `supabase/full_schema.sql` (все 89 миграций одним файлом) или
+**Новая установка.** `supabase/full_schema.sql` (все 90 миграций одним файлом) или
 `npx supabase db push` — подробно в [supabase/DATABASE.md](supabase/DATABASE.md). Каталог систем
 требует отдельной загрузки дампа — [SPANSH-IMPORT.md](SPANSH-IMPORT.md).
 

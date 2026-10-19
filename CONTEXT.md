@@ -2,8 +2,8 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-10-19** (checked against the code).
-> Web release: **2.24.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
-> 89 SQL migrations · 230 API routes · 59 pages · 147 test files (1563 checks).
+> Web release: **2.25.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
+> 90 SQL migrations · 231 API routes · 59 pages · 148 test files (1578 checks).
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -306,7 +306,8 @@ named in brackets introduced the group; everything else comes from
 
 Heavy logic lives in SQL functions called through PostgREST RPC with the
 service role, e.g. `colonisation_sites_write`, `colonisation_retention_prune`,
-`apply_fleet_carrier_batch`, `save_station_commerce`, `search_station_catalog`,
+`apply_fleet_carrier_batch`, `save_station_commerce`, `search_station_catalog` /
+`search_station_catalog_stations`,
 `powerplay_apply_batch` / `powerplay_finish_sync` / `powerplay_layer_rows` /
 `powerplay_apply_observations`, `bgs_apply_snapshots` / `bgs_layer_rows` /
 `bgs_system_detail`, `architect_project_progress_sources` /
@@ -437,7 +438,8 @@ checks itself:
 | `/api/route/progress` | POST · сессия | Отметить прогресс системы маршрута |
 | `/api/route/resolve` | POST · — | Координаты систем маршрута (EDSM → каталог → Spansh) |
 | `/api/stations/report` | POST · сессия/токен | Станции и рынки от Colonial Helper (`station_commerce`; источник ставит сервер) |
-| `/api/stations/search` | GET · — | Поиск товаров по станциям (`/station-search`) |
+| `/api/stations/search` | GET · — | Поиск по станциям (`/station-search`): `group=station` — одна строка на станцию со всеми совпадениями и общим числом (RPC `search_station_catalog_stations`), `item=<id>` — точный выбор из списка; без `group` — прежний плоский ответ |
+| `/api/stations/search/options` | GET · — | Списки быстрого выбора поиска станций: товары, модули, корабли (EDCD/FDevIDs), услуги и инженеры; кэш на час |
 | `/api/systems/overview` | GET · — (зритель по сессии) | Карточка системы: каталог, стройка (тот же расчёт, что у «Проектов систем»), проекты, кольцо, станции, фракции, PowerPlay, авианосцы, цели, поставки, ссылки (`src/lib/systemOverview.ts`, SQL `system_overview_sources`) |
 | `/api/systems/progress` | GET · — | Стройплощадки и прогресс системы (Архитектор, `/systems`) |
 
@@ -1516,7 +1518,8 @@ Full description: **ARCHITECT.md → «Проекты систем»**.
 
 ### 8.20 Stations and commerce (`/station-search`)
 Full description: **STATION-COMMERCE.md**.
-- Tables (`20261014000000_station_commerce.sql`, `20261014010000_station_search.sql`):
+- Tables (`20261014000000_station_commerce.sql`, `20261014010000_station_search.sql`,
+  `20261022120000_station_search_by_station.sql`):
   `commerce_systems`, `station_commerce`, `station_inventory_snapshots` (one
   complete current snapshot per station and kind: market / outfitting /
   shipyard). Writes — `save_station_commerce(report)`; newer observation wins,
@@ -1526,9 +1529,25 @@ Full description: **STATION-COMMERCE.md**.
   `Outfitting.json`, `Shipyard.json` while docked, outbox
   `.station_commerce_outbox.json`), EDDN, Atlas EDSM requests, rich Spansh dumps.
 - `/station-search` (commodities, modules, ships, services) →
-  `GET /api/stations/search` → RPC `search_station_catalog`; never calls
-  EDSM/Spansh itself. Atlas «Рынок» reads the same snapshots first (freshness
-  1 hour) and only then refreshes from EDSM.
+  `GET /api/stations/search?group=station` → RPC
+  `search_station_catalog_stations` (web 2.25.0): results are a **list of
+  stations**, a row expands to what matched the search (prices, stock, demand;
+  modules, ships, services); pages of 50 stations with a total. Both it and the
+  old flat `search_station_catalog` take matches from one SQL function,
+  `station_catalog_matches`; without the migration the route groups one page
+  of the old RPC (`grouping: 'page'`). Never calls EDSM/Spansh itself. Atlas
+  «Рынок» reads the same snapshots first (freshness 1 hour) and only then
+  refreshes from EDSM.
+- Quick pick in every query field (`src/components/StationSearch/StationItemPicker.tsx`):
+  lists from `GET /api/stations/search/options` — EDCD/FDevIDs commodities,
+  modules and ships (`src/lib/stationSearchItems.json`, rebuilt by
+  `scripts/build-station-search-items.mjs`), `SERVICE_OPTIONS`, `ENGINEERS`;
+  Russian names only where the project has them (`COMMODITY_LABELS_RU`,
+  `GROUP_NAMES`). Filtering and ranking — `src/lib/stationSearchOptions.ts`.
+  A picked item (`item=market:Steel`) is searched exactly by `exact_keys`
+  (English name + Frontier symbol, key `station_item_key` = `commodityKey`);
+  free text keeps the substring search. Catalog/labels/pick resolution —
+  `src/lib/stationSearchCatalog.ts`.
 
 ### 8.21 Journal reset and cross-path deduplication (#141, #142)
 - «Перезагрузить логи с нуля»: `POST /api/journal/reset` (session or Helper

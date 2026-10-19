@@ -1,43 +1,74 @@
 import { test, expect } from '@playwright/test';
-import type { StationSearchResult } from '../../src/lib/stationSearch';
+import type { StationSearchStation } from '../../src/lib/stationSearch';
 
-const result = (station: string, coordinates: boolean = true): StationSearchResult => ({
-  system_name: 'Sol', station_name: station, station_type: 'Coriolis', market_id: '42', station_key: station,
+const station = (name: string, coordinates: boolean = true): StationSearchStation => ({
+  system_name: 'Sol', station_name: name, station_type: 'Coriolis', market_id: '42', station_key: name,
   metadata: { distance_to_arrival: 100 }, x: coordinates ? 0 : null,
   y: coordinates ? 0 : null, z: coordinates ? 0 : null, distance: null,
-  item: { name: 'Gold', buyPrice: 123, stock: 50, demand: 7 },
+  items: [{ name: 'Gold', buyPrice: 123, stock: 50, demand: 7, display: 'Gold' }], item_count: 1, best_price: 123,
   source: 'colonial-helper', observed_at: new Date().toISOString(), stale: false,
 });
+const body = (page: number, stations: StationSearchStation[], hasMore: boolean) => ({
+  kind: 'market', query: 'Gold', page, has_more: hasMore, total: 3, stations, pick: { id: 'market:Gold', label: 'Gold' },
+  grouping: 'station', reference: null, source: 'project-db',
+});
 
-test('station search renders persisted result fields, pagination and a safe Atlas link', async ({ page }) => {
-  const pages: string[] = [];
+test('station search lists stations, expands a row with prices and a safe Atlas link, and pages', async ({ page }) => {
+  const requests: URL[] = [];
   await page.route('**/api/stations/search?*', async route => {
-    const requestedPage = new URL(route.request().url()).searchParams.get('page') ?? '0';
-    pages.push(requestedPage);
-    await route.fulfill({ json: { kind: 'market', query: 'Gold', page: Number(requestedPage),
-      has_more: requestedPage === '0', results: requestedPage === '0'
-        ? [result('Galileo'), result('Unknown coordinates', false)] : [result('Next page')] } });
+    const url = new URL(route.request().url());
+    requests.push(url);
+    const requestedPage = Number(url.searchParams.get('page') ?? '0');
+    await route.fulfill({ json: requestedPage === 0
+      ? body(0, [station('Galileo'), station('Unknown coordinates', false)], true)
+      : body(1, [station('Next page')], false) });
   });
   await page.goto('/station-search', { waitUntil: 'domcontentloaded' });
   await page.getByRole('combobox', { name: 'Товары', exact: true }).fill('Gold');
   await page.getByRole('button', { name: 'Найти станции' }).click();
-  await expect(page.getByRole('heading', { name: 'Galileo', exact: true })).toBeVisible();
-  await expect(page.locator('.station-report-time').first()).toContainText('Colonial Helper');
-  await expect(page.locator('.station-result-card').first().getByText('123 CR', { exact: true })).toBeVisible();
-  const atlas = page.getByRole('link', { name: 'Показать систему в Атласе' });
-  await expect(atlas).toHaveCount(1);
+  await expect(page.locator('.station-row')).toHaveCount(2);
+  // Название целиком — точный выбор из справочника.
+  expect(requests[0].searchParams.get('item')).toBe('market:Gold');
+  expect(requests[0].searchParams.get('group')).toBe('station');
+  const galileo = page.getByRole('button', { name: /Galileo/ });
+  await expect(galileo).toHaveAttribute('aria-expanded', 'false');
+  await galileo.click();
+  await expect(galileo).toHaveAttribute('aria-expanded', 'true');
+  const panel = page.getByRole('region', { name: 'Galileo: что найдено' });
+  await expect(panel.getByRole('cell', { name: '123 CR', exact: true })).toBeVisible();
+  await expect(panel.locator('.station-report-time')).toContainText('Colonial Helper');
+  const atlas = panel.getByRole('link', { name: 'Показать систему в Атласе' });
   await expect(atlas).toHaveAttribute('target', '_blank');
   const focusUrl = new URL((await atlas.getAttribute('href'))!, 'http://localhost');
   expect(focusUrl.searchParams.get('focus_system')).toBe('Sol');
   expect(['x', 'y', 'z'].map(key => focusUrl.searchParams.get(key))).toEqual(['0', '0', '0']);
+  await page.getByRole('button', { name: 'Развернуть все' }).click();
   await expect(page.getByRole('button', { name: 'Координаты системы неизвестны' })).toBeDisabled();
   await page.getByRole('button', { name: 'Далее →' }).click();
-  await expect(page.getByRole('heading', { name: 'Next page', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Galileo', exact: true })).toHaveCount(0);
-  expect(pages).toEqual(['0', '1']);
+  await expect(page.locator('.station-row')).toHaveCount(1);
+  await expect(page.locator('.station-list')).toContainText('Next page');
+  expect(requests.map(url => url.searchParams.get('page'))).toEqual(['0', '1']);
   await page.getByRole('tab', { name: 'Модули', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Next page', exact: true })).toHaveCount(0);
+  await expect(page.locator('.station-row')).toHaveCount(0);
   await expect(page.getByLabel('Класс модуля', { exact: true })).toBeVisible();
+});
+
+test('typing a material offers a quick-pick list and the picked item is searched exactly', async ({ page }) => {
+  const requests: URL[] = [];
+  await page.route('**/api/stations/search?*', async route => {
+    requests.push(new URL(route.request().url()));
+    await route.fulfill({ json: body(0, [station('Galileo')], false) });
+  });
+  await page.goto('/station-search', { waitUntil: 'domcontentloaded' });
+  const input = page.getByRole('combobox', { name: 'Товары', exact: true });
+  await input.fill('ста');
+  const steel = page.getByRole('option', { name: /Сталь/ });
+  await expect(steel).toBeVisible();
+  await steel.click();
+  await expect(input).toHaveValue('Сталь');
+  await page.getByRole('button', { name: 'Найти станции' }).click();
+  await expect(page.locator('.station-row')).toHaveCount(1);
+  expect(requests[0].searchParams.get('item')).toBe('market:Steel');
 });
 
 test('changing category cancels an in-flight result and supports keyboard tabs', async ({ page }) => {
@@ -47,7 +78,7 @@ test('changing category cancels an in-flight result and supports keyboard tabs',
     void page.route('**/api/stations/search?*', async route => {
       resolve();
       await pending;
-      await route.fulfill({ json: { results: [result('Cancelled result')], has_more: false } }).catch(() => {});
+      await route.fulfill({ json: body(0, [station('Cancelled result')], false) }).catch(() => {});
     });
   });
   await page.goto('/station-search', { waitUntil: 'domcontentloaded' });
@@ -58,18 +89,20 @@ test('changing category cancels an in-flight result and supports keyboard tabs',
   await modules.click();
   release();
   await expect(page.getByRole('button', { name: 'Найти станции' })).toBeEnabled();
-  await expect(page.getByRole('heading', { name: 'Cancelled result', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Cancelled result')).toHaveCount(0);
   await modules.press('End');
   await expect(page.getByRole('tab', { name: 'Услуги', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByLabel('Услуга / инженер', { exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Услуга / инженер', exact: true })).toBeVisible();
 });
 
-test('station finder fits a narrow mobile screen', async ({ page }) => {
+test('station finder and its quick-pick list fit a narrow mobile screen', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/station-search', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'Поиск по станциям', exact: true })).toBeVisible();
   await page.getByRole('tab', { name: 'Модули', exact: true }).click();
   await expect(page.getByLabel('Класс модуля', { exact: true })).toBeVisible();
+  await page.getByRole('combobox', { name: 'Модули', exact: true }).fill('fsd');
+  await expect(page.getByRole('option').first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
