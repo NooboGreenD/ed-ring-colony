@@ -2,8 +2,8 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-10-19** (checked against the code).
-> Web release: **2.23.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
-> 89 SQL migrations · 229 API routes · 59 pages · 147 test files (1549 checks).
+> Web release: **2.24.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
+> 89 SQL migrations · 230 API routes · 59 pages · 147 test files (1563 checks).
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -640,7 +640,8 @@ checks itself:
 | `/api/admin/monitor` | GET · admin | Снимок мониторинга: приложение, БД, диск, Docker, задачи, версия (через monitor-agent) |
 | `/api/admin/monitor/update` | GET/POST/DELETE · admin | Обновление проекта через update-agent: статус, запуск (`confirm: true`), остановка |
 | `/api/admin/outfitting` | GET/POST · admin | Админка верфи: справочник с правками и журналом; POST — пакет CRUD/архив/сброс |
-| `/api/admin/powerplay` | GET/POST · admin | PowerPlay: статус и журнал загрузки, слушатель EDDN; POST — `start`/`force`/`cancel`/`eddn-start`/`eddn-stop` |
+| `/api/admin/powerplay` | GET/POST · admin | PowerPlay: статус и журнал загрузки, архив и куски на сервере, путь записи, слушатель EDDN; POST — `start`/`force`/`download`/`split`/`import` (+ `segments` 1–16) /`cancel`/`cleanup`/`eddn-start`/`eddn-stop` |
+| `/api/admin/powerplay/upload` | GET/POST/PUT · admin | Загрузка архива `powerPlay.json.gz` с компьютера: `start` → `PUT ?offset=` по 8 МиБ → `finish`/`cancel` (общий механизм с фракциями) |
 | `/api/admin/smtp` | GET/POST/DELETE · admin | Настройки SMTP для GoTrue (через update-agent) |
 | `/api/admin/smtp/apply` | POST · admin | Применить SMTP: пересоздать `auth` Supabase и `web` |
 | `/api/admin/uploader/build-kit` | GET · admin | Комплект для первой Windows-сборки Helper (ключи встроены в `bundle.py`) |
@@ -1320,7 +1321,7 @@ Full description: **POWERPLAY.md**.
   «Держава не определена» points, a filter row and «+N?» per power. An older
   journal (≤ 7 days before the dump observation) names an unknown owner that is
   among the listed powers (`resolved`). A run stored by the old parser
-  (`stats.parser` ≠ 2) is re-read without the conditional request.
+  (`stats.parser` ≠ 2) is re-read even if EDSM did not change the file.
 - Atlas tab «PowerPlay» (7th, `?tab=powerplay`, Alt+7) + a 3D layer: every system
   controlled by a PowerPlay 2.0 power (Stronghold / Fortified / Exploited). Colour =
   power (`POWERPLAY_POWERS` in `src/lib/powerplay.ts`), shape = state. Filter by
@@ -1350,27 +1351,48 @@ Full description: **POWERPLAY.md**.
   `powerplay_apply_batch`, `powerplay_finish_sync` (deletes rows the new dump
   lacks, in one transaction with the state), `powerplay_layer_rows` (one JSON —
   bypasses PostgREST `max_rows`). Migration `20261018120000_powerplay_systems.sql`.
-- Import `src/lib/powerplaySync.ts`: conditional GET (ETag/If-Modified-Since),
-  gzip by magic bytes (a proxy may already have decoded it), size caps, guards:
-  HTTP error / broken gzip / non-array / < 100 rows / < 50 % of the previous total
-  never touch the table (`?force=1` accepts a shrunken dump). One run per process
-  (`globalThis` single-flight — route bundles have separate module copies).
+- Import `src/lib/powerplaySync.ts` (web 2.24.0 — the same pipeline as the
+  minor factions, shared modules `dumpArchive.ts` / `dumpShards.ts` /
+  `dumpUpload.ts` / `importProgress.ts`): HEAD probe (the dump already imported
+  by the current parser = «без изменений») → the archive is downloaded to the
+  server in full (`data/spansh/powerplay`, `POWERPLAY_DOWNLOAD_SEGMENTS` = 4
+  ordered 256 KiB pieces, resumable, stall detection and short requests on a
+  ТСПУ-frozen link, a dump regenerated mid-transfer restarts) → split into
+  `pp-NNNNN.ndjson.gz` chunks of 2000 systems (the whole archive is parsed,
+  because one system's records are spread across the file; gzip by magic
+  bytes) → guards before any write (< `POWERPLAY_MIN_ROWS` = 100 rows / < 50 %
+  of the previous total never touch the table, `?force=1` accepts a shrunken
+  dump; a broken archive is deleted) → chunks written by direct Postgres (one
+  call per chunk) or PostgREST (batches of 2000, halved on statement_timeout),
+  a chunk is the resume unit → `powerplay_finish_sync`, archive and chunks
+  removed (`POWERPLAY_ARCHIVE_KEEP=1` keeps them). Step-by-step runs
+  (`download` / `split` / `import` without EDSM), offline fallback to the archive
+  on disk, archive upload from the admin's computer (`/api/admin/powerplay/upload`,
+  8 MiB chunks, 409 resume, gzip + PowerPlay records check, adopts EDSM's ETag
+  when the size matches). One run per process (`globalThis` single-flight —
+  route bundles have separate module copies).
 - Triggers: job `powerplay-sync` (12 h, default-enabled) and lazy refresh from
   `GET /api/powerplay/systems` when the table is empty or unchecked for 26 h
   (≤ 1 attempt / 30 min). The API answers compact tuples
   `[id64, name, x, y, z, powerIdx (−1 = unknown), stateIdx, observedSec, basisIdx?,
   presentPowerIdx[]?]` plus `bases`, ETag = import + meta, cached in memory until
   the next import.
-- Progress (2.18.0, `src/lib/powerplayProgress.ts`): every run records six weighted
-  stages (request, download in bytes, gunzip, parse, batched write, finish), an
+- Progress (`src/lib/powerplayProgress.ts` on the shared `importProgress.ts`,
+  web 2.24.0): five weighted stages like the factions (probe, download to the
+  server, split, chunk import, finish), run modes (`full` / `download` / `split`
+  / `import` — stages outside the mode are «не нужен» and not counted), an
   overall percent and a log; the live run lives in `globalThis`, a copy goes to
   `powerplay_sync_state.progress` / `.log` (migration
   `20261018180000_powerplay_sync_progress.sql`, which also adds the
-  `powerplay_admin_summary()` RPC). Admin → «Игровые данные» → «PowerPlay»
-  (`PowerplayAdminTab.tsx`, `/api/admin/powerplay`: GET status, POST start /
-  force / cancel) shows stage progress bars and the process log. The public layer
-  API exposes only `meta.progress` (stage + percent) so the Atlas tab can say
-  «сервер загружает данные EDSM — 64 %».
+  `powerplay_admin_summary()` RPC); a saved run of the old six-stage format is
+  read with `request/parse/write` mapped to `probe/split/import`, and a
+  «running» copy without a live run is shown as interrupted. Admin → «Игровые
+  данные» → «PowerPlay» (`PowerplayAdminTab.tsx`) has the archive and chunk
+  cards (download / split / import / cleanup, connections 1–16, «Загрузить
+  архив с компьютера» via the shared `ArchiveUploadControl.tsx`), stage
+  progress bars and the process log. The public layer API exposes only
+  `meta.progress` (stage + percent) so the Atlas tab can say «сервер загружает
+  данные EDSM — 64 %».
 - Atlas tab: a status card (loading bytes via `X-Content-Bytes` / server import /
   loaded N systems / no data / error) and an always-visible power filter (all 12
   powers before data arrives, faction quick filter). Map points are clickable with
@@ -1619,7 +1641,7 @@ values are baked in at build time — rebuild `web` after changing them.
 | Supabase gateway / direct DB | `SUPABASE_INTERNAL_URL` (same-origin gateway), `SUPABASE_DB_URL` / `DATABASE_URL` (direct Postgres), `SUPABASE_NETWORK`, `SUPABASE_NET_WATCH_*`, `MONITOR_DB_URL`; CLI only: `SUPABASE_PROJECT_REF`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD` |
 | Jobs | `JOBS_ENABLED`, `JOBS_TRANSLATE_PASSES`, `COLONISATION_RETENTION_DAYS`, `GALNET_FEED_LIMIT`, `GALNET_TRANSLATE_LIMIT` |
 | Galaxy catalog | `GALAXY_IMPORT_URL`, `GALAXY_DUMP_BASE_URL`, `GALAXY_DOWNLOAD_SEGMENTS` (4), `GALAXY_IMPORT_MODE` (stream/shards), `GALAXY_DATA_HOST_DIR`, `GALAXY_ARCHIVE_DIR`, `GALAXY_SHARDS_*`, `GALAXY_ARCHIVE_KEEP`, `GALAXY_DISK_CHECK`, `GALAXY_IMPORT_FILE`, `GALAXY_COPY_MERGE_TIMEOUT_S`, `GALAXY_POINTS_*` |
-| PowerPlay / factions | `POWERPLAY_DUMP_URL`; `FACTIONS_DUMP_URL`, `FACTIONS_REFRESH_DAYS` (7), `FACTIONS_ARCHIVE_DIR`, `FACTIONS_ARCHIVE_KEEP`, `FACTIONS_DOWNLOAD_SEGMENTS` (8), `FACTIONS_PIECE_MB` (8), `FACTIONS_SHARD_SYSTEMS` (1000), `FACTIONS_DB_DIRECT` (1), `FACTIONS_STALL_SECONDS` (15), `FACTIONS_REQUEST_KB` (auto), `FACTIONS_FRESH_CONNECTIONS` (1), `FACTIONS_BATCH_SIZE` (250), `FACTIONS_MIN_SYSTEMS` (1000) |
+| PowerPlay / factions | `POWERPLAY_DUMP_URL`, `POWERPLAY_ARCHIVE_DIR`, `POWERPLAY_ARCHIVE_KEEP`, `POWERPLAY_DOWNLOAD_SEGMENTS` (4), `POWERPLAY_PIECE_KB` (256), `POWERPLAY_SHARD_SYSTEMS` (2000), `POWERPLAY_DB_DIRECT` (1), `POWERPLAY_STALL_SECONDS` (15), `POWERPLAY_REQUEST_KB` (auto), `POWERPLAY_FRESH_CONNECTIONS` (1), `POWERPLAY_BATCH_SIZE` (2000), `POWERPLAY_MIN_ROWS` (100); `FACTIONS_DUMP_URL`, `FACTIONS_REFRESH_DAYS` (7), `FACTIONS_ARCHIVE_DIR`, `FACTIONS_ARCHIVE_KEEP`, `FACTIONS_DOWNLOAD_SEGMENTS` (8), `FACTIONS_PIECE_MB` (8), `FACTIONS_SHARD_SYSTEMS` (1000), `FACTIONS_DB_DIRECT` (1), `FACTIONS_STALL_SECONDS` (15), `FACTIONS_REQUEST_KB` (auto), `FACTIONS_FRESH_CONNECTIONS` (1), `FACTIONS_BATCH_SIZE` (250), `FACTIONS_MIN_SYSTEMS` (1000) |
 | Monitoring and updates | `MONITOR_AGENT_TOKEN`, `UPDATE_AGENT_TOKEN`, `UPDATE_AGENT_URL`, `PROJECT_REPOSITORY`, `PROJECT_UPDATE_BRANCH`, `PROJECT_DEPLOY_MODE`, `UPDATE_APPLY_MIGRATIONS`, `UPDATE_BACKUP_DIR`, `UPDATE_BACKUP_KEEP`, `BACKUP_TIMEOUT_MINUTES`, `RUN_TESTS`, `UPDATE_*` cache/retry knobs, `APP_GIT_*` |
 | Auth and mail | `AUTH_OAUTH_PROVIDERS`, `AUTH_EMAIL_ENABLED`, `VK_ID_CLIENT_ID`/`_SECRET`, `YANDEX_ID_CLIENT_ID`/`_SECRET` (SMTP itself lives in the Supabase auth stack) |
 | Frontier CAPI | `FRONTIER_REDIRECT_URI`, `FRONTIER_CLIENT_ID` (optional, built-in key), `FRONTIER_CLIENT_SECRET`, `CAPI_STATE_SECRET` |

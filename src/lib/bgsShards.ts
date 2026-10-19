@@ -20,123 +20,65 @@
  * Файлы обычные: `zcat bgs-00001.ndjson.gz | head` показывает строки как есть.
  */
 
-import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createReadStream, mkdirSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
-import { promisify } from 'node:util';
-import { createGunzip, gunzip as gunzipCallback, gzip as gzipCallback } from 'node:zlib';
+import { createGunzip } from 'node:zlib';
 
 import { snapshotToRpcRow } from './bgs.ts';
 import { parseEdsmPopulatedLine, type BgsDumpCounter, type BgsDumpStats } from './bgsDump.ts';
+import {
+  SHARD_MANIFEST,
+  SHARD_MANIFEST_VERSION,
+  clearShards,
+  createShardManifest,
+  readShardManifest,
+  readShardRows,
+  sameDumpSource,
+  shardFileName,
+  shardManifestPath,
+  shardsInfo,
+  writeShardFile,
+  writeShardManifest,
+  type DumpSource,
+  type ShardEntry,
+  type ShardManifest,
+  type ShardsInfo,
+} from './dumpShards.ts';
 
-const gzip = promisify(gzipCallback);
-const gunzip = promisify(gunzipCallback);
+export { writeFileAtomic } from './dumpShards.ts';
 
-export const BGS_SHARD_VERSION = 1;
-export const BGS_SHARD_MANIFEST = 'manifest.json';
+export const BGS_SHARD_VERSION = SHARD_MANIFEST_VERSION;
+export const BGS_SHARD_MANIFEST = SHARD_MANIFEST;
 /** Систем в куске: ≈1,5 КБ строки на систему — кусок ≈0,3 МБ в gzip. */
 export const DEFAULT_BGS_SHARD_SYSTEMS = 1000;
-const SHARD_FILE = /^bgs-\d{5}\.ndjson\.gz$/;
-const TMP_FILE = /\.tmp-\d+$/;
+/** Куски фракций: `bgs-00001.ndjson.gz`. */
+const PREFIX = 'bgs';
 /** Строка дампа длиннее — это не дамп, а что-то сломанное. */
 const MAX_LINE_CHARS = 64 * 1024 * 1024;
 
 export const BGS_SPLIT_ABORTED = 'Разбивка остановлена';
 
-/* ── Какой дамп ────────────────────────────────────────────────────────── */
+/* ── Какой дамп и манифест — общие с PowerPlay (`dumpShards.ts`) ───────── */
 
 /** Дамп, которому принадлежат архив и куски: адрес, размер, валидаторы HTTP. */
-export interface BgsDumpSource {
-  url: string;
-  etag: string | null;
-  lastModified: string | null;
-  total: number | null;
-}
-
-function sameDate(a: string, b: string): boolean {
-  const left = Date.parse(a);
-  const right = Date.parse(b);
-  return Number.isFinite(left) && Number.isFinite(right) ? left === right : a.trim() === b.trim();
-}
+export type BgsDumpSource = DumpSource;
 
 /**
  * Один и тот же дамп? Размер решает сразу; дальше ETag, без него —
  * Last-Modified (как и прежде: у статического файла EDSM они меняются вместе).
  * Без валидаторов совпадение не доказать.
  */
-export function sameBgsDumpSource(a: BgsDumpSource | null | undefined, b: BgsDumpSource | null | undefined): boolean {
-  if (!a || !b || a.url !== b.url) return false;
-  if (a.total != null && b.total != null && a.total !== b.total) return false;
-  if (a.etag && b.etag) return a.etag.replace(/^W\//i, '') === b.etag.replace(/^W\//i, '');
-  if (a.lastModified && b.lastModified) return sameDate(a.lastModified, b.lastModified);
-  return false;
-}
+export const sameBgsDumpSource = sameDumpSource;
 
-function cleanSource(value: unknown): BgsDumpSource | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as Record<string, unknown>;
-  if (typeof raw.url !== 'string' || !raw.url) return null;
-  const total = Number(raw.total);
-  return {
-    url: raw.url,
-    etag: typeof raw.etag === 'string' && raw.etag ? raw.etag : null,
-    lastModified: typeof raw.lastModified === 'string' && raw.lastModified ? raw.lastModified : null,
-    total: Number.isFinite(total) && total > 0 ? Math.round(total) : null,
-  };
-}
-
-/* ── Манифест ──────────────────────────────────────────────────────────── */
-
-export interface BgsShardEntry {
-  file: string;
-  systems: number;
-  /** Размер файла (gzip). */
-  bytes: number;
-  /** Кусок записан в базу (с меткой импорта `runId`). */
-  imported: boolean;
-  applied: number;
-  /** Системы куска, у которых наблюдение пилотов свежее дампа. */
-  stale: number;
-}
-
-export interface BgsShardManifest {
-  version: number;
-  source: BgsDumpSource;
-  /** Метка импорта (`bgs_systems.sync_run`): у продолжения та же. */
-  runId: string;
-  createdAt: string;
-  completedAt: string | null;
-  systemsPerShard: number;
-  /** Записей архива (включая отброшенные), разложенных по закрытым кускам, — точка продолжения разбивки. */
-  recordsRead: number;
-  /** Сжатых байт архива, прочитанных к этому моменту (для процента). */
-  bytesRead: number;
-  systems: number;
-  shards: BgsShardEntry[];
-  /** Архив разобран до конца. */
-  complete: boolean;
-  /** Итоги разбора архива (когда `complete`). */
-  stats: BgsDumpStats | null;
-}
+export type BgsShardEntry = ShardEntry;
+export type BgsShardManifest = ShardManifest<BgsDumpStats>;
 
 export function bgsShardFileName(index: number): string {
-  return `bgs-${String(index).padStart(5, '0')}.ndjson.gz`;
+  return shardFileName(PREFIX, index);
 }
 
 export function bgsShardManifestPath(dir: string): string {
-  return join(dir, BGS_SHARD_MANIFEST);
-}
-
-function count(value: unknown): number {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
-}
-
-/** Атомарная запись: обрыв посреди записи не оставляет полфайла. */
-export function writeFileAtomic(path: string, data: string | Buffer): void {
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, data);
-  renameSync(tmp, path);
+  return shardManifestPath(dir);
 }
 
 export function createBgsShardManifest(options: {
@@ -145,149 +87,32 @@ export function createBgsShardManifest(options: {
   systemsPerShard?: number;
   now?: number;
 }): BgsShardManifest {
-  return {
-    version: BGS_SHARD_VERSION,
-    source: { ...options.source },
-    runId: options.runId,
-    createdAt: new Date(options.now ?? Date.now()).toISOString(),
-    completedAt: null,
-    systemsPerShard: Math.max(1, Math.floor(options.systemsPerShard ?? DEFAULT_BGS_SHARD_SYSTEMS)),
-    recordsRead: 0,
-    bytesRead: 0,
-    systems: 0,
-    shards: [],
-    complete: false,
-    stats: null,
-  };
+  return createShardManifest<BgsDumpStats>({ ...options, systemsPerShard: options.systemsPerShard ?? DEFAULT_BGS_SHARD_SYSTEMS });
 }
 
 /** Манифест с диска; всё, что не похоже на наш формат, — «кусков нет». */
 export function readBgsShardManifest(dir: string): BgsShardManifest | null {
-  let raw: Record<string, unknown>;
-  try {
-    raw = JSON.parse(readFileSync(bgsShardManifestPath(dir), 'utf8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  if (!raw || raw.version !== BGS_SHARD_VERSION || !Array.isArray(raw.shards) || typeof raw.runId !== 'string' || !raw.runId) return null;
-  const source = cleanSource(raw.source);
-  if (!source) return null;
-  const shards: BgsShardEntry[] = [];
-  for (const item of raw.shards) {
-    const entry = item as Record<string, unknown> | null;
-    if (!entry || typeof entry.file !== 'string' || !SHARD_FILE.test(entry.file)) return null;
-    shards.push({
-      file: entry.file,
-      systems: count(entry.systems),
-      bytes: count(entry.bytes),
-      imported: entry.imported === true,
-      applied: count(entry.applied),
-      stale: count(entry.stale),
-    });
-  }
-  return {
-    version: BGS_SHARD_VERSION,
-    source,
-    runId: raw.runId,
-    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date(0).toISOString(),
-    completedAt: typeof raw.completedAt === 'string' ? raw.completedAt : null,
-    systemsPerShard: Math.max(1, count(raw.systemsPerShard) || DEFAULT_BGS_SHARD_SYSTEMS),
-    recordsRead: count(raw.recordsRead),
-    bytesRead: count(raw.bytesRead),
-    systems: shards.reduce((sum, entry) => sum + entry.systems, 0),
-    shards,
-    complete: raw.complete === true,
-    stats: raw.stats && typeof raw.stats === 'object' ? (raw.stats as BgsDumpStats) : null,
-  };
+  return readShardManifest<BgsDumpStats>(dir, PREFIX, DEFAULT_BGS_SHARD_SYSTEMS);
 }
 
 export function writeBgsShardManifest(dir: string, manifest: BgsShardManifest): void {
-  mkdirSync(dir, { recursive: true });
-  writeFileAtomic(bgsShardManifestPath(dir), JSON.stringify(manifest, null, 1));
+  writeShardManifest(dir, manifest);
 }
 
 /** Удалить все куски и манифест. Возвращает освобождённые байты. */
 export function clearBgsShards(dir: string): number {
-  if (!existsSync(dir)) return 0;
-  let freed = 0;
-  let names: string[] = [];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return 0;
-  }
-  for (const name of names) {
-    if (!SHARD_FILE.test(name) && name !== BGS_SHARD_MANIFEST && !TMP_FILE.test(name)) continue;
-    const path = join(dir, name);
-    try {
-      freed += statSync(path).size;
-    } catch {
-      // уже нет
-    }
-    rmSync(path, { force: true });
-  }
-  return freed;
+  return clearShards(dir, PREFIX);
 }
 
-export interface BgsShardsInfo {
-  dir: string;
-  /** Есть манифест. */
-  exists: boolean;
-  /** Архив разобран до конца. */
-  complete: boolean;
-  shards: number;
-  imported: number;
-  systems: number;
-  importedSystems: number;
-  /** Файлов кусков на диске и их объём. */
-  files: number;
-  bytes: number;
-  source: BgsDumpSource | null;
-  createdAt: string | null;
-  completedAt: string | null;
-}
+export type BgsShardsInfo = ShardsInfo;
 
 /** Что админка показывает о кусках. */
 export function bgsShardsInfo(dir: string): BgsShardsInfo {
-  const manifest = readBgsShardManifest(dir);
-  let files = 0;
-  let bytes = 0;
-  try {
-    for (const name of readdirSync(dir)) {
-      if (!SHARD_FILE.test(name)) continue;
-      files += 1;
-      bytes += statSync(join(dir, name)).size;
-    }
-  } catch {
-    // каталога ещё нет — нули честны
-  }
-  const imported = manifest?.shards.filter((entry) => entry.imported) ?? [];
-  return {
-    dir,
-    exists: Boolean(manifest),
-    complete: Boolean(manifest?.complete),
-    shards: manifest?.shards.length ?? 0,
-    imported: imported.length,
-    systems: manifest?.systems ?? 0,
-    importedSystems: imported.reduce((sum, entry) => sum + entry.systems, 0),
-    files,
-    bytes,
-    source: manifest?.source ?? null,
-    createdAt: manifest?.createdAt ?? null,
-    completedAt: manifest?.completedAt ?? null,
-  };
+  return shardsInfo(dir, PREFIX, DEFAULT_BGS_SHARD_SYSTEMS);
 }
 
 /** Строки одного куска — готовые строки для `bgs_apply_snapshots`. */
-export async function readBgsShardRows(file: string): Promise<Record<string, unknown>[]> {
-  const body = await gunzip(readFileSync(file));
-  const rows: Record<string, unknown>[] = [];
-  for (const line of body.toString('utf8').split('\n')) {
-    if (!line) continue;
-    rows.push(JSON.parse(line) as Record<string, unknown>);
-  }
-  return rows;
-}
+export const readBgsShardRows = readShardRows;
 
 function abortError(signal: AbortSignal): Error {
   const reason = signal.reason;
@@ -354,9 +179,8 @@ export async function splitBgsArchive(options: SplitBgsArchiveOptions): Promise<
   const closeShard = async () => {
     if (pending.length === 0) return;
     const file = bgsShardFileName(manifest.shards.length + 1);
-    const body = await gzip(Buffer.from(`${pending.join('\n')}\n`, 'utf8'), { level: 6 });
-    writeFileAtomic(join(dir, file), body);
-    const entry: BgsShardEntry = { file, systems: pending.length, bytes: body.length, imported: false, applied: 0, stale: 0 };
+    const bytes = await writeShardFile(dir, file, pending);
+    const entry: BgsShardEntry = { file, systems: pending.length, bytes, imported: false, applied: 0, stale: 0 };
     pending = [];
     manifest.shards.push(entry);
     manifest.systems += entry.systems;

@@ -137,3 +137,16 @@ export function createFreshConnectionFetch(options: FreshFetchOptions = {}): typ
     }
   }) as typeof fetch;
 }
+
+type FreshGlobal = typeof globalThis & { edrcFreshConnectionFetch?: typeof fetch };
+
+/**
+ * Один на процесс для всех скачиваний дампов EDSM (фракции, PowerPlay): общий
+ * кэш TLS-сессий делает новые соединения дешевле. Маршруты Next — отдельные
+ * бандлы со своими копиями модуля, поэтому экземпляр лежит в globalThis.
+ */
+export function sharedFreshConnectionFetch(): typeof fetch {
+  const holder = globalThis as FreshGlobal;
+  holder.edrcFreshConnectionFetch ??= createFreshConnectionFetch();
+  return holder.edrcFreshConnectionFetch;
+}
