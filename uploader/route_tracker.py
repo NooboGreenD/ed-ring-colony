@@ -36,6 +36,7 @@ class RouteTracker:
                 "visited_at": old.get("visited_at"),
                 "system_address": item.get("SystemAddress", 0),
                 "star_pos": item.get("StarPos"),
+                "star_class": item.get("StarClass"),
             })
         self.systems = loaded
 
