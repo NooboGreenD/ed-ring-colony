@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from collections import deque
 
+from overlay_options import CONTENT_OPTIONS, CONTENT_DEFAULTS, CARRIER_FILTERS, option_key, filter_carrier_rows
+
 import ship_hud
 from ship_tracker import decode_status_flags
 from game_monitor import (
@@ -787,6 +789,43 @@ class OverlayWindow:
     # якорей были захардкожены под размер 320x300. Теперь положение считает
     # `compute_anchored_position()` по реальному размеру окна и отступу.
     ANCHOR_POSITIONS = {}
+
+    def apply_data_options(self):
+        """Hide data sections without destroying windows, rows or their state."""
+        key = getattr(self, 'overlay_key', '')
+        saved = self.__dict__.setdefault('_content_pack', {})
+        for section, (_label, attributes) in CONTENT_OPTIONS.get(key, {}).items():
+            setting = option_key(key, section)
+            visible = bool(self.settings.get(setting, CONTENT_DEFAULTS.get(setting, True)))
+            for attribute in attributes:
+                widget = getattr(self, attribute, None)
+                if widget is None:
+                    continue
+                if key == 'exobio':
+                    flag = {'telemetry_frame': '_telemetry_shown', 'signals_label': '_signals_shown',
+                            'next_action_label': '_action_shown', 'planet_separator': '_planets_shown',
+                            'planets_header': '_planets_shown', 'planets_label': '_planets_shown'}.get(attribute)
+                    if flag and not getattr(self, flag, True):
+                        saved.pop(attribute, None)
+                        continue
+                if not visible and widget.winfo_manager() == 'pack':
+                    saved[attribute] = dict(widget.pack_info())
+                    widget.pack_forget()
+                elif visible and attribute in saved:
+                    options = saved.pop(attribute)
+                    self._pack_content_widget(widget, **options)
+
+    @staticmethod
+    def _pack_content_widget(widget, **options):
+        """Restore content order even when the neighbouring section is hidden."""
+        siblings = list(widget.master.winfo_children())
+        if widget in siblings:
+            after = siblings[siblings.index(widget) + 1:]
+            following = next((w for w in after if w.winfo_manager() == 'pack'), None)
+            if following is not None:
+                options['before'] = following
+        options.pop('in', None)
+        widget.pack(**options)
 
     def __init__(
         self,
@@ -1628,88 +1667,48 @@ class OverlayWindow:
 #  RouteOverlay
 # ============================================================
 class RouteOverlay(OverlayWindow):
+    """Compact navigation summary; journal facts only, no guessed fuel range."""
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
-        super().__init__(
-            master, "ROUTE",
-            settings.get("route_x", 50), settings.get("route_y", 50),
-            settings.get("route_width", 280), settings.get("route_height", 160),
-            settings, "route",
-        )
-        ff = settings.get("font_family", "Consolas")
-        fs = settings.get("font_size", 10)
+        super().__init__(master, "ROUTE", settings.get("route_x", 50), settings.get("route_y", 50),
+                         settings.get("route_width", 280), settings.get("route_height", 160), settings, "route")
+        ff, fs = settings.get("font_family", "Consolas"), settings.get("font_size", 10)
+        for name, text, color, bold in (
+            ('current_label', 'Сейчас: —', COLOR_TEXT_MUTED, False),
+            ('next_label', '→ —', COLOR_CYAN, True),
+            ('star_label', 'Звезда: —', COLOR_TEXT_MUTED, False),
+            ('distance_label', 'Прыжок: — св. л.', COLOR_TEXT, False),
+            ('remaining_label', 'Осталось: —', COLOR_TEXT, False),
+            ('destination_label', 'Цель: —', COLOR_ACCENT, False),
+            ('progress_label', '', COLOR_TEXT_MUTED, False),
+        ):
+            widget = tk.Label(self.content, text=text, fg=color, bg=COLOR_PANEL,
+                              font=(ff, fs if bold else max(7, fs - 1), 'bold' if bold else 'normal'),
+                              anchor=tk.W, justify=tk.LEFT,
+                              wraplength=max(120, settings.get('route_width', 280) - 26))
+            widget.pack(fill=tk.X, pady=1)
+            setattr(self, name, widget)
+        self.progress_frame = tk.Frame(self.content, bg=COLOR_LINE, height=4)
+        self.progress_frame.pack(fill=tk.X, pady=(4, 0))
+        self.progress_fill = tk.Frame(self.progress_frame, bg=COLOR_ACCENT, height=4)
+        self.progress_fill.place(x=0, y=0, relwidth=0)
 
-        self.progress_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.progress_frame.pack(fill=tk.X, pady=(4, 6))
-        self.progress_bg = tk.Frame(self.progress_frame, bg=COLOR_LINE, height=6)
-        self.progress_bg.pack(fill=tk.X)
-        self.progress_fill = tk.Frame(self.progress_bg, bg=COLOR_ACCENT, height=6, width=0)
-        self.progress_fill.place(x=0, y=0)
-
-        _section_header(self.content, "Current waypoint", ff, fs - 2, "A").pack(
-            fill=tk.X, pady=(0, 3))
-        self.current_frame = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
-        self.current_frame.pack(fill=tk.X)
-        self.current_dot = tk.Label(self.current_frame, text="■", font=(ff, 7),
-                                    fg=COLOR_ACCENT, bg=COLOR_PANEL_ALT)
-        self.current_dot.pack(side=tk.LEFT)
-        self.current_label = tk.Label(
-            self.current_frame, text="-", font=(ff, fs + 1, "bold"),
-            fg=COLOR_TEXT, bg=COLOR_PANEL_ALT, anchor=tk.W)
-        self.current_label.pack(side=tk.LEFT, padx=(6, 0))
-
-        _section_header(self.content, "Next waypoint", ff, fs - 2, "B").pack(
-            fill=tk.X, pady=(7, 3))
-        self.next_frame = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
-        self.next_frame.pack(fill=tk.X)
-        self.next_dot = tk.Label(self.next_frame, text="■", font=(ff, 7),
-                                 fg=COLOR_CYAN, bg=COLOR_PANEL_ALT)
-        self.next_dot.pack(side=tk.LEFT)
-        self.next_label = tk.Label(
-            self.next_frame, text="-", font=(ff, fs), fg=COLOR_CYAN,
-            bg=COLOR_PANEL_ALT, anchor=tk.W)
-        self.next_label.pack(side=tk.LEFT, padx=(6, 0))
-
-        self.stats_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.stats_frame.pack(fill=tk.X, pady=(6, 0))
-        self.progress_label = tk.Label(self.stats_frame, text="0 / 0", font=(ff, fs - 1, "bold"), fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W)
-        self.progress_label.pack(side=tk.LEFT)
-        self.remaining_label = tk.Label(self.stats_frame, text="", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.E)
-        self.remaining_label.pack(side=tk.RIGHT)
-
-        self.remaining_list = tk.Label(self.content, text="", font=(ff, fs - 3), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W, wraplength=260)
-        self.remaining_list.pack(fill=tk.X, pady=(2, 0))
-
-    def update_route(self, current: str, next_system: str, visited: int, total: int, remaining: Optional[list] = None, next_info: Optional[dict] = None):
-        self.current_label.config(text=current[:30])
-        self.next_label.config(text=next_system[:30])
-        if next_info and next_info.get("name") == next_system:
-            if not next_info.get("known"):
-                self.next_label.config(text=f"{next_system[:24]}  [EDSM нет данных]")
-            else:
-                bodies = next_info.get("bodies")
-                population = next_info.get("population")
-                details = []
-                if bodies is not None:
-                    details.append(f"{bodies} тел")
-                if population:
-                    details.append(f"нас. {population:g}")
-                if details:
-                    self.next_label.config(text=f"{next_system[:20]}  ({', '.join(details)})")
-        self.progress_label.config(text=f"{visited} / {total}")
-        if total > 0:
-            pct = visited / total
-            bar_width = int(260 * pct)
-            self.progress_fill.config(width=bar_width)
-            self.progress_fill.config(bg=COLOR_GREEN_TEXT if pct >= 1.0 else COLOR_ACCENT)
-        remaining_count = total - visited
-        self.remaining_label.config(text=f"Left: {remaining_count}")
-        if remaining and len(remaining) <= 4:
-            text = " -> ".join(remaining[:4])
-        elif remaining:
-            text = " -> ".join(remaining[:4]) + f" ... (+{len(remaining) - 4})"
-        else:
-            text = ""
-        self.remaining_list.config(text=text)
+    def update_route(self, current, next_system, visited, total, remaining=None, next_info=None, summary=None):
+        summary = summary or {}
+        self.current_label.config(text=f"Сейчас: {current}")
+        self.next_label.config(text=(f'→ {next_system}' if summary.get('jumps_left', 1) else 'Маршрут завершён') if total else 'Маршрут не задан')
+        star = summary.get('star_class') or '—'
+        scoopable = summary.get('scoopable')
+        fuel = 'заправка возможна' if scoopable is True else ('без заправки' if scoopable is False else 'заправка неизвестна')
+        self.star_label.config(text=f"Звезда: {star} · {fuel}", fg=COLOR_GREEN_TEXT if scoopable is True else COLOR_TEXT_MUTED)
+        def ly(value):
+            return '—' if value is None else f'{value:,.1f}'
+        self.distance_label.config(text=f"Прыжок: {ly(summary.get('jump_distance'))} св. л.")
+        left = summary.get('jumps_left', max(0, total - visited))
+        self.remaining_label.config(text=f"Осталось: {left} прыж. · {ly(summary.get('remaining_distance'))} св. л.")
+        self.destination_label.config(text=f"Цель: {summary.get('destination') or '—'}")
+        self.progress_label.config(text=f"{visited} / {total}" if total else '')
+        self.progress_fill.place_configure(relwidth=max(0, min(1, visited / total)) if total else 0)
+        self.apply_data_options()
 
 
 # ============================================================
@@ -1732,14 +1731,22 @@ class SessionEventsOverlay(OverlayWindow):
         self.text.pack(fill=tk.BOTH, expand=True)
 
     def add_event(self, message: str, level: str = "info"):
+        if not hasattr(self, '_events'):
+            self._events = deque(maxlen=100)
+        self._events.append((time.strftime('%H:%M:%S'), str(message), level))
+        self.render_events()
+
+    def render_events(self):
         colors = {"info": COLOR_TEXT, "success": COLOR_GREEN_TEXT, "warn": COLOR_YELLOW, "error": COLOR_RED_TEXT}
         self.text.config(state=tk.NORMAL)
-        tag = f"event_{int(time.time() * 1000) % 100000}"
-        self.text.insert(tk.END, f"{time.strftime('%H:%M:%S')}  {message}\n", tag)
-        self.text.tag_config(tag, foreground=colors.get(level, COLOR_TEXT))
-        lines = int(self.text.index("end-1c").split(".")[0])
-        if lines > 100:
-            self.text.delete("1.0", "21.0")
+        self.text.delete('1.0', tk.END)
+        for stamp, message, level in getattr(self, '_events', ()):
+            kind = level if level in colors else 'info'
+            if not self.settings.get(option_key('events', kind), True):
+                continue
+            prefix = stamp + '  ' if self.settings.get(option_key('events', 'timestamps'), True) else ''
+            self.text.insert(tk.END, prefix + message + '\n', kind)
+            self.text.tag_config(kind, foreground=colors[kind])
         self.text.see(tk.END)
         self.text.config(state=tk.DISABLED)
 
@@ -2026,9 +2033,10 @@ class CargoOverlay(OverlayWindow):
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 10)
 
-        _section_header(self.content, "Capacity", ff, fs - 2, "A").pack(
+        self.capacity_header = _section_header(self.content, "Capacity", ff, fs - 2, "A")
+        self.capacity_header.pack(
             fill=tk.X, pady=(0, 4))
-        header = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
+        self.capacity_frame = header = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
         header.pack(fill=tk.X)
         self.total_label = tk.Label(
             header, text="0 / 0 T", font=(ff, fs + 1, "bold"),
@@ -2044,7 +2052,8 @@ class CargoOverlay(OverlayWindow):
         self.cargo_bar_fill = tk.Frame(self.cargo_bar_bg, bg=COLOR_ACCENT, height=6, width=0)
         self.cargo_bar_fill.place(x=0, y=0)
 
-        _section_header(self.content, "Hold manifest", ff, fs - 2, "B").pack(
+        self.items_header = _section_header(self.content, "Hold manifest", ff, fs - 2, "B")
+        self.items_header.pack(
             fill=tk.X, pady=(5, 3))
 
         self.cargo_canvas = tk.Canvas(
@@ -2052,7 +2061,7 @@ class CargoOverlay(OverlayWindow):
             highlightbackground=COLOR_LINE, height=240)
         self.cargo_canvas.pack(fill=tk.BOTH, expand=True)
 
-        scrollbar = tk.Scrollbar(self.content, orient=tk.VERTICAL, command=self.cargo_canvas.yview)
+        self.cargo_scrollbar = scrollbar = tk.Scrollbar(self.content, orient=tk.VERTICAL, command=self.cargo_canvas.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.cargo_canvas.configure(yscrollcommand=scrollbar.set)
 
@@ -2189,7 +2198,7 @@ class CarrierOverlay(OverlayWindow):
 
         _section_header(self.content, "Carrier status", ff, fs - 2, "A").pack(
             fill=tk.X, pady=(0, 4))
-        header = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
+        self.carrier_header = header = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
         header.pack(fill=tk.X)
         self.name_label = tk.Label(
             header, text="FLEET CARRIER", font=(ff, fs + 1, "bold"),
@@ -2237,7 +2246,7 @@ class CarrierOverlay(OverlayWindow):
         # сокращается никогда, режется только подпись.
         self._name_chars = self._name_width_chars()
 
-        list_frame = tk.Frame(self.content, bg=COLOR_PANEL)
+        self.list_frame = list_frame = tk.Frame(self.content, bg=COLOR_PANEL)
         list_frame.pack(fill=tk.BOTH, expand=True)
         rail = tk.Frame(list_frame, bg=COLOR_PANEL)
         rail.pack(side=tk.RIGHT, fill=tk.Y)
@@ -2287,6 +2296,7 @@ class CarrierOverlay(OverlayWindow):
     def update_carrier(self, data: Optional[dict]):
         """Обновить блок. `data` — `CarrierState.get_state_dict(need)`."""
         data = data or {}
+        self._last_carrier_data = data
         ff = self.settings.get("font_family", "Consolas")
         fs = self.settings.get("font_size", 10)
 
@@ -2371,7 +2381,9 @@ class CarrierOverlay(OverlayWindow):
         self.detail_label.config(text=detail_text)
 
         rows = list(data.get("commodities") or [])
-        self._render_rows(rows, self._empty_text(data))
+        shown = filter_carrier_rows(rows, self.settings.get('carrier_filter', 'all'), self.settings.get('carrier_search', ''))
+        filtered = self.settings.get('carrier_filter', 'all') != 'all' or bool(self.settings.get('carrier_search', ''))
+        self._render_rows(shown, 'Нет товаров по фильтру' if filtered and rows else self._empty_text(data))
 
         # Чей список материалов показан.
         need_label = str(data.get("need_label") or "").strip()
@@ -2432,7 +2444,7 @@ class CarrierOverlay(OverlayWindow):
             ]
             summary = (f"{summary}\n" if summary else "") + "ещё носители: " + ", ".join(parts)
 
-        self.summary_label.config(text=summary, fg=color)
+        self.summary_label.config(text=(f"Показано {len(shown)} / {len(rows)} · итоги по всем товарам\n" if filtered else "") + summary, fg=color)
 
         # Пересчёт области прокрутки откладываем: `update_idletasks()` на
         # каждом обновлении заставлял Tk пересчитывать геометрию всех строк
@@ -2887,7 +2899,7 @@ class ExobiologyOverlay(OverlayWindow):
         self._action_shown = visible
         if visible:
             try:
-                self.next_action_label.pack(fill=tk.X, pady=(2, 0))
+                self._pack_content_widget(self.next_action_label, fill=tk.X, pady=(2, 0))
             except Exception:
                 pass
         else:
@@ -2906,7 +2918,7 @@ class ExobiologyOverlay(OverlayWindow):
         if not self._signals_shown:
             self._signals_shown = True
             try:
-                self.signals_label.pack(fill=tk.X, pady=(1, 0))
+                self._pack_content_widget(self.signals_label, fill=tk.X, pady=(1, 0))
             except Exception:
                 pass
 
@@ -2917,7 +2929,7 @@ class ExobiologyOverlay(OverlayWindow):
         if not self._telemetry_shown:
             self._telemetry_shown = True
             try:
-                self.telemetry_frame.pack(fill=tk.X, pady=(2, 1), after=self.body_label)
+                self._pack_content_widget(self.telemetry_frame, fill=tk.X, pady=(2, 1))
             except Exception:
                 pass
 
@@ -2968,6 +2980,10 @@ class ExobiologyOverlay(OverlayWindow):
         self.chip_temp.config(text=f"🌡 {temp:.0f}K", fg=COLOR_TEXT, bg="#21262d")
 
     def _render(self):
+        self._render_content()
+        self.apply_data_options()
+
+    def _render_content(self):
         state = self._state
         if not state:
             self.body_label.config(text="Тело: —")
@@ -3081,7 +3097,7 @@ class ExobiologyOverlay(OverlayWindow):
                       if signals else
                       f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
             )
-            self.signals_label.pack(fill=tk.X, pady=(1, 0))
+            self._pack_content_widget(self.signals_label, fill=tk.X, pady=(1, 0))
 
         self._render_samples(state, mapped)
         self._render_predictions(state, mapped)
@@ -3392,7 +3408,8 @@ class SessionOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=4)
 
-        _section_header(self.content, "Cargo history", ff, fs - 2, "B").pack(
+        self.history_header = _section_header(self.content, "Cargo history", ff, fs - 2, "B")
+        self.history_header.pack(
             fill=tk.X, pady=(3, 2))
 
         self.chart_canvas = tk.Canvas(
@@ -3579,6 +3596,7 @@ class OverlayManager:
 
         for key, ov in self._blocks():
             self._wire_block(key, ov)
+            ov.apply_data_options()
             # Содержимое уже собрано — запоминаем шрифты и применяем
             # персональные настройки блока (свой размер шрифта/прозрачность).
             ov._register_fonts()
@@ -4193,6 +4211,7 @@ class OverlayManager:
             parts.append(
                 f"{m.get('slot', '')}:{m.get('health', 0)}:{m.get('power', 0)}:{m.get('on', True)}"
             )
+        parts.append(str(data.get("route_summary", {})))
         parts.append(str(data.get("visited", 0)))
         parts.append(str(data.get("total", 0)))
         parts.append(str(data.get("current", "")))
@@ -4249,7 +4268,7 @@ class OverlayManager:
             self.route_overlay.update_route(
                 data.get("current", "-"), data.get("next", "-"),
                 data.get("visited", 0), data.get("total", 0), data.get("remaining"),
-                data.get("next_system_info"),
+                data.get("next_system_info"), data.get("route_summary"),
             )
         if self.status_overlay:
             self.status_overlay.set_status(data.get("online", False), data.get("status_detail", ""))
@@ -4303,6 +4322,32 @@ class OverlayManager:
             self._session_stats["cargo_count"] = ship.get("cargo_count", 0)
 
             self.session_overlay.update_session(self._session_stats)
+
+        for _key, overlay in self._blocks():
+            overlay.apply_data_options()
+
+    def set_content_option(self, block, section, value):
+        if section not in CONTENT_OPTIONS.get(block, {}):
+            return
+        self.settings[option_key(block, section)] = bool(value)
+        self.save_settings()
+        overlay = getattr(self, f'{block}_overlay', None)
+        if overlay:
+            if block == 'exobio':
+                overlay._render()
+            elif block == 'events':
+                overlay.render_events()
+            overlay.apply_data_options()
+
+    def set_carrier_filter(self, mode=None, query=None):
+        if mode is not None:
+            self.settings['carrier_filter'] = mode if mode in CARRIER_FILTERS else 'all'
+        if query is not None:
+            self.settings['carrier_search'] = str(query).strip()[:120]
+        self.save_settings()
+        if self.carrier_overlay:
+            self.carrier_overlay.update_carrier(getattr(self.carrier_overlay, '_last_carrier_data', {}))
+            self.carrier_overlay.apply_data_options()
 
     def _add_log_safe(self, message: str, level: str = "info"):
         if self.status_overlay:
@@ -5020,6 +5065,9 @@ DEFAULT_SETTINGS = {
     "profiles": {},
     "active_profile": "",
 }
+
+DEFAULT_SETTINGS.update(CONTENT_DEFAULTS)
+DEFAULT_SETTINGS.update(carrier_filter='all', carrier_search='')
 
 # Позиции и размеры блоков берутся из DEFAULT_BLOCK_POSITIONS — единственного
 # источника раскладки. Раньше они дублировались literals-ами выше и разошлись:

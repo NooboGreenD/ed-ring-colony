@@ -605,6 +605,24 @@ class CarrierRowReuseTests(unittest.TestCase):
             "delivered": delivered, "need": 4000, "remaining": max(0, 4000 - steel),
         }]}
 
+    def test_filters_change_rows_but_not_totals_and_can_be_cleared(self):
+        overlay = self._overlay()
+        data = {"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 20, "need": 100, "remaining": 80},
+            {"key": "gold", "name": "Gold", "amount": 50, "need": 10, "remaining": 0},
+        ], "need_total": 110, "need_label": "Build", "need_source": "project"}
+        overlay.update_carrier(data)
+        original = overlay.summary_label.text_arg
+        overlay.settings.update(carrier_filter="missing", carrier_search="steel")
+        overlay.update_carrier(data)
+        self.assertEqual(overlay._row_pool[0]["cells"]["name"].text_arg, "Steel")
+        self.assertIn("Показано 1 / 2", overlay.summary_label.text_arg)
+        self.assertTrue(overlay.summary_label.text_arg.endswith(original))
+        overlay.settings.update(carrier_filter="all", carrier_search="")
+        overlay.update_carrier(data)
+        self.assertEqual(overlay.summary_label.text_arg, original)
+        self.assertEqual(overlay._row_pool[1]["cells"]["name"].text_arg, "Gold")
+
     def test_rows_are_not_recreated_on_update(self):
         overlay = self._overlay()
         overlay.update_carrier(self._rows())

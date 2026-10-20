@@ -87,6 +87,7 @@ from journal_parser import (
     PARSER_VERSION,
 )
 from route_tracker import RouteTracker
+from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
@@ -5587,6 +5588,39 @@ class ColonialHelperApp:
             tb.Radiobutton(frame, text=label, value=mode, variable=self._ship_modules_var,
                            command=self._on_ship_modules_view_changed).pack(anchor=W, pady=1)
 
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=12)
+        tb.Label(frame, text="Отображаемые данные по оверлеям", font=("Segoe UI", 11, "bold")).pack(anchor=W)
+        content_tabs = tb.Notebook(frame)
+        content_tabs.pack(fill=X, pady=(6, 12))
+        self._overlay_content_vars = {}
+        for block, sections in CONTENT_OPTIONS.items():
+            tab = tb.Frame(content_tabs, padding=10)
+            content_tabs.add(tab, text=block.upper())
+            for section, (label, _attributes) in sections.items():
+                setting = option_key(block, section)
+                var = tk.BooleanVar(value=bool(self.overlay_manager.settings.get(setting, True)))
+                self._overlay_content_vars[setting] = var
+                tb.Checkbutton(tab, text=label, variable=var,
+                               command=lambda b=block, k=section, v=var: self.overlay_manager.set_content_option(b, k, v.get())).pack(anchor=W, pady=2)
+            if block == 'ship':
+                tb.Label(tab, text="Показатели и режим списка модулей настраиваются выше.", wraplength=650).pack(anchor=W, pady=6)
+            if block == 'carrier':
+                labels = list(CARRIER_FILTERS.values())
+                mode = self.overlay_manager.settings.get('carrier_filter', 'all')
+                self._carrier_filter_var = tk.StringVar(value=CARRIER_FILTERS.get(mode, labels[0]))
+                combo = tb.Combobox(tab, textvariable=self._carrier_filter_var, values=labels, state='readonly', width=28)
+                combo.pack(anchor=W, pady=(8, 4))
+                combo.bind('<<ComboboxSelected>>', lambda _e: self.overlay_manager.set_carrier_filter(
+                    mode=next(k for k, label in CARRIER_FILTERS.items() if label == self._carrier_filter_var.get())))
+                tb.Label(tab, text="Название товара (применить Enter или кнопкой):").pack(anchor=W)
+                self._carrier_search_var = tk.StringVar(value=self.overlay_manager.settings.get('carrier_search', ''))
+                entry = tb.Entry(tab, textvariable=self._carrier_search_var, width=32)
+                entry.pack(anchor=W, pady=4)
+                entry.bind('<Return>', lambda _e: self.overlay_manager.set_carrier_filter(query=self._carrier_search_var.get()))
+                tb.Button(tab, text="Применить поиск", command=lambda: self.overlay_manager.set_carrier_filter(
+                    query=self._carrier_search_var.get())).pack(anchor=W)
+                tb.Label(tab, text="Фильтр меняет список, но не общие итоги. Без потребности стройки режимы материалов и недостачи пусты.", wraplength=650).pack(anchor=W, pady=6)
+
         # ---------- Раскладка: якоря, отступы, профили ----------
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
         tb.Label(frame, text="Раскладка и привязка", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
@@ -6294,21 +6328,10 @@ class ColonialHelperApp:
             "new_deliveries": 0,
             "cargo_total_tons": self._session_cargo_tons,
         }
-        # Маршрут
-        systems = self.route.systems
-        if systems:
-            data["total"] = len(systems)
-            data["visited"] = self.route.visited_count
-            current_idx = None
-            for i, s in enumerate(systems):
-                if s["status"] in ("current", "pending"):
-                    current_idx = i
-                    data["current"] = s["name"]
-                    if i + 1 < len(systems):
-                        data["next"] = systems[i + 1]["name"]
-                    break
-            if current_idx is not None:
-                data["remaining"] = [s["name"] for s in systems[current_idx + 2:] if s["status"] == "pending"]
+        # Current location comes from the journal, not the first pending waypoint.
+        summary = route_summary(self.route.systems, getattr(self.ship.state, 'current_system', ''))
+        data.update({key: summary[key] for key in ('current', 'next', 'visited', 'total', 'remaining')})
+        data['route_summary'] = summary
         # Корабль
         ship_dict = self.ship.get_state_dict()
         data["ship"] = ship_dict
