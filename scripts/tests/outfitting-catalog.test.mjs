@@ -68,9 +68,9 @@ beforeEach(() => {
 
 test('unmodified catalogue includes every source module, group and ship without mutating source', () => {
   const data = lib.mergeCatalog(base, initial());
-  assert.equal(Object.values(data.modules).flat().length, 973);
+  assert.equal(Object.values(data.modules).flat().length, 980);
   assert.equal(Object.keys(data.groups).length, 88);
-  assert.equal(Object.values(data.ships).flatMap((ship) => ship.bulkheads).length, 236);
+  assert.equal(Object.values(data.ships).flatMap((ship) => ship.bulkheads).length, 242);
   assert.equal(data.catalogRevision, 0);
   assert.equal(base.catalogRevision, undefined);
   assert.deepEqual(data.modules, base.modules);
@@ -359,7 +359,7 @@ test('every existing module validates without loss, including factory modules', 
 
 test('validation rejects invalid types, renamed technical IDs, unknown groups/ships and invalid factory settings', () => {
   const value = moduleValue();
-  for (const updates of [{ class: 9 }, { class: 1.5 }, { rating: 'AA' }, { mass: -1 }, { cost: '120' }, { power: NaN }, { mount: 'unknown' }, { id: 'different' }, { grp: 'ls' }, { merc: 1 }, { damagedist: { T: '1' } }, { fireint: 0 }, { preEngineered: { grade: 6 } }, { preEngineered: { blueprints: ['not_a_blueprint'] } }, { name: 'x'.repeat(161) }]) {
+  for (const updates of [{ class: 9 }, { class: 1.5 }, { rating: 'AA' }, { mass: -1 }, { cost: '120' }, { power: NaN }, { mount: 'unknown' }, { id: 'different' }, { grp: 'ls' }, { merc: 1 }, { damagedist: { T: '1' } }, { fireint: 0 }, { preEngineered: { grade: 6 } }, { preEngineered: { blueprints: ['not_a_blueprint'] } }, { ships: ['not_a_ship'] }, { ships: ['anaconda', 'anaconda'] }, { name: 'x'.repeat(161) }]) {
     assert.throws(() => lib.validateCatalogValue('module', 'pp:test_module', { ...value, ...updates }, base), lib.CatalogError);
   }
   assert.throws(() => lib.validateCatalogValue('module', 'unknown:test_module', { ...value, grp: 'unknown' }, base), /Группа не найдена/);

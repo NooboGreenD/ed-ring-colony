@@ -263,6 +263,7 @@ export function buildSlots(data: OutfittingData, build: ShipBuild): BuildSlot[] 
   ship.slots.standard.forEach((size, index) => {
     slots.push({
       key: `S${index}`,
+      shipId: build.ship,
       section: 'standard',
       index,
       class: size,
@@ -275,6 +276,7 @@ export function buildSlots(data: OutfittingData, build: ShipBuild): BuildSlot[] 
   ship.slots.hardpoints.forEach((slot, index) => {
     slots.push({
       key: `H${index}`,
+      shipId: build.ship,
       section: 'hardpoints',
       index,
       class: typeof slot === 'number' ? slot : slot.class,
@@ -290,6 +292,7 @@ export function buildSlots(data: OutfittingData, build: ShipBuild): BuildSlot[] 
     const size = typeof slot === 'number' ? slot : slot.class;
     slots.push({
       key: `I${index}`,
+      shipId: build.ship,
       section: 'internal',
       index,
       class: size,
@@ -312,6 +315,7 @@ export function modulesForSlot(data: OutfittingData, ship: OutfittingShip, slot:
     for (const module of list ?? []) {
       if (!isRealModule(module)) continue;
       if (module.class > slot.class) continue;
+      if (module.ships && !module.ships.includes(ship.id)) continue;
       result.push(module);
     }
   };
@@ -320,6 +324,7 @@ export function modulesForSlot(data: OutfittingData, ship: OutfittingShip, slot:
     const group = slot.group!;
     for (const module of data.modules[group] ?? []) {
       if (!isRealModule(module)) continue;
+      if (module.ships && !module.ships.includes(ship.id)) continue;
       // Топливный бак и «основные» модули меньшего класса ставить можно,
       // но реактор/двигатели/FSD меньшего класса — обычная практика
       // облегчения корабля, поэтому ограничение только сверху.
@@ -406,7 +411,7 @@ export interface BuildStats {
   };
   boostEnergy: number;
   pipSpeed: number;
-  masslock: number;
+  masslock: number | null;
   /** Пустых слотов. */
   emptySlots: number;
   /** Модулей с инженерными доработками. */

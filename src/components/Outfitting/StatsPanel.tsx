@@ -362,7 +362,7 @@ export default function StatsPanel({
               value={tons(profile.mass)}
               hint={t('outfitting.stats.ladenMassHint', { value: num(stats.ladenMass, 1) })}
             />
-            <Row label={t('outfitting.stats.masslock')} value={String(stats.masslock)} />
+            <Row label={t('outfitting.stats.masslock')} value={stats.masslock === null ? '—' : String(stats.masslock)} />
           </Block>
 
           <Block icon={<IconShield size={12} color="var(--cyan)" />} title={t('outfitting.stats.defence')}>

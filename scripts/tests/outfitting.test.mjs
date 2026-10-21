@@ -81,6 +81,55 @@ test('справочник верфи содержит корабли, моду�
   assert.ok(anaconda.properties.hullMass > 0);
 });
 
+test('обновление 2026-10-20 добавляет Anaconda Mk II и ребалансирует корабли', () => {
+  const ship = data.ships.anaconda_mk_ii;
+  assert.ok(ship, 'Anaconda Mk II должен быть в каталоге');
+  assert.equal(ship.properties.hullMass, 940);
+  assert.equal(ship.properties.baseShieldStrength, 450);
+  assert.equal(ship.properties.heatCapacity, null, 'неизвестную теплоёмкость нельзя подменять догадкой');
+  assert.equal(ship.properties.masslock, null, 'неизвестный masslock нельзя подменять догадкой');
+  assert.equal(ship.properties.pipSpeed, null, 'неизвестная скорость распределителя остаётся неизвестной');
+  assert.deepEqual(ship.slots.hardpoints.slice(0, 7), [4, 3, 3, 3, 3, 1, 1]);
+  assert.equal(ship.slots.internal.filter((slot) => typeof slot !== 'number' && slot.name === 'Military').length, 2);
+  assert.ok(data.ships.sidewinder.properties.baseShieldStrength === 55);
+  assert.equal(data.ships.sidewinder.bulkheads.find((item) => item.name === 'Reactive Surface Composite').cost, 139420);
+  assert.ok(data.ships.eagle.properties.baseShieldStrength === 80);
+  assert.equal(data.ships.viper_mk_iv.properties.speed, 280);
+  assert.equal(data.ships.asp_scout.properties.hullMass, 140);
+  assert.equal(data.ships.mandalay.properties.hullMass, 190);
+  assert.equal(data.ships.explorer_nx.properties.hullMass, 825);
+});
+
+test('MK II modules retain their EDSY ship restrictions', () => {
+  const cargo = data.modules.crl.find((module) => module.id === 'mk2_6d');
+  assert.deepEqual(cargo?.ships, ['anaconda_mk_ii', 'panthermkii']);
+  for (const group of ['fh', 'pv']) {
+    const mk2 = (data.modules[group] ?? []).filter((module) => module.name?.startsWith('Mk II'));
+    assert.ok(mk2.length > 0, `нет MK II модулей в ${group}`);
+    assert.ok(mk2.every((module) => module.ships?.length === 4), `${group}: список разрешённых кораблей потерян`);
+  }
+  for (const module of data.modules.crl.filter((item) => item.name === 'MkII Cargo Rack')) {
+    assert.deepEqual(module.ships, ['anaconda_mk_ii', 'panthermkii']);
+  }
+});
+
+maybe('ограниченные MK II модули предлагаются только подходящим корпусам', async () => {
+  const lib = await libPromise;
+  const mk2 = data.ships.anaconda_mk_ii;
+  const cargoSlot = lib.buildSlots(data, lib.defaultBuild(data, 'anaconda_mk_ii'))
+    .find((slot) => slot.section === 'internal' && slot.special === 'Cargo');
+  assert.ok(cargoSlot);
+  assert.ok(lib.modulesForSlot(data, mk2, cargoSlot).some((module) => module.grp === 'crl' && module.id === 'mk2_6d'));
+  const mk2Build = lib.defaultBuild(data, 'anaconda_mk_ii');
+  assert.equal(lib.moduleOf(data, mk2Build.hardpoints[5])?.grp, 'pl', 'заводское орудие должно сохранять правильную группу');
+
+  const caspian = data.ships.explorer_nx;
+  const regularSlot = lib.buildSlots(data, lib.defaultBuild(data, 'explorer_nx'))
+    .find((slot) => slot.section === 'internal' && !slot.special && slot.class >= 6);
+  assert.ok(regularSlot);
+  assert.ok(!lib.modulesForSlot(data, caspian, regularSlot).some((module) => module.grp === 'crl' && module.id === 'mk2_6d'));
+});
+
 maybe('сборка любого корабля покрывает ровно его слоты', async () => {
   const lib = await libPromise;
   // В исходных данных Coriolis у части новых кораблей заводские списки короче

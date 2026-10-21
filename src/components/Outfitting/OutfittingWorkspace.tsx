@@ -119,6 +119,7 @@ function isSlotCompatibleWithModule(
   candidate: OutfittingModule,
 ): boolean {
   if (targetSlot.archived || candidate.class > targetSlot.class) return false;
+  if (candidate.ships && !candidate.ships.includes(targetSlot.shipId ?? '')) return false;
 
   if (targetSlot.section === 'standard') {
     return targetSlot.group === candidate.grp;

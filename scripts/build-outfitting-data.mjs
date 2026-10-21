@@ -26,6 +26,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'public', 'data', 'outfitting.json');
 const EFFECTS = join(ROOT, 'scripts', 'data', 'experimental-effects.json');
 const FACTORY = join(ROOT, 'scripts', 'data', 'factory-modules.json');
+const SHIP_UPDATE = join(ROOT, 'scripts', 'data', 'ship-update-20261020.json');
 const REPO = 'https://github.com/EDCD/coriolis-data.git';
 
 /** Сопротивления Coriolis хранит в процентных пунктах, у нас везде доли. */
@@ -329,6 +330,52 @@ function applyFactory(modules, blueprints, modifications) {
   return modules;
 }
 
+/** Наложить проверенное обновление кораблей из EDSY поверх набора Coriolis. */
+function applyShipUpdate(ships, modules) {
+  const patch = readJson(SHIP_UPDATE);
+  for (const [id, entry] of Object.entries(patch.ships ?? {})) {
+    const current = ships[id];
+    if (current) {
+      current.properties = { ...current.properties, ...entry.properties };
+      current.retailCost = entry.retailCost;
+      if (entry.bulkheads) current.bulkheads = entry.bulkheads;
+      current.slots = entry.slots;
+      current.defaults = entry.defaults;
+    } else {
+      if (entry.id !== id || !entry.bulkheads?.length) {
+        throw new Error(`ship-update: некорректная новая запись корабля ${id}`);
+      }
+      ships[id] = entry;
+    }
+  }
+
+  for (const entry of patch.modules ?? []) {
+    const list = modules[entry.grp] ?? (modules[entry.grp] = []);
+    if (list.some((module) => module.id === entry.id)) {
+      throw new Error(`ship-update: ID модуля ${entry.grp}:${entry.id} уже занят`);
+    }
+    list.push(entry);
+  }
+  for (const update of patch.moduleUpdates ?? []) {
+    const list = modules[update.grp] ?? [];
+    const matches = list.filter((module) => module.class === update.class && module.rating === update.rating);
+    if (matches.length !== 1) {
+      throw new Error(`ship-update: ожидался один модуль ${update.grp} ${update.class}${update.rating}, найдено ${matches.length}`);
+    }
+    Object.assign(matches[0], update);
+  }
+
+  for (const [group, list] of Object.entries(modules)) {
+    for (const module of list) {
+      if (module.ships && module.ships.some((id) => !ships[id])) {
+        throw new Error(`ship-update: ограничение корабля у ${group}:${module.id} ссылается на неизвестный корабль`);
+      }
+    }
+    list.sort((left, right) => (left.class - right.class) || String(left.rating).localeCompare(String(right.rating)));
+  }
+  return patch;
+}
+
 function main() {
   const { dir, temporary } = sourceDir();
   try {
@@ -367,11 +414,12 @@ function main() {
     const trimmedSpecials = buildSpecials(specials, modifierActions);
     addMissingSpecialLists(moduleBlueprints, trimmedSpecials);
     applyFactory(modules, trimmedBlueprints, modifications);
+    const shipUpdate = applyShipUpdate(ships, modules);
 
     const payload = {
       version: 1,
       generatedAt: new Date().toISOString(),
-      source: 'EDCD/coriolis-data',
+      source: `EDCD/coriolis-data + EDSY ${shipUpdate.source.gameUpdate}`,
       groups: GROUPS,
       ships,
       modules,

@@ -154,10 +154,13 @@ function validateShip(key: string, value: Record<string, unknown>, data: Outfitt
   props.manufacturer = text(props.manufacturer, 'Производитель', 120);
   check(Number.isInteger(props.class) && Number(props.class) >= 1 && Number(props.class) <= 3, 'Размер корабля: 1, 2 или 3');
   for (const field of ['hullCost', 'speed', 'boost', 'boostEnergy', 'baseShieldStrength', 'baseArmour',
-    'heatCapacity', 'hardness', 'hullMass', 'masslock', 'pipSpeed', 'reserveFuelCapacity']) {
+    'hardness', 'hullMass', 'reserveFuelCapacity']) {
     number(props[field], field, true);
   }
-  check(Number(props.hullMass) > 0 && Number(props.pipSpeed) > 0, 'Масса корпуса и скорость распределителя должны быть больше нуля');
+  for (const field of ['heatCapacity', 'masslock', 'pipSpeed']) {
+    if (props[field] !== null) number(props[field], field, true);
+  }
+  check(Number(props.hullMass) > 0 && (props.pipSpeed === null || Number(props.pipSpeed) > 0), 'Масса корпуса и скорость распределителя должны быть больше нуля');
   check(Number.isInteger(props.crew) && Number(props.crew) >= 1 && Number(props.crew) <= 16, 'Экипаж: целое число от 1 до 16');
   for (const field of ['minthrust', 'boostInt', 'pitch', 'roll', 'yaw']) {
     if (props[field] !== undefined) number(props[field], field, true);
@@ -329,6 +332,11 @@ export function validateCatalogValue(kind: CatalogKind, key: string, input: unkn
   check(typeof value.rating === 'string' && /^[A-Z]$/.test(value.rating), 'Рейтинг: одна заглавная латинская буква');
   if (value.name !== undefined) value.name = text(value.name, 'Название модуля', 160, false);
   if (value.mount !== undefined) check(Object.hasOwn(CATALOG_MOUNTS, String(value.mount)), 'Крепление: F, G или T');
+  if (value.ships !== undefined) {
+    check(Array.isArray(value.ships) && value.ships.length > 0 && value.ships.every((ship) => typeof ship === 'string'), 'ships: ожидается непустой список ID кораблей');
+    check(new Set(value.ships).size === value.ships.length, 'ships: повторяющийся ID корабля');
+    check(value.ships.every((ship) => SAFE_SHIP.test(ship) && Object.hasOwn(data.ships, ship)), 'ships: неизвестный ID корабля');
+  }
   for (const [field, entry] of Object.entries(value)) {
     if (NUMBER_FIELDS.has(field)) number(entry, field, ['mass', 'cost', 'power', 'integrity', 'coins'].includes(field));
   }
