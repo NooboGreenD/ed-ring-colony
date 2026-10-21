@@ -182,9 +182,17 @@ test('Меню: Atlas доступен с любого устройства, с�
 
   await t.test('боковое меню содержит Atlas и разделы навигации', () => {
     assert.ok(sidebar.includes("href: '/atlas'"), 'в боковом меню нет пункта Atlas');
-    for (const href of ['/atlas', '/map', '/systems', '/projects', '/wiki', '/architect']) {
+    for (const href of ['/atlas', '/map', '/systems', '/projects', '/cg', '/wiki', '/architect']) {
       assert.ok(sidebar.includes(`href: '${href}'`), `в меню нет пункта ${href}`);
     }
+  });
+
+  await t.test('боковое меню сворачивается до значков и сохраняет настройку', () => {
+    const styles = read('src/app/globals.css');
+    assert.ok(sidebar.includes("ed-ring-sidebar-compact"), 'не сохраняется состояние сворачивания');
+    assert.ok(sidebar.includes("'nav.collapseSidebar'") && sidebar.includes("'nav.expandSidebar'"), 'кнопка сворачивания не имеет локализованных подписей');
+    assert.ok(sidebar.includes('sidebar-item-label') && sidebar.includes('aria-label={compact ? t(item.translation)'), 'свёрнутые пункты теряют доступные названия');
+    assert.ok(styles.includes('.sidebar.sidebar-compact {\n    width: 64px;'), 'не задана компактная ширина панели');
   });
 
   await t.test('персональные разделы живут в меню пользователя, а не в навигации', () => {

@@ -9,6 +9,8 @@ import {
   IconAtlas,
   IconBuilding,
   IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
   IconGear,
   IconGlobe,
   IconHomeSystem,
@@ -20,6 +22,7 @@ import {
   IconProjects,
   IconRadio,
   IconSearch,
+  IconStar,
   IconUsers,
   IconWiki,
   IconWrench,
@@ -79,6 +82,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/squadrons', translation: 'nav.squadrons', icon: <IconPlane size={iconSize} className="sidebar-icon" /> },
       { href: '/projects', translation: 'nav.projects', icon: <IconProjects size={iconSize} className="sidebar-icon" /> },
+      { href: '/cg', translation: 'nav.communityGoals', icon: <IconStar size={iconSize} className="sidebar-icon" /> },
       { href: '/wiki', translation: 'nav.wiki', icon: <IconWiki size={iconSize} className="sidebar-icon" /> },
       { href: '/forum', translation: 'nav.forum', icon: <IconMessage size={iconSize} className="sidebar-icon" /> },
       { href: '/news', translation: 'nav.news', icon: <IconNote size={iconSize} className="sidebar-icon" /> },
@@ -103,6 +107,7 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 const COLLAPSED_STORAGE_KEY = 'ed-ring-sidebar-collapsed';
+const SIDEBAR_COMPACT_STORAGE_KEY = 'ed-ring-sidebar-compact';
 
 /** Активен ли пункт: точное совпадение или вложенный маршрут. */
 export function isNavItemActive(pathname: string, href: string): boolean {
@@ -140,16 +145,34 @@ function persistCollapsedGroups(groups: string[]) {
   }
 }
 
+function readSidebarCompact(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COMPACT_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function persistSidebarCompact(compact: boolean) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COMPACT_STORAGE_KEY, String(compact));
+  } catch {
+    // Приватный режим: настройка просто не сохранится.
+  }
+}
+
 function NavContent({
   pathname,
   query,
   collapsed,
+  compact = false,
   onNavigate,
   onToggleGroup,
 }: {
   pathname: string;
   query: string;
   collapsed: string[];
+  compact?: boolean;
   onNavigate?: () => void;
   onToggleGroup: (id: string) => void;
 }) {
@@ -180,24 +203,26 @@ function NavContent({
   return (
     <>
       {visibleGroups.map((group) => {
-        const isCollapsed = collapsed.includes(group.id) && !normalizedQuery;
+        const isCollapsed = collapsed.includes(group.id) && !normalizedQuery && !compact;
         const groupHasActive = group.items.some((item) =>
           isNavItemActive(pathname, item.href)
           || Boolean(item.children?.some((child) => isNavItemActive(pathname, child.href))));
         return (
           <div className="sidebar-group" key={group.id}>
-            <button
-              type="button"
-              className={`sidebar-group-title${isCollapsed ? ' collapsed' : ''}${groupHasActive ? ' active' : ''}`}
-              onClick={() => onToggleGroup(group.id)}
-              aria-expanded={!isCollapsed}
-            >
-              <span>{t(group.titleKey)}</span>
-              <span className="sidebar-group-meta">
-                {isCollapsed && groupHasActive && <span className="sidebar-group-dot" aria-hidden="true" />}
-                <IconChevronDown size={12} />
-              </span>
-            </button>
+            {!compact && (
+              <button
+                type="button"
+                className={`sidebar-group-title${isCollapsed ? ' collapsed' : ''}${groupHasActive ? ' active' : ''}`}
+                onClick={() => onToggleGroup(group.id)}
+                aria-expanded={!isCollapsed}
+              >
+                <span>{t(group.titleKey)}</span>
+                <span className="sidebar-group-meta">
+                  {isCollapsed && groupHasActive && <span className="sidebar-group-dot" aria-hidden="true" />}
+                  <IconChevronDown size={12} />
+                </span>
+              </button>
+            )}
             {!isCollapsed && (
               <div className="sidebar-group-items">
                 {group.items.map((item) => {
@@ -212,11 +237,13 @@ function NavContent({
                         className={`sidebar-item${isActive || (childActive && !isActive) ? ' active' : ''}${childActive && !isActive ? ' sidebar-item-parent-active' : ''}`}
                         onClick={onNavigate}
                         aria-current={isActive ? 'page' : undefined}
+                        aria-label={compact ? t(item.translation) : undefined}
+                        title={compact ? t(item.translation) : undefined}
                       >
                         {item.icon}
-                        {t(item.translation)}
+                        <span className="sidebar-item-label">{t(item.translation)}</span>
                       </Link>
-                      {item.children && (isActive || childActive || childMatches) && (
+                      {!compact && item.children && (isActive || childActive || childMatches) && (
                         <div className="sidebar-subitems">
                           {item.children.map((child) => {
                             const childIsActive = isNavItemActive(pathname, child.href);
@@ -252,6 +279,7 @@ export default function Sidebar() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<string[]>([]);
+  const [sidebarCompact, setSidebarCompact] = useState(false);
   const drawerRef = useRef<HTMLDivElement | null>(null);
   const desktopSearchRef = useRef<HTMLInputElement | null>(null);
   const drawerSearchRef = useRef<HTMLInputElement | null>(null);
@@ -259,6 +287,7 @@ export default function Sidebar() {
   // Настройка «свёрнутые разделы» — персональная, переживает перезагрузку.
   useEffect(() => {
     setCollapsed(readCollapsedGroups());
+    setSidebarCompact(readSidebarCompact());
   }, []);
 
   // Свёрнутая группа не должна прятать раздел, который сейчас открыт: раньше
@@ -314,13 +343,22 @@ export default function Sidebar() {
   // Быстрый доступ к фильтру меню: Ctrl/⌘+K из любого места страницы и «/» —
   // когда фокус не в поле ввода.
   useEffect(() => {
+    const focusDesktopSearch = () => {
+      if (readSidebarCompact()) {
+        persistSidebarCompact(false);
+        setSidebarCompact(false);
+        window.requestAnimationFrame(() => desktopSearchRef.current?.focus());
+      } else {
+        desktopSearchRef.current?.focus();
+      }
+    };
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing = Boolean(target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable));
       const isShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k';
       if (isShortcut) {
         event.preventDefault();
-        if (window.matchMedia('(min-width: 1025px)').matches) { desktopSearchRef.current?.focus(); return; }
+        if (window.matchMedia('(min-width: 1025px)').matches) { focusDesktopSearch(); return; }
         setOpen(true);
         window.requestAnimationFrame(() => {
           (drawerSearchRef.current ?? desktopSearchRef.current)?.focus();
@@ -329,7 +367,7 @@ export default function Sidebar() {
       }
       if (event.key === '/' && !typing) {
         event.preventDefault();
-        if (window.matchMedia('(min-width: 1025px)').matches) { desktopSearchRef.current?.focus(); return; }
+        if (window.matchMedia('(min-width: 1025px)').matches) { focusDesktopSearch(); return; }
         setOpen(true);
         window.requestAnimationFrame(() => {
           (drawerSearchRef.current ?? desktopSearchRef.current)?.focus();
@@ -355,6 +393,15 @@ export default function Sidebar() {
   }, []);
 
   const closeDrawer = useCallback(() => setOpen(false), []);
+
+  const toggleSidebarCompact = useCallback(() => {
+    setQuery('');
+    setSidebarCompact((current) => {
+      const next = !current;
+      persistSidebarCompact(next);
+      return next;
+    });
+  }, []);
 
   const searchField = (ref: React.RefObject<HTMLInputElement | null>) => (
     <div className="sidebar-search">
@@ -386,13 +433,26 @@ export default function Sidebar() {
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="sidebar" aria-label={t('nav.menu')}>
-        {searchField(desktopSearchRef)}
-        <nav className="sidebar-nav">
-          <NavContent pathname={pathname} query={query} collapsed={collapsed} onToggleGroup={toggleGroup} />
+      <aside className={`sidebar${sidebarCompact ? ' sidebar-compact' : ''}`} aria-label={t('nav.menu')}>
+        <div className="sidebar-toolbar">
+          <button
+            type="button"
+            className="sidebar-compact-toggle"
+            onClick={toggleSidebarCompact}
+            aria-label={t(sidebarCompact ? 'nav.expandSidebar' : 'nav.collapseSidebar')}
+            title={t(sidebarCompact ? 'nav.expandSidebar' : 'nav.collapseSidebar')}
+            aria-expanded={!sidebarCompact}
+            aria-controls="desktop-sidebar-nav"
+          >
+            {sidebarCompact ? <IconChevronRight size={16} /> : <IconChevronLeft size={16} />}
+          </button>
+        </div>
+        {!sidebarCompact && searchField(desktopSearchRef)}
+        <nav id="desktop-sidebar-nav" className="sidebar-nav">
+          <NavContent pathname={pathname} query={query} collapsed={collapsed} compact={sidebarCompact} onToggleGroup={toggleGroup} />
         </nav>
         <div className="sidebar-footer">
-          <LanguageSwitcher />
+          <LanguageSwitcher compact={sidebarCompact} />
         </div>
       </aside>
 
