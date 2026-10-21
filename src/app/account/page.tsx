@@ -1324,7 +1324,22 @@ export default function AccountPage() {
           <p style={{ color: 'var(--muted)' }}>Сохранённые сборки кораблей, привязанные к вашему досье пилота.</p>
           {myBuilds.length === 0 ? <p>Сохранённых сборок пока нет.</p> : (
             <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>Название</th><th>Корабль</th><th>Сохранена</th></tr></thead><tbody>
-              {myBuilds.map((build) => <tr key={build.id}><td>{build.name}</td><td>{build.ship}</td><td>{new Date(build.created_at).toLocaleString()}</td></tr>)}
+              {myBuilds.map((build) => (
+                <tr key={build.id}>
+                  <td>
+                    {typeof build.code === 'string' && build.code ? (
+                      <Link
+                        href={`/outfitting?b=${encodeURIComponent(build.code)}`}
+                        style={{ color: 'var(--cyan)', textDecoration: 'none' }}
+                      >
+                        {build.name}
+                      </Link>
+                    ) : build.name}
+                  </td>
+                  <td>{build.ship}</td>
+                  <td>{new Date(build.created_at).toLocaleString()}</td>
+                </tr>
+              ))}
             </tbody></table></div>
           )}
         </section>
