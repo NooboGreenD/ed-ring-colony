@@ -17,7 +17,13 @@ interface CommunityGoal {
   tier_current: number | null;
   tier_max: number | null;
   contributors: number | null;
-  contributions_total: number | null;
+  contributions_total: number | string | null;
+  commander_reports: {
+    commander_count: number;
+    player_contribution_total: number;
+    journal_current_total: number | null;
+    reported_at: string | null;
+  } | null;
   is_complete: boolean;
   is_colonisation_related: boolean;
   expiry_date: string | null;
@@ -180,7 +186,21 @@ export default function CGPage() {
                         </div>
                         {goal.contributions_total !== null && goal.contributions_total !== undefined && (
                           <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 5 }}>
-                            {t('cg.contributions')}: {goal.contributions_total.toLocaleString(locale)}
+                            {t('cg.contributions')}: {Number(goal.contributions_total).toLocaleString(locale)}
+                          </div>
+                        )}
+                        {goal.commander_reports && goal.commander_reports.commander_count > 0 && (
+                          <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 5, lineHeight: 1.5 }}>
+                            <div>
+                              {t('cg.commanderReports')}: {goal.commander_reports.commander_count.toLocaleString(locale)} · {t('cg.contributions')}: {goal.commander_reports.player_contribution_total.toLocaleString(locale)}
+                            </div>
+                            {goal.commander_reports.journal_current_total !== null && goal.contributions_total !== null && goal.contributions_total !== undefined && (
+                              <div>
+                                {t('cg.journalCompare')}: {goal.commander_reports.journal_current_total.toLocaleString(locale)} / {Number(goal.contributions_total).toLocaleString(locale)}
+                                {' · Δ '}
+                                {(goal.commander_reports.journal_current_total - Number(goal.contributions_total)).toLocaleString(locale)}
+                              </div>
+                            )}
                           </div>
                         )}
                       </td>

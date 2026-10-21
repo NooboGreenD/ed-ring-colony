@@ -72,6 +72,7 @@ except ImportError:
     pyperclip = None
 
 from api_client import ApiClient
+from community_goals import CommunityGoalReportCollector, community_goal_reports_from_event
 from site_config import normalize_site_url, saved_connection
 from companion_api import (AUDIENCE_LABELS, CompanionAuth, CompanionAuthError,
                            CompanionClient, normalize_audience, profile_to_stats,
@@ -301,12 +302,14 @@ class ColonialHelperApp:
         self._defer_uploads = False
         self._backfill_deliveries: list = []
         self._backfill_construction: list = []
+        self._backfill_community_goal_reports: list = []
         # Коллектор snapshots стройки живёт вместе с приложением, а не вместе
         # с тиком watcher'а: набор уже отправленных состояний обязан переживать
         # тик, иначе журнал (он пишет `ColonisationConstructionDepot` каждые
         # несколько секунд, пока игрок у площадки) заливал сайт одинаковыми
         # снимками с новой меткой времени — по одной строке на тик.
         self._construction_collector = ConstructionSnapshotCollector()
+        self._community_goal_collector = CommunityGoalReportCollector()
         self._navroute_mtime = 0.0
 
         # Конфиг
@@ -7504,6 +7507,7 @@ class ColonialHelperApp:
         # Состояния площадок тоже забываем: пользователь ждёт повторной
         # отправки, а не «ничего не произошло».
         self._construction_collector = ConstructionSnapshotCollector()
+        self._community_goal_collector = CommunityGoalReportCollector()
         self.log(
             f"Кэш импорта сброшен ({count} записей) — файлы будут разобраны и загружены заново",
             "info",
@@ -8096,6 +8100,7 @@ class ColonialHelperApp:
 
     def _do_upload_thread(self):
         all_deliveries = []
+        community_goal_reports = []
         # Snapshots стройки собираются попутно, за тот же один проход по файлу,
         # и сразу с отсевом повторов (подробнее — в ConstructionSnapshotCollector).
         collector = ConstructionSnapshotCollector()
@@ -8218,13 +8223,18 @@ class ColonialHelperApp:
                 try:
                     current_system = self.ship.state.current_system if self.ship.state else None
                     current_system_address = self.ship.state.system_address if self.ship.state else 0
+                    file_goal_reports = []
+
+                    def community_goal_hook(_line, event):
+                        file_goal_reports.extend(community_goal_reports_from_event(event))
+
                     (
                         cname, deliveries, self._last_cargo, self._last_depot_state,
                         self._last_contribution_state, self._seen_events, event_counts,
                     ) = parse_events(
                         iter_journal_events(text), current_system, self._last_cargo, self._last_depot_state,
                         self._last_contribution_state, self._seen_events, current_system_address,
-                        hooks=hooks,
+                        hooks=hooks + [community_goal_hook],
                     )
                     total_event_counts.update(event_counts)
                     files_processed += 1
@@ -8242,6 +8252,7 @@ class ColonialHelperApp:
                                 ),
                             )
                             continue
+                    community_goal_reports.extend(file_goal_reports)
                     all_deliveries.extend(deliveries)
                     self.root.after(
                         0,
@@ -8290,8 +8301,8 @@ class ColonialHelperApp:
                 ),
             )
 
-        if not all_deliveries and not construction_events:
-            self.root.after(0, lambda: self.log("Доставки и события строительства не найдены", "warn"))
+        if not all_deliveries and not construction_events and not community_goal_reports:
+            self.root.after(0, lambda: self.log("Доставки, события строительства и CG не найдены", "warn"))
             self.root.after(0, lambda: self._mark_files_imported(accepted_files))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             self.root.after(0, lambda: self._update_progress(0, "", force=True))
@@ -8327,10 +8338,24 @@ class ColonialHelperApp:
                     ),
                 )
 
+        community_goal_reports_ok = True
+        if community_goal_reports:
+            community_result = self.api.upload_community_goal_reports(community_goal_reports, cmdr_name)
+            community_goal_reports_ok = bool(community_result.get("ok"))
+            if community_goal_reports_ok:
+                stored = int(community_result.get("stored", 0) or 0)
+                self.root.after(0, lambda n=stored: self.log(
+                    f"Отчёты Community Goals: сохранено обновлений — {n}", "success"))
+            else:
+                error_text = community_result.get("error", "ошибка")
+                self.root.after(0, lambda e=error_text: self.log(
+                    f"Отчёты Community Goals не отправлены: {e}", "warn"))
+
         # ---- Отправка доставок ----
         if not all_deliveries:
-            self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
-            if construction_ok:
+            if not community_goal_reports:
+                self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
+            if construction_ok and community_goal_reports_ok:
                 self.root.after(0, lambda: self._mark_files_imported(accepted_files))
             self.root.after(0, lambda: self._update_progress(100, "Готово", force=True))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
@@ -8403,7 +8428,7 @@ class ColonialHelperApp:
                     text=f"Загружено: {ins} записей ({rt:.0f}t на маршрут)"
                 ),
             )
-            if construction_ok:
+            if construction_ok and community_goal_reports_ok:
                 self.root.after(0, lambda: self._mark_files_imported(accepted_files))
         else:
             # result может быть "partial" (часть чанков доставок всё же
@@ -8476,6 +8501,7 @@ class ColonialHelperApp:
         self._defer_uploads = False
         self._backfill_deliveries = []
         self._backfill_construction = []
+        self._backfill_community_goal_reports = []
         self.dispatcher.reset_stats()
 
         self.carrier.reset()
@@ -9103,8 +9129,10 @@ class ColonialHelperApp:
         self._defer_uploads = False
         self._flush_station_reports()
         deliveries, construction = self._backfill_deliveries, self._backfill_construction
+        community_goal_reports = self._backfill_community_goal_reports
         self._backfill_deliveries, self._backfill_construction = [], []
-        if not deliveries and not construction:
+        self._backfill_community_goal_reports = []
+        if not deliveries and not construction and not community_goal_reports:
             return
         cmdr_name = self._watcher_cmdr_name or ""
 
@@ -9112,7 +9140,8 @@ class ColonialHelperApp:
             self.root.after(0, lambda m=message, l=level: self.log(m, l))
 
         log(f"Первичная загрузка: отправка на сайт — {len(deliveries)} доставок, "
-            f"{len(construction)} snapshots стройки", "info")
+            f"{len(construction)} snapshots стройки, "
+            f"{len(community_goal_reports)} отчётов CG", "info")
 
         if construction and self.api.is_connected:
             def construction_progress(done, total_chunks):
@@ -9129,6 +9158,17 @@ class ColonialHelperApp:
                 self._construction_collector.requeue(construction)
                 log(f"Первичная загрузка: snapshots стройки не отправлены — "
                     f"{result.get('error', 'ошибка')}", "warn")
+
+        if community_goal_reports:
+            if not self.api.is_connected:
+                self._community_goal_collector.requeue(community_goal_reports)
+            else:
+                result = self.api.upload_community_goal_reports(community_goal_reports, cmdr_name)
+                if result.get("ok"):
+                    log(f"Первичная загрузка: отчёты CG сохранены ({result.get('stored', 0)})", "success")
+                else:
+                    self._community_goal_collector.requeue(community_goal_reports)
+                    log(f"Первичная загрузка: отчёты CG не отправлены — {result.get('error', 'ошибка')}", "warn")
 
         if deliveries and self.api.is_connected:
             def delivery_progress(done, total_chunks):
@@ -9174,6 +9214,7 @@ class ColonialHelperApp:
         # уходит на сайт один раз (повтор всё равно схлопывается по
         # `source_hash`), а дальше отправляются только изменения.
         self._construction_collector = ConstructionSnapshotCollector()
+        self._community_goal_collector = CommunityGoalReportCollector()
         for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime):
             try:
                 # Первый запуск проверяет историю с начала файлов; после этого
@@ -10910,6 +10951,11 @@ class ColonialHelperApp:
         # и (только в live-режиме) внешние API. Раньше текст разбирался дважды
         # — parse_journal() плюс отдельный построчный цикл на каждое событие.
         collector = self._construction_collector
+        community_goal_collector = self._community_goal_collector
+        tick_community_goal_reports = []
+
+        def community_goal_hook(_line, ev):
+            tick_community_goal_reports.extend(community_goal_reports_from_event(ev))
 
         def dispatch_hook(line, ev):
             station_type = str(self._last_depot_state.get("_station_type", "") or "")
@@ -10924,7 +10970,7 @@ class ColonialHelperApp:
         tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events, _tick_event_counts = parse_events(
             iter_journal_events(new_text), current_system, self._last_cargo, self._last_depot_state,
             self._last_contribution_state, self._seen_events, current_system_address,
-            hooks=[collector, tracking_hook, dispatch_hook, self.exobiology.handle],
+            hooks=[collector, community_goal_hook, tracking_hook, dispatch_hook, self.exobiology.handle],
         )
         # Commander/LoadGame встречаются обычно только один раз в начале файла,
         # поэтому в большинстве тиков tick_cmdr_name будет None — переиспользуем
@@ -10941,7 +10987,10 @@ class ColonialHelperApp:
             self._watcher_cmdr_name = tick_cmdr_name
         cmdr_name = self._watcher_cmdr_name
         # Трекинг корабля/маршрута/оверлея и внешние API выполняются в хуках
-        # parse_events() — тем же однопроходным разбором текста.
+        # parse_events() — тем же однопроходным разбором текста. Отчёты CG
+        # добавляются в долговечный накопитель только после проверки CMDR.
+        community_goal_collector.add_reports(tick_community_goal_reports)
+        community_goal_reports = community_goal_collector.drain()
 
         self._record_session_deliveries(deliveries)
         # Snapshots стройки собираются тем же проходом, что и доставки, с
@@ -10959,7 +11008,19 @@ class ColonialHelperApp:
                 self._backfill_deliveries.extend(deliveries)
             if construction_events:
                 self._backfill_construction.extend(construction_events)
+            if community_goal_reports:
+                self._backfill_community_goal_reports.extend(community_goal_reports)
             return processed_bytes
+
+        if community_goal_reports:
+            if not self.api.is_connected:
+                community_goal_collector.requeue(community_goal_reports)
+            else:
+                result = self.api.upload_community_goal_reports(community_goal_reports, cmdr_name)
+                if not result.get("ok"):
+                    community_goal_collector.requeue(community_goal_reports)
+                    self.root.after(0, lambda e=result.get("error", "ошибка"):
+                        self.log(f"[Watcher] Отчёты CG не отправлены: {e}", "warn"))
 
         if construction_events and self.api.is_connected:
             construction_result = self.api.upload_construction_events(construction_events, cmdr_name)

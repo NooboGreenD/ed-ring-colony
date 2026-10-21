@@ -24,6 +24,31 @@ function asTier(value) {
   return match ? Number(match[0]) : null;
 }
 
+function normalizeIdentityPart(value) {
+  return asText(value).normalize('NFKC').toLowerCase().replace(/\s+/g, ' ');
+}
+
+function normalizeExpiry(value) {
+  const text = asText(value);
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    : normalizeIdentityPart(text);
+}
+
+export function communityGoalIdentityKey(goal) {
+  const title = goal.communitygoalName ?? goal.cgName ?? goal.title ?? goal.Title;
+  const systemName = goal.starsystemName ?? goal.systemName ?? goal.SystemName;
+  const stationName = goal.stationName ?? goal.marketName ?? goal.MarketName;
+  const expiryDate = goal.goalExpiry ?? goal.expiryDate ?? goal.expiry ?? goal.Expiry;
+  return JSON.stringify([
+    normalizeIdentityPart(title),
+    normalizeIdentityPart(systemName),
+    normalizeIdentityPart(stationName),
+    normalizeExpiry(expiryDate),
+  ]);
+}
+
 function stableGoalId(identity) {
   let hash = 0x811c9dc5;
   for (let index = 0; index < identity.length; index += 1) {
@@ -54,6 +79,7 @@ export function normalizeCommunityGoal(goal) {
 
   return {
     cg_id: id,
+    identity_key: communityGoalIdentityKey(goal),
     title,
     description: description || objective || null,
     system_name: systemName || null,

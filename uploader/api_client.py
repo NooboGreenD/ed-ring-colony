@@ -171,11 +171,27 @@ class ApiClient:
         chunks = [events[i : i + chunk_size] for i in range(0, len(events), chunk_size)]
         return self._upload_chunks(chunks, "construction_events", cmdr, max_workers, progress_cb)
 
+    def upload_community_goal_reports(
+        self,
+        reports: list,
+        cmdr: str = None,
+        chunk_size: int = 500,
+        max_workers: int = UPLOAD_WORKERS,
+    ) -> dict:
+        """Upload private, account-scoped Community Goal journal snapshots."""
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        if not reports:
+            return {"ok": True, "stored": 0}
+        chunk_size = max(1, min(int(chunk_size), 500))
+        chunks = [reports[i : i + chunk_size] for i in range(0, len(reports), chunk_size)]
+        return self._upload_chunks(chunks, "community_goal_reports", cmdr, max_workers, None)
+
     def _upload_chunks(self, chunks: list, field: str, cmdr: str, max_workers: int, progress_cb) -> dict:
         """Параллельно отправить пачки на /api/logs/upload и собрать результат."""
         total_chunks = len(chunks)
         lock = threading.Lock()
-        state = {"inserted": 0, "events": 0, "snapshots": 0, "deferred": 0,
+        state = {"inserted": 0, "events": 0, "snapshots": 0, "reports": 0, "deferred": 0,
                  "failed": 0, "done": 0, "last_error": ""}
 
         def notify_progress():
@@ -256,9 +272,11 @@ class ApiClient:
                     if field == "deliveries":
                         state["inserted"] += int((data or {}).get("inserted", 0) or 0)
                         state["events"] += int((data or {}).get("eventsFound", 0) or 0)
-                    else:
+                    elif field == "construction_events":
                         state["inserted"] += int((data or {}).get("constructionInserted", 0) or 0)
                         state["snapshots"] += int((data or {}).get("snapshotInserted", 0) or 0)
+                    else:
+                        state["reports"] += int((data or {}).get("communityGoalReportsStored", 0) or 0)
                     # Сервер больше не отвечает 500 на statement_timeout, а
                     # возвращает число строк, которые база не приняла. Без
                     # этого счётчика помощник отчитался бы об успехе, молча
@@ -295,9 +313,12 @@ class ApiClient:
             result = {"ok": True, "inserted": state["inserted"]}
         if field == "deliveries":
             result["eventsFound"] = state["events"]
-        else:
+        elif field == "construction_events":
             result["constructionInserted"] = state["inserted"]
             result["snapshotInserted"] = state["snapshots"]
+        else:
+            result["stored"] = state["reports"]
+            result["communityGoalReportsStored"] = state["reports"]
         result["chunks"] = total_chunks
         result["chunks_failed"] = state["failed"]
         result["deferred"] = state["deferred"]

@@ -12,6 +12,7 @@
  *   • colonisation_events            — устаревшая таблица событий стройки
  *   • pilot_stats                    — сводка пилота (кредиты, ранги, жетоны)
  *   • system_scans                   — сканы тел, которые загрузил этот пользователь
+ *   • community_goal_commander_reports — личные CG-снимки этого пользователя
  *
  * Общие таблицы (доступны другим командирам) мы НЕ удаляем:
  *   • colonisation_sites             — текущее состояние площадок (общая карта);
@@ -42,6 +43,8 @@ export interface JournalResetOutcome {
   systemScansDeleted: number;
   /** Сколько строк colonisation_sites лишились авторства (user_id → NULL). */
   sitesDetached: number;
+  /** Сколько личных снимков Community Goal удалено. */
+  communityGoalReportsDeleted: number;
 }
 
 /**
@@ -96,6 +99,7 @@ export async function resetJournalData(
     legacyEvents?: boolean;
     pilotStats?: boolean;
     systemScans?: boolean;
+    communityGoalReports?: boolean;
     detachSites?: boolean;
   } = {},
 ): Promise<JournalResetOutcome> {
@@ -105,6 +109,7 @@ export async function resetJournalData(
     legacyEvents = true,
     pilotStats = true,
     systemScans = true,
+    communityGoalReports = true,
     detachSites = true,
   } = options;
 
@@ -115,6 +120,7 @@ export async function resetJournalData(
     pilotStatsDeleted: false,
     systemScansDeleted: 0,
     sitesDetached: 0,
+    communityGoalReportsDeleted: 0,
   };
 
   // Поставки — самая большая таблица; пачками, с лимитом.
@@ -152,7 +158,17 @@ export async function resetJournalData(
     outcome.systemScansDeleted = await deleteInBatches(svc, 'system_scans', userId);
   }
 
-  // Состояния стройплощадок (общая карта) не удаляем — это видно всем
+  if (communityGoalReports) {
+    const { data, error } = await svc
+      .from('community_goal_commander_reports')
+      .delete({ count: 'exact' })
+      .eq('user_id', userId)
+      .select('game_cg_id');
+    if (error) throw new Error(`community_goal_commander_reports delete: ${error.message}`);
+    outcome.communityGoalReportsDeleted = Array.isArray(data) ? data.length : 0;
+  }
+
+  // Состояния стройплощадки (общая карта) не удаляем — это видно всем
   // командирам. Снимаем авторство у строк, которые обновляли мы: после этого
   // первый же snapshot при повторном импорте сможет перезаписать строку,
   // даже если его timestamp окажется старше «нашего» последнего состояния.

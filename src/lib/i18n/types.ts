@@ -41,6 +41,8 @@ export type TranslationKey =
   | 'cg.contributions'
   | 'cg.updated'
   | 'cg.details'
+  | 'cg.commanderReports'
+  | 'cg.journalCompare'
   | 'nav.architectProjects'
   | 'nav.outfitting'
   | 'nav.engineers'
