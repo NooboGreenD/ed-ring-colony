@@ -1,0 +1,2023 @@
+{
+  "source": {
+    "gameUpdate": "Elite Dangerous 4.4.2.0 (2026-10-20)",
+    "shipData": "EDSY/taleden-EDSY",
+    "sourceCommit": "a0942192e2e149c96a24b28af9be9743721116e9",
+    "sourceSnapshot": "ea787cf805f2c38f72c8d5f168fa1063341ebd9a"
+  },
+  "ships": {
+    "sidewinder": {
+      "properties": {
+        "hullCost": 5070,
+        "speed": 220,
+        "boost": 320,
+        "minthrust": 45.454,
+        "boostEnergy": 7,
+        "boostInt": 4,
+        "baseShieldStrength": 55,
+        "baseArmour": 60,
+        "heatCapacity": 140,
+        "hardness": 20,
+        "hullMass": 25,
+        "masslock": 6,
+        "pitch": 43,
+        "roll": 110,
+        "yaw": 17,
+        "crew": 1,
+        "reserveFuelCapacity": 0.3
+      },
+      "retailCost": 32000,
+      "bulkheads": [
+        {
+          "id": "b0",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "b1",
+          "grp": "bh",
+          "cost": 25600,
+          "mass": 2,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "b2",
+          "grp": "bh",
+          "cost": 80320,
+          "mass": 4,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "b3",
+          "grp": "bh",
+          "cost": 132060,
+          "mass": 4,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "b4",
+          "grp": "bh",
+          "cost": 139420,
+          "mass": 4,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          2,
+          2,
+          2,
+          1,
+          1,
+          1,
+          1
+        ],
+        "hardpoints": [
+          1,
+          1,
+          0,
+          0
+        ],
+        "internal": [
+          2,
+          2,
+          1,
+          1,
+          1,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "2E",
+          "2E",
+          "2E",
+          "1E",
+          "1E",
+          "1E",
+          "1C"
+        ],
+        "hardpoints": [
+          "pl:18",
+          "pl:18",
+          0,
+          0
+        ],
+        "internal": [
+          "sg:3v",
+          "cr:01",
+          0,
+          0,
+          0,
+          0,
+          "4F"
+        ]
+      }
+    },
+    "eagle": {
+      "properties": {
+        "hullCost": 7490,
+        "speed": 240,
+        "boost": 350,
+        "minthrust": 75,
+        "boostEnergy": 8,
+        "boostInt": 4.5,
+        "baseShieldStrength": 80,
+        "baseArmour": 40,
+        "heatCapacity": 165,
+        "hardness": 28,
+        "hullMass": 50,
+        "masslock": 6,
+        "pitch": 50,
+        "roll": 120,
+        "yaw": 18,
+        "crew": 1,
+        "reserveFuelCapacity": 0.34
+      },
+      "retailCost": 44800,
+      "bulkheads": [
+        {
+          "id": "bY",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "bZ",
+          "grp": "bh",
+          "cost": 26880,
+          "mass": 4,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "B0",
+          "grp": "bh",
+          "cost": 90050,
+          "mass": 8,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "B1",
+          "grp": "bh",
+          "cost": 140090,
+          "mass": 8,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "B2",
+          "grp": "bh",
+          "cost": 150390,
+          "mass": 8,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          2,
+          3,
+          3,
+          1,
+          2,
+          2,
+          2
+        ],
+        "hardpoints": [
+          1,
+          1,
+          1,
+          0
+        ],
+        "internal": [
+          3,
+          2,
+          {
+            "class": 2,
+            "name": "Military",
+            "eligible": {
+              "mahr": 1,
+              "hr": 1,
+              "scb": 1,
+              "mrp": 1,
+              "gsrp": 1,
+              "gmrp": 1,
+              "ghrp": 1
+            }
+          },
+          1,
+          1,
+          1,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "2D",
+          "3E",
+          "3E",
+          "1E",
+          "2E",
+          "2E",
+          "2C"
+        ],
+        "hardpoints": [
+          "pl:17",
+          "pl:17",
+          0,
+          0
+        ],
+        "internal": [
+          "sg:44",
+          "cr:00",
+          0,
+          0,
+          0,
+          0,
+          0,
+          "4F"
+        ]
+      }
+    },
+    "viper_mk_iv": {
+      "properties": {
+        "hullCost": 290680,
+        "speed": 280,
+        "boost": 360,
+        "minthrust": 64.815,
+        "boostEnergy": 10,
+        "boostInt": 5,
+        "baseShieldStrength": 160,
+        "baseArmour": 150,
+        "heatCapacity": 209,
+        "hardness": 35,
+        "hullMass": 190,
+        "masslock": 7,
+        "pitch": 33,
+        "roll": 90,
+        "yaw": 13,
+        "crew": 1,
+        "reserveFuelCapacity": 0.46
+      },
+      "retailCost": 437930,
+      "bulkheads": [
+        {
+          "id": "c6",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "c7",
+          "grp": "bh",
+          "cost": 175180,
+          "mass": 5,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "c8",
+          "grp": "bh",
+          "cost": 394140,
+          "mass": 9,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "c9",
+          "grp": "bh",
+          "cost": 931480,
+          "mass": 9,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "ca",
+          "grp": "bh",
+          "cost": 1032200,
+          "mass": 9,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          4,
+          4,
+          4,
+          2,
+          3,
+          3,
+          4
+        ],
+        "hardpoints": [
+          2,
+          2,
+          1,
+          1,
+          0,
+          0
+        ],
+        "internal": [
+          4,
+          4,
+          3,
+          {
+            "class": 3,
+            "name": "Military",
+            "eligible": {
+              "mahr": 1,
+              "hr": 1,
+              "scb": 1,
+              "mrp": 1,
+              "gsrp": 1,
+              "gmrp": 1,
+              "ghrp": 1
+            }
+          },
+          2,
+          2,
+          1,
+          1,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "4E",
+          "4E",
+          "4E",
+          "2E",
+          "3E",
+          "3E",
+          "4C"
+        ],
+        "hardpoints": [
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          "cr:02",
+          "cr:02",
+          "sg:44",
+          0,
+          "cr:00",
+          0,
+          0,
+          "sua:3w",
+          "dc:3x",
+          "4F"
+        ]
+      }
+    },
+    "type_6_transporter": {
+      "properties": {
+        "hullCost": 858010,
+        "speed": 220,
+        "boost": 350,
+        "minthrust": 40.909,
+        "boostEnergy": 10,
+        "boostInt": 4,
+        "baseShieldStrength": 125,
+        "baseArmour": 180,
+        "heatCapacity": 179,
+        "hardness": 35,
+        "hullMass": 155,
+        "masslock": 8,
+        "pitch": 30,
+        "roll": 100,
+        "yaw": 17,
+        "crew": 1,
+        "reserveFuelCapacity": 0.39
+      },
+      "retailCost": 1045950,
+      "bulkheads": [
+        {
+          "id": "Bn",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "Bo",
+          "grp": "bh",
+          "cost": 418380,
+          "mass": 12,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "Bp",
+          "grp": "bh",
+          "cost": 941350,
+          "mass": 23,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "Bq",
+          "grp": "bh",
+          "cost": 2224730,
+          "mass": 23,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "Br",
+          "grp": "bh",
+          "cost": 2465290,
+          "mass": 23,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          3,
+          4,
+          4,
+          2,
+          3,
+          2,
+          4
+        ],
+        "hardpoints": [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          6,
+          5,
+          5,
+          4,
+          4,
+          3,
+          2,
+          2,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "3E",
+          "4E",
+          "4E",
+          "2E",
+          "3E",
+          "2E",
+          "4C"
+        ],
+        "hardpoints": [
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          0,
+          "cr:03",
+          "cr:03",
+          "cr:02",
+          "cr:02",
+          "sg:44",
+          "cr:00",
+          0,
+          "sua:3w",
+          "4F"
+        ]
+      }
+    },
+    "asp_scout": {
+      "properties": {
+        "hullCost": 3811220,
+        "speed": 270,
+        "boost": 360,
+        "minthrust": 50,
+        "boostEnergy": 13,
+        "boostInt": 4.5,
+        "baseShieldStrength": 120,
+        "baseArmour": 180,
+        "heatCapacity": 210,
+        "hardness": 52,
+        "hullMass": 140,
+        "masslock": 8,
+        "pitch": 40,
+        "roll": 110,
+        "yaw": 18,
+        "crew": 2,
+        "reserveFuelCapacity": 0.47
+      },
+      "retailCost": 3961160,
+      "bulkheads": [
+        {
+          "id": "c1",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "c2",
+          "grp": "bh",
+          "cost": 1584460,
+          "mass": 21,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "c3",
+          "grp": "bh",
+          "cost": 3565040,
+          "mass": 42,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "c4",
+          "grp": "bh",
+          "cost": 8425380,
+          "mass": 42,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "c5",
+          "grp": "bh",
+          "cost": 9336440,
+          "mass": 42,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          4,
+          4,
+          4,
+          3,
+          4,
+          4,
+          4
+        ],
+        "hardpoints": [
+          2,
+          2,
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          5,
+          4,
+          3,
+          3,
+          2,
+          2,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "4E",
+          "4E",
+          "4E",
+          "3E",
+          "4E",
+          "4E",
+          "4C"
+        ],
+        "hardpoints": [
+          0,
+          0,
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          "cr:02",
+          "cr:02",
+          "sg:44",
+          0,
+          0,
+          0,
+          "sua:3w",
+          "4F"
+        ]
+      }
+    },
+    "federal_dropship": {
+      "properties": {
+        "hullCost": 13501480,
+        "speed": 200,
+        "boost": 300,
+        "minthrust": 55.556,
+        "boostEnergy": 19,
+        "boostInt": 6,
+        "baseShieldStrength": 200,
+        "baseArmour": 300,
+        "heatCapacity": 331,
+        "hardness": 60,
+        "hullMass": 500,
+        "masslock": 14,
+        "pitch": 30,
+        "roll": 80,
+        "yaw": 14,
+        "crew": 2,
+        "reserveFuelCapacity": 0.83
+      },
+      "retailCost": 14314210,
+      "bulkheads": [
+        {
+          "id": "bE",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "bF",
+          "grp": "bh",
+          "cost": 5725680,
+          "mass": 44,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "bG",
+          "grp": "bh",
+          "cost": 12882780,
+          "mass": 87,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "bH",
+          "grp": "bh",
+          "cost": 30446310,
+          "mass": 87,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "bI",
+          "grp": "bh",
+          "cost": 33738580,
+          "mass": 87,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          6,
+          6,
+          5,
+          5,
+          6,
+          4,
+          4
+        ],
+        "hardpoints": [
+          3,
+          2,
+          2,
+          2,
+          2,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          6,
+          6,
+          5,
+          5,
+          {
+            "class": 4,
+            "name": "Military",
+            "eligible": {
+              "mahr": 1,
+              "hr": 1,
+              "scb": 1,
+              "mrp": 1,
+              "gsrp": 1,
+              "gmrp": 1,
+              "ghrp": 1
+            }
+          },
+          {
+            "class": 4,
+            "name": "Military",
+            "eligible": {
+              "mahr": 1,
+              "hr": 1,
+              "scb": 1,
+              "mrp": 1,
+              "gsrp": 1,
+              "gmrp": 1,
+              "ghrp": 1
+            }
+          },
+          4,
+          3,
+          3,
+          2,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "6E",
+          "6E",
+          "5E",
+          "5E",
+          "6E",
+          "4E",
+          "4C"
+        ],
+        "hardpoints": [
+          0,
+          0,
+          0,
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          0,
+          "cr:04",
+          "cr:03",
+          "sg:4e",
+          0,
+          0,
+          "cr:02",
+          0,
+          0,
+          0,
+          "sua:3w",
+          "4F"
+        ]
+      }
+    },
+    "type_7_transport": {
+      "properties": {
+        "hullCost": 16774470,
+        "speed": 180,
+        "boost": 300,
+        "minthrust": 33.333,
+        "boostEnergy": 10,
+        "boostInt": 6,
+        "baseShieldStrength": 156,
+        "baseArmour": 340,
+        "heatCapacity": 232,
+        "hardness": 54,
+        "hullMass": 300,
+        "masslock": 10,
+        "pitch": 22,
+        "roll": 60,
+        "yaw": 22,
+        "crew": 1,
+        "reserveFuelCapacity": 0.52
+      },
+      "retailCost": 17472250,
+      "bulkheads": [
+        {
+          "id": "7C",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "7D",
+          "grp": "bh",
+          "cost": 6988900,
+          "mass": 32,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "7E",
+          "grp": "bh",
+          "cost": 15725030,
+          "mass": 63,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "7F",
+          "grp": "bh",
+          "cost": 37163480,
+          "mass": 63,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "7G",
+          "grp": "bh",
+          "cost": 41182100,
+          "mass": 63,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          5,
+          5,
+          5,
+          4,
+          4,
+          3,
+          5
+        ],
+        "hardpoints": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          7,
+          6,
+          6,
+          6,
+          6,
+          5,
+          5,
+          5,
+          3,
+          3,
+          2,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "4E",
+          "5E",
+          "5E",
+          "4E",
+          "3E",
+          "3E",
+          "5C"
+        ],
+        "hardpoints": [
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          0,
+          0,
+          "cr:04",
+          "cr:04",
+          "cr:04",
+          "cr:03",
+          "cr:03",
+          "sg:49",
+          0,
+          0,
+          0,
+          "sua:3w",
+          "4F"
+        ]
+      }
+    },
+    "imperial_clipper": {
+      "properties": {
+        "hullCost": 21035250,
+        "speed": 300,
+        "boost": 380,
+        "minthrust": 60,
+        "boostEnergy": 19,
+        "boostInt": 4.5,
+        "baseShieldStrength": 200,
+        "baseArmour": 270,
+        "heatCapacity": 304,
+        "hardness": 60,
+        "hullMass": 350,
+        "masslock": 12,
+        "pitch": 40,
+        "roll": 80,
+        "yaw": 18,
+        "crew": 2,
+        "reserveFuelCapacity": 0.74
+      },
+      "retailCost": 22295860,
+      "bulkheads": [
+        {
+          "id": "bp",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "bq",
+          "grp": "bh",
+          "cost": 8918340,
+          "mass": 30,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "br",
+          "grp": "bh",
+          "cost": 20066270,
+          "mass": 60,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "bs",
+          "grp": "bh",
+          "cost": 47423290,
+          "mass": 60,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "bt",
+          "grp": "bh",
+          "cost": 52551340,
+          "mass": 60,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          6,
+          6,
+          5,
+          5,
+          6,
+          5,
+          5
+        ],
+        "hardpoints": [
+          3,
+          3,
+          2,
+          2,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          7,
+          7,
+          6,
+          4,
+          4,
+          3,
+          3,
+          2,
+          2,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "6E",
+          "6E",
+          "5E",
+          "5E",
+          "6E",
+          "5E",
+          "5C"
+        ],
+        "hardpoints": [
+          0,
+          0,
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          0,
+          "cr:05",
+          "sg:4j",
+          "cr:02",
+          0,
+          0,
+          0,
+          "cr:00",
+          0,
+          "sua:3w",
+          "4F"
+        ]
+      }
+    },
+    "mandalay": {
+      "properties": {
+        "hullCost": 16527690,
+        "speed": 280,
+        "boost": 350,
+        "minthrust": 71.5,
+        "boostEnergy": 14,
+        "boostInt": 5,
+        "baseShieldStrength": 220,
+        "baseArmour": 230,
+        "heatCapacity": 245,
+        "hardness": 55,
+        "hullMass": 190,
+        "masslock": 11,
+        "pitch": 35,
+        "roll": 96,
+        "yaw": 28,
+        "crew": 2,
+        "reserveFuelCapacity": 0.5
+      },
+      "retailCost": 17639220,
+      "bulkheads": [
+        {
+          "id": "Bs",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "Bt",
+          "grp": "bh",
+          "cost": 7055690,
+          "mass": 19,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "Bu",
+          "grp": "bh",
+          "cost": 15875300,
+          "mass": 38,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "Bv",
+          "grp": "bh",
+          "cost": 37518620,
+          "mass": 38,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "Bw",
+          "grp": "bh",
+          "cost": 41575640,
+          "mass": 38,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          5,
+          5,
+          5,
+          4,
+          5,
+          5,
+          5
+        ],
+        "hardpoints": [
+          2,
+          2,
+          2,
+          2,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          6,
+          5,
+          4,
+          4,
+          3,
+          3,
+          2,
+          1,
+          1,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "5E",
+          "5E",
+          "5C",
+          "4E",
+          "5E",
+          "5E",
+          "5C"
+        ],
+        "hardpoints": [
+          0,
+          0,
+          0,
+          0,
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          "cr:04",
+          "sg:4e",
+          "cr:02",
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          "sua:3w",
+          "4F"
+        ]
+      }
+    },
+    "explorer_nx": {
+      "properties": {
+        "hullCost": 189326510,
+        "speed": 210,
+        "boost": 290,
+        "minthrust": 76,
+        "boostEnergy": 25,
+        "boostInt": 5.5,
+        "baseShieldStrength": 500,
+        "baseArmour": 345,
+        "heatCapacity": 341,
+        "hardness": 60,
+        "hullMass": 825,
+        "masslock": 21,
+        "pitch": 30,
+        "roll": 75,
+        "yaw": 14,
+        "crew": 4,
+        "reserveFuelCapacity": 1.14
+      },
+      "retailCost": 194861290,
+      "bulkheads": [
+        {
+          "id": "6W",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "6R",
+          "grp": "bh",
+          "cost": 9743070,
+          "mass": 15,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Mk II Ablative Lightweight"
+        },
+        {
+          "id": "6S",
+          "grp": "bh",
+          "cost": 77944520,
+          "mass": 30,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Mk II Ablative Reinforced"
+        },
+        {
+          "id": "6T",
+          "grp": "bh",
+          "cost": 175375160,
+          "mass": 60,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Mk II Ablative Military Grade"
+        },
+        {
+          "id": "6U",
+          "grp": "bh",
+          "cost": 414469960,
+          "mass": 60,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mk II Ablative Mirrored"
+        },
+        {
+          "id": "6V",
+          "grp": "bh",
+          "cost": 459288060,
+          "mass": 60,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Mk II Ablative Reactive"
+        }
+      ],
+      "slots": {
+        "standard": [
+          8,
+          7,
+          8,
+          5,
+          7,
+          8,
+          7
+        ],
+        "hardpoints": [
+          3,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          7,
+          6,
+          6,
+          5,
+          5,
+          5,
+          5,
+          4,
+          4,
+          3,
+          2,
+          1,
+          1,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "8E",
+          "7E",
+          "8E",
+          "5E",
+          "7E",
+          "8E",
+          "7C"
+        ],
+        "hardpoints": [
+          0,
+          0,
+          0,
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          "cr:05",
+          "sg:4j",
+          "cr:04",
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          "sua:3w",
+          "dc:3x",
+          "4F"
+        ]
+      }
+    },
+    "anaconda_mk_ii": {
+      "id": "anaconda_mk_ii",
+      "properties": {
+        "hullCost": 372041780,
+        "speed": 190,
+        "boost": 250,
+        "minthrust": 47,
+        "boostEnergy": 27,
+        "boostInt": 6,
+        "baseShieldStrength": 450,
+        "baseArmour": 745,
+        "hardness": 65,
+        "hullMass": 940,
+        "pitch": 27,
+        "roll": 65,
+        "yaw": 14,
+        "crew": 4,
+        "reserveFuelCapacity": 1.08,
+        "name": "Anaconda Mk II",
+        "manufacturer": "Faulcon DeLacy",
+        "class": 3,
+        "heatCapacity": null,
+        "masslock": null,
+        "pipSpeed": null,
+        "fighterHangars": true
+      },
+      "retailCost": 384958850,
+      "bulkheads": [
+        {
+          "id": "anaconda_mk_ii_b0",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "anaconda_mk_ii_b1",
+          "grp": "bh",
+          "cost": 19247940,
+          "mass": 15,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Mk II Ablative Lightweight"
+        },
+        {
+          "id": "anaconda_mk_ii_b2",
+          "grp": "bh",
+          "cost": 153983540,
+          "mass": 30,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Mk II Ablative Reinforced"
+        },
+        {
+          "id": "anaconda_mk_ii_b3",
+          "grp": "bh",
+          "cost": 346462970,
+          "mass": 60,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Mk II Ablative Military Grade"
+        },
+        {
+          "id": "anaconda_mk_ii_b4",
+          "grp": "bh",
+          "cost": 818807470,
+          "mass": 60,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mk II Ablative Mirrored"
+        },
+        {
+          "id": "anaconda_mk_ii_b5",
+          "grp": "bh",
+          "cost": 907348010,
+          "mass": 60,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Mk II Ablative Reactive"
+        }
+      ],
+      "slots": {
+        "standard": [
+          8,
+          7,
+          8,
+          5,
+          8,
+          8,
+          6
+        ],
+        "hardpoints": [
+          4,
+          3,
+          3,
+          3,
+          3,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          8,
+          7,
+          7,
+          {
+            "class": 6,
+            "name": "Cargo",
+            "eligible": {
+              "cr": 1,
+              "crl": 1,
+              "ft": 1
+            }
+          },
+          5,
+          5,
+          5,
+          {
+            "name": "Military",
+            "eligible": {
+              "mahr": 1,
+              "hr": 1,
+              "scb": 1,
+              "mrp": 1,
+              "gsrp": 1,
+              "gmrp": 1,
+              "ghrp": 1
+            },
+            "class": 5
+          },
+          {
+            "name": "Military",
+            "eligible": {
+              "mahr": 1,
+              "hr": 1,
+              "scb": 1,
+              "mrp": 1,
+              "gsrp": 1,
+              "gmrp": 1,
+              "ghrp": 1
+            },
+            "class": 5
+          },
+          4,
+          4,
+          3,
+          2,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "8E",
+          "7E",
+          "8E",
+          "5E",
+          "8E",
+          "8E",
+          "6C"
+        ],
+        "hardpoints": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          "cr:06",
+          "cr:05",
+          "sg:4o",
+          0,
+          "cr:03",
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          "sua:3w",
+          "dc:3x",
+          "4F"
+        ]
+      }
+    }
+  },
+  "modules": [
+    {
+      "id": "mk2_6d",
+      "name": "Mk II Cargo Rack",
+      "class": 6,
+      "rating": "D",
+      "cost": 587400,
+      "mass": 0,
+      "cargo": 96,
+      "restriction": "Cargo",
+      "ships": [
+        "anaconda_mk_ii",
+        "panthermkii"
+      ],
+      "grp": "crl",
+      "sourceName": "Mk II Cargo Rack"
+    },
+    {
+      "id": "mk2_5d",
+      "name": "Mk II Vessel Hangar",
+      "class": 5,
+      "rating": "D",
+      "cost": 794390,
+      "mass": 10,
+      "integrity": 60,
+      "power": 0.25,
+      "bays": 1,
+      "rebuildsperbay": 6,
+      "fightercost": 1030,
+      "ships": [
+        "anaconda_mk_ii",
+        "type_11_prospector",
+        "explorer_nx",
+        "panthermkii"
+      ],
+      "grp": "fh",
+      "sourceName": "Mk II Vessel Hangar"
+    },
+    {
+      "id": "mk2_6d",
+      "name": "Mk II Vessel Hangar",
+      "class": 6,
+      "rating": "D",
+      "cost": 2579690,
+      "mass": 20,
+      "integrity": 80,
+      "power": 0.35,
+      "bays": 2,
+      "rebuildsperbay": 8,
+      "fightercost": 1030,
+      "ships": [
+        "anaconda_mk_ii",
+        "type_11_prospector",
+        "explorer_nx",
+        "panthermkii"
+      ],
+      "grp": "fh",
+      "sourceName": "Mk II Vessel Hangar"
+    },
+    {
+      "id": "mk2_7d",
+      "name": "Mk II Vessel Hangar",
+      "class": 7,
+      "rating": "D",
+      "cost": 3269660,
+      "mass": 30,
+      "integrity": 120,
+      "power": 0.35,
+      "bays": 2,
+      "rebuildsperbay": 30,
+      "fightercost": 1030,
+      "ships": [
+        "anaconda_mk_ii",
+        "type_11_prospector",
+        "explorer_nx",
+        "panthermkii"
+      ],
+      "grp": "fh",
+      "sourceName": "Mk II Vessel Hangar"
+    },
+    {
+      "id": "mk2_2f",
+      "name": "Mk II Large Planetary Vehicle Hangar",
+      "class": 2,
+      "rating": "F",
+      "cost": 32400,
+      "mass": 9,
+      "integrity": 30,
+      "power": 0.5,
+      "bays": 1,
+      "ammocost": 1030,
+      "ships": [
+        "anaconda_mk_ii",
+        "type_11_prospector",
+        "explorer_nx",
+        "panthermkii"
+      ],
+      "grp": "pv",
+      "sourceName": "Mk II Large Planetary Vehicle Hangar"
+    },
+    {
+      "id": "mk2_4f",
+      "name": "Mk II Large Planetary Vehicle Hangar",
+      "class": 4,
+      "rating": "F",
+      "cost": 129600,
+      "mass": 15,
+      "integrity": 30,
+      "power": 0.8,
+      "bays": 2,
+      "ammocost": 1030,
+      "ships": [
+        "anaconda_mk_ii",
+        "type_11_prospector",
+        "explorer_nx",
+        "panthermkii"
+      ],
+      "grp": "pv",
+      "sourceName": "Mk II Large Planetary Vehicle Hangar"
+    },
+    {
+      "id": "mk2_6f",
+      "name": "Mk II Large Planetary Vehicle Hangar",
+      "class": 6,
+      "rating": "F",
+      "cost": 1036800,
+      "mass": 25.5,
+      "integrity": 30,
+      "power": 1.2,
+      "bays": 4,
+      "ammocost": 1030,
+      "ships": [
+        "anaconda_mk_ii",
+        "type_11_prospector",
+        "explorer_nx",
+        "panthermkii"
+      ],
+      "grp": "pv",
+      "sourceName": "Mk II Large Planetary Vehicle Hangar"
+    }
+  ],
+  "moduleUpdates": [
+    {
+      "grp": "crl",
+      "class": 7,
+      "rating": "D",
+      "cost": 1958680,
+      "cargo": 192,
+      "ships": [
+        "anaconda_mk_ii",
+        "panthermkii"
+      ]
+    },
+    {
+      "grp": "crl",
+      "class": 8,
+      "rating": "D",
+      "cost": 4929320,
+      "cargo": 384,
+      "ships": [
+        "anaconda_mk_ii",
+        "panthermkii"
+      ]
+    }
+  ]
+}

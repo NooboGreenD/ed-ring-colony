@@ -7,8 +7,8 @@
  * `build.ts`, а страница верфи — в `src/app/outfitting`.
  */
 
-/** Значение любого поля модуля: числа, строки и распределение урона. */
-export type ModuleValue = number | string | boolean | PreEngineered | Record<string, number | boolean>;
+/** Значение любого поля модуля: числа, строки, списки ограничений и объектные параметры. */
+export type ModuleValue = number | string | boolean | string[] | PreEngineered | Record<string, number | boolean>;
 
 /** Модуль верфи: id, класс, рейтинг и всё, что о нём знает игра. */
 /**
@@ -66,6 +66,8 @@ export interface OutfittingModule {
   passive?: number;
   /** Пометка из набора Coriolis: модуль ещё не разобран. */
   info?: string;
+  /** Корабли, на которых разрешён модуль (ограничение по корпусу). */
+  ships?: string[];
   /** Powerplay-модуль: доступен только за лояльность фракции. */
   pp?: string;
   /** Заводская настройка: чертежи, уровень и разрешённая эксперименталка. */
@@ -108,11 +110,11 @@ export interface ShipProperties {
   boostEnergy: number;
   baseShieldStrength: number;
   baseArmour: number;
-  heatCapacity: number;
+  heatCapacity: number | null;
   hardness: number;
   hullMass: number;
-  masslock: number;
-  pipSpeed: number;
+  masslock: number | null;
+  pipSpeed: number | null;
   crew: number;
   reserveFuelCapacity: number;
   fighterHangars?: boolean;
@@ -242,6 +244,8 @@ export interface ShipBuild {
 /** Слот сборки в удобном для интерфейса виде. */
 export interface BuildSlot {
   key: string;
+  /** ID корабля-владельца слота; нужен для проверок ограниченных модулей. */
+  shipId?: string;
   section: 'standard' | 'hardpoints' | 'internal';
   index: number;
   class: number;

@@ -25,19 +25,26 @@ function resolveDefault(
   data: OutfittingData,
   entry: string | number | undefined,
   groups: string[],
+  shipId: string,
 ): string | null {
   if (!entry || entry === 0) return null;
   const text = String(entry);
+  const qualifiedRef = /^([a-z][a-z0-9_]*):(.+)$/.exec(text);
+  if (qualifiedRef && groups.includes(qualifiedRef[1])) {
+    const module = findModule(data, qualifiedRef[1], qualifiedRef[2]);
+    return module && (!module.ships || module.ships.includes(shipId)) ? moduleRef(module) : null;
+  }
   const classRating = /^(\d)([A-Z])$/.exec(text);
   if (classRating && groups.length === 1) {
     const module = (data.modules[groups[0]] ?? []).find(
-      (candidate) => candidate.class === Number(classRating[1]) && candidate.rating === classRating[2],
+      (candidate) => candidate.class === Number(classRating[1]) && candidate.rating === classRating[2]
+        && (!candidate.ships || candidate.ships.includes(shipId)),
     );
     if (module) return moduleRef(module);
   }
   for (const group of groups) {
     const module = findModule(data, group, text);
-    if (module) return moduleRef(module);
+    if (module && (!module.ships || module.ships.includes(shipId))) return moduleRef(module);
   }
   return null;
 }
@@ -57,11 +64,11 @@ export function defaultBuild(data: OutfittingData, shipId: string): ShipBuild {
 
   build.standard = ship.slots.standard.map((size, index) => {
     const group = STANDARD_GROUPS[index];
-    const fromDefaults = resolveDefault(data, ship.defaults?.standard?.[index], [group]);
+    const fromDefaults = resolveDefault(data, ship.defaults?.standard?.[index], [group], shipId);
     if (fromDefaults) return fromDefaults;
     // Заводская запись потерялась — ставим самый доступный модуль по размеру.
     const fallback = (data.modules[group] ?? [])
-      .filter((module) => module.class === size)
+      .filter((module) => module.class === size && (!module.ships || module.ships.includes(shipId)))
       .sort((left, right) => Number(left.cost ?? 0) - Number(right.cost ?? 0))[0];
     return fallback ? moduleRef(fallback) : null;
   });
@@ -69,14 +76,14 @@ export function defaultBuild(data: OutfittingData, shipId: string): ShipBuild {
   const hardpointGroups = groupsOfSection(data, 'hardpoints');
   build.hardpoints = ship.slots.hardpoints.map((slot, index) =>
     typeof slot !== 'number' && slot.archived ? null : resolveDefault(data, ship.defaults?.hardpoints?.[index],
-      typeof slot === 'number' || !slot.eligible ? hardpointGroups : hardpointGroups.filter((group) => !!slot.eligible?.[group])),
+      typeof slot === 'number' || !slot.eligible ? hardpointGroups : hardpointGroups.filter((group) => !!slot.eligible?.[group]), shipId),
   );
 
   const internalGroups = groupsOfSection(data, 'internal');
   build.internal = ship.slots.internal.map((slot, index) =>
     typeof slot !== 'number' && slot.archived ? null : resolveDefault(data, ship.defaults?.internal?.[index],
       typeof slot === 'number' || !slot.eligible ? [...internalGroups, 'pas']
-        : [...internalGroups, 'pas'].filter((group) => !!slot.eligible?.[group])),
+        : [...internalGroups, 'pas'].filter((group) => !!slot.eligible?.[group]), shipId),
   );
 
   return build;
