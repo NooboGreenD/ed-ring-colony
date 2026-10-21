@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabaseServer';
+import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { localizedValue, safeContentLocale } from '@/lib/localizedContent';
 import { footerFromContent } from '@/lib/siteFooter';
 import { NextResponse } from 'next/server';
@@ -29,18 +29,32 @@ export async function GET(request: Request) {
   const locale = safeContentLocale(searchParams.get('locale'));
 
   const supabase = await createClient();
+  // Construction sites are intentionally private to service_role: count only
+  // completed sites reported by registered site commanders, not route hubs.
+  const service = createServiceClient();
 
-  const [siteResult, newsResult, galnetResult, profilesResult, hubsResult, doneResult] = await Promise.all([
+  const [siteResult, newsResult, galnetResult, profilesResult, systemsResult, facilitiesResult] = await Promise.all([
     supabase.from('site_content').select('*').eq('id', 1).maybeSingle(),
     supabase.from('news').select('*').order('published_at', { ascending: false }).limit(3),
     supabase.from('galnet_news').select('*').order('published_at', { ascending: false }).limit(3),
     supabase.from('public_profiles').select('id', { count: 'exact', head: true }),
-    supabase.from('hubs').select('id', { count: 'exact', head: true }),
-    supabase.from('hubs').select('id', { count: 'exact', head: true }).eq('status', 'done'),
+    // Route systems are considered built when either the status was marked
+    // done or their synchronized progress reached 100%.
+    supabase.from('route_systems').select('id', { count: 'exact', head: true })
+      .or('status.eq.done,progress.gte.100'),
+    service.from('colonisation_sites').select('market_id', { count: 'exact', head: true })
+      .gte('construction_progress', 100)
+      .not('user_id', 'is', null),
   ] as const);
 
   const degraded: string[] = [];
-  for (const [label, result] of [['news', newsResult], ['galnet', galnetResult]] as const) {
+  for (const [label, result] of [
+    ['news', newsResult],
+    ['galnet', galnetResult],
+    ['cmdrs', profilesResult],
+    ['systems', systemsResult],
+    ['built', facilitiesResult],
+  ] as const) {
     if (result.error) {
       console.error(`[home-data] ${label}:`, result.error.message);
       degraded.push(label);
@@ -75,9 +89,9 @@ export async function GET(request: Request) {
       footer: footerFromContent(site, locale),
       news: normalize((newsResult.data ?? []) as Row[], false),
       galnet: normalize((galnetResult.data ?? []) as Row[], true),
-      cmdrs: profilesResult.count ?? 0,
-      systems: hubsResult.count ?? 0,
-      built: doneResult.count ?? 0,
+      cmdrs: profilesResult.error ? null : profilesResult.count ?? 0,
+      systems: systemsResult.error ? null : systemsResult.count ?? 0,
+      built: facilitiesResult.error ? null : facilitiesResult.count ?? 0,
       updatedAt: text(site, 'updated_at'),
       ...(degraded.length ? { degraded } : {}),
     },
