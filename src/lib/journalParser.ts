@@ -946,6 +946,37 @@ export interface ParsedColonisationContribution {
   total: number;
 }
 
+export interface ParsedCommunityGoalReport {
+  game_cg_id: number;
+  title: string;
+  system_name: string | null;
+  station_name: string | null;
+  expiry_date: string | null;
+  player_contribution: number;
+  current_total: number | null;
+  tier_reached: number | null;
+  tier_max: number | null;
+  contributors_num: number | null;
+  percentile_band: number | null;
+  is_top_rank: boolean | null;
+  is_complete: boolean | null;
+  observed_at: string;
+}
+
+function optionalNonNegativeInteger(value: unknown): number | null {
+  const parsed = typeof value === 'number'
+    ? value
+    : (typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : NaN);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function communityGoalTier(value: unknown): number | null {
+  const direct = optionalNonNegativeInteger(value);
+  if (direct !== null) return direct;
+  const match = String(value ?? '').match(/\d+/);
+  return match ? Number(match[0]) : null;
+}
+
 function constructionProgress(value: unknown, complete: boolean): number {
   if (complete) return 100;
   const raw = finiteNonNegative(value);
@@ -962,6 +993,7 @@ export function parseColonisationEvents(text: string): {
   cmdrName: string | null;
   depotEvents: ParsedColonisationDepot[];
   contributionEvents: ParsedColonisationContribution[];
+  communityGoalReports: ParsedCommunityGoalReport[];
   stats: {
     eventsParsed: number;
     depotEventsFound: number;
@@ -973,6 +1005,7 @@ export function parseColonisationEvents(text: string): {
   let currentSystem: string | null = null;
   const depotEvents: ParsedColonisationDepot[] = [];
   const contributionEvents: ParsedColonisationContribution[] = [];
+  const communityGoalReports: ParsedCommunityGoalReport[] = [];
   const seen = new Set<string>();
   const stats = {
     eventsParsed: 0,
@@ -1021,6 +1054,33 @@ export function parseColonisationEvents(text: string): {
     const systemName = typeof event.StarSystem === 'string' && event.StarSystem.trim()
       ? event.StarSystem.trim()
       : currentSystem || '';
+    if (eventName === 'CommunityGoal' && timestamp) {
+      const currentGoals = Array.isArray(event.CurrentGoals) ? event.CurrentGoals : [];
+      for (const currentGoal of currentGoals) {
+        if (!currentGoal || typeof currentGoal !== 'object' || Array.isArray(currentGoal)) continue;
+        const goal = currentGoal as Record<string, unknown>;
+        const gameCgId = optionalNonNegativeInteger(goal.CGID);
+        const title = typeof goal.Title === 'string' ? goal.Title.trim() : '';
+        if (!gameCgId || !title) continue;
+        communityGoalReports.push({
+          game_cg_id: gameCgId,
+          title,
+          system_name: typeof goal.SystemName === 'string' ? goal.SystemName.trim() || null : null,
+          station_name: typeof goal.MarketName === 'string' ? goal.MarketName.trim() || null : null,
+          expiry_date: typeof goal.Expiry === 'string' ? goal.Expiry : null,
+          player_contribution: optionalNonNegativeInteger(goal.PlayerContribution) ?? 0,
+          current_total: optionalNonNegativeInteger(goal.CurrentTotal),
+          tier_reached: communityGoalTier(goal.TierReached),
+          tier_max: communityGoalTier(goal.TierMax),
+          contributors_num: optionalNonNegativeInteger(goal.NumContributors),
+          percentile_band: optionalNonNegativeInteger(goal.PlayerPercentileBand),
+          is_top_rank: typeof goal.PlayerInTopRank === 'boolean' ? goal.PlayerInTopRank : null,
+          is_complete: typeof goal.IsComplete === 'boolean' ? goal.IsComplete : null,
+          observed_at: timestamp,
+        });
+      }
+      continue;
+    }
     if (eventName === 'ColonisationConstructionDepot') {
       const marketId = journalId(event.MarketID, rawJournalInteger(line, 'MarketID'));
       const constructionId = journalId(event.ConstructionID, rawJournalInteger(line, 'ConstructionID'));
@@ -1075,5 +1135,5 @@ export function parseColonisationEvents(text: string): {
     }
   }
 
-  return { cmdrName, depotEvents, contributionEvents, stats };
+  return { cmdrName, depotEvents, contributionEvents, communityGoalReports, stats };
 }

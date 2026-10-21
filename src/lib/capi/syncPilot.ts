@@ -21,6 +21,7 @@ import { capiProfileRow, isBlankProfile, pilotStatsRow } from './profile.ts';
 import { upsertResilient, updateResilient, schemaWarning } from './persist.ts';
 import { syncMemberLocation } from './locationSync.ts';
 import { parseColonisationEvents } from '@/lib/journalParser';
+import { persistCommunityGoalReports } from '@/lib/communityGoalReports';
 import {
   persistColonisationSites,
   siteRowFromDepot,
@@ -211,6 +212,13 @@ export async function syncCapiPilot(
 
       if (journal.text) {
         const events = parseColonisationEvents(journal.text);
+        if (events.communityGoalReports.length > 0) {
+          try {
+            await persistCommunityGoalReports(svc, userId, events.communityGoalReports, 'capi');
+          } catch (err) {
+            warnings.push(`Отчёты Community Goals не сохранены: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         const rows = events.depotEvents
           .map((ev) => siteRowFromDepot(userId, ev))
           .filter((row): row is ColonisationSiteRow => row !== null);

@@ -59,9 +59,18 @@ export async function POST(req: Request) {
     const constructionEvents = Array.isArray(body.construction_events)
       ? body.construction_events
       : (Array.isArray(body.constructionEvents) ? body.constructionEvents : []);
+    const communityGoalReports = Array.isArray(body.community_goal_reports)
+      ? body.community_goal_reports
+      : (Array.isArray(body.communityGoalReports) ? body.communityGoalReports : []);
     if (constructionEvents.length > MAX_CONSTRUCTION_EVENTS_PER_REQUEST) {
       return NextResponse.json(
         { error: `Too many construction events in one request (max ${MAX_CONSTRUCTION_EVENTS_PER_REQUEST})` },
+        { status: 413 },
+      );
+    }
+    if (communityGoalReports.length > MAX_CONSTRUCTION_EVENTS_PER_REQUEST) {
+      return NextResponse.json(
+        { error: `Too many Community Goal reports in one request (max ${MAX_CONSTRUCTION_EVENTS_PER_REQUEST})` },
         { status: 413 },
       );
     }
@@ -108,6 +117,7 @@ export async function POST(req: Request) {
       ...outcome,
       constructionInserted: telemetry?.constructionInserted ?? 0,
       constructionDuplicates: telemetry?.constructionDuplicates ?? 0,
+      communityGoalReportsStored: ingest.communityGoalReportsStored,
       snapshotInserted: telemetry?.snapshotInserted ?? 0,
       pilotStatsUpdated: telemetry?.pilotStatsUpdated ?? false,
       // 'web_source' — сводка пилота защищена загрузкой журналов на сайте

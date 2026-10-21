@@ -537,7 +537,7 @@ class ApiClientUploadTests(unittest.TestCase):
         def fake_post(payload, timeout=30):
             time.sleep(latency)
             calls["count"] += 1
-            rows = payload.get("deliveries") or payload.get("construction_events") or []
+            rows = payload.get("deliveries") or payload.get("construction_events") or payload.get("community_goal_reports") or []
             calls["rows"] += len(rows)
             calls["max_rows"] = max(calls["max_rows"], len(rows))
             if fail_predicate is not None and fail_predicate(payload):
@@ -547,11 +547,13 @@ class ApiClientUploadTests(unittest.TestCase):
                 "eventsFound": 0,
                 "constructionInserted": len(payload.get("construction_events", [])),
                 "snapshotInserted": len(payload.get("construction_events", [])),
+                "communityGoalReportsStored": len(payload.get("community_goal_reports", [])),
             }), {
                 "inserted": len(payload.get("deliveries", [])),
                 "eventsFound": 0,
                 "constructionInserted": len(payload.get("construction_events", [])),
                 "snapshotInserted": len(payload.get("construction_events", [])),
+                "communityGoalReportsStored": len(payload.get("community_goal_reports", [])),
             }
 
         client._post_upload = fake_post
@@ -658,10 +660,21 @@ class ApiClientUploadTests(unittest.TestCase):
         self.assertLessEqual(calls["max_rows"], 500, "пачка превысила лимит сервера")
         self.assertEqual(result["constructionInserted"], 1200)
 
+    def test_community_goal_reports_are_chunked_and_counted(self):
+        client, calls = self._client_with_stub(latency=0.0)
+        reports = [{"game_cg_id": index + 1} for index in range(1200)]
+        result = client.upload_community_goal_reports(reports, "CMDR")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stored"], 1200)
+        self.assertEqual(result["communityGoalReportsStored"], 1200)
+        self.assertEqual(calls["count"], 3)
+        self.assertLessEqual(calls["max_rows"], 500)
+
     def test_empty_payloads_are_noop(self):
         client, calls = self._client_with_stub()
         self.assertTrue(client.upload_deliveries([], "CMDR")["ok"])
         self.assertTrue(client.upload_construction_events([], "CMDR")["ok"])
+        self.assertTrue(client.upload_community_goal_reports([], "CMDR")["ok"])
         self.assertEqual(calls["count"], 0)
 
 

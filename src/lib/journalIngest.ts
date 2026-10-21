@@ -23,6 +23,7 @@ import { persistImportedDeliveries } from './deliveryImport.ts';
 import { persistJournalTelemetry, type JournalTelemetryOutcome, type PilotStatsSource } from './journalTelemetry.ts';
 import { resetJournalData } from './journalReset.ts';
 import { syncProjectsFromSites, type ProjectSyncResult } from './projects/projectSync.ts';
+import { persistCommunityGoalReports } from './communityGoalReports.ts';
 
 type Svc = any;
 
@@ -43,6 +44,7 @@ export interface JournalBatchOutcome {
   telemetry: JournalTelemetryOutcome | null;
   reset: Awaited<ReturnType<typeof resetJournalData>> | null;
   projects: ProjectSyncResult | null;
+  communityGoalReportsStored: number;
 }
 
 /** Нужна ли очистка перед этой пачкой: флаг читается только в первой. */
@@ -110,7 +112,15 @@ export async function ingestJournalBatch(svc: Svc, input: JournalBatchInput): Pr
     }
   }
 
-  return { deliveries, telemetry, reset, projects };
+  const reportPayload = body.communityGoalReports ?? body.community_goal_reports;
+  const communityGoalReportsStored = await persistCommunityGoalReports(
+    svc,
+    userId,
+    reportPayload,
+    source,
+  );
+
+  return { deliveries, telemetry, reset, projects, communityGoalReportsStored };
 }
 
 /** Короткая сводка реакций для ответа клиенту. */
