@@ -36,7 +36,7 @@
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "^2.114.0",
     "lru-cache": "^11.5.2",
-    "next": "16.3.5",
+    "next": "16.4.2",
     "pg": "^8.23.0",
     "pg-copy-streams": "^7.0.0",
     "react": "19.2.8",
@@ -64,11 +64,14 @@
     "jsdom": "^28.1.0",
     "libpg-query": "^18.1.5",
     "postcss": "^8.5.26",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "tailwindcss": "^4.3.3",
     "typescript": "^5"
   },
   "engines": {
     "node": ">=22.18.0"
+  },
+  "overrides": {
+    "source-map-js": "1.2.2"
   }
 }

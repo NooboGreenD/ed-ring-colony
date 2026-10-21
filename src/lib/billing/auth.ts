@@ -22,6 +22,16 @@ export interface BillingActor {
 function previewAllowed(req?: Request): boolean {
   if (process.env.NODE_ENV === 'production') return false;
   if (process.env.SUPABASE_SERVICE_ROLE_KEY) return false;
+  // Never turn an unauthenticated request into an administrator if this
+  // process can reach a real Supabase/Postgres instance. The public anon key
+  // is not a credential: RLS, not this development shortcut, must protect DB.
+  if (
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.SUPABASE_INTERNAL_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_DB_URL ||
+    process.env.DATABASE_URL
+  ) return false;
   if (req?.headers.has('authorization')) return false;
   return process.env.NODE_ENV === 'development' || process.env.BILLING_PREVIEW_ADMIN === '1';
 }

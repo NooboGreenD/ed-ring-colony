@@ -460,10 +460,20 @@ test('anonymous production and staff roles cannot read/write, even with preview 
   assert.equal(lib.db.calls.length, 0);
 });
 
-test('development preview is allowed only without a service key or supplied bearer', async () => {
+test('development preview is allowed only when no database is configured and no bearer is supplied', async () => {
   process.env.NODE_ENV = 'development'; lib.auth.user = null;
   assert.equal((await lib.requireCatalogAdmin(new Request('https://site.example/api/admin/outfitting'))).actor, 'CMDR Preview (local)');
   assert.equal((await lib.requireCatalogAdmin(new Request('https://site.example/api/admin/outfitting', { headers: { authorization: 'Bearer invalid' } }))).response.status, 401);
+
+  // A public URL/anon key is enough to reach the database API. Do not grant
+  // local preview-admin rights just because the privileged key is absent.
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://db.example.test';
+  assert.equal((await lib.requireCatalogAdmin(new Request('https://site.example/api/admin/outfitting'))).response.status, 401);
+  delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'public-anon-key';
+  assert.equal((await lib.requireCatalogAdmin(new Request('https://site.example/api/admin/outfitting'))).response.status, 401);
+  delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'configured-key';
   assert.equal((await lib.requireCatalogAdmin(new Request('https://site.example/api/admin/outfitting'))).response.status, 401);
 });

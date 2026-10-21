@@ -9,7 +9,15 @@ export async function requireCatalogAdmin(request: Request): Promise<
   if (!user) {
     // Allow a usable local sandbox, but never grant anonymous access to a
     // configured database or to a production server, even on a preview host.
-    if (process.env.NODE_ENV === 'development' && !process.env.SUPABASE_SERVICE_ROLE_KEY && !request.headers.has('authorization')) {
+    const databaseConfigured = Boolean(
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.SUPABASE_INTERNAL_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.SUPABASE_DB_URL ||
+      process.env.DATABASE_URL
+    );
+    if (process.env.NODE_ENV === 'development' && !databaseConfigured && !request.headers.has('authorization')) {
       return { actor: 'CMDR Preview (local)' };
     }
     return { response: NextResponse.json({ error: 'Требуется авторизация' }, { status: 401, headers: { 'Cache-Control': 'no-store' } }) };
