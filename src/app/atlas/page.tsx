@@ -1,6 +1,6 @@
 'use client';
 
-import dynamic from 'next/dynamic';
+import { GalaxyMapClient } from '@/components/GalaxyMap/GalaxyMapClient';
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -46,15 +46,6 @@ import { countByWorldType, downloadCsv, favoriteKey, filterCandidates, formatCoo
 
 import { atlasFocusFromParams } from '@/lib/stationSearch';
 import { systemId64, systemPageHref } from '@/lib/systemIdentity';
-
-const GalaxyMap = dynamic(() => import('@/components/GalaxyMap'), {
-  ssr: false,
-  loading: () => (
-    <div className="atlas-map-loading">
-      Загрузка 3D-движка…
-    </div>
-  ),
-});
 
 type ProjectItem = {
   id: number;
@@ -994,7 +985,12 @@ function AtlasPageInner() {
             <IconAtlas size={14} /> Панель Atlas
           </button>
         )}
-        <GalaxyMap
+        <GalaxyMapClient
+          loadingFallback={(
+            <div className="atlas-map-loading">
+              Загрузка 3D-движка…
+            </div>
+          )}
           // 3D-слой синхронизирован с пилюлями категорий, а не только со списком.
           atlasCandidates={filteredCandidates}
           squadronRouteSystems={allRoutePoints}

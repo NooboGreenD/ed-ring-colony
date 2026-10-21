@@ -23,6 +23,24 @@ function supabaseGatewayTarget(raw) {
 
 const supabaseGateway = supabaseGatewayTarget(process.env.SUPABASE_INTERNAL_URL);
 
+function usesSameOriginSupabaseGateway(raw) {
+  if (!raw?.trim()) return false;
+  try {
+    return new URL(raw.trim()).pathname.replace(/\/+$/, '') === '/api/supabase';
+  } catch {
+    return false;
+  }
+}
+
+// Do not silently build a broken same-origin endpoint. With the browser URL
+// pointing at /api/supabase, the private Kong rewrite is required for REST,
+// Auth, and Realtime (including WebSocket Upgrade) to reach Supabase.
+if (usesSameOriginSupabaseGateway(process.env.NEXT_PUBLIC_SUPABASE_URL) && !supabaseGateway) {
+  throw new Error(
+    'NEXT_PUBLIC_SUPABASE_URL uses /api/supabase but SUPABASE_INTERNAL_URL is empty; configure the private Kong URL before building.',
+  );
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,

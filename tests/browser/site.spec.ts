@@ -66,6 +66,12 @@ test('opening email link strips the token but does not consume it before explici
 test('production galaxy map mounts the actual React 19 / R3F renderer with WebGL2', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => {
+    (window as Window & { __webglContextLost?: boolean }).__webglContextLost = false;
+    document.addEventListener('webglcontextlost', () => {
+      (window as Window & { __webglContextLost?: boolean }).__webglContextLost = true;
+    }, true);
+  });
   await page.goto('/map');
   await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 });
   await expect.poll(async () => page.locator('canvas').evaluate((canvas: HTMLCanvasElement) => canvas.width)).toBeGreaterThan(0);
@@ -81,7 +87,29 @@ test('production galaxy map mounts the actual React 19 / R3F renderer with WebGL
       width: Math.min(300, metadata.width! - 10), height: 100 }).stats();
     return Math.max(...stats.channels.slice(0, 3).map(channel => channel.max));
   }, { timeout: 30_000, intervals: [250, 500, 1000] }).toBeGreaterThan(10);
+  // The Next CSR-bailout error used to unmount Canvas shortly after first paint;
+  // that cleanup was surfaced by Three.js as a misleading context-loss warning.
+  await page.waitForTimeout(1_500);
+  await expect(page.locator('canvas')).toBeVisible();
+  expect(await page.evaluate(() => (window as Window & { __webglContextLost?: boolean }).__webglContextLost)).toBe(false);
   await page.screenshot({ path: '.cache/galaxy-smoke.png' });
+  expect(errors).toEqual([]);
+});
+
+test('Atlas lazy-loads its shared WebGL map without a React CSR-bailout error', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => {
+    (window as Window & { __webglContextLost?: boolean }).__webglContextLost = false;
+    document.addEventListener('webglcontextlost', () => {
+      (window as Window & { __webglContextLost?: boolean }).__webglContextLost = true;
+    }, true);
+  });
+  await page.goto('/atlas?tab=search');
+  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(1_500);
+  await expect(page.locator('canvas')).toBeVisible();
+  expect(await page.evaluate(() => (window as Window & { __webglContextLost?: boolean }).__webglContextLost)).toBe(false);
   expect(errors).toEqual([]);
 });
 
