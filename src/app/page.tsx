@@ -23,9 +23,8 @@ export default function Home() {
   const c = data?.content ?? {};
   const news = data?.news ?? [];
   const galnet = data?.galnet ?? [];
-  const cmdrs = data?.cmdrs ?? 0;
-  const systems = data?.systems ?? 0;
-  const built = data?.built ?? 0;
+  const formatCount = (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString(locale) : '—';
 
   const kicker = c?.kicker || '';
   const title1 = c?.title1 || '';
@@ -61,13 +60,13 @@ export default function Home() {
         </div>
         <div className="stats">
           <div>
-            {t('home.statsCmdrs')}:<b>{cmdrs.toLocaleString(locale)}</b>
+            {t('home.statsCmdrs')}:<b>{formatCount(data?.cmdrs)}</b>
           </div>
           <div>
-            {t('home.statsSystems')}:<b>{systems.toLocaleString(locale)}</b>
+            {t('home.statsSystems')}:<b>{formatCount(data?.systems)}</b>
           </div>
           <div>
-            {t('home.statsBuilt')}:<b>{built.toLocaleString(locale)}</b>
+            {t('home.statsBuilt')}:<b>{formatCount(data?.built)}</b>
           </div>
         </div>
         <div className="initiate">{t('home.initiate')}</div>
