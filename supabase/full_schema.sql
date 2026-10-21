@@ -7591,6 +7591,8 @@ CREATE TABLE community_goals (
   is_complete     BOOLEAN DEFAULT false,
   is_colonisation_related BOOLEAN DEFAULT false,
   raw_data        JSONB,
+  inara_url       TEXT,
+  source_updated_at TIMESTAMPTZ,
   updated_at      TIMESTAMPTZ DEFAULT NOW(),
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -17539,3 +17541,13 @@ BEGIN
   END IF;
 END $$;
 NOTIFY pgrst, 'reload schema';
+
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261025090000_cg_inara_details.sql                 │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Retain the source link and source-side timestamp returned by Inara.
+ALTER TABLE public.community_goals
+  ADD COLUMN IF NOT EXISTS inara_url TEXT,
+  ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;

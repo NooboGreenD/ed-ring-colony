@@ -16,14 +16,14 @@ export class InaraClient {
 
   async call(
     eventName: string,
-    eventData: Record<string, unknown>
+    eventData: Record<string, unknown> | unknown[]
   ): Promise<InaraApiResponse> {
     const req: InaraApiRequest = {
       header: {
         appName: 'ED Ring Colony',
         appVersion: '1.0',
         APIkey: this.apiKey,
-        isDeveloped: true,
+        isBeingDeveloped: false,
       },
       events: [
         {
@@ -57,7 +57,15 @@ export class InaraClient {
   }
 
   async getCommunityGoals(): Promise<InaraCommunityGoal[]> {
-    const res = await this.call('getCommunityGoals', {});
-    return ((res.events[0]?.eventData as unknown) as InaraCommunityGoal[]) || [];
+    const res = await this.call('getCommunityGoalsRecent', []);
+    const event = res.events[0];
+    if (!event) throw new Error('Inara Community Goals API returned no event result');
+    if (event.eventStatus === 204) return [];
+    if (event.eventStatus !== 200 && event.eventStatus !== 202) {
+      throw new Error(`Inara Community Goals API error: ${event.eventStatusText || event.eventStatus}`);
+    }
+
+    if (!Array.isArray(event.eventData)) return [];
+    return event.eventData as InaraCommunityGoal[];
   }
 }

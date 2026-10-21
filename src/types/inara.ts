@@ -6,13 +6,13 @@ export interface InaraApiHeader {
   appName: string;
   appVersion: string;
   APIkey: string;
-  isDeveloped: boolean;
+  isBeingDeveloped: boolean;
 }
 
 export interface InaraApiEvent {
   eventName: string;
   eventTimestamp: string;
-  eventData: Record<string, unknown>;
+  eventData: Record<string, unknown> | unknown[];
 }
 
 export interface InaraApiRequest {
@@ -23,7 +23,7 @@ export interface InaraApiRequest {
 export interface InaraApiResponseEvent {
   eventStatus: number;
   eventStatusText?: string;
-  eventData?: Record<string, unknown>;
+  eventData?: Record<string, unknown> | unknown[];
 }
 
 export interface InaraApiResponse {
@@ -54,16 +54,28 @@ export interface InaraRank {
 }
 
 export interface InaraCommunityGoal {
-  cgID: number;
-  cgName: string;
-  starsystemName: string;
-  stationName: string;
-  objective: string;
-  reward: string;
-  tierReached: number;
-  tierMax: number;
-  contributors: number;
-  contributionsTotal: number;
-  expiryDate: string;
-  isCompleted: boolean;
+  [key: string]: unknown;
+  communitygoalGameID?: number;
+  communitygoalName: string;
+  starsystemName?: string;
+  stationName?: string;
+  goalExpiry?: string;
+  tierReached?: number | string;
+  tierMax?: number | string;
+  contributorsNum?: number;
+  contributionsTotal?: number;
+  isCompleted?: boolean;
+  lastUpdate?: string;
+  goalObjectiveText?: string;
+  goalRewardText?: string;
+  goalDescriptionText?: string;
+  inaraURL?: string;
+
+  /** Legacy field aliases tolerated for previously documented payloads. */
+  cgID?: number;
+  cgName?: string;
+  objective?: string;
+  reward?: string;
+  contributors?: number;
+  expiryDate?: string;
 }
