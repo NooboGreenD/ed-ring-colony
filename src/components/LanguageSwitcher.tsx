@@ -4,7 +4,7 @@ import { useI18n } from '@/lib/i18n/I18nContext';
 import { LOCALE_FLAGS } from '@/lib/i18n/translations';
 import { useState, useRef, useEffect } from 'react';
 
-export default function LanguageSwitcher() {
+export default function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
   const { locale, setLocale, supportedLocales, localeNames } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -26,8 +26,10 @@ export default function LanguageSwitcher() {
         style={{
           display: 'flex',
           alignItems: 'center',
+          justifyContent: compact ? 'center' : 'flex-start',
           gap: 6,
-          padding: '6px 10px',
+          width: compact ? 38 : undefined,
+          padding: compact ? '6px 8px' : '6px 10px',
           fontSize: 12,
           background: 'transparent',
           border: '1px solid #3a3d40',
@@ -37,13 +39,14 @@ export default function LanguageSwitcher() {
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
           letterSpacing: 1,
         }}
-        title="Language"
+        title={localeNames[locale] ?? locale}
+        aria-label={localeNames[locale] ?? locale}
       >
         <span>{LOCALE_FLAGS[locale] ?? ''}</span>
-        <span>{localeNames[locale] ?? locale}</span>
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        {!compact && <span>{localeNames[locale] ?? locale}</span>}
+        {!compact && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <polyline points="6 9 12 15 18 9" />
-        </svg>
+        </svg>}
       </button>
       {open && (
         <div

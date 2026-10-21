@@ -81,6 +81,17 @@ test('словарь меню: каждый пункт Sidebar переведё�
   assert.deepEqual(missing, [], `пункт меню без перевода:\n${missing.join('\n')}`);
 });
 
+test('страница целей сообщества переведена во всех локалях', () => {
+  const dictionaries = localeDictionaries();
+  const goalKeys = declaredKeys().filter((key) => key.startsWith('cg.'));
+  assert.ok(goalKeys.length >= 10, 'ключи страницы целей сообщества не объявлены в типах');
+  for (const locale of LOCALES) {
+    for (const key of goalKeys) {
+      assert.ok(dictionaries[locale].has(key), `${locale}: нет перевода ${key}`);
+    }
+  }
+});
+
 test('словарь меню: ключи мобильной навигации переведены', () => {
   const mobileNav = fs.readFileSync(path.join(ROOT, 'src/components/MobileNav.tsx'), 'utf8');
   const dictionaries = localeDictionaries();
