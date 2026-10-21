@@ -2,7 +2,6 @@
 
 import { IconMapPin, IconPlane, IconGlobe, IconRefresh, IconCircleFill, IconExternalLink } from '@/components/Icons';
 import { useState, useId, useCallback, useEffect, Suspense, useMemo, useRef } from 'react';
-import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -30,6 +29,7 @@ import {
   type MapCarriersResponse,
 } from '@/lib/carrierMap';
 import { CarrierLayerControls, type CarrierLayerStatus } from './CarrierLayerControls';
+import { GalaxyScene } from './GalaxyScene';
 import type { FocusTarget } from './GalaxyScene';
 import { CarrierSystemCard } from './CarrierSystemCard';
 import { PowerplaySystemCard } from './PowerplaySystemCard';
@@ -58,11 +58,6 @@ function formatPointCount(count: number): string {
 function formatMegabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
 }
-
-const GalaxyScene = dynamic(
-  () => import('./GalaxyScene').then((module) => module.GalaxyScene),
-  { ssr: false },
-);
 
 type MapStatus = 'planned' | 'building' | 'done';
 type StatusFilters = Record<MapStatus, boolean>;

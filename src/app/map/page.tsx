@@ -1,11 +1,6 @@
 'use client';
 
-import dynamic from "next/dynamic";
-
-const GalaxyMap = dynamic(
-  () => import("@/components/GalaxyMap"),
-  { ssr: false, loading: () => <MapLoadingFallback /> }
-);
+import { GalaxyMapClient } from "@/components/GalaxyMap/GalaxyMapClient";
 
 function MapLoadingFallback() {
   return (
@@ -19,7 +14,7 @@ function MapLoadingFallback() {
 export default function MapPage() {
   return (
     <div className="map-page" style={{ margin: "-16px -20px", width: "calc(100% + 40px)", height: "calc(100vh - 52px)" }}>
-      <GalaxyMap showOnlyMainRoute />
+      <GalaxyMapClient showOnlyMainRoute loadingFallback={<MapLoadingFallback />} />
     </div>
   );
 }

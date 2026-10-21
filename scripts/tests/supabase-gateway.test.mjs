@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,15 +8,25 @@ import { pathToFileURL } from 'node:url';
 const root = process.cwd();
 const configUrl = pathToFileURL(resolve(root, 'next.config.mjs')).href;
 
-function rewrites(internalUrl = '') {
+function loadConfig(internalUrl = '', publicUrl = '') {
   const code = `import config from ${JSON.stringify(configUrl)};
 const value = await config.rewrites();
 console.log(JSON.stringify(value));`;
-  return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '--eval', code], {
+  return spawnSync(process.execPath, ['--input-type=module', '--eval', code], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, SUPABASE_INTERNAL_URL: internalUrl },
-  }));
+    env: {
+      ...process.env,
+      SUPABASE_INTERNAL_URL: internalUrl,
+      NEXT_PUBLIC_SUPABASE_URL: publicUrl,
+    },
+  });
+}
+
+function rewrites(internalUrl = '', publicUrl = '') {
+  const result = loadConfig(internalUrl, publicUrl);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return JSON.parse(result.stdout);
 }
 
 test('same-origin Supabase gateway is compiled only with an explicit private Kong URL', () => {
@@ -31,6 +41,16 @@ test('same-origin Supabase gateway is compiled only with an explicit private Kon
     afterFiles: [],
     fallback: [],
   });
+});
+
+test('same-origin Supabase URL fails the build when its private Kong rewrite is missing', () => {
+  const result = loadConfig('', 'https://edringcolony.ru/api/supabase/');
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /NEXT_PUBLIC_SUPABASE_URL uses \/api\/supabase but SUPABASE_INTERNAL_URL is empty/);
+
+  // The private rewrite stays optional when the browser talks to a public
+  // Supabase host directly.
+  assert.deepEqual(rewrites('', 'https://supabase.edringcolony.ru'), []);
 });
 
 test('gateway remains a Next rewrite, excludes auth middleware and gets its private URL at build time', () => {
