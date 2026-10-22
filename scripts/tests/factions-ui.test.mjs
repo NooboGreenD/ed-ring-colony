@@ -521,7 +521,7 @@ test('подключение: вкладка Atlas, слой карты, адм�
   assert.match(scene, /<LandmarkMarkers onSelect=\{onSelectRouteSystem\} interactive=\{!layerPointsVisible\} \/>/);
 
   const nav = read('src/components/Admin/AdminNavigation.tsx');
-  assert.match(nav, /'powerplay', 'factions', 'backup'/);
+  assert.match(nav, /'powerplay', 'factions', 'community-goals', 'backup'/);
   assert.match(nav, /ADMIN_ONLY_TABS: AdminTab\[\] = \[[^\]]*'factions'/);
   assert.match(nav, /\{ id: 'factions', label: 'Фракции', icon: IconShieldHalf \}/);
   assert.match(read('src/app/admin/page.tsx'), /tab === 'factions' && role === 'admin' && <FactionsAdminTab \/>/);

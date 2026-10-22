@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { communityGoalIdentityKey } from '@/lib/inara/community-goals.mjs';
+import { effectiveCommunityGoal } from '@/lib/communityGoalAdmin';
+import { readAllRows } from '@/lib/readAllRows';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,19 +28,22 @@ export async function GET(req: Request) {
     : 'active';
 
   const svc = createServiceClient();
-  let query = svc.from('community_goals').select('*');
-
-  if (filter === 'active') {
-    query = query.eq('is_complete', false);
-  } else if (filter === 'colonisation') {
-    query = query.eq('is_colonisation_related', true).eq('is_complete', false);
-  } else if (filter === 'completed') {
-    query = query.eq('is_complete', true);
-  }
-
-  const { data, error } = await query.order('expiry_date', { ascending: true });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  const goals = data || [];
+  const result = await readAllRows((from, to) => svc
+    .from('community_goals')
+    .select('*')
+    .eq('moderation_status', 'approved')
+    .order('expiry_date', { ascending: true })
+    .order('id', { ascending: true })
+    .range(from, to));
+  if (result.error) return NextResponse.json({ error: result.error.message }, { status: 500 });
+  const allGoals: Record<string, any>[] = result.data.map((goal: unknown) =>
+    effectiveCommunityGoal(goal as Record<string, any>));
+  const goals = allGoals.filter((goal) => {
+    if (filter === 'active') return goal.is_complete !== true;
+    if (filter === 'colonisation') return goal.is_complete !== true && goal.is_colonisation_related === true;
+    if (filter === 'completed') return goal.is_complete === true;
+    return true;
+  });
   const identityByGoalId = new Map<number, string>();
   for (const goal of goals) {
     const identityKey = goal.identity_key || communityGoalIdentityKey({
@@ -96,7 +101,7 @@ export async function GET(req: Request) {
     });
   }
 
-  const enrichedGoals = goals.map((goal) => ({
+  const enrichedGoals: Array<Record<string, any>> = goals.map((goal) => ({
     ...goal,
     commander_reports: reportSummary.get(identityByGoalId.get(goal.id) || '') || null,
   }));
@@ -106,5 +111,27 @@ export async function GET(req: Request) {
     .sort()
     .at(-1) || null;
 
-  return NextResponse.json({ goals: enrichedGoals, updatedAt: lastUpdated });
+  const publicGoals = enrichedGoals.map((goal) => ({
+    id: goal.id,
+    cg_id: goal.cg_id,
+    title: goal.title,
+    description: goal.description,
+    system_name: goal.system_name,
+    station_name: goal.station_name,
+    objective: goal.objective,
+    reward: goal.reward,
+    tier_current: goal.tier_current,
+    tier_max: goal.tier_max,
+    contributors: goal.contributors,
+    contributions_total: goal.contributions_total,
+    is_complete: goal.is_complete,
+    is_colonisation_related: goal.is_colonisation_related,
+    expiry_date: goal.expiry_date,
+    inara_url: goal.inara_url,
+    source_updated_at: goal.source_updated_at,
+    updated_at: goal.updated_at,
+    commander_reports: goal.commander_reports,
+  }));
+
+  return NextResponse.json({ goals: publicGoals, updatedAt: lastUpdated });
 }
