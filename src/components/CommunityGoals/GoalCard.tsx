@@ -94,6 +94,12 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
   const journalWidth = journalTotal === null ? 0 : Math.min(100, (journalTotal / compareBase) * 100);
   const inaraWidth = total === null ? 0 : Math.min(100, (total / compareBase) * 100);
   const progressPercent = current !== null && max !== null && max > 0 ? Math.round(Math.min(100, current / max * 100)) : null;
+  const objectiveText = goal.objective?.trim() || null;
+  const descriptionText = goal.description?.trim() || null;
+  const taskText = objectiveText || descriptionText;
+  const additionalDescription = descriptionText && objectiveText && descriptionText !== objectiveText
+    ? descriptionText
+    : null;
 
   return (
     <article className={`${styles.card} ${goal.is_complete ? styles.completed : ''}`}>
@@ -121,7 +127,34 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           </div>
         </header>
 
-        {goal.objective && <p className={styles.objective}>{goal.objective}</p>}
+        {taskText || additionalDescription || goal.reward ? (
+          <section className={styles.goalInfo} aria-label={t('cg.goalInformation')}>
+            {taskText && (
+              <div className={`${styles.infoBlock} ${styles.taskBlock}`}>
+                <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">◈</span>{t('cg.objective')}</div>
+                <p>{taskText}</p>
+              </div>
+            )}
+            {additionalDescription && (
+              <div className={styles.infoBlock}>
+                <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">▤</span>{t('cg.details')}</div>
+                <p>{additionalDescription}</p>
+              </div>
+            )}
+            {goal.reward && (
+              <div className={`${styles.infoBlock} ${styles.rewardBlock}`}>
+                <div className={styles.infoTitle}><span className={styles.rewardIcon} aria-hidden="true">✦</span>{t('cg.reward')}</div>
+                <p>{goal.reward}</p>
+              </div>
+            )}
+          </section>
+        ) : (
+          <section className={`${styles.goalInfo} ${styles.infoUnavailable}`} aria-label={t('cg.goalInformation')}>
+            <span className={styles.infoIcon} aria-hidden="true">ⓘ</span>
+            <p>{t('cg.noGoalInfo')}</p>
+            {goal.inara_url && <a href={goal.inara_url} target="_blank" rel="noreferrer">{t('cg.viewSource')} ↗</a>}
+          </section>
+        )}
 
         <div className={styles.dashboard}>
           <section className={styles.progressPanel} aria-label={t('cg.progress')}>
@@ -147,7 +180,6 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
                   <span>{t('cg.currentTier')}</span>
                   <span>{current === null ? '—' : `${t('cg.progress')} ${current}`}{max === null ? '' : ` / ${max}`}</span>
                 </div>
-                {goal.reward && <div className={styles.reward}><span aria-hidden="true">✦</span><div><small>{t('cg.reward')}</small><strong>{goal.reward}</strong></div></div>}
               </div>
             </div>
           </section>
@@ -215,15 +247,9 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           </section>
         )}
 
-        {(goal.description || sourceUpdated) && (
+        {sourceUpdated && (
           <footer className={styles.footer}>
-            {goal.description && (
-              <details className={styles.details}>
-                <summary>{t('cg.details')} <span aria-hidden="true">⌄</span></summary>
-                <p>{goal.description}</p>
-              </details>
-            )}
-            {sourceUpdated && <span className={styles.updated}>{t('cg.updated')}: {sourceUpdated}</span>}
+            <span className={styles.updated}>{t('cg.updated')}: {sourceUpdated}</span>
           </footer>
         )}
       </div>
