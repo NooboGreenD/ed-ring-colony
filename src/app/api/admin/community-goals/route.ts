@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 import { normalizeCommunityGoals } from '@/lib/inara/community-goals.mjs';
+import { upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
 import { InaraClient } from '@/lib/inara/client';
 import {
   COMMUNITY_GOAL_EDITABLE_FIELDS,
@@ -100,9 +101,12 @@ export async function GET(req: Request) {
       all: rows.length,
       active: rows.filter((row) => !row.is_complete).length,
       completed: rows.filter((row) => row.is_complete).length,
+      pending: rows.filter((row) => row.moderation_status === 'pending').length,
       hidden: rows.filter((row) => row.moderation_status === 'hidden').length,
       rejected: rows.filter((row) => row.moderation_status === 'rejected').length,
       manual: rows.filter((row) => row.source === 'manual').length,
+      capi: rows.filter((row) => row.source === 'capi').length,
+      journal: rows.filter((row) => row.source === 'journal').length,
     },
   }, { headers });
 }
@@ -122,19 +126,22 @@ export async function POST(req: Request) {
   const svc = createServiceClient();
   if (body.action === 'sync') {
     const apiKey = process.env.INARA_API_KEY;
-    if (!apiKey) return NextResponse.json({ error: 'Не задан INARA_API_KEY' }, { status: 503, headers });
+    if (!apiKey) return NextResponse.json({
+      error: 'Не задан INARA_API_KEY. Каталог продолжит получать данные из CAPI и журналов; новые журнальные CG ожидают модерации.',
+      fallbackSources: ['Frontier CAPI', 'commander journal uploads'],
+    }, { status: 503, headers });
     try {
       const sourceGoals = await new InaraClient(apiKey).getCommunityGoals();
       const rows = normalizeCommunityGoals(sourceGoals);
-      if (rows.length > 0) {
-        const { error } = await svc.from('community_goals').upsert(rows, { onConflict: 'cg_id' });
-        if (error) throw new Error(error.message);
-      }
-      return NextResponse.json({ ok: true, synced: rows.length, received: sourceGoals.length, completed: rows.filter((row) => row.is_complete).length }, { headers });
+      const synced = await upsertCommunityGoalCatalog(svc, rows, 'inara');
+      return NextResponse.json({ ok: true, synced, received: sourceGoals.length, completed: rows.filter((row) => row.is_complete).length }, { headers });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[admin/community-goals] Inara sync failed:', message);
-      return NextResponse.json({ error: message }, { status: 502, headers });
+      return NextResponse.json({
+        error: `${message}. В это время каталог продолжает получать официальные CG из Frontier CAPI; журнальные находки доступны в очереди модерации.`,
+        fallbackSources: ['Frontier CAPI', 'commander journal uploads'],
+      }, { status: 502, headers });
     }
   }
 
@@ -202,12 +209,12 @@ export async function PATCH(req: Request) {
   };
   const hasEditableValues = COMMUNITY_GOAL_EDITABLE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(body, field));
   if (body.resetOverrides === true) {
-    if (existing.source !== 'inara') return badRequest('Для локальной CG нечего сбрасывать');
+    if (existing.source === 'manual') return badRequest('Для локальной CG нечего сбрасывать');
     update.manual_overrides = {};
   } else if (hasEditableValues) {
     const parsed = normalizeEditableFields(body);
     if (!parsed.fields) return badRequest(parsed.error || 'Некорректные поля CG');
-    if (existing.source === 'inara') {
+    if (existing.source !== 'manual') {
       const previous = existing.manual_overrides && typeof existing.manual_overrides === 'object' && !Array.isArray(existing.manual_overrides)
         ? existing.manual_overrides
         : {};
@@ -249,7 +256,7 @@ export async function DELETE(req: Request) {
   const { data: existing, error: readError } = await svc.from('community_goals').select('id,source').eq('id', id).maybeSingle();
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500, headers });
   if (!existing) return NextResponse.json({ error: 'CG не найдена' }, { status: 404, headers });
-  if (existing.source !== 'manual') return NextResponse.json({ error: 'Записи Inara нельзя физически удалить: используйте статус «Отклонена» или «Скрыта»' }, { status: 409, headers });
+  if (existing.source !== 'manual') return NextResponse.json({ error: 'Записи внешних источников нельзя физически удалить: используйте статус «Отклонена» или «Скрыта»' }, { status: 409, headers });
   const { error } = await svc.from('community_goals').delete().eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500, headers });
   return NextResponse.json({ ok: true }, { headers });

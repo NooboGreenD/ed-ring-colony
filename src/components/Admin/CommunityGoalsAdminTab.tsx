@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { authFetch } from '@/lib/supabaseClient';
 
-type ModerationStatus = 'approved' | 'hidden' | 'rejected';
+type ModerationStatus = 'pending' | 'approved' | 'hidden' | 'rejected';
 type ViewFilter = 'all' | 'active' | 'completed';
 
 interface CommunityGoalRow {
@@ -24,7 +24,7 @@ interface CommunityGoalRow {
   is_colonisation_related: boolean;
   inara_url: string | null;
   source_updated_at: string | null;
-  source: 'inara' | 'manual';
+  source: 'inara' | 'capi' | 'journal' | 'manual';
   moderation_status: ModerationStatus;
   manual_overrides: Record<string, unknown>;
   admin_note: string | null;
@@ -108,9 +108,17 @@ async function readResponse(response: Response) {
 }
 
 function statusLabel(status: ModerationStatus) {
+  if (status === 'pending') return 'На модерации';
   if (status === 'hidden') return 'Скрыта';
   if (status === 'rejected') return 'Отклонена';
   return 'Опубликована';
+}
+
+function sourceLabel(source: CommunityGoalRow['source']) {
+  if (source === 'manual') return 'Локальная';
+  if (source === 'capi') return 'Frontier CAPI';
+  if (source === 'journal') return 'Игровой журнал';
+  return 'Inara';
 }
 
 export default function CommunityGoalsAdminTab() {
@@ -156,6 +164,7 @@ export default function CommunityGoalsAdminTab() {
     all: goals.length,
     active: goals.filter((goal) => !goal.is_complete).length,
     completed: goals.filter((goal) => goal.is_complete).length,
+    pending: goals.filter((goal) => goal.moderation_status === 'pending').length,
     hidden: goals.filter((goal) => goal.moderation_status === 'hidden').length,
     rejected: goals.filter((goal) => goal.moderation_status === 'rejected').length,
   }), [goals]);
@@ -189,7 +198,7 @@ export default function CommunityGoalsAdminTab() {
     setError('');
     try {
       const payload: Record<string, unknown> = payloadFromDraft(draft);
-      if (editor !== 'new' && editor?.source === 'inara') {
+      if (editor && editor !== 'new' && editor.source !== 'manual') {
         const original = draftFromGoal(editor);
         const editable = [
           'title', 'description', 'system_name', 'station_name', 'objective', 'reward',
@@ -211,7 +220,7 @@ export default function CommunityGoalsAdminTab() {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: editor.id, ...payload }),
         }));
-        setMessage(editor.source === 'inara' ? 'Изменения модератора сохранены как override и сохранятся после синхронизации Inara.' : 'Изменения CG сохранены.');
+        setMessage(editor.source !== 'manual' ? 'Изменения модератора сохранены отдельно и сохранятся после синхронизации источника.' : 'Изменения CG сохранены.');
       }
       setEditor(null);
       await load();
@@ -239,8 +248,8 @@ export default function CommunityGoalsAdminTab() {
     }
   }
 
-  async function resetInaraEdits(goal: CommunityGoalRow) {
-    if (!window.confirm(`Сбросить локальные правки и восстановить исходные данные Inara для «${goal.title}»?`)) return;
+  async function resetSourceEdits(goal: CommunityGoalRow) {
+    if (!window.confirm(`Сбросить локальные правки и восстановить исходные данные (${sourceLabel(goal.source)}) для «${goal.title}»?`)) return;
     setWorking(true);
     setError('');
     try {
@@ -248,7 +257,7 @@ export default function CommunityGoalsAdminTab() {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: goal.id, resetOverrides: true }),
       }));
-      setMessage('Локальные правки удалены; отображаются исходные данные Inara.');
+      setMessage('Локальные правки удалены; отображаются исходные данные источника.');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось сбросить правки');
@@ -305,7 +314,7 @@ export default function CommunityGoalsAdminTab() {
         <div>
           <h2 style={{ marginBottom: 6 }}>Community Goals — синхронизация и модерация</h2>
           <p style={{ color: 'var(--muted)', maxWidth: 900, fontSize: 13, marginTop: 0 }}>
-            Плановая синхронизация выполняется раз в шесть часов; здесь можно запустить её вне расписания. Из Inara поступают текущие и недавние завершённые CG. Все загруженные записи сохраняются в каталоге, а локальные правки Inara хранятся отдельно от исходных данных.
+            Inara остаётся основным источником текущих и недавних CG. Если её API недоступен, каталог дополнительно пополняется через Frontier CAPI при синхронизации привязанных командиров; CG, найденные только в игровых журналах, появятся здесь на модерации. Локальные правки и решения модератора сохраняются при последующих синхронизациях.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -321,6 +330,7 @@ export default function CommunityGoalsAdminTab() {
         <span>Всего: <strong>{counts.all}</strong></span>
         <span>Активных: <strong>{counts.active}</strong></span>
         <span>Завершённых: <strong>{counts.completed}</strong></span>
+        <span>Ожидают модерации: <strong>{counts.pending}</strong></span>
         <span>Скрытых: <strong>{counts.hidden}</strong></span>
         <span>Отклонённых: <strong>{counts.rejected}</strong></span>
         <span>Последнее обновление источника Inara: <strong>{latestInaraUpdate ? new Date(latestInaraUpdate).toLocaleString() : '—'}</strong></span>
@@ -337,7 +347,7 @@ export default function CommunityGoalsAdminTab() {
         </label>
         <label style={labelStyle}>Модерация
           <select style={inputStyle} value={status} onChange={(event) => setStatus(event.target.value as typeof status)}>
-            <option value="all">Любой статус</option><option value="approved">Опубликована</option><option value="hidden">Скрыта</option><option value="rejected">Отклонена</option>
+            <option value="all">Любой статус</option><option value="pending">На модерации</option><option value="approved">Опубликована</option><option value="hidden">Скрыта</option><option value="rejected">Отклонена</option>
           </select>
         </label>
         <label style={labelStyle}>Поиск по названию / системе / станции
@@ -354,7 +364,7 @@ export default function CommunityGoalsAdminTab() {
                 <div style={{ minWidth: 240, flex: '1 1 360px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <strong>{goal.title}</strong>
-                    <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10, color: 'var(--muted)' }}>{goal.source === 'manual' ? 'Локальная' : 'Inara'}</span>
+                    <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10, color: 'var(--muted)' }}>{sourceLabel(goal.source)}</span>
                     <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10, color: goal.moderation_status === 'approved' ? 'var(--green, #6fcf97)' : 'var(--orange)' }}>{statusLabel(goal.moderation_status)}</span>
                     {goal.is_complete && <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10 }}>Завершена</span>}
                     {goal.is_colonisation_related && <span style={{ border: '1px solid var(--orange)', padding: '2px 6px', fontSize: 10, color: 'var(--orange)' }}>Колонизация</span>}
@@ -374,7 +384,7 @@ export default function CommunityGoalsAdminTab() {
                   {goal.moderation_status !== 'approved' && <button type="button" className="btn btn-cyan" disabled={working} onClick={() => void moderate(goal, 'approved')}>Опубликовать</button>}
                   {goal.moderation_status !== 'hidden' && <button type="button" className="btn" disabled={working} onClick={() => void moderate(goal, 'hidden')}>Скрыть</button>}
                   {goal.moderation_status !== 'rejected' && <button type="button" className="btn" disabled={working} onClick={() => void moderate(goal, 'rejected')}>Отклонить</button>}
-                  {goal.source === 'inara' && Object.keys(goal.manual_overrides || {}).length > 0 && <button type="button" className="btn" disabled={working} onClick={() => void resetInaraEdits(goal)}>Сбросить правки</button>}
+                  {goal.source !== 'manual' && Object.keys(goal.manual_overrides || {}).length > 0 && <button type="button" className="btn" disabled={working} onClick={() => void resetSourceEdits(goal)}>Сбросить правки</button>}
                   {goal.source === 'manual' && <button type="button" className="btn btn-danger" disabled={working} onClick={() => void deleteManualGoal(goal)}>Удалить</button>}
                 </div>
               </div>
@@ -390,7 +400,7 @@ export default function CommunityGoalsAdminTab() {
               <h3 id="cg-editor-title" style={{ marginTop: 0 }}>{editor === 'new' ? 'Новая колонизационная CG' : `Редактирование: ${editor.title}`}</h3>
               <button type="button" className="btn" disabled={working} onClick={() => setEditor(null)}>Закрыть</button>
             </div>
-            {editor !== 'new' && editor.source === 'inara' && <p style={{ color: 'var(--muted)', fontSize: 12 }}>Изменения будут сохранены как модераторские overrides и не затрут исходные данные Inara при следующем обновлении.</p>}
+            {editor !== 'new' && editor.source !== 'manual' && <p style={{ color: 'var(--muted)', fontSize: 12 }}>Изменения будут сохранены отдельно от данных источника и не затрутся при следующей синхронизации.</p>}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
               {input('title', 'Название CG *')}
               {input('system_name', 'Звёздная система')}
@@ -403,7 +413,7 @@ export default function CommunityGoalsAdminTab() {
               {input('inara_url', 'Ссылка Inara')}
               {editor !== 'new' && <label style={labelStyle}>Модерация
                 <select style={inputStyle} value={draft.moderation_status} onChange={(event) => setDraft((current) => ({ ...current, moderation_status: event.target.value as ModerationStatus }))}>
-                  <option value="approved">Опубликована</option><option value="hidden">Скрыта</option><option value="rejected">Отклонена</option>
+                  <option value="pending">На модерации</option><option value="approved">Опубликована</option><option value="hidden">Скрыта</option><option value="rejected">Отклонена</option>
                 </select>
               </label>}
               <label style={labelStyle}>Объект колонизации

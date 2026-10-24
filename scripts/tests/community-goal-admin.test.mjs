@@ -27,9 +27,10 @@ test('moderator overrides affect displayed goal fields but preserve source ident
 });
 
 test('moderation status validation allows only explicit workflow states', () => {
+  assert.equal(isCommunityGoalModerationStatus('pending'), true);
   assert.equal(isCommunityGoalModerationStatus('approved'), true);
   assert.equal(isCommunityGoalModerationStatus('hidden'), true);
   assert.equal(isCommunityGoalModerationStatus('rejected'), true);
-  assert.equal(isCommunityGoalModerationStatus('pending'), false);
+  assert.equal(isCommunityGoalModerationStatus('unknown'), false);
   assert.equal(isCommunityGoalModerationStatus({}), false);
 });

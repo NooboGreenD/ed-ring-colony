@@ -95,6 +95,19 @@ test('204 на журнал не роняет синк', async () => {
   });
 });
 
+test('Community Goals берутся из Frontier CAPI, а 204 считается пустым каталогом', async () => {
+  const goals = [{ cg_id: 428, title: 'Colony initiative', system_name: 'Sol' }];
+  await withFetch(async (url) => {
+    assert.equal(new URL(String(url)).pathname, '/communitygoals');
+    return new Response(JSON.stringify({ goals }), { status: 200 });
+  }, async () => {
+    assert.deepEqual(await new CapiClient('token').getCommunityGoals(), { goals });
+  });
+  await withFetch(async () => new Response(null, { status: 204 }), async () => {
+    assert.deepEqual(await new CapiClient('token').getCommunityGoals(), { goals: [] });
+  });
+});
+
 test('206 помечается как частичный журнал', async () => {
   await withFetch(async () => new Response(NDJSON, { status: 206 }), async () => {
     const client = new CapiClient('token');

@@ -147,7 +147,7 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   раскрывается и показывает найденное (цены, запас, спрос), в каждом поле — быстрый выбор из справочника
   на русском и английском с точным поиском выбранного (web 2.25.0), фокус на карте Atlas; данные приходят из
   Colonial Helper и дампов — [STATION-COMMERCE.md](STATION-COMMERCE.md)
-- **Community Goals** — `/cg`: цели сообщества из Inara (задача `cg-check`)
+- **Community Goals** — `/cg`: текущие и недавние цели из Inara; альтернативно каталог пополняет официальный Frontier CAPI при синхронизации привязанных пилотов. Найденные только в игровых журналах CG поступают в админку со статусом «На модерации»; приватный вклад командира остаётся в отдельной таблице отчётов.
 
 ### Пилот
 
@@ -267,7 +267,7 @@ DISCORD_WEBHOOK_URL=your-discord-webhook-url
 NEXT_PUBLIC_VAPID_PUBLIC_KEY=your-vapid-public-key
 VAPID_PRIVATE_KEY=your-vapid-private-key
 YANDEX_TRANSLATE_API_KEY=your-yandex-key
-INARA_API_KEY=...                      # Community Goals
+INARA_API_KEY=...                      # основной источник Community Goals; CAPI и журналы — fallback
 JOBS_ENABLED=capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync,factions-sync,eddn-listener
 ```
 
@@ -403,9 +403,9 @@ ed-ring-colony/
 
 | Задача | Расписание (UTC) | Маршрут | Что делает |
 |---|---|---|---|
-| `capi-sync` | каждые 5 мин | `/api/cron/capi-sync` | синхронизация привязанных аккаунтов Frontier небольшой пачкой, продление токенов |
+| `capi-sync` | каждые 5 мин | `/api/cron/capi-sync` | синхронизация привязанных аккаунтов Frontier небольшой пачкой, продление токенов, резервное получение Community Goals |
 | `update-progress` | каждые 30 мин | `/api/cron/update-progress` | прогресс хабов и систем маршрута из Raven Colonial → `system_progress` |
-| `cg-check` | каждые 6 ч | `/api/cron/cg-check` | Community Goals из Inara (нужен `INARA_API_KEY`) |
+| `cg-check` | каждые 6 ч | `/api/cron/cg-check` | текущие и недавние Community Goals из Inara (нужен `INARA_API_KEY`); без него/при недоступности работают CAPI и журнальный fallback |
 | `eddn-cleanup` | каждые 6 ч, :30 | `/api/cron/eddn-cleanup` | удаляет цены EDDN старше 7 дней |
 | `colonisation-cleanup` | 03:40 | `/api/cron/colonisation-cleanup` | подрезает снимки прогресса строек старше `COLONISATION_RETENTION_DAYS` |
 | `galnet-sync` | 06:20 | `/api/galnet` | лента Galnet + догон переводов |

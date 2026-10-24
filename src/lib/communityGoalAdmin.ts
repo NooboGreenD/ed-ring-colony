@@ -1,4 +1,4 @@
-export const COMMUNITY_GOAL_MODERATION_STATUSES = ['approved', 'hidden', 'rejected'] as const;
+export const COMMUNITY_GOAL_MODERATION_STATUSES = ['pending', 'approved', 'hidden', 'rejected'] as const;
 export type CommunityGoalModerationStatus = typeof COMMUNITY_GOAL_MODERATION_STATUSES[number];
 
 export const COMMUNITY_GOAL_EDITABLE_FIELDS = [
