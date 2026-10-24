@@ -52,6 +52,17 @@ type Diagnostics = {
   live: Record<string, unknown> | null;
 };
 
+type NetworkCheck = {
+  checkedAt: string;
+  timeoutMs: { dns: number; https: number };
+  probes: Array<{
+    host: string;
+    reachable: boolean;
+    dns: { ok: boolean; addressCount?: number; durationMs: number; code?: string; error?: string };
+    https: { ok: boolean; status?: number; durationMs: number; code?: string; error?: string };
+  }>;
+};
+
 const RANK_NAMES = ['Harmless','Mostly Harmless','Novice','Competent','Expert','Master','Dangerous','Deadly','Elite'];
 const EMPIRE_RANKS = ['None','Outsider','Serf','Master','Squire','Knight','Lord','Baron','Viscount','Count','Earl','Marquis','Duke','Prince','King'];
 const FED_RANKS = ['None','Recruit','Cadet','Midshipman','Petty Officer','Chief Petty Officer','Warrant Officer','Ensign','Lieutenant','Lt. Commander','Post Commander','Post Captain','Rear Admiral','Vice Admiral','Admiral'];
@@ -95,6 +106,9 @@ export default function CapiPage() {
   const [platform, setPlatform] = useState('auto');
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
+  const [networkCheck, setNetworkCheck] = useState<NetworkCheck | null>(null);
+  const [networkLoading, setNetworkLoading] = useState(false);
+  const [networkError, setNetworkError] = useState<string | null>(null);
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -216,6 +230,21 @@ export default function CapiPage() {
     }
   }
 
+  async function handleNetworkCheck() {
+    setNetworkLoading(true);
+    setNetworkError(null);
+    try {
+      const res = await authFetch('/api/capi/network-check', { cache: 'no-store' });
+      const data = await res.json();
+      if (res.ok) setNetworkCheck(data as NetworkCheck);
+      else setNetworkError(data.error || 'Проверка сети недоступна');
+    } catch (checkError) {
+      setNetworkError(checkError instanceof Error ? checkError.message : 'Проверка сети недоступна');
+    } finally {
+      setNetworkLoading(false);
+    }
+  }
+
   if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>Загрузка...</div>;
 
   // Привязка определяется токеном, а не кэшем профиля: строка в
@@ -294,6 +323,9 @@ export default function CapiPage() {
                 </button>
                 <button className="btn" onClick={handleDiagnostics} disabled={diagLoading}>
                   {diagLoading ? 'Проверка...' : 'Диагностика'}
+                </button>
+                <button className="btn" onClick={handleNetworkCheck} disabled={networkLoading}>
+                  {networkLoading ? 'Проверяю сеть...' : 'Проверить сеть сервера'}
                 </button>
                 <button className="btn danger-btn" onClick={handleUnlink}>Отвязать</button>
               </div>
@@ -448,6 +480,45 @@ export default function CapiPage() {
               </div>
             </div>
           </div>
+
+          {networkError && (
+            <div className="capi-notice capi-notice-error" style={{ marginTop: 16 }} role="alert">
+              Проверка связи сервера с Frontier не выполнена: {networkError}
+            </div>
+          )}
+
+          {networkCheck && (
+            <div className="card" style={{ marginTop: 20 }}>
+              <h3 className="capi-section-title">Исходящая сеть сайта → Frontier CAPI</h3>
+              <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.6 }}>
+                Проверка выполняется с веб-сервера без CAPI-токена пользователя. Ответ HTTP 401/403 здесь ожидаем и означает, что DNS, HTTPS и узел Frontier доступны.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+                {networkCheck.probes.map((probe) => {
+                  const passed = probe.reachable && probe.https.ok;
+                  const title = probe.host.startsWith('legacy-') ? 'Legacy CAPI' : 'Live CAPI';
+                  return (
+                    <div key={probe.host} style={{ border: '1px solid var(--line)', borderRadius: 6, padding: 12, background: 'rgba(0,0,0,.12)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <strong>{title}</strong>
+                        <span style={{ color: passed ? 'var(--green)' : 'var(--red)', fontSize: 11, fontWeight: 700 }}>
+                          {passed ? 'ДОСТУПЕН' : probe.dns.ok ? 'HTTPS НЕДОСТУПЕН' : 'DNS ОШИБКА'}
+                        </span>
+                      </div>
+                      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 8, lineHeight: 1.7 }}>
+                        <div>DNS: {probe.dns.ok ? `OK · ${probe.dns.addressCount ?? 0} адрес(а) · ${probe.dns.durationMs} мс` : `${probe.dns.code || 'ошибка'} · ${probe.dns.error || 'не удалось разрешить имя'}`}</div>
+                        <div>HTTPS: {probe.https.status ? `HTTP ${probe.https.status} · ${probe.https.durationMs} мс` : `${probe.https.code || 'ошибка'} · ${probe.https.error || 'ответ не получен'}`}</div>
+                        <div style={{ overflowWrap: 'anywhere' }}>{probe.host}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p style={{ color: 'var(--muted)', fontSize: 10, marginBottom: 0 }}>
+                Проверено: {new Date(networkCheck.checkedAt).toLocaleString('ru-RU')} · лимит: DNS {networkCheck.timeoutMs.dns} мс, HTTPS {networkCheck.timeoutMs.https} мс.
+              </p>
+            </div>
+          )}
 
           {diagnostics && (
             <div className="card" style={{ marginTop: 20 }}>
