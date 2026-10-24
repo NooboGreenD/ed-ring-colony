@@ -254,6 +254,9 @@ export default function CapiPage() {
   const linked = Boolean(binding?.linked);
   const needsReauth = linked && binding?.tokenActive === false;
   const hasCapiError = linked && !needsReauth && Boolean(binding?.lastError);
+  const frontierStoreEntitlementError = hasCapiError
+    && binding?.platform === 'frontier'
+    && Boolean(binding.lastError?.includes('CAPI Frontier не подтвердил доступ к Elite Dangerous'));
   const profileEmpty = linked && (!profile || (profile.credits === null && !profile.current_system));
 
   return (
@@ -381,8 +384,21 @@ export default function CapiPage() {
                 <strong><IconWaiting size={14} /> Ошибка получения данных CAPI, не потеря авторизации</strong>
                 <div className="capi-notice-hint">{binding?.lastError}</div>
                 <div className="capi-notice-hint">
-                  Сохранённые токены не удалены. Можно повторить синхронизацию и открыть диагностику без нового входа.
+                  {frontierStoreEntitlementError
+                    ? 'Сейчас токен подтверждён как Frontier Store, а CAPI не видит право на игру. Повтор синхронизации сам по себе платформу не изменит. Если игра куплена в Epic или Steam, ниже можно начать вход через точный магазин; текущие данные сайта не удаляются.'
+                    : 'Сохранённые токены не удалены. Можно повторить синхронизацию и открыть диагностику без нового входа.'}
                 </div>
+                {frontierStoreEntitlementError && (
+                  <div style={{ marginTop: 10, padding: 10, border: '1px solid var(--line)', borderRadius: 4 }}>
+                    <div className="capi-notice-hint" style={{ marginBottom: 8 }}>
+                      Перед входом выйдите из старой сессии на auth.frontierstore.net или откройте приватное окно. На странице Frontier нажмите кнопку Epic/Steam, а не вход через почту. Это не отвязывает CAPI от сайта.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <a href="/api/capi/auth?platform=epic" className="btn btn-orange">Переподключить через Epic Games Store</a>
+                      <a href="/api/capi/auth?platform=steam" className="btn">Переподключить через Steam</a>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
