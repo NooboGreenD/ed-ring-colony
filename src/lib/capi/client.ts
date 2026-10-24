@@ -29,7 +29,7 @@ import { normalizeCapiProfile } from './profile.ts';
 import { parseCapiJournal, journalPath } from './journal.ts';
 import { ENTITLEMENT_RECOVERY_HINT, NO_ENTITLEMENT_MESSAGE, isNoEntitlementResponse } from './entitlement.ts';
 
-const CAPI_BASE = 'https://companion.orerve.net';
+export const CAPI_BASE = 'https://companion.orerve.net';
 // Profile/journal bodies can be slow or large. Thirty seconds caused avoidable
 // aborts while the response was still being read; keep a bounded but more
 // tolerant window and let the user retry if Frontier is genuinely unavailable.
