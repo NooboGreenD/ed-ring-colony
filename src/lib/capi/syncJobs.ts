@@ -65,6 +65,7 @@ export function publicCapiSyncResult(result: CapiSyncResult) {
     needsReauth: result.needsReauth,
     reason: result.reason ?? null,
     errorKind: result.errorKind ?? null,
+    transportPhase: result.transportPhase ?? null,
     httpStatus: result.httpStatus ?? null,
     endpoint: result.endpoint ?? null,
     host: result.host ?? null,

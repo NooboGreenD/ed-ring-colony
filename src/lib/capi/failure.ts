@@ -12,6 +12,7 @@ export interface CapiFailure {
   endpoint: string | null;
   host: string | null;
   detail: string | null;
+  transportPhase: 'response_headers' | 'response_body' | null;
   platform: string | null;
 }
 
@@ -31,6 +32,7 @@ export async function diagnoseCapiFailure(
     endpoint: err instanceof CapiError ? err.endpoint : err instanceof FrontierAuthError ? '/token' : null,
     host: err instanceof CapiError ? err.host : null,
     detail: err instanceof CapiError ? err.detail || null : null,
+    transportPhase: err instanceof CapiError ? err.transportPhase : null,
     platform: options.identity?.platform ?? null,
   };
   if (err instanceof FrontierAuthError) {

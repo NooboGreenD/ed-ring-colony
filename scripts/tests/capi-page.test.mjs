@@ -152,7 +152,9 @@ test('фоновый синк опрашивает статус задания �
       return { body: { job: {
         id: 'job-1', status: 'failed', stage: 'failed', total_duration_ms: 1234,
         stage_timings: [{ stage: 'profile_request', durationMs: 1000 }],
-        result: { error: BINDING.lastError, needsReauth: false, reason: 'entitlement_unavailable', warnings: [] },
+        result: { error: BINDING.lastError, needsReauth: false, journalStatus: 'error', reason: 'profile_unavailable', errorKind: 'timeout',
+          endpoint: '/profile', host: 'https://companion.orerve.net', httpStatus: 0, transportPhase: 'response_headers',
+          detail: 'The operation was aborted due to timeout', warnings: [] },
       } } };
     }
   } });
@@ -165,6 +167,12 @@ test('фоновый синк опрашивает статус задания �
     assert.ok(ui.calls.filter((call) => call.url === '/api/capi/profile').length >= 2);
     assert.doesNotMatch(ui.text(), /Требуется повторная авторизация|Переподключить/);
     assert.match(ui.text(), /Авторизация сохранена/);
+    assert.match(ui.text(), /CAPI endpoint: \/profile · https:\/\/companion\.orerve\.net/);
+    assert.match(ui.text(), /Тип ошибки: timeout · profile_unavailable/);
+    assert.match(ui.text(), /журнал не запрашивался/);
+    assert.match(ui.text(), /Транспорт: ожидание HTTP-заголовков/);
+    assert.match(ui.text(), /HTTP: ответ не получен/);
+    assert.match(ui.text(), /The operation was aborted due to timeout/);
     assert.ok(ui.dom.window.document.querySelector('.capi-status-pending'));
   } finally {
     await ui.cleanup();

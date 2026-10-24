@@ -70,10 +70,11 @@ export class CapiError extends Error {
   /** Короткий ответ Frontier, без токена; нужен для честной диагностики 400. */
   readonly detail: string;
   readonly host: string | null;
+  readonly transportPhase: 'response_headers' | 'response_body' | null;
 
   constructor(
     kind: CapiErrorKind, endpoint: string, status: number, message?: string,
-    diagnostics: { detail?: string; host?: string } = {},
+    diagnostics: { detail?: string; host?: string; transportPhase?: 'response_headers' | 'response_body' } = {},
   ) {
     // Сообщение 'UNAUTHORIZED' сохранено дословно: на него смотрит
     // `CapiSession.run()` и тесты, написанные до появления этого класса.
@@ -84,6 +85,7 @@ export class CapiError extends Error {
     this.endpoint = endpoint;
     this.detail = diagnostics.detail || '';
     this.host = diagnostics.host || null;
+    this.transportPhase = diagnostics.transportPhase || null;
   }
 }
 
@@ -147,13 +149,14 @@ export class CapiClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CAPI_TIMEOUT_MS;
   }
 
-  private transportError(endpoint: string, err: unknown): CapiError {
+  private transportError(endpoint: string, err: unknown, transportPhase: 'response_headers' | 'response_body'): CapiError {
     const message = err instanceof Error ? err.message : String(err);
     const name = err instanceof Error ? err.name : '';
     const timedOut = name === 'TimeoutError' || /(?:aborted due to|timed?\s*out|timeout)/i.test(message);
     return new CapiError(timedOut ? 'timeout' : 'network', endpoint, 0, message, {
       detail: message.slice(0, 300),
       host: this.base,
+      transportPhase,
     });
   }
 
@@ -171,7 +174,7 @@ export class CapiClient {
         },
       });
     } catch (err) {
-      throw this.transportError(endpoint, err);
+      throw this.transportError(endpoint, err, 'response_headers');
     }
 
     if (res.status === 401 || res.status === 403 || res.status === 422) {
@@ -184,7 +187,7 @@ export class CapiClient {
       try {
         body = await res.text();
       } catch (err) {
-        throw this.transportError(endpoint, err);
+        throw this.transportError(endpoint, err, 'response_body');
       }
       const safeBody = this.accessToken ? body.split(this.accessToken).join('[redacted]') : body;
       const detail = safeBody.replace(/\s+/g, ' ').trim().slice(0, 300);
@@ -210,7 +213,7 @@ export class CapiClient {
       // Отмена может произойти ПОСЛЕ получения заголовков, пока читается
       // большой журнал/профиль. Раньше этот AbortError обходил классификацию
       // выше, и пилот видел сырое английское сообщение без endpoint и host.
-      throw this.transportError(endpoint, err);
+      throw this.transportError(endpoint, err, 'response_body');
     }
   }
 
@@ -321,7 +324,7 @@ export class CapiClient {
         },
       });
     } catch (err) {
-      throw this.transportError(endpoint, err);
+      throw this.transportError(endpoint, err, 'response_headers');
     }
 
     // Тот же разбор, что и в request(): иначе просроченный токен отдавал
@@ -337,7 +340,7 @@ export class CapiClient {
     try {
       return await res.blob();
     } catch (err) {
-      throw this.transportError(endpoint, err);
+      throw this.transportError(endpoint, err, 'response_body');
     }
   }
 }

@@ -46,6 +46,14 @@ type SyncReport = {
   durationMs?: number | null;
   jobId?: string;
   stageTimings?: Array<{ stage: string; attempt?: number; durationMs: number }>;
+  endpoint?: string | null;
+  host?: string | null;
+  httpStatus?: number | null;
+  errorKind?: string | null;
+  transportPhase?: 'response_headers' | 'response_body' | null;
+  reason?: string | null;
+  platform?: string | null;
+  detail?: string | null;
 };
 
 type SyncJob = {
@@ -61,6 +69,9 @@ type SyncJob = {
     ok?: boolean; cmdrName?: string | null; journalStatus?: string;
     eventsImported?: number; eventsDuplicate?: number; warnings?: string[];
     needsReauth?: boolean; error?: string | null; detail?: string | null;
+    endpoint?: string | null; host?: string | null; httpStatus?: number | null; errorKind?: string | null;
+    transportPhase?: 'response_headers' | 'response_body' | null;
+    reason?: string | null; platform?: string | null;
   } | null;
 };
 
@@ -209,13 +220,23 @@ export default function CapiPage() {
   function reportFromJob(job: SyncJob): SyncReport {
     return {
       cmdrName: job.result?.cmdrName ?? null,
-      journalStatus: job.result?.journalStatus ?? 'error',
+      journalStatus: job.stage_timings?.length && !job.stage_timings.some((timing) => timing.stage === 'journal_request')
+        ? 'skipped'
+        : job.result?.journalStatus ?? 'error',
       eventsImported: job.result?.eventsImported ?? 0,
       eventsDuplicate: job.result?.eventsDuplicate ?? 0,
       warnings: Array.isArray(job.result?.warnings) ? job.result.warnings : [],
       durationMs: job.total_duration_ms ?? null,
       jobId: job.id,
       stageTimings: Array.isArray(job.stage_timings) ? job.stage_timings : [],
+      endpoint: job.result?.endpoint ?? null,
+      host: job.result?.host ?? null,
+      httpStatus: job.result?.httpStatus ?? null,
+      errorKind: job.result?.errorKind ?? null,
+      transportPhase: job.result?.transportPhase ?? null,
+      reason: job.result?.reason ?? null,
+      platform: job.result?.platform ?? null,
+      detail: job.result?.detail ?? null,
     };
   }
 
@@ -552,6 +573,17 @@ export default function CapiPage() {
               {syncReport.jobId && (
                 <details style={{ marginTop: 8 }}>
                   <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>Диагностика этапов · задание {syncReport.jobId}</summary>
+                  {(syncReport.endpoint || syncReport.errorKind || syncReport.detail) && (
+                    <div className="capi-notice-hint" style={{ marginTop: 8 }}>
+                      {syncReport.endpoint && <div>CAPI endpoint: <code>{syncReport.endpoint}</code>{syncReport.host ? ` · ${syncReport.host}` : ''}</div>}
+                      {syncReport.errorKind && <div>Тип ошибки: {syncReport.errorKind}{syncReport.reason ? ` · ${syncReport.reason}` : ''}{syncReport.platform ? ` · платформа ${syncReport.platform}` : ''}</div>}
+                      {syncReport.transportPhase && <div>Транспорт: {syncReport.transportPhase === 'response_headers' ? 'ожидание HTTP-заголовков' : 'чтение тела HTTP-ответа'}</div>}
+                      {syncReport.httpStatus !== undefined && syncReport.httpStatus !== null && (
+                        <div>HTTP: {syncReport.httpStatus === 0 ? 'ответ не получен' : syncReport.httpStatus}</div>
+                      )}
+                      {syncReport.detail && <div>Деталь: {syncReport.detail}</div>}
+                    </div>
+                  )}
                   {syncReport.stageTimings?.length ? (
                     <ul className="capi-warnings">
                       {syncReport.stageTimings.map((timing, index) => (

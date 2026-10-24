@@ -98,6 +98,13 @@ async function handleOne() {
       status,
       totalDurationMs: durationMs,
       stageTimings,
+      failedAtStage: result.ok ? null : activeStage,
+      endpoint: publicResult.endpoint,
+      host: publicResult.host,
+      httpStatus: publicResult.httpStatus,
+      errorKind: publicResult.errorKind,
+      transportPhase: publicResult.transportPhase,
+      reason: publicResult.reason,
       profileSaved: result.profileSaved,
       journalStatus: result.journalStatus,
     }));
