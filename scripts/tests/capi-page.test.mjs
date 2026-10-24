@@ -85,6 +85,20 @@ test('список audience после колбэка сохраняет «Ав�
   }
 });
 
+test('ошибка шлюза ручной синхронизации показывает HTTP статус вместо общего сообщения', async () => {
+  const ui = await renderCapi({ api: (url) => {
+    if (url === '/api/capi/sync') return { status: 504, body: {} };
+  } });
+  try {
+    const button = [...ui.dom.window.document.querySelectorAll('button')]
+      .find((item) => item.textContent.includes('Синхронизировать'));
+    await ui.click(button);
+    assert.match(ui.text(), /Синхронизация не удалась \(HTTP 504/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
 test('неуспешный ручной синк перечитывает привязку и убирает старое требование входа', async () => {
   let binding = { ...BINDING, tokenActive: false };
   const ui = await renderCapi({ binding: () => binding, api: (url) => {
