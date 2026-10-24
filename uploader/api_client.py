@@ -524,54 +524,50 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 
-    def fetch_capi_tokens(self) -> dict:
-        """Забрать с сайта сохранённую привязку Frontier CAPI этого пилота.
+    def get_capi_status(self) -> dict:
+        """Read the website-owned CAPI binding and its parsed profile summary.
 
-        Сайт обновляет (refresh) токены по расписанию, поэтому его копия —
-        самая свежая. Приложение берёт её, когда собственный токен истёк или
-        отсутствует: без этого пилоту приходилось проходить вход у Frontier
-        заново после каждого долгого перерыва (refresh-токен живёт 25 дней).
-        Возвращает {ok, tokens} или {ok: False, error}.
+        The project API token identifies the site account. Frontier access and
+        refresh tokens are never returned to the desktop client.
         """
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": "Нет токена проекта"}
         try:
             resp = self._session.get(
-                f"{self.api_base}/capi/token",
+                f"{self.api_base}/capi/helper",
                 headers={"Authorization": f"Bearer {self.token}"},
                 allow_redirects=False,
-                timeout=15,
+                timeout=20,
             )
             data = _safe_json(resp)
-            if resp.ok and data.get("ok") and data.get("tokens"):
-                return {"ok": True, "tokens": data["tokens"]}
-            # 404 — привязки на сайте нет: это не ошибка, а честное «брать
-            # нечего», поэтому отдельно не расшифровываем.
-            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+            if resp.ok:
+                return {"ok": True, **data}
+            return {"ok": False, "status": resp.status_code,
+                    "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 
-    def push_capi_tokens(self, tokens: dict) -> dict:
-        """Отправить на сайт свежую привязку Frontier CAPI.
+    def sync_capi(self) -> dict:
+        """Ask the website to sync its existing Frontier binding.
 
-        Один источник правды: если пилот авторизовался в приложении, сайт
-        получает те же токены и дальше продлевает их своим расписанием.
-        Возвращает {ok} или {ok: False, error}.
+        Only the revocable project API token is sent. The server fetches,
+        parses, and persists CAPI data; no raw Frontier credentials or profile
+        payload are uploaded from Colonial Helper.
         """
-        if not self.token or not tokens:
-            return {"ok": False, "error": "Нет токена или данных"}
+        if not self.token:
+            return {"ok": False, "error": "Нет токена проекта"}
         try:
             resp = self._session.post(
-                f"{self.api_base}/capi/token",
+                f"{self.api_base}/capi/helper",
                 headers={"Authorization": f"Bearer {self.token}"},
-                json={"token": self.token, **tokens},
                 allow_redirects=False,
-                timeout=15,
+                timeout=75,
             )
             data = _safe_json(resp)
             if resp.ok and data.get("ok"):
-                return {"ok": True}
-            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+                return {"ok": True, **data}
+            return {"ok": False, "status": resp.status_code, **data,
+                    "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 

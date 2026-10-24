@@ -20,6 +20,7 @@ import traceback
 from typing import Dict, Optional, List
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import webbrowser
 
 # -- Проверка tkinter --
 try:
@@ -74,9 +75,6 @@ except ImportError:
 from api_client import ApiClient
 from community_goals import CommunityGoalReportCollector, community_goal_reports_from_event
 from site_config import normalize_site_url, saved_connection
-from companion_api import (AUDIENCE_LABELS, CompanionAuth, CompanionAuthError,
-                           CompanionClient, normalize_audience, profile_to_stats,
-                           set_app_version as set_capi_app_version, normalize_platform)
 from journal_parser import (
     parse_file,          # noqa: F401 — оставлен как публичный API парсера
     parse_journal,       # noqa: F401
@@ -149,11 +147,6 @@ except Exception:  # pragma: no cover - запуск из исходников �
 APP_NAME = "Colonial Helper"
 VERSION = "2.17.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
-
-# Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
-# (EDCD/FDevIDs → Frontier API/README.md). Версию отдаём модулю CAPI сразу,
-# чтобы в заголовке был настоящий номер сборки, а не заглушка.
-set_capi_app_version(VERSION)
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
 # Пусто — значит, программа запущена не из сборки (исходники, отладка), и
@@ -318,15 +311,9 @@ class ColonialHelperApp:
         # Отдельное хранилище credentials переживает обновление приложения и
         # не может быть затёрто настройками HUD/overlay.
         self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
-        # Frontier Companion API (досье пилота). Авторизация PKCE, поэтому
-        # секретный ключ FDEV не требуется. Токены храним отдельно от настроек
-        # и с правами 0600.
-        self.capi_auth_path = Path.home() / ".colonial_helper_capi.json"
-        # Настройки читаются ниже (`load_config`), поэтому здесь создаём
-        # клиент с умолчаниями, а client_id/платформу накладываем после
-        # загрузки конфига — раньше `frontier_client_id` из файла не
-        # применялся вовсе, потому что self.config тут ещё пустой.
-        self.capi_auth = CompanionAuth(str(self.capi_auth_path))
+        # Frontier CAPI is bound and fetched by the website. Colonial Helper
+        # keeps no separate Frontier credentials; it uses only its revocable
+        # project API token to request a server-side sync.
         # Кэш последнего ответа Raven: карта не ждёт сеть при старте приложения.
         self.map_cache = MapRavenCache(
             self.config_path.with_name(".colonial_helper_map_cache.json"))
@@ -336,7 +323,6 @@ class ColonialHelperApp:
         self.exobiology.load_from_cache(self.exobio_cache)
         self._exobio_history_scanned_systems = set()
         self.load_config()
-        self._apply_capi_config()
 
         # Raven Colonial API
         self.raven_api = RavenColonialAPI(self.config.get("raven_colonial_key", ""))
@@ -723,55 +709,31 @@ class ColonialHelperApp:
 
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
 
-        # -- Frontier CAPI (досье пилота) --------------------------------
-        # Авторизация идёт через PKCE: секретный ключ FDEV не нужен, поэтому
-        # подключить досье можно сразу, без ожидания ответа поддержки.
+        # -- Frontier CAPI (website-owned binding) ------------------------
         tb.Label(frame, text="Досье пилота (Frontier CAPI)", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
         tb.Label(
             frame,
             text=(
-                "Баланс, ранги и счётчики исследований берутся у Frontier напрямую. "
-                "Откроется браузер: нажмите «Разрешить» — дальше Colonial Helper "
-                "сам получит данные и обновит досье на сайте. Секретный ключ "
-                "разработчика не требуется (авторизация PKCE)."
+                "Подключение и данные CAPI принадлежат вашему аккаунту на сайте. "
+                "Сначала привяжите Frontier в личном кабинете сайта; Colonial Helper "
+                "не хранит Frontier-токены и запрашивает синхронизацию только через "
+                "ваш токен проекта. Сайт сам получает, разбирает и сохраняет данные."
             ),
             foreground=COLOR_MUTED,
             wraplength=700,
             justify=LEFT,
         ).pack(anchor=W, pady=(0, 8))
 
-        # Выбор платформы = параметр `audience` у Frontier. Если войти учёткой
-        # магазина Frontier, когда игра куплена в Steam/Epic, авторизация
-        # пройдёт, но CAPI ответит 400 «Please Visit the store to purchase
-        # Elite: Dangerous» — привязка будет выглядеть рабочей и не работать.
-        capi_platform_frame = tb.Frame(frame)
-        capi_platform_frame.pack(anchor=W, pady=(0, 8))
-        tb.Label(capi_platform_frame, text="Где куплена игра:",
-                 font=("Segoe UI", 10)).pack(side=LEFT, padx=(0, 8))
-        self.capi_audience_var = tk.StringVar(value=self._capi_audience_label())
-        self.capi_audience_combo = tb.Combobox(
-            capi_platform_frame,
-            textvariable=self.capi_audience_var,
-            width=32,
-            state="readonly",
-            values=[label for _key, label in AUDIENCE_LABELS],
-        )
-        self.capi_audience_combo.pack(side=LEFT)
-        self.capi_audience_combo.bind(
-            "<<ComboboxSelected>>", lambda _e: self._on_capi_audience_changed())
-
         capi_btn_frame = tb.Frame(frame)
         capi_btn_frame.pack(anchor=W, pady=(0, 8))
-
         self.capi_link_btn = tb.Button(
             capi_btn_frame,
-            text="Подключить Frontier",
+            text="Открыть Frontier CAPI на сайте",
             command=self._on_capi_link,
             bootstyle="primary",
-            width=22,
+            width=30,
         )
         self.capi_link_btn.pack(side=LEFT, padx=(0, 10))
-
         self.capi_fetch_btn = tb.Button(
             capi_btn_frame,
             text="Обновить досье",
@@ -779,19 +741,12 @@ class ColonialHelperApp:
             bootstyle="success-outline",
             width=18,
         )
-        self.capi_fetch_btn.pack(side=LEFT, padx=(0, 10))
+        self.capi_fetch_btn.pack(side=LEFT)
 
-        tb.Button(
-            capi_btn_frame,
-            text="Отключить",
-            command=self._on_capi_unlink,
-            bootstyle="danger-outline",
-            width=14,
-        ).pack(side=LEFT)
-
-        self.capi_status = tb.Label(frame, text="Frontier не подключён", font=("Segoe UI", 10), foreground=COLOR_MUTED,
+        self.capi_status = tb.Label(frame, text="Проверка привязки сайта…", font=("Segoe UI", 10), foreground=COLOR_MUTED,
                                     wraplength=700)
         self.capi_status.pack(anchor=W, pady=(4, 0))
+        self._capi_refresh_status()
 
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
 
@@ -4753,298 +4708,119 @@ class ColonialHelperApp:
         except Exception:
             pass
 
-    def _apply_capi_config(self):
-        """Наложить настройки из конфига на клиент Frontier CAPI."""
-        client_id = str(self.config.get("frontier_client_id", "") or "").strip()
-        if client_id:
-            self.capi_auth.client_id = client_id
-        self.capi_auth.audience = normalize_audience(
-            self.config.get("frontier_audience", ""))
-
-    def _capi_audience_label(self) -> str:
-        """Подпись выбранной платформы для комбобокса."""
-        current = normalize_audience(self.config.get("frontier_audience", ""))
-        for key, label in AUDIENCE_LABELS:
-            if normalize_audience(key) == current:
-                return label
-        return AUDIENCE_LABELS[0][1]
-
-    def _on_capi_audience_changed(self):
-        """Пользователь выбрал платформу аккаунта Frontier."""
-        label = self.capi_audience_var.get()
-        key = next((k for k, text in AUDIENCE_LABELS if text == label), "auto")
-        self.config["frontier_audience"] = key
-        self.capi_auth.audience = normalize_audience(key)
-        self.save_config()
-        self.log(f"Frontier CAPI: платформа аккаунта — {label} "
-                 f"(audience={self.capi_auth.audience})", "info")
-
-    def _capi_refresh_status(self):
-        """Показать в UI состояние привязки Frontier.
-
-        Важно различать «токен сохранён» и «связь работает»: OAuth может
-        пройти успешно, а CAPI — отказать в правах даже после правильного
-        входа через EGS. Зелёный статус даём только после ответа CAPI,
-        но отказ в правах не уничтожает рабочую авторизацию.
-        """
+    def _capi_open_site(self):
+        """Открыть единственное место, где Frontier можно привязать/отвязать."""
+        site = getattr(getattr(self, "api", None), "site_url", "") or ""
+        if not site:
+            self._capi_set_status("Сначала подключите токен проекта", ok=False)
+            return
+        url = f"{site.rstrip('/')}/account/capi"
         try:
-            state = self.capi_auth.status()
-        except Exception:
-            state = {"linked": False}
-
-        if not state.get("linked"):
-            self._capi_set_status("Frontier не подключён", ok=None)
-            return
-
-        authorized = float(state.get("authorized_at") or 0)
-        when = datetime.fromtimestamp(authorized).strftime("%d.%m.%Y %H:%M") if authorized else "—"
-
-        if state.get("error"):
-            hint = state.get("hint") or ""
-            self._capi_set_status(
-                f"Связь с Frontier не подтверждена: {state['error']}"
-                + (f"\n{hint}" if hint else ""),
-                ok=False,
-            )
-            return
-
-        if state.get("verified"):
-            cmdr = state.get("cmdr") or ""
-            self._capi_set_status(
-                f"Frontier подключён и проверен{f' ({cmdr})' if cmdr else ''}, "
-                f"авторизация от {when}",
-                ok=True,
-            )
-            return
-
-        self._capi_set_status(
-            f"Токен Frontier сохранён (от {when}), связь ещё не проверялась — "
-            "нажмите «Обновить досье»",
-            ok=None,
-        )
+            webbrowser.open(url)
+            self._capi_set_status("Открыл страницу Frontier CAPI на сайте", ok=None)
+        except Exception as exc:
+            self._capi_set_status(f"Не удалось открыть браузер: {exc}", ok=False)
 
     def _on_capi_link(self):
-        """Открыть браузер и пройти авторизацию Frontier (PKCE, без секретного ключа)."""
-        btn = getattr(self, "capi_link_btn", None)
-        if btn:
-            btn.config(state="disabled")
-        self._capi_set_status("Ожидаю подтверждения в браузере…")
-        self.log("Frontier CAPI: открываю браузер для авторизации (PKCE), "
-                 f"платформа audience={self.capi_auth.audience}", "info")
+        """Совместимый обработчик кнопки: привязка выполняется только на сайте."""
+        self._capi_open_site()
+
+    def _capi_refresh_status(self):
+        """Показать статус привязки, полученный от сайта по токену проекта."""
+        api = getattr(self, "api", None)
+        if not api or not api.is_connected:
+            self._capi_set_status("Подключите токен проекта, затем привяжите Frontier на сайте", ok=None)
+            return
+        self._capi_set_status("Проверяю привязку Frontier на сайте…", ok=None)
 
         def worker():
-            error = None
             try:
-                self.capi_auth.authorize(on_url=lambda url: self.root.after(
-                    0, self.log, f"Ссылка авторизации: {url}", "info"))
-            except CompanionAuthError as exc:
-                error = str(exc)
+                result = api.get_capi_status()
             except Exception as exc:
-                error = f"Непредвиденная ошибка авторизации: {exc}"
+                result = {"ok": False, "error": str(exc)}
 
             def done():
-                if btn:
-                    btn.config(state="normal")
-                if error:
-                    self._capi_set_status(f"Не удалось подключиться: {error}", ok=False)
-                    self.log(f"Frontier CAPI: {error}", "error")
-                    return
-                self.log("Frontier CAPI: токен получен, проверяю связь с Companion API",
-                         "info")
-                # Токен сам по себе ничего не гарантирует: подтверждение —
-                # только успешный ответ /profile.
-                self._capi_fetch_and_upload()
-
-            self.root.after(0, done)
-
-        threading.Thread(target=worker, daemon=True, name="CapiLink").start()
-
-    def _on_capi_unlink(self):
-        """Забыть токены Frontier."""
-        self.capi_auth.clear()
-        self._capi_refresh_status()
-        self.log("Frontier CAPI: авторизация сброшена", "info")
-
-    def _on_capi_fetch(self):
-        if not self.capi_auth.is_linked():
-            self._capi_set_status("Сначала подключите Frontier", ok=False)
-            return
-        self._capi_fetch_and_upload()
-
-    def _capi_adopt_site_tokens(self) -> bool:
-        """Подтянуть привязку Frontier с сайта, если собственная истекла.
-
-        Refresh-токен Frontier живёт 25 дней, а сайт продлевает свою копию
-        расписанием `capi-sync`. Раньше после долгого перерыва приложение
-        молча теряло привязку, и пилоту приходилось каждый раз проходить вход
-        у Frontier заново («синхронизация постоянно через логин-пароль»).
-        Теперь приложение сначала пробует живые токены сайта.
-        """
-        if not getattr(self, "api_client", None) or not self.api_client.is_connected:
-            return False
-        result = self.api_client.fetch_capi_tokens()
-        tokens = result.get("tokens") if result.get("ok") else None
-        if not isinstance(tokens, dict):
-            return False
-        access = str(tokens.get("access_token") or "")
-        refresh = str(tokens.get("refresh_token") or "")
-        if not access or not refresh:
-            return False
-        actual_platform = normalize_platform(tokens.get("platform"))
-        requested = self.capi_auth.audience
-        if actual_platform and actual_platform not in requested.split(","):
-            self.log(f"Frontier CAPI: токены сайта выданы платформой «{actual_platform}», "
-                     f"а в Helper выбрана «{requested}» — локальная привязка не заменена", "warn")
-            return False
-        try:
-            expires_in = int(tokens.get("expires_in") or 14400)
-        except (TypeError, ValueError):
-            expires_in = 14400
-        obtained_at = None
-        expires_at_raw = str(tokens.get("expires_at") or "")
-        if expires_at_raw:
-            try:
-                expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
-                obtained_at = max(0.0, expires_at.timestamp() - expires_in)
-            except ValueError:
-                obtained_at = None
-        try:
-            self.capi_auth.save({
-                "access_token": access,
-                "refresh_token": refresh,
-                "expires_in": expires_in,
-                "obtained_at": obtained_at or time.time(),
-                "audience": requested,
-                "platform": actual_platform,
-            })
-        except Exception as exc:
-            self.log(f"Frontier CAPI: не удалось принять привязку с сайта: {exc}", "warn")
-            return False
-        self.log("Frontier CAPI: привязка подтянута с сайта (токены сайта свежее локальных)", "info")
-        return True
-
-    def _capi_push_tokens_to_site(self):
-        """Поделиться свежей привязкой с сайтом (один источник правды).
-
-        Сайт с полученными токенами будет продлевать их сам — и приложению, и
-        сайту хватит одной авторизации вместо двух независимых, умирающих
-        каждые 25 дней.
-        """
-        if not getattr(self, "api_client", None) or not self.api_client.is_connected:
-            return
-        tokens = self.capi_auth.load()
-        if not tokens.get("access_token") or not tokens.get("refresh_token"):
-            return
-        try:
-            self.api_client.push_capi_tokens({
-                "access_token": tokens.get("access_token"),
-                "refresh_token": tokens.get("refresh_token"),
-                "expires_in": tokens.get("expires_in"),
-                "obtained_at": tokens.get("obtained_at"),
-                "audience": tokens.get("audience") or self.capi_auth.audience,
-            })
-        except Exception as exc:
-            self.log(f"Frontier CAPI: не удалось передать привязку на сайт: {exc}", "warn")
-
-    def _capi_fetch_and_upload(self):
-        """Скачать профиль из CAPI и отправить его на сайт в досье."""
-        if not getattr(self, "api_client", None) or not self.api_client.is_connected:
-            self.log("Frontier CAPI: нет токена сайта — данные останутся локально", "warn")
-
-        self._capi_set_status("Загружаю досье из Frontier…")
-
-        def verify_once():
-            client = CompanionClient(self.capi_auth)
-            # verify() сам пишет рядом с токенами, подтверждена связь или
-            # нет, и возвращает разобранную причину отказа.
-            return client.verify()
-
-        def worker():
-            error = None
-            hint = ""
-            stats: dict = {}
-            cmdr = ""
-            result = None
-            try:
-                result = verify_once()
-            except CompanionAuthError as exc:
-                error = str(exc)
-                hint = exc.hint
-            except Exception as exc:
-                error = f"Сбой загрузки досье: {exc}"
-
-            # Свежий refresh-токен мог не пережить 25-дневный простой Frontier.
-            # Прежде чем просить пилота о повторном входе, пробуем копию
-            # привязки с сайта: сайт продлевает её своим расписанием.
-            # Status 0 — локальная авторизация уже не даёт токена (refresh
-            # истёк или отозван): сайт мог продлить СВОЮ пару, пока
-            # приложение стояло, — тогда подхватываем её вместо ошибки.
-            if result is not None and not result.get("ok") and result.get("status") in (0, 401, 403, 422):
-                if self._capi_adopt_site_tokens():
-                    try:
-                        result = verify_once()
-                    except CompanionAuthError as exc:
-                        result = None
-                        error = str(exc)
-                        hint = exc.hint
-                    except Exception as exc:
-                        result = None
-                        error = f"Сбой загрузки досье: {exc}"
-            if result is not None and result.get("reason") == "entitlement_unavailable":
-                # OAuth получен правильной платформой, но CAPI пока не видит
-                # права на игру. Сайт тоже сохраняет эту пару и может продлевать
-                # её, не заставляя пилота проходить две авторизации заново.
-                self._capi_push_tokens_to_site()
-            if error is None and result is not None and not result.get("ok"):
-                error = str(result.get("error") or "Frontier не отдал профиль")
-                hint = str(result.get("hint") or "")
-            if result is not None and result.get("ok"):
-                stats = result.get("stats") or {}
-                cmdr = str(result.get("cmdr") or "")
-
-            upload_error = None
-            upload_note = None
-            if not error and stats:
-                # Живые токены есть и профиль получен: делимся ими с сайтом,
-                # чтобы дальше их продлевало расписание сайта.
-                self._capi_push_tokens_to_site()
-                result_upload = self.api_client.upload_pilot_stats(stats, cmdr or None)
-                if not result_upload.get("ok"):
-                    upload_error = result_upload.get("error")
-                elif result_upload.get("pilotStatsSkipped") == "web_source":
-                    # Не ошибка: сайт хранит сводку, загруженную через браузер,
-                    # и программа не имеет права её перетереть.
-                    upload_note = result_upload.get("warning") or (
-                        "сводка пилота не записана — приоритет у данных, "
-                        "загруженных через сайт"
-                    )
-
-            def done():
-                if error:
+                if not result.get("ok"):
                     self._capi_set_status(
-                        f"Досье не обновлено: {error}" + (f"\n{hint}" if hint else ""),
+                        f"Не удалось проверить CAPI сайта: {result.get('error', 'ошибка запроса')}",
                         ok=False,
                     )
-                    self.log(f"Frontier CAPI: {error}", "error")
-                    if hint:
-                        self.log(f"Что делать: {hint}", "warn")
                     return
-                if upload_error:
-                    self._capi_set_status("Данные получены, но не отправлены на сайт", ok=False)
-                    self.log(f"Досье из CAPI получено, загрузка на сайт не удалась: {upload_error}", "warn")
-                    return
-                if upload_note:
+                if not result.get("linked"):
                     self._capi_set_status(
-                        f"Досье из Frontier получено ({cmdr or 'пилот'}); {upload_note}", ok=True)
-                    self.log(f"Сводка пилота от программы не записана: {upload_note}", "warn")
-                    return
-                self._capi_set_status(
-                    f"Досье обновлено из Frontier{f' ({cmdr})' if cmdr else ''}", ok=True)
-                self.log("Досье пилота обновлено из Frontier CAPI", "success")
+                        "Frontier не привязан на сайте. Нажмите «Открыть Frontier CAPI на сайте».",
+                        ok=None,
+                    )
+                elif not result.get("active"):
+                    self._capi_set_status(
+                        "Привязка Frontier сохранена, но требует внимания. Откройте CAPI на сайте.",
+                        ok=False,
+                    )
+                else:
+                    cmdr = result.get("cmdrName") or ""
+                    synced = result.get("lastSyncedAt") or ""
+                    suffix = f"; синхронизация: {synced}" if synced else ""
+                    self._capi_set_status(
+                        f"Frontier привязан на сайте{f' (CMDR {cmdr})' if cmdr else ''}{suffix}",
+                        ok=True,
+                    )
 
             self.root.after(0, done)
 
-        threading.Thread(target=worker, daemon=True, name="CapiFetch").start()
+        threading.Thread(target=worker, daemon=True, name="CapiStatus").start()
+
+    def _on_capi_fetch(self):
+        """Запросить синхронизацию сайта; без его привязки CAPI недоступен."""
+        self._capi_fetch_and_upload()
+
+    def _capi_unlink(self):
+        """Отключение CAPI также выполняется только на сайте."""
+        self._capi_open_site()
+
+    def _capi_fetch_and_upload(self):
+        """Попросить сайт синхронизировать его Frontier-привязку.
+
+        Helper отправляет только проектный API-токен. Токены Frontier,
+        ответы Companion API и нормализация профиля остаются на сервере.
+        """
+        api = getattr(self, "api", None)
+        if not api or not api.is_connected:
+            self._capi_set_status("Сначала подключите токен проекта", ok=False)
+            return
+        self._capi_set_status("Сайт синхронизирует данные Frontier…", ok=None)
+
+        def worker():
+            try:
+                result = api.sync_capi()
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+
+            def done():
+                if not result.get("ok"):
+                    error = result.get("error") or "Синхронизация не удалась"
+                    if result.get("needsSiteLink"):
+                        error += ". Сначала привяжите Frontier на сайте."
+                    elif result.get("needsReauth"):
+                        error += ". Откройте Frontier CAPI на сайте и переподключите аккаунт."
+                    self._capi_set_status(error, ok=False)
+                    self.log(f"Frontier CAPI: {error}", "warn")
+                    return
+
+                cmdr = result.get("cmdrName") or ""
+                imported = result.get("eventsImported", 0)
+                warnings = result.get("warnings") or []
+                suffix = f"; событий колонизации добавлено: {imported}" if imported else ""
+                if warnings:
+                    suffix += f"; предупреждений: {len(warnings)}"
+                self._capi_set_status(
+                    f"Досье обновлено сайтом из Frontier{f' (CMDR {cmdr})' if cmdr else ''}{suffix}",
+                    ok=True,
+                )
+                self.log("Досье Frontier синхронизировано сайтом", "success")
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True, name="CapiSiteSync").start()
 
     def _maybe_sync_pilot_stats(self):
         stats = getattr(self, "_pilot_stats", {})
@@ -7681,6 +7457,7 @@ class ColonialHelperApp:
             self.set_connection_status(True, self.api.display_name)
             self.log(f"Авторизован как {self.api.display_name}", "success")
             self.save_config()
+            self._capi_refresh_status()
             if not self.watcher_active:
                 self.root.after(300, self._auto_start_watcher)
         else:

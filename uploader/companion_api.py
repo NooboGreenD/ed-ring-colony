@@ -1,63 +1,13 @@
-"""Frontier Companion API (CAPI) из Colonial Helper — без Shared Key от FDEV.
+"""Legacy Frontier CAPI client and profile parser.
 
-Зачем этот модуль
------------------
+Colonial Helper no longer imports or uses this module in its production flow.
+Frontier OAuth, refresh tokens, CAPI calls, parsing, and persistence belong to
+ED Ring Colony's website. The desktop app uses only its revocable project API
+token with `/api/capi/helper` and never receives Frontier credentials.
 
-Досье пилота на сайте заполняется из CAPI: баланс, ранги, текущий корабль и
-система, счётчики экзобиологии. Получить их может только тот, кого командир
-авторизовал у Frontier. Сайт делал это сам, но для обмена кода на токен ему
-требовался `client_secret` («Shared Key» из Developer Zone), который Frontier
-выдаёт по заявке и иногда не выдаёт вовсе.
-
-Решение — поток **PKCE**, для которого секрет не нужен: доказательством служит
-`code_verifier`, известный только тому, кто начал авторизацию. Именно так
-работают десктопные инструменты сообщества (EDMC, EDDI). Нужен только Client ID,
-а его можно создать самостоятельно за минуту в Developer Zone
-(https://user.frontierstore.net → «CREATE CLIENT»); по умолчанию используется
-client_id приложения «ED Ring Colony», зарегистрированного проектом.
-
-Как это устроено здесь
-----------------------
-
-1. `CompanionAuth.authorize()` открывает браузер на
-   `https://auth.frontierstore.net/auth` с `code_challenge` (S256) и
-   `redirect_uri` на локальный порт `http://127.0.0.1:<port>/`.
-2. Локальный `http.server` ловит `?code=…&state=…`, отдаёт страницу «можно
-   закрыть» и закрывается.
-3. Код обменивается на токены POST'ом на `https://auth.frontierstore.net/token`
-   с `code_verifier` — БЕЗ `client_secret`.
-4. Токены хранятся локально (`capi_tokens.json` рядом с настройками) и
-   обновляются refresh-токеном. Refresh живёт не дольше 25 дней с момента
-   авторизации, после чего нужна повторная авторизация.
-5. `profile_to_stats()` превращает ответ `/profile` в тот же payload, который
-   сайт ждёт в `POST /api/cmdr/stats` — дальше работает существующий
-   `api_client.upload_pilot_stats()`.
-
-Три грабли, на которые здесь наступали (и почему код выглядит так)
-------------------------------------------------------------------
-
-**1. `audience=frontier` ⇒ CAPI отвечает `HTTP 400`.** Параметр `audience`
-говорит Frontier, аккаунт какой платформы авторизуется. Раньше здесь всегда
-стояло `frontier` — учётка магазина frontierstore.net. У пилота, купившего игру
-в Steam или Epic, такая учётка игрой не владеет: OAuth проходит, токен выдаётся,
-`/me` отвечает, а `companion.orerve.net/profile` возвращает
-`400 Bad Request: Please Visit the store to purchase Elite: Dangerous`.
-Снаружи это и выглядит как «подключение фиктивное». EDMC запрашивает сразу
-`audience=frontier,steam,epic` — так же поступаем и мы (`DEFAULT_AUDIENCE`),
-а пользователь при желании выбирает платформу явно.
-
-**2. Дефолтный `User-Agent` requests.** Frontier просит третьи стороны
-представляться по шаблону `EDCD-[A-Za-z]+-[.0-9]+` (EDCD/FDevIDs →
-`Frontier API/README.md`). `python-requests/2.x` под шаблон не подходит.
-
-**3. Разбор `/profile` по «плоским» полям.** CAPI отдаёт `commander.credits`,
-`commander.rank.*`, `lastSystem.name`, `lastStarport.name`, `ship.name` +
-`ship.shipName`. Старый разбор читал `profile["credits"]`, `profile["rank"]`,
-`profile["ship"]` — и досье оставалось пустым даже при успешном ответе.
-
-Модуль не импортирует tkinter и не трогает UI: всё взаимодействие с
-пользователем (открытие браузера, сообщения) делает вызывающий код через
-колбэки.
+The PKCE/client/parser code is retained temporarily for compatibility tests and
+for reading older Helper installations; do not wire it back into the UI or add
+a second OAuth binding. See `CAPI-SITE-OWNERSHIP.md` for the current contract.
 """
 
 import base64

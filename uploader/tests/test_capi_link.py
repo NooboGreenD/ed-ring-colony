@@ -438,7 +438,7 @@ class RealProfileShapeTests(unittest.TestCase):
 
 
 class AppDossierFlowTests(unittest.TestCase):
-    """Поведение приложения вокруг кнопки «Обновить досье» (без настоящего Tk)."""
+    """Helper использует только сайт-владельца CAPI, без прямых Frontier-запросов."""
 
     @classmethod
     def setUpClass(cls):
@@ -449,25 +449,22 @@ class AppDossierFlowTests(unittest.TestCase):
         cls.App = colonial_helper.ColonialHelperApp
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
         self.app = self.App.__new__(self.App)
         self.app.config = {}
         self.app.log = mock.Mock()
         self.app.capi_status = None
         self.app._capi_set_status = mock.Mock()
         self.app.root = mock.Mock()
-        # root.after(delay, fn, *args) в тесте выполняется сразу.
         self.app.root.after = lambda _delay, fn=None, *args: fn(*args) if fn else None
-        self.app.capi_auth = CompanionAuth(os.path.join(self.tmp.name, "capi.json"))
-        self.app.capi_auth.save({"access_token": "tok", "expires_in": 14400,
-                                 "obtained_at": time.time()})
         self.app.api = mock.Mock()
         self.app.api.is_connected = True
-        self.app.api.upload_pilot_stats.return_value = {"ok": True}
+        self.app.api.site_url = "https://colony.test"
+        self.app.api.sync_capi.return_value = {
+            "ok": True, "cmdrName": "Hunter", "eventsImported": 2,
+            "warnings": [], "profile": {"credits": 10},
+        }
 
-    def _run_fetch(self, response):
-        """Прогнать `_capi_fetch_and_upload` синхронно."""
+    def _run_worker(self, method):
         threads = []
 
         class _Thread:
@@ -478,94 +475,58 @@ class AppDossierFlowTests(unittest.TestCase):
                 threads.append(self._target)
                 self._target()
 
-        with mock.patch.object(companion_api.requests, "get",
-                               side_effect=lambda *a, **k: response), \
-             mock.patch.object(self.module.threading, "Thread", _Thread):
-            self.app._capi_fetch_and_upload()
-        self.assertTrue(threads, "рабочий поток досье не запускался")
+        with mock.patch.object(self.module.threading, "Thread", _Thread):
+            method()
+        self.assertTrue(threads, "CAPI request was not dispatched to a worker")
 
-    def test_api_client_alias_points_at_the_real_client(self):
-        # Регрессия: раньше self.api_client не существовал и поток досье падал
-        # с AttributeError уже после успешного ответа Frontier.
-        self.assertIs(self.app.api_client, self.app.api)
-
-    def test_successful_profile_is_uploaded_to_the_site(self):
-        profile = {"commander": {"name": "Hunter", "credits": 10,
-                                 "rank": {"combat": 2}},
-                   "lastSystem": {"name": "Sol"}}
-        self._run_fetch(_Resp(200, profile))
-
-        self.app.api.upload_pilot_stats.assert_called_once()
-        stats, cmdr = self.app.api.upload_pilot_stats.call_args.args
-        self.assertEqual(cmdr, "Hunter")
-        self.assertEqual(stats["credits"], 10)
-        self.assertEqual(stats["current_system"], "Sol")
-        status_text, kwargs = (self.app._capi_set_status.call_args.args,
-                               self.app._capi_set_status.call_args.kwargs)
-        self.assertTrue(kwargs.get("ok"))
-        self.assertIn("Досье обновлено", status_text[0])
-        self.assertTrue(self.app.capi_auth.status()["verified"])
-
-    def test_http_400_shows_the_cause_and_skips_the_upload(self):
-        self._run_fetch(_Resp(400, None, "Please Visit the store to purchase Elite: Dangerous."))
-
+    def test_successful_sync_is_delegated_to_site_not_local_frontier(self):
+        self._run_worker(self.app._capi_fetch_and_upload)
+        self.app.api.sync_capi.assert_called_once_with()
+        text = self.app._capi_set_status.call_args.args[0]
+        self.assertIn("Досье обновлено сайтом", text)
+        self.assertIn("Hunter", text)
+        self.assertIn("2", text)
         self.app.api.upload_pilot_stats.assert_not_called()
+        self.app.api.push_capi_tokens.assert_not_called()
+        self.app.api.fetch_capi_tokens.assert_not_called()
+
+    def test_unlinked_site_binding_is_required(self):
+        self.app.api.sync_capi.return_value = {
+            "ok": False, "needsSiteLink": True,
+            "error": "Сначала привяжите Frontier CAPI в личном кабинете сайта",
+        }
+        self._run_worker(self.app._capi_fetch_and_upload)
         text = self.app._capi_set_status.call_args.args[0]
-        self.assertIn("Досье не обновлено", text)
-        self.assertIn("Elite Dangerous", text)
-        self.assertIn("Steam", text)          # подсказка «выберите платформу»
+        self.assertIn("привяжите Frontier", text)
         self.assertFalse(self.app._capi_set_status.call_args.kwargs.get("ok"))
-        self.assertFalse(self.app.capi_auth.status()["verified"])
 
-    def test_status_line_separates_saved_token_from_working_link(self):
-        self.app._capi_refresh_status()
+    def test_status_comes_from_website_project_token(self):
+        self.app.api.get_capi_status.return_value = {
+            "ok": True, "linked": True, "active": True,
+            "cmdrName": "Hunter", "lastSyncedAt": "2026-10-24T12:00:00Z",
+        }
+        self._run_worker(self.app._capi_refresh_status)
+        self.app.api.get_capi_status.assert_called_once_with()
         text = self.app._capi_set_status.call_args.args[0]
-        self.assertIn("связь ещё не проверялась", text)
-
-        self.app.capi_auth.mark_failed("Companion API отклонил запрос: HTTP 400",
-                                       "Выберите платформу Steam")
-        self.app._capi_refresh_status()
-        text = self.app._capi_set_status.call_args.args[0]
-        self.assertIn("не подтверждена", text)
-        self.assertIn("Steam", text)
-
-        self.app.capi_auth.mark_verified("Hunter")
-        self.app._capi_refresh_status()
-        text = self.app._capi_set_status.call_args.args[0]
-        self.assertIn("проверен", text)
+        self.assertIn("привязан на сайте", text)
         self.assertIn("Hunter", text)
 
-    def test_platform_choice_from_config_reaches_the_auth_url(self):
-        self.app.config = {"frontier_audience": "steam", "frontier_client_id": "my-id"}
-        self.app._apply_capi_config()
-        self.assertEqual(self.app.capi_auth.audience, "steam")
-        self.assertEqual(self.app.capi_auth.client_id, "my-id")
+    def test_unlinked_status_explains_site_binding(self):
+        self.app.api.get_capi_status.return_value = {"ok": True, "linked": False, "active": False}
+        self._run_worker(self.app._capi_refresh_status)
+        self.assertIn("не привязан на сайте", self.app._capi_set_status.call_args.args[0])
 
-        self.app.config = {}
-        self.app._apply_capi_config()
-        self.assertEqual(self.app.capi_auth.audience, DEFAULT_AUDIENCE)
+    def test_link_button_opens_account_capi_page(self):
+        with mock.patch.object(self.module.webbrowser, "open") as open_browser:
+            self.app._on_capi_link()
+        open_browser.assert_called_once_with("https://colony.test/account/capi")
 
-    def test_platform_selector_saves_the_choice(self):
-        self.app.capi_audience_var = mock.Mock()
-        self.app.capi_audience_var.get.return_value = "Только Epic Games Store (EGS)"
-        self.app.save_config = mock.Mock()
-
-        self.app._on_capi_audience_changed()
-
-        self.assertEqual(self.app.config["frontier_audience"], "epic")
-        self.assertEqual(self.app.capi_auth.audience, "epic")
-        self.app.save_config.assert_called_once()
-
-    def test_audience_labels_cover_every_platform(self):
-        keys = {key for key, _label in self.module.AUDIENCE_LABELS}
-        self.assertEqual(keys, {"auto", "frontier", "steam", "epic", "xbox", "psn"})
-        for key, _label in self.module.AUDIENCE_LABELS:
-            self.assertTrue(normalize_audience(key))
+    def test_no_frontier_auth_object_is_created_or_used(self):
+        self.assertFalse(hasattr(self.app, "capi_auth"))
+        self.assertFalse(hasattr(self.module.ColonialHelperApp, "_capi_adopt_site_tokens"))
 
     def test_mercenary_coins_come_from_bank_account_not_combat_bonds(self):
-        """Регрессия «943 153 188 монет»: жетоны Operations — это баланс
-        Bank_Account.MercCoins_Current (кап 9999), а не накопленные кредиты
-        за боевые облигации."""
+        """Жетоны Operations — это Bank_Account.MercCoins_Current, а не кредиты за бои."""
         self.app._maybe_sync_pilot_stats = mock.Mock()
         self.app._update_pilot_stats_from_event({
             "event": "Statistics",
@@ -574,77 +535,6 @@ class AppDossierFlowTests(unittest.TestCase):
         })
         self.assertEqual(self.app._pilot_stats["mercenary_coins"], 5900)
         self.assertEqual(self.app._pilot_stats["credits"], 12345678)
-
-    def test_pending_entitlement_is_shared_with_the_site_without_uploading_empty_stats(self):
-        self.app.capi_auth.update(audience="epic", refresh_token="refresh-kept")
-        self._run_fetch(_Resp(400, None, "Please Visit the store to purchase Elite: Dangerous."))
-        self.app.api.push_capi_tokens.assert_called_once()
-        payload = self.app.api.push_capi_tokens.call_args.args[0]
-        self.assertEqual(payload["audience"], "epic")
-        self.assertEqual(payload["refresh_token"], "refresh-kept")
-        self.app.api.upload_pilot_stats.assert_not_called()
-        text = self.app._capi_set_status.call_args.args[0]
-        self.assertIn("Авторизация сохранена", text)
-        self.assertNotIn("войдите кнопкой", text)
-
-    def test_epic_selection_is_not_silently_replaced_by_frontier_site_tokens(self):
-        self.app.capi_auth.audience = "epic"
-        self.app.api.fetch_capi_tokens.return_value = {"ok": True, "tokens": {
-            "access_token": "site-frontier", "refresh_token": "site-refresh", "platform": "frontier"}}
-        self.assertFalse(self.app._capi_adopt_site_tokens())
-        self.assertEqual(self.app.capi_auth.load()["access_token"], "tok")
-        self.assertEqual(self.app.capi_auth.audience, "epic")
-
-    def test_site_tokens_keep_selected_audience_separate_from_confirmed_platform(self):
-        self.app.capi_auth.audience = DEFAULT_AUDIENCE
-        self.app.api.fetch_capi_tokens.return_value = {"ok": True, "tokens": {
-            "access_token": "site-epic", "refresh_token": "site-refresh", "platform": "epic"}}
-        self.assertTrue(self.app._capi_adopt_site_tokens())
-        tokens = self.app.capi_auth.load()
-        self.assertEqual(tokens["audience"], DEFAULT_AUDIENCE)
-        self.assertEqual(tokens["platform"], "epic")
-
-    def test_dead_refresh_adopts_site_tokens_and_retries(self):
-        """Свежий токен умирает за 25 дней: приложение берёт копию с сайта,
-        а не отправляет пилота на повторный вход у Frontier."""
-        calls = {"profile": 0}
-
-        def fake_get(url, headers=None, timeout=None):
-            if "/profile" in url:
-                calls["profile"] += 1
-                if calls["profile"] == 1:
-                    return _Resp(401, None, "UNAUTHORIZED")
-                return _Resp(200, {"commander": {"name": "Hunter", "credits": 10}})
-            raise AssertionError(f"unexpected url: {url}")
-
-        self.app.api.fetch_capi_tokens.return_value = {
-            "ok": True,
-            "tokens": {
-                "access_token": "site-access", "refresh_token": "site-refresh",
-                "expires_in": 14400, "platform": "steam",
-            },
-        }
-        threads = []
-
-        class _Thread:
-            def __init__(self, target=None, daemon=None, name=None):
-                self._target = target
-
-            def start(self):
-                threads.append(self._target)
-                self._target()
-
-        with mock.patch.object(companion_api.requests, "get", side_effect=fake_get), \
-             mock.patch.object(self.module.threading, "Thread", _Thread):
-            self.app._capi_fetch_and_upload()
-
-        # Токены сайта приняты локально и отправлены обратно после успеха.
-        tokens = self.app.capi_auth.load()
-        self.assertEqual(tokens["access_token"], "site-access")
-        self.assertEqual(tokens["refresh_token"], "site-refresh")
-        self.assertEqual(calls["profile"], 2, "повтор после принятия токенов сайта не случился")
-        self.app.api.push_capi_tokens.assert_called_once()
-        self.app.api.upload_pilot_stats.assert_called_once()
 
 
 if __name__ == "__main__":
