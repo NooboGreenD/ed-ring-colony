@@ -169,9 +169,10 @@ export default function CapiPage() {
         });
         await fetchProfile();
       } else {
+        const fallbackError = `Синхронизация не удалась (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''})`;
         setError(data.needsReauth
           ? `${data.error || 'Frontier отклонил токен'} — подключите аккаунт заново.`
-          : data.error || 'Синхронизация не удалась');
+          : data.error || fallbackError);
         await fetchProfile();
         if (Array.isArray(data.warnings) && data.warnings.length) {
           setSyncReport({ cmdrName: null, journalStatus: 'error', eventsImported: 0, eventsDuplicate: 0, warnings: data.warnings });

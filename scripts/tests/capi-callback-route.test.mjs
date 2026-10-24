@@ -456,6 +456,7 @@ maybe('несовпадение state и отсутствие кода объя�
 
 maybe('ручной синк отвечает 200 и сообщает состояние журнала', async () => {
   const { mod, dir } = await buildRoutes();
+  assert.equal(mod.sync.maxDuration, 60, 'manual CAPI sync must opt into the extended function window');
   const frontier = fakeFrontier({ journalStatus: 204 });
   try {
     mod.db.tables.capi_tokens = [{
