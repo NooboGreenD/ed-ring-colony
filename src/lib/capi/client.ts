@@ -299,7 +299,14 @@ export class CapiClient {
   }
 
   async getCommunityGoals(): Promise<CapiCommunityGoalsResponse> {
-    return (await this.fetchJson('/communitygoals')) as CapiCommunityGoalsResponse;
+    try {
+      return (await this.fetchJson('/communitygoals')) as CapiCommunityGoalsResponse;
+    } catch (err) {
+      // Commanders with no active Community Goals can receive Frontier's
+      // normal empty-body response; that is not a broken OAuth binding.
+      if (err instanceof CapiError && err.kind === 'no_content') return { goals: [] };
+      throw err;
+    }
   }
 
   async getVisitedStars(): Promise<Blob> {

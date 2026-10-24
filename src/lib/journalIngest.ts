@@ -24,6 +24,7 @@ import { persistJournalTelemetry, type JournalTelemetryOutcome, type PilotStatsS
 import { resetJournalData } from './journalReset.ts';
 import { syncProjectsFromSites, type ProjectSyncResult } from './projects/projectSync.ts';
 import { persistCommunityGoalReports } from './communityGoalReports.ts';
+import { syncCommunityGoalsFromJournal } from './communityGoalCatalog.ts';
 
 type Svc = any;
 
@@ -113,12 +114,24 @@ export async function ingestJournalBatch(svc: Svc, input: JournalBatchInput): Pr
   }
 
   const reportPayload = body.communityGoalReports ?? body.community_goal_reports;
-  const communityGoalReportsStored = await persistCommunityGoalReports(
-    svc,
-    userId,
-    reportPayload,
-    source,
-  );
+  let communityGoalReportsStored = 0;
+  try {
+    communityGoalReportsStored = await persistCommunityGoalReports(
+      svc,
+      userId,
+      reportPayload,
+      source,
+    );
+  } catch (reportError) {
+    console.warn(`${logTag} private Community Goal reports could not be stored:`, (reportError as Error).message);
+  }
+  try {
+    await syncCommunityGoalsFromJournal(svc, reportPayload);
+  } catch (catalogError) {
+    // Journal-only catalogue entries are pending moderator review; an optional
+    // discovery path must not turn a successful journal upload into a failure.
+    console.warn(`${logTag} Community Goal catalogue fallback failed:`, (catalogError as Error).message);
+  }
 
   return { deliveries, telemetry, reset, projects, communityGoalReportsStored };
 }

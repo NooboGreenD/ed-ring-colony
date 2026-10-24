@@ -22,6 +22,7 @@ import { upsertResilient, updateResilient, schemaWarning } from './persist.ts';
 import { syncMemberLocation } from './locationSync.ts';
 import { parseColonisationEvents } from '@/lib/journalParser';
 import { persistCommunityGoalReports } from '@/lib/communityGoalReports';
+import { syncCommunityGoalsFromCapi, syncCommunityGoalsFromJournal } from '@/lib/communityGoalCatalog';
 import {
   persistColonisationSites,
   siteRowFromDepot,
@@ -170,6 +171,19 @@ export async function syncCapiPilot(
   }
   result.profileSaved = true;
 
+  // ── Community Goals from Frontier CAPI ──────────────────────────
+  // This is an independent, authenticated source: it keeps the public CG
+  // catalogue populated even when Inara has not allowlisted our API client.
+  // A failure here is optional and must not make profile/journal sync fail.
+  try {
+    const communityGoals = await session.run((client) => client.getCommunityGoals());
+    await syncCommunityGoalsFromCapi(svc, communityGoals);
+  } catch (err) {
+    if (!(err instanceof CapiError && err.kind === 'no_content')) {
+      warnings.push(`Community Goals Frontier CAPI не получены: ${describeCapiError(err)}`);
+    }
+  }
+
   // ── 4. pilot_stats: витрина досье и рейтингов ───────────────────
   // Досье (/cmdr/<name>) читает pilot_stats в первую очередь, поэтому синк
   // CAPI обязан наполнять и её — иначе «данные не подтягиваются» ровно там,
@@ -217,6 +231,11 @@ export async function syncCapiPilot(
             await persistCommunityGoalReports(svc, userId, events.communityGoalReports, 'capi');
           } catch (err) {
             warnings.push(`Отчёты Community Goals не сохранены: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          try {
+            await syncCommunityGoalsFromJournal(svc, events.communityGoalReports);
+          } catch (err) {
+            warnings.push(`Журнальные Community Goals не добавлены в каталог: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
         const rows = events.depotEvents
