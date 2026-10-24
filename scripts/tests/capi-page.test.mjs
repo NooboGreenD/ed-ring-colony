@@ -26,6 +26,8 @@ async function renderCapi({ binding = BINDING, query = '', api } = {}) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', {
     url: `https://colony.test/account/capi${query}`, pretendToBeVisual: true,
   });
+  // Keep status-polling tests deterministic and fast while retaining async turns.
+  dom.window.setTimeout = (callback, _delay, ...args) => globalThis.setTimeout(callback, 0, ...args);
   const previous = Object.fromEntries(['window', 'document', 'HTMLElement', 'Element', 'Node',
     'navigator', 'fetch', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const key of ['window', 'document', 'HTMLElement', 'Element', 'Node', 'navigator']) {
@@ -103,32 +105,64 @@ test('подтверждённая Frontier-платформа при отказ
 });
 
 test('ошибка шлюза ручной синхронизации показывает HTTP статус вместо общего сообщения', async () => {
-  const ui = await renderCapi({ api: (url) => {
-    if (url === '/api/capi/sync') return { status: 504, body: {} };
+  const ui = await renderCapi({ api: (url, init) => {
+    if (url === '/api/capi/sync' && init?.method === 'POST') return { status: 504, body: {} };
   } });
   try {
     const button = [...ui.dom.window.document.querySelectorAll('button')]
       .find((item) => item.textContent.includes('Синхронизировать'));
     await ui.click(button);
-    assert.match(ui.text(), /Синхронизация не удалась \(HTTP 504/);
+    assert.match(ui.text(), /Не удалось поставить синхронизацию в очередь \(HTTP 504/);
   } finally {
     await ui.cleanup();
   }
 });
 
-test('неуспешный ручной синк перечитывает привязку и убирает старое требование входа', async () => {
+test('страница после OAuth автоматически возобновляет активную очередь и показывает результат', async () => {
+  const ui = await renderCapi({ query: '?status=partial&reason=sync_queued', api: (url, init) => {
+    if (url === '/api/capi/sync' && !init?.method) {
+      return { body: { job: { id: 'initial-job', status: 'running', stage: 'profile_request', attempts: 1 } } };
+    }
+    if (url === '/api/capi/sync/initial-job') {
+      return { body: { job: {
+        id: 'initial-job', status: 'succeeded', stage: 'succeeded', total_duration_ms: 500,
+        stage_timings: [{ stage: 'profile_request', attempt: 1, durationMs: 250 }],
+        result: { ok: true, cmdrName: 'Nova', journalStatus: 'empty', eventsImported: 0, eventsDuplicate: 0, warnings: [] },
+      } } };
+    }
+  } });
+  try {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    assert.ok(ui.calls.some((call) => call.url === '/api/capi/sync/initial-job'), 'page resumed polling after OAuth redirect');
+    assert.match(ui.text(), /Синхронизация завершена/);
+    assert.match(ui.text(), /Диагностика этапов/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('фоновый синк опрашивает статус задания и перечитывает привязку', async () => {
   let binding = { ...BINDING, tokenActive: false };
-  const ui = await renderCapi({ binding: () => binding, api: (url) => {
-    if (url === '/api/capi/sync') {
+  const ui = await renderCapi({ binding: () => binding, api: (url, init) => {
+    if (url === '/api/capi/sync' && init?.method === 'POST') {
+      return { status: 202, body: { job: { id: 'job-1', status: 'queued', stage: 'queued', attempts: 0 } } };
+    }
+    if (url === '/api/capi/sync/job-1') {
       binding = { ...BINDING, tokenActive: true };
-      return { status: 502, body: { error: BINDING.lastError, needsReauth: false, reason: 'entitlement_unavailable' } };
+      return { body: { job: {
+        id: 'job-1', status: 'failed', stage: 'failed', total_duration_ms: 1234,
+        stage_timings: [{ stage: 'profile_request', durationMs: 1000 }],
+        result: { error: BINDING.lastError, needsReauth: false, reason: 'entitlement_unavailable', warnings: [] },
+      } } };
     }
   } });
   try {
     assert.match(ui.text(), /Требуется повторная авторизация/);
     const button = [...ui.dom.window.document.querySelectorAll('button')].find((b) => b.textContent.includes('Синхронизировать'));
     await ui.click(button);
-    assert.equal(ui.calls.filter((call) => call.url === '/api/capi/profile').length, 2);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    assert.ok(ui.calls.some((call) => call.url === '/api/capi/sync/job-1'), 'UI polls the durable job status');
+    assert.ok(ui.calls.filter((call) => call.url === '/api/capi/profile').length >= 2);
     assert.doesNotMatch(ui.text(), /Требуется повторная авторизация|Переподключить/);
     assert.match(ui.text(), /Авторизация сохранена/);
     assert.ok(ui.dom.window.document.querySelector('.capi-status-pending'));

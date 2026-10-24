@@ -43,7 +43,9 @@ function finiteNumber(value) {
 
 /** Parse JOBS_ENABLED with exactly the runner's missing-vs-empty semantics. */
 export function enabledJobNames(value) {
-  return typeof value === 'string' ? asStringList(value) : DEFAULT_JOBS;
+  const enabled = typeof value === 'string' ? asStringList(value) : [...DEFAULT_JOBS];
+  if (enabled.includes('capi-sync') && !enabled.includes('capi-sync-jobs')) enabled.push('capi-sync-jobs');
+  return JOBS.filter((job) => enabled.includes(job.name)).map((job) => job.name);
 }
 
 function nextRunAt(job, now) {

@@ -6,6 +6,8 @@ export const MINUTE = 60_000;
 export const HOUR = 60 * MINUTE;
 
 export const JOBS = [
+  // Drain durable foreground requests before the longer legacy bulk sync.
+  { name: 'capi-sync-jobs', period: MINUTE, offset: 0, path: '/api/cron/capi-sync-jobs', timeout: 5 * MINUTE },
   { name: 'capi-sync', period: 5 * MINUTE, offset: 0, path: '/api/cron/capi-sync', timeout: 15 * MINUTE },
   { name: 'update-progress', period: 30 * MINUTE, offset: 0, path: '/api/cron/update-progress', timeout: 20 * MINUTE },
   { name: 'cg-check', period: 6 * HOUR, offset: 0, path: '/api/cron/cg-check', timeout: 5 * MINUTE },

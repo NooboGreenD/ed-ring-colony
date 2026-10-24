@@ -34,6 +34,9 @@ export function jobConfig(env = process.env) {
   for (const name of enabled) {
     if (!JOBS.some(job => job.name === name)) throw new Error(`Unknown job: ${name}`);
   }
+  // Compatibility for existing .env.production files: the durable request
+  // worker is mandatory whenever the legacy CAPI schedule remains enabled.
+  if (enabled.includes('capi-sync') && !enabled.includes('capi-sync-jobs')) enabled.push('capi-sync-jobs');
   return {
     baseUrl: base.origin,
     secret: env.CRON_SECRET || '',

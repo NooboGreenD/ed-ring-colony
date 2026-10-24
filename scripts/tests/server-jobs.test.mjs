@@ -10,17 +10,19 @@ const json = body => new Response(JSON.stringify(body), { headers: { 'Content-Ty
 
 test('all six former Actions have UTC schedules, including progress', () => {
   assert.deepEqual(JOBS.map(job => job.name), [
-    'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'powerplay-sync',
+    'capi-sync-jobs', 'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'powerplay-sync',
     'factions-sync', 'eddn-listener', 'galaxy-import',
   ]);
   // The Spansh catalog import stays opt-in: it must not run on a bare scheduler.
   // `factions-sync` включена: первый (большой) импорт фракций она не делает.
   // `eddn-listener` включена: без флага в админке она ничего не запускает.
   assert.deepEqual(DEFAULT_JOBS, [
-    'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'powerplay-sync',
+    'capi-sync-jobs', 'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'powerplay-sync',
     'factions-sync', 'eddn-listener',
   ]);
   assert.deepEqual(config().jobs.map(job => job.name), DEFAULT_JOBS);
+  assert.deepEqual(config({ JOBS_ENABLED: 'capi-sync' }).jobs.map(job => job.name), ['capi-sync-jobs', 'capi-sync'],
+    'existing explicit production allowlists automatically gain the durable manual-sync worker');
   assert.deepEqual(config({ JOBS_ENABLED: 'galaxy-import' }).jobs.map(job => job.name), ['galaxy-import']);
   for (const job of JOBS) {
     const at = Date.parse('2026-09-20T00:00:00Z') + job.offset;

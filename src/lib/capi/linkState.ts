@@ -145,6 +145,8 @@ export type CapiLinkReason =
   | 'token_exchange_failed'
   | 'redirect_uri_missing'
   | 'token_save_failed'
+  | 'sync_queued'
+  | 'sync_queue_failed'
   | 'profile_unavailable'
   | 'profile_empty'
   | 'profile_save_failed'
