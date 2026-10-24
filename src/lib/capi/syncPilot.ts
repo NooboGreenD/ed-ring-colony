@@ -65,6 +65,8 @@ export interface SyncOptions {
   requestedPlatform?: string | null;
   /** Уже проверенная Frontier платформа, не выбор пользователя в селекторе. */
   identity?: FrontierIdentity | null;
+  /** Наблюдаемая стадия для durable/background sync; значения не содержат payload или секреты. */
+  onStage?: (stage: string) => void | Promise<void>;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -99,7 +101,15 @@ export async function syncCapiPilot(
     binding: { status: 'missing', displayName: null, nameMismatch: false },
   };
 
+  const stage = async (name: string) => {
+    try { await options.onStage?.(name); } catch (err) {
+      // Диагностика не должна менять исход синхронизации.
+      console.warn('[CAPI Sync] stage telemetry failed', name, err instanceof Error ? err.message : 'unknown error');
+    }
+  };
+
   // ── 1. Сессия и профиль ─────────────────────────────────────────
+  await stage('session');
   let session;
   try {
     session = await capiSession(svc, userId, tokenRow, options.refreshFn);
@@ -109,6 +119,7 @@ export async function syncCapiPilot(
   }
 
   let profile;
+  await stage('profile_request');
   try {
     profile = await session.run((client) => client.getProfile());
   } catch (err) {
@@ -130,6 +141,7 @@ export async function syncCapiPilot(
     return result;
   }
 
+  await stage('profile_received');
   const cmdrName = profile.cmdrName ?? tokenRow.cmdr_name ?? null;
   result.cmdrName = cmdrName;
 
@@ -138,6 +150,7 @@ export async function syncCapiPilot(
   }
 
   // ── 2. Имя командира в профиле сайта ────────────────────────────
+  await stage('profile_site_lookup');
   const { data: siteProfile } = await svc
     .from('profiles')
     .select('cmdr_name')
@@ -158,6 +171,7 @@ export async function syncCapiPilot(
   }
 
   // ── 3. capi_profiles ────────────────────────────────────────────
+  await stage('profile_save');
   const profileWrite = await upsertResilient(
     svc,
     'capi_profiles',
@@ -174,12 +188,14 @@ export async function syncCapiPilot(
   result.profileSaved = true;
 
   if (!options.skipCommunityGoals) {
+    await stage('community_goals_request');
     // ── Community Goals from Frontier CAPI ──────────────────────────
     // This is an independent, authenticated source: it keeps the public CG
     // catalogue populated even when Inara has not allowlisted our API client.
     // A failure here is optional and must not make profile/journal sync fail.
     try {
       const communityGoals = await session.run((client) => client.getCommunityGoals());
+      await stage('community_goals_save');
       await syncCommunityGoalsFromCapi(svc, communityGoals);
     } catch (err) {
       if (!(err instanceof CapiError && err.kind === 'no_content')) {
@@ -192,6 +208,7 @@ export async function syncCapiPilot(
   // Досье (/cmdr/<name>) читает pilot_stats в первую очередь, поэтому синк
   // CAPI обязан наполнять и её — иначе «данные не подтягиваются» ровно там,
   // где пилот их ищет.
+  await stage('stats_save');
   const statsWrite = await upsertResilient(
     svc,
     'pilot_stats',
@@ -205,6 +222,7 @@ export async function syncCapiPilot(
   // ── 5. Положение в эскадрилье ───────────────────────────────────
   // Передаём уже полученный профиль: второй запрос `/profile` только жёг бы
   // лимит Frontier ради тех же данных.
+  await stage('member_location');
   try {
     await syncMemberLocation(userId, profile);
   } catch (err) {
@@ -213,6 +231,7 @@ export async function syncCapiPilot(
 
   // ── 6. Журнал и события колонизации ─────────────────────────────
   if (!options.skipJournal) {
+    await stage('journal_request');
     try {
       const journal = await session.run((client) => client.getJournal());
 
@@ -229,13 +248,16 @@ export async function syncCapiPilot(
       }
 
       if (journal.text) {
+        await stage('journal_parse');
         const events = parseColonisationEvents(journal.text);
         if (events.communityGoalReports.length > 0) {
+          await stage('journal_reports_save');
           try {
             await persistCommunityGoalReports(svc, userId, events.communityGoalReports, 'capi');
           } catch (err) {
             warnings.push(`Отчёты Community Goals не сохранены: ${err instanceof Error ? err.message : String(err)}`);
           }
+          await stage('journal_reports_catalog');
           try {
             await syncCommunityGoalsFromJournal(svc, events.communityGoalReports);
           } catch (err) {
@@ -246,6 +268,7 @@ export async function syncCapiPilot(
           .map((ev) => siteRowFromDepot(userId, ev))
           .filter((row): row is ColonisationSiteRow => row !== null);
 
+        await stage('journal_sites_save');
         const write = await persistColonisationSites(svc, rows);
         warnings.push(...write.warnings);
         result.eventsImported = write.changed;
@@ -255,6 +278,7 @@ export async function syncCapiPilot(
         // Снимки прогресса и проекты — те же реакции, что у журналов с сайта
         // и из Colonial Helper: только по площадкам, чьё состояние изменилось
         // (окно CAPI на каждом синке содержит одни и те же события).
+        await stage('journal_snapshots_save');
         const snapshots = snapshotRowsForChangedSites(rows, write.changedMarkets)
           .map((row) => ({ ...row, source: 'capi' }));
         for (let offset = 0; offset < snapshots.length; offset += 100) {
@@ -268,6 +292,7 @@ export async function syncCapiPilot(
           rows.filter((row) => write.changedMarkets.has(row.market_id)).map((row) => row.system_name),
         ));
         if (changedSystems.length > 0) {
+          await stage('journal_projects_sync');
           try {
             const projects = await syncProjectsFromSites(svc, changedSystems, { actorId: userId });
             if (projects?.warning) warnings.push(`Проекты эскадрилий: ${projects.warning}`);
@@ -278,8 +303,10 @@ export async function syncCapiPilot(
 
         // Наблюдения систем (FSDJump / Location / CarrierJump) за день — в
         // слои фракций и PowerPlay, как у журналов с сайта и из Helper'а.
+        await stage('journal_observations_parse');
         const observations = observationEventsFromJournalText(journal.text);
         if (observations.length > 0) {
+          await stage('journal_observations_save');
           try {
             const applied = await applySystemObservations(svc, observations, { source: 'web', userId });
             if (applied.powerplay.error) warnings.push(applied.powerplay.error);
@@ -301,6 +328,7 @@ export async function syncCapiPilot(
   }
 
   // ── 7. Отметка успешного синка ──────────────────────────────────
+  await stage('finalize');
   const tokenUpdate = await updateResilient(
     svc,
     'capi_tokens',

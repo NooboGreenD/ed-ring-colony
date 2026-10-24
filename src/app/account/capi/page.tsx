@@ -43,7 +43,46 @@ type SyncReport = {
   eventsImported: number;
   eventsDuplicate: number;
   warnings: string[];
+  durationMs?: number | null;
+  jobId?: string;
+  stageTimings?: Array<{ stage: string; attempt?: number; durationMs: number }>;
 };
+
+type SyncJob = {
+  id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  stage: string;
+  requested_at?: string;
+  attempts?: number;
+  total_duration_ms?: number | null;
+  stage_timings?: Array<{ stage: string; attempt?: number; durationMs: number }> | null;
+  error?: string | null;
+  result?: {
+    ok?: boolean; cmdrName?: string | null; journalStatus?: string;
+    eventsImported?: number; eventsDuplicate?: number; warnings?: string[];
+    needsReauth?: boolean; error?: string | null; detail?: string | null;
+  } | null;
+};
+
+function syncStageLabel(stage: string): string {
+  const labels: Record<string, string> = {
+    queued: 'Задание ожидает worker', starting: 'Worker забрал задание', token_lookup: 'Проверка сайт-привязки Frontier',
+    session: 'Проверка и обновление сессии Frontier',
+    profile_request: 'Запрос профиля Frontier', profile_received: 'Профиль получен',
+    profile_site_lookup: 'Проверка привязки профиля сайта', profile_save: 'Сохранение профиля',
+    community_goals_request: 'Запрос необязательных Community Goals', community_goals_save: 'Сохранение каталога Community Goals',
+    stats_save: 'Сохранение статистики командира', member_location: 'Обновление положения в эскадрилье',
+    journal_request: 'Запрос журнала Frontier', journal_parse: 'Разбор JSON журнала',
+    journal_reports_save: 'Сохранение отчётов Community Goals из журнала',
+    journal_reports_catalog: 'Обновление каталога Community Goals из журнала',
+    journal_sites_save: 'Запись событий колонизации', journal_snapshots_save: 'Запись снимков прогресса',
+    journal_projects_sync: 'Синхронизация проектов эскадрилий',
+    journal_observations_parse: 'Разбор наблюдений систем', journal_observations_save: 'Запись фракций и PowerPlay из журнала',
+    finalize: 'Завершение и запись результата', succeeded: 'Завершено', failed: 'Ошибка',
+    worker_lost: 'Worker не ответил; превышено число повторных попыток',
+  };
+  return labels[stage] || `Этап: ${stage.replaceAll('_', ' ')}`;
+}
 
 type Diagnostics = {
   config: Record<string, unknown>;
@@ -103,6 +142,7 @@ export default function CapiPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'partial' | 'error'; title: string; hint: string; detail?: string } | null>(null);
   const [syncReport, setSyncReport] = useState<SyncReport | null>(null);
+  const [syncJob, setSyncJob] = useState<SyncJob | null>(null);
   const [platform, setPlatform] = useState('auto');
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
@@ -163,7 +203,65 @@ export default function CapiPage() {
       setPlatform(platformSelection(returnedPlatform));
     }
     void fetchProfile();
+    void resumeActiveSync();
   }, [fetchProfile]);
+
+  function reportFromJob(job: SyncJob): SyncReport {
+    return {
+      cmdrName: job.result?.cmdrName ?? null,
+      journalStatus: job.result?.journalStatus ?? 'error',
+      eventsImported: job.result?.eventsImported ?? 0,
+      eventsDuplicate: job.result?.eventsDuplicate ?? 0,
+      warnings: Array.isArray(job.result?.warnings) ? job.result.warnings : [],
+      durationMs: job.total_duration_ms ?? null,
+      jobId: job.id,
+      stageTimings: Array.isArray(job.stage_timings) ? job.stage_timings : [],
+    };
+  }
+
+  async function pollSyncJob(jobId: string) {
+    while (true) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      const res = await authFetch(`/api/capi/sync/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.job) throw new Error(data.error || `Не удалось проверить состояние синхронизации (HTTP ${res.status})`);
+
+      const job = data.job as SyncJob;
+      setSyncJob(job);
+      if (job.status === 'queued' || job.status === 'running') continue;
+
+      setNotice(null);
+      if (job.status === 'succeeded') {
+        setSyncReport(reportFromJob(job));
+        setError(null);
+      } else {
+        setSyncReport(job.result ? reportFromJob(job) : null);
+        const message = [job.result?.error || job.error || 'Фоновая синхронизация завершилась ошибкой', job.result?.detail]
+          .filter((part, index, all): part is string => Boolean(part) && all.indexOf(part) === index)
+          .join(' · ');
+        setError(job.result?.needsReauth ? `${message} — подключите аккаунт заново.` : message);
+      }
+      await fetchProfile();
+      return;
+    }
+  }
+
+  async function resumeActiveSync() {
+    try {
+      const res = await authFetch('/api/capi/sync', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const job = data.job as SyncJob | null;
+      if (!job) return;
+      setSyncJob(job);
+      setSyncing(true);
+      await pollSyncJob(job.id);
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : 'Не удалось продолжить синхронизацию');
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   async function handleSync() {
     setSyncing(true);
@@ -173,27 +271,16 @@ export default function CapiPage() {
     try {
       const res = await authFetch('/api/capi/sync', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setSyncReport({
-          cmdrName: data.cmdrName ?? null,
-          journalStatus: data.journalStatus ?? 'skipped',
-          eventsImported: data.eventsImported ?? 0,
-          eventsDuplicate: data.eventsDuplicate ?? 0,
-          warnings: Array.isArray(data.warnings) ? data.warnings : [],
-        });
-        await fetchProfile();
-      } else {
-        const fallbackError = `Синхронизация не удалась (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''})`;
-        setError(data.needsReauth
-          ? `${data.error || 'Frontier отклонил токен'} — подключите аккаунт заново.`
-          : data.error || fallbackError);
-        await fetchProfile();
-        if (Array.isArray(data.warnings) && data.warnings.length) {
-          setSyncReport({ cmdrName: null, journalStatus: 'error', eventsImported: 0, eventsDuplicate: 0, warnings: data.warnings });
-        }
+      if (!res.ok || !data.job) {
+        const fallbackError = `Не удалось поставить синхронизацию в очередь (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''})`;
+        setError(data.needsAuth ? `${data.error || fallbackError}. Подключите Frontier.` : data.error || fallbackError);
+        return;
       }
+      const job = data.job as SyncJob;
+      setSyncJob(job);
+      await pollSyncJob(job.id);
     } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : 'Синхронизация не удалась');
+      setError(syncError instanceof Error ? syncError.message : 'Не удалось поставить синхронизацию в очередь');
     } finally {
       setSyncing(false);
     }
@@ -340,6 +427,15 @@ export default function CapiPage() {
               {binding?.platform ? ` | Платформа: ${binding.platform}` : ''}
             </p>
 
+            {syncing && (
+              <div className="capi-notice capi-notice-partial" role="status" style={{ marginTop: 12 }}>
+                <strong><IconWaiting size={14} /> {syncJob ? syncStageLabel(syncJob.stage) : 'Постановка в очередь синхронизации'}</strong>
+                <div className="capi-notice-hint">
+                  {syncJob ? `Задание ${syncJob.id.slice(0, 8)} · попытка ${syncJob.attempts ?? 1}. Синхронизация продолжится на сервере, даже если закрыть страницу.` : 'HTTP-запрос только создаёт задание; получение профиля и журнала выполняется фоновым worker.'}
+                </div>
+              </div>
+            )}
+
             {needsReauth && (
               <div className="capi-notice capi-notice-error" style={{ marginTop: 12 }}>
                 <strong><IconError size={14} /> Frontier больше не принимает сохранённый токен</strong>
@@ -436,18 +532,34 @@ export default function CapiPage() {
           </div>
 
           {syncReport && (
-            <div className="capi-notice capi-notice-success" style={{ marginBottom: 20 }}>
-              <strong><IconCheck size={14} /> Синхронизация завершена</strong>
+            <div className={`capi-notice ${syncJob?.status === 'failed' ? 'capi-notice-error' : 'capi-notice-success'}`} style={{ marginBottom: 20 }}>
+              <strong>
+                {syncJob?.status === 'failed' ? <IconError size={14} /> : <IconCheck size={14} />}
+                {' '}{syncJob?.status === 'failed' ? 'Синхронизация завершилась с ошибкой' : 'Синхронизация завершена'}
+              </strong>
               <div className="capi-notice-hint">
                 {syncReport.cmdrName ? `CMDR ${syncReport.cmdrName}. ` : ''}
                 Событий колонизации добавлено: {syncReport.eventsImported}
                 {syncReport.eventsDuplicate ? `, повторов пропущено: ${syncReport.eventsDuplicate}` : ''}
                 {' · '}{describeJournalStatus(syncReport.journalStatus)}
+                {syncReport.durationMs != null ? ` · ${Math.round(syncReport.durationMs / 100) / 10} с` : ''}
               </div>
               {syncReport.warnings.length > 0 && (
                 <ul className="capi-warnings">
                   {syncReport.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
                 </ul>
+              )}
+              {syncReport.jobId && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>Диагностика этапов · задание {syncReport.jobId}</summary>
+                  {syncReport.stageTimings?.length ? (
+                    <ul className="capi-warnings">
+                      {syncReport.stageTimings.map((timing, index) => (
+                        <li key={`${timing.stage}-${index}`}>{syncStageLabel(timing.stage)}{timing.attempt ? ` (попытка ${timing.attempt})` : ''}: {Math.round(timing.durationMs / 10) / 100} с</li>
+                      ))}
+                    </ul>
+                  ) : <div className="capi-notice-hint">Измерения этапов недоступны для этого завершения.</div>}
+                </details>
               )}
             </div>
           )}

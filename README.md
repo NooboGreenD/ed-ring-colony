@@ -268,7 +268,7 @@ NEXT_PUBLIC_VAPID_PUBLIC_KEY=your-vapid-public-key
 VAPID_PRIVATE_KEY=your-vapid-private-key
 YANDEX_TRANSLATE_API_KEY=your-yandex-key
 INARA_API_KEY=...                      # основной источник Community Goals; CAPI и журналы — fallback
-JOBS_ENABLED=capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync,factions-sync,eddn-listener
+JOBS_ENABLED=capi-sync-jobs,capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync,factions-sync,eddn-listener
 ```
 
 Группы переменных (каталог систем `GALAXY_*`, PowerPlay `POWERPLAY_*`, фракции `FACTIONS_*`, обновление
@@ -403,7 +403,8 @@ ed-ring-colony/
 
 | Задача | Расписание (UTC) | Маршрут | Что делает |
 |---|---|---|---|
-| `capi-sync` | каждые 5 мин | `/api/cron/capi-sync` | синхронизация привязанных аккаунтов Frontier небольшой пачкой, продление токенов, резервное получение Community Goals |
+| `capi-sync-jobs` | каждую минуту | `/api/cron/capi-sync-jobs` | обрабатывает одно сохранённое задание ручной CAPI-синхронизации вне браузерного запроса, пишет этапы и длительность |
+| `capi-sync` | каждые 5 мин | `/api/cron/capi-sync` | пакетная синхронизация привязанных аккаунтов Frontier, продление токенов, резервное получение Community Goals |
 | `update-progress` | каждые 30 мин | `/api/cron/update-progress` | прогресс хабов и систем маршрута из Raven Colonial → `system_progress` |
 | `cg-check` | каждые 6 ч | `/api/cron/cg-check` | текущие и недавние Community Goals из Inara (нужен `INARA_API_KEY`); без него/при недоступности работают CAPI и журнальный fallback |
 | `eddn-cleanup` | каждые 6 ч, :30 | `/api/cron/eddn-cleanup` | удаляет цены EDDN старше 7 дней |
@@ -415,8 +416,7 @@ ed-ring-colony/
 | `eddn-listener` | каждые 5 мин | `/api/cron/eddn-listener` | держит слушатель живых данных EDDN в веб-процессе по флагу из админки (PowerPlay → «Живые данные EDDN»); выключено — ничего не делает |
 | `galaxy-import` | 02:00, **выключена по умолчанию** | `/api/cron/galaxy-import` | дельта каталога Spansh; включается осознанно |
 
-Если в `.env.production` задан свой `JOBS_ENABLED`, новые задачи (`powerplay-sync`, `factions-sync`,
-`eddn-listener`) нужно дописать в него вручную.
+Если в `.env.production` задан свой `JOBS_ENABLED`, `capi-sync-jobs` добавляется автоматически, пока включён `capi-sync`; новые задачи `powerplay-sync`, `factions-sync` и `eddn-listener` нужно дописать в него вручную.
 
 ## Spansh: все системы галактики
 

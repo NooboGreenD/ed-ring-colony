@@ -49,6 +49,7 @@ Supabase) и для приведения существующей базы в с
 | `20261020120000_unified_system_data.sql` | общие функции разделов: карточка системы, прогресс, журнал → проекты, PowerPlay из журналов | ARCHITECTURE.md |
 | `20261021120000_powerplay_owner.sql`, `20261021130000_eddn_listener.sql` | владелец системы PowerPlay (`power_basis`, «не определена»), живые данные EDDN (`eddn_listener_state`) | POWERPLAY.md |
 | `20261022120000_station_search_by_station.sql` | поиск по станциям списком: `station_catalog_matches` (общий подбор), `search_station_catalog_stations` (станция + совпадения, общее число), точный выбор `exact_keys` / `station_item_key`; прежний `search_station_catalog` — тот же ответ | STATION-COMMERCE.md |
+| `20261029090000_capi_sync_jobs.sql` | durable очередь ручной CAPI-синхронизации, атомарный RPC claim и журналирование этапов/времени | CAPI-STABILITY-AND-STATS-SOURCE.md |
 
 ## Как применяются миграции на рабочем сервере
 

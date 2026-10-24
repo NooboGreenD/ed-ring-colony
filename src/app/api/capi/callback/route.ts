@@ -7,8 +7,8 @@ import {
   frontierRedirectUri,
 } from '@/lib/capi/oauth';
 import { createServiceClient, authFromRequest } from '@/lib/supabaseServer';
-import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
 import { upsertResilient, schemaWarning } from '@/lib/capi/persist';
+import { enqueueCapiSyncJob, safeCapiDiagnostic } from '@/lib/capi/syncJobs';
 import {
   CAPI_LINK_COOKIE,
   CAPI_PLATFORM_COOKIE,
@@ -36,10 +36,10 @@ export const dynamic = 'force-dynamic';
  *
  * Теперь:
  *   1. токены сохраняются СРАЗУ после обмена — это и есть привязка;
- *   2. профиль и журнал подтягиваются следом, и их сбой даёт `status=partial`
- *      с причиной, а не потерю связи;
- *   3. любой исход возвращается на `/account/capi` с машинным кодом причины,
- *      который страница разворачивает в человеческий текст.
+ *   2. короткое durable-задание ставится в очередь; CAPI и журнал запрашиваются
+ *      worker-ом после редиректа, не удерживая браузерный callback;
+ *   3. callback возвращается на `/account/capi`, где страница возобновляет
+ *      опрос задания и показывает результат/диагностику этапов.
  */
 export async function GET(req: NextRequest) {
   const site = getSiteUrl();
@@ -166,37 +166,28 @@ export async function GET(req: NextRequest) {
   if (tokenSchemaWarning) console.warn('[CAPI Callback]', tokenSchemaWarning);
 
   // ── 4. Первая загрузка данных ───────────────────────────────────
-  // Сбой здесь уже не отменяет привязку: пилот сможет нажать
-  // «Синхронизировать» позже, когда CAPI оживёт.
-  const sync = await syncCapiPilot(svc, userId, {
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: new Date(now.getTime() + tokens.expires_in * 1000).toISOString(),
-    cmdr_name: null,
-  }, { requestedPlatform, identity });
-
-  for (const warning of sync.warnings) console.warn('[CAPI Callback]', warning);
-
-  if (!sync.ok) {
-    console.error('[CAPI Callback] first sync failed:', sync.error);
-    if (sync.needsReauth) {
-      // Только отозванный токен или подтверждённое несовпадение платформ.
-      // Отказ CAPI в правах после правильного входа через EGS не рвёт OAuth.
-      await markCapiTokenBroken(svc, userId, sync.error || 'Требуется повторная авторизация Frontier');
-    }
+  // Не вызываем syncCapiPilot из OAuth callback: профиль+журнал могут
+  // пережить внешний HTTP timeout. Привязка уже сохранена; этот запрос
+  // только создаёт durable job, который UI затем опрашивает.
+  const queued = await enqueueCapiSyncJob(svc, userId, { requestedPlatform, skipCommunityGoals: false });
+  if (queued.error || !queued.data) {
+    console.error('[CAPI Callback] sync enqueue failed', safeCapiDiagnostic(queued.error?.message));
     return finish({
       status: 'partial',
-      reason: sync.reason ?? (sync.profileSaved ? 'profile_save_failed' : 'profile_unavailable'),
-      detail: sync.detail || sync.error,
-      actualPlatform: sync.platform ?? identity?.platform ?? null,
-      binding: sync.binding.status,
+      reason: 'sync_queue_failed',
+      detail: 'Привязка Frontier сохранена, но задание синхронизации не поставлено. Нажмите «Синхронизировать» на странице.',
+      actualPlatform: identity?.platform ?? null,
     });
   }
 
+  console.info('[CAPI Callback] initial sync queued', {
+    jobId: queued.data.id,
+    reused: queued.reused,
+    elapsedMs: Date.now() - now.getTime(),
+  });
   return finish({
-    status: 'success',
-    binding: sync.binding.status,
-    cmdr: sync.cmdrName,
-    reason: sync.cmdrName ? undefined : 'profile_empty',
+    status: 'partial',
+    reason: 'sync_queued',
+    actualPlatform: identity?.platform ?? null,
   });
 }

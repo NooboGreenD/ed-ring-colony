@@ -90,7 +90,7 @@ const rowsOf = (table) => (db.tables[table] ||= []);
 
 function matches(row, filters) {
   return filters.every(([op, column, value]) =>
-    op === 'eq' ? row[column] === value : op === 'neq' ? row[column] !== value : true);
+    op === 'eq' ? row[column] === value : op === 'neq' ? row[column] !== value : op === 'in' ? value.includes(row[column]) : op === 'gte' ? row[column] >= value : true);
 }
 
 function missing(values) {
@@ -99,11 +99,15 @@ function missing(values) {
 
 function makeQuery(table) {
   const filters = [];
+  const insertedRows = [];
+  let updateValues = null;
   let verb = 'select';
   const api = {
-    select: () => { verb = 'select'; return api; },
+    select: () => { if (verb !== 'insert' && verb !== 'update') verb = 'select'; return api; },
     eq: (column, value) => { filters.push(['eq', column, value]); return api; },
     neq: (column, value) => { filters.push(['neq', column, value]); return api; },
+    in: (column, value) => { filters.push(['in', column, value]); return api; },
+    gte: (column, value) => { filters.push(['gte', column, value]); return api; },
     order: () => api,
     limit: () => api,
     upsert: (values) => {
@@ -120,19 +124,17 @@ function makeQuery(table) {
       else rows.push({ ...values });
       return Promise.resolve({ error: null, data: values });
     },
-    insert: (values) => { rowsOf(table).push({ ...values }); return Promise.resolve({ error: null }); },
-    update: (values) => ({
-      eq: (column, value) => {
-        const bad = missing(values);
-        if (bad) {
-          return Promise.resolve({ error: { code: 'PGRST204', message: "Could not find the '" + bad + "' column of '" + table + "' in the schema cache" } });
-        }
-        for (const row of rowsOf(table)) {
-          if (row[column] === value || row.id === value) Object.assign(row, values);
-        }
-        return Promise.resolve({ error: null });
-      },
-    }),
+    insert: (values) => {
+      verb = 'insert';
+      const inserted = Array.isArray(values) ? values : [values];
+      for (const value of inserted) {
+        const row = { ...(table === 'capi_sync_jobs' ? { id: '11111111-1111-4111-8111-' + String(rowsOf(table).length + 1).padStart(12, '0'), requested_at: new Date().toISOString(), attempts: 0 } : {}), ...value };
+        rowsOf(table).push(row);
+        insertedRows.push(row);
+      }
+      return api;
+    },
+    update: (values) => { verb = 'update'; updateValues = values; return api; },
     delete: () => ({ eq: (column, value) => {
       db.tables[table] = rowsOf(table).filter((row) => row[column] !== value);
       return Promise.resolve({ error: null });
@@ -142,13 +144,18 @@ function makeQuery(table) {
       return { data: found ?? null, error: null };
     },
     single: async () => {
-      const found = rowsOf(table).find((row) => matches(row, filters));
+      const found = verb === 'insert' ? insertedRows[0] : rowsOf(table).find((row) => matches(row, filters));
       return { data: found ?? null, error: found ? null : { message: 'not found' } };
     },
-    then: (resolve, reject) => Promise.resolve({
-      data: rowsOf(table).filter((row) => matches(row, filters)),
-      error: null,
-    }).then(resolve, reject),
+    then: (resolve, reject) => {
+      if (verb === 'update') {
+        const bad = missing(updateValues || {});
+        if (bad) return Promise.resolve({ error: { code: 'PGRST204', message: "Could not find the '" + bad + "' column of '" + table + "' in the schema cache" } }).then(resolve, reject);
+        for (const row of rowsOf(table).filter((item) => matches(item, filters))) Object.assign(row, updateValues);
+        return Promise.resolve({ error: null }).then(resolve, reject);
+      }
+      return Promise.resolve({ data: verb === 'insert' ? insertedRows : rowsOf(table).filter((row) => matches(row, filters)), error: null }).then(resolve, reject);
+    },
   };
   void verb;
   return api;
@@ -157,6 +164,13 @@ function makeQuery(table) {
 const client = () => ({
   auth: { getUser: async () => ({ data: { user: db.user }, error: null }) },
   from: (table) => makeQuery(table),
+  rpc: async (name) => {
+    if (name !== 'claim_next_capi_sync_job') return { data: null, error: { message: 'unknown rpc' } };
+    const job = rowsOf('capi_sync_jobs').find((row) => row.status === 'queued');
+    if (!job) return { data: [], error: null };
+    Object.assign(job, { status: 'running', stage: 'starting', attempts: (job.attempts || 0) + 1, started_at: new Date().toISOString(), heartbeat_at: new Date().toISOString() });
+    return { data: [job], error: null };
+  },
 });
 
 export function createClient() { return client(); }
@@ -189,7 +203,8 @@ async function buildRoutes() {
     entry,
     "export * as callback from '@/app/api/capi/callback/route';\n"
     + "export * as sync from '@/app/api/capi/sync/route';\n"
-    + "export * as profile from '@/app/api/capi/profile/route';\n"
+    + "export * as syncStatus from '@/app/api/capi/sync/[jobId]/route';\n"
+    + "export * as syncWorker from '@/app/api/cron/capi-sync-jobs/route';\n"    + "export * as profile from '@/app/api/capi/profile/route';\n"
     + "export * as status from '@/app/api/capi/status/route';\n"
     + "export * as auth from '@/app/api/capi/auth/route';\n"
     + "export * as cron from '@/app/api/cron/capi-sync/route';\n"
@@ -278,6 +293,10 @@ function fakeFrontier({ profile = PROFILE_JSON, profileStatus = 200, profileErro
   return { calls, restore: () => { globalThis.fetch = original; } };
 }
 
+async function runQueuedWorker(mod) {
+  return mod.syncWorker.POST(new Request('https://colony.test/api/cron/capi-sync-jobs', { method: 'POST' }));
+}
+
 function callbackRequest(dir, { state = 'state-123', cookieState = 'state-123', code = 'auth-code', platformCookie = null } = {}) {
   void dir;
   const url = new URL('https://colony.test/api/capi/callback');
@@ -292,17 +311,18 @@ function callbackRequest(dir, { state = 'state-123', cookieState = 'state-123', 
 
 /* ── Тесты ──────────────────────────────────────────────────────────── */
 
-maybe('успешная привязка сохраняет токен и РЕАЛЬНЫЕ данные профиля', async () => {
+maybe('OAuth callback быстро сохраняет привязку, ставит sync job, worker пишет реальные данные', async () => {
   const { mod, dir } = await buildRoutes();
   const frontier = fakeFrontier();
   try {
     const res = await mod.callback.GET(callbackRequest(dir));
     const location = new URL(res.headers.get('location'));
-
     assert.equal(res.status, 307);
     assert.equal(location.pathname, '/account/capi');
-    assert.equal(location.searchParams.get('status'), 'success');
-    assert.equal(location.searchParams.get('cmdr'), 'Nova');
+    assert.equal(location.searchParams.get('status'), 'partial');
+    assert.equal(location.searchParams.get('reason'), 'sync_queued');
+    assert.equal(frontier.calls.some((call) => call.url.includes('/profile') || call.url.includes('/journal')), false,
+      'OAuth callback must not run the CAPI pipeline in the browser request');
 
     const token = mod.db.tables.capi_tokens[0];
     assert.equal(token.user_id, 'user-1');
@@ -310,10 +330,12 @@ maybe('успешная привязка сохраняет токен и РЕА
     assert.equal(token.refresh_token, 'refresh-1');
     assert.equal(token.is_active, true);
     assert.equal(token.frontier_id, '777');
-    assert.equal(token.cmdr_name, 'Nova', 'имя командира попадает в привязку');
-    assert.ok(token.last_synced_at, 'первая синхронизация отмечена');
+    assert.equal(mod.db.tables.capi_sync_jobs[0].status, 'queued');
 
-    // Главное: профиль заполнен, а не состоит из NULL.
+    await runQueuedWorker(mod);
+    assert.equal(mod.db.tables.capi_sync_jobs[0].status, 'succeeded');
+    assert.equal(token.cmdr_name, 'Nova');
+    assert.ok(token.last_synced_at);
     const profileRow = mod.db.tables.capi_profiles[0];
     assert.equal(profileRow.cmdr_name, 'Nova');
     assert.equal(profileRow.credits, 4200000);
@@ -324,13 +346,9 @@ maybe('успешная привязка сохраняет токен и РЕА
     assert.equal(profileRow.current_station, 'Jaques Station');
     assert.equal(profileRow.current_ship, 'Mule');
     assert.equal(profileRow.frontier_id, '777');
-
-    // Пустое имя в профиле сайта заполняется именем Frontier.
     assert.equal(mod.db.tables.profiles[0].cmdr_name, 'Nova');
-    // И витрина досье тоже.
     assert.equal(mod.db.tables.pilot_stats[0].credits, 4200000);
 
-    // Обмен кода шёл по PKCE: верификатор с «=», без client_secret.
     const tokenCall = frontier.calls.find((call) => call.url.includes('/token'));
     assert.match(tokenCall.body, /code_verifier=verifier%3D/);
     assert.equal(tokenCall.body.includes('client_secret'), false);
@@ -346,28 +364,30 @@ maybe('CAPI на техобслуживании (418) не отменяет пр
   try {
     const res = await mod.callback.GET(callbackRequest(dir));
     const location = new URL(res.headers.get('location'));
-
-    assert.equal(location.searchParams.get('status'), 'partial');
-    assert.equal(location.searchParams.get('reason'), 'profile_unavailable');
-    // Токен на месте — пилот сможет синхронизироваться позже.
+    assert.equal(location.searchParams.get('reason'), 'sync_queued');
+    await runQueuedWorker(mod);
+    assert.equal(mod.db.tables.capi_sync_jobs[0].status, 'failed');
     assert.equal(mod.db.tables.capi_tokens[0].access_token, 'access-1');
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true, 'CAPI HTTP failure does not revoke OAuth');
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-maybe('400 о покупке при подтверждённом несовпадении платформ требует переподключения', async () => {
+maybe('400 о покупке после OAuth сохраняет привязку; worker обнаруживает платформенную ошибку', async () => {
   const { mod, dir } = await buildRoutes();
-  const frontier = fakeFrontier({ profileStatus: 400, profileError: 'Please Visit the store to purchase Elite: Dangerous.' });
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR });
   try {
     const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
-    const location = new URL(res.headers.get('location'));
-
-    assert.equal(location.searchParams.get('status'), 'partial');
-    assert.equal(location.searchParams.get('reason'), 'platform_not_entitled');
-    assert.equal(mod.db.tables.capi_tokens[0].is_active, false,
-      'неверная платформа не должна выглядеть рабочей');
+    assert.equal(new URL(res.headers.get('location')).searchParams.get('reason'), 'sync_queued');
+    assert.equal(mod.db.tables.capi_sync_jobs[0].requested_platform, 'epic');
+    await runQueuedWorker(mod);
+    const result = mod.db.tables.capi_sync_jobs[0].result;
+    assert.equal(result.reason, 'platform_not_entitled');
+    assert.equal(result.needsReauth, true);
+    assert.equal(result.platform, 'frontier');
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, false);
     assert.match(mod.db.tables.capi_tokens[0].last_error, /не подтвердил|CAPI/i);
   } finally {
     frontier.restore();
@@ -375,35 +395,36 @@ maybe('400 о покупке при подтверждённом несовпа�
   }
 });
 
-maybe('400 при выбранном EGS объясняет, что токен выдан платформой frontier', async () => {
+maybe('фоновая проверка EGS объясняет несоответствие platform без блокировки OAuth callback', async () => {
   const { mod, dir } = await buildRoutes();
-  // /me говорит platform: frontier, хотя пилот выбирал epic — на странице
-  // Frontier осталась сессия почтой. Раньше колбэк это скрывал, и пилот по
-  // кругу переподключался «с той же платформой».
-  const frontier = fakeFrontier({ profileStatus: 400, profileError: 'Please Visit the store to purchase Elite: Dangerous.' });
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR });
   try {
     const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
     const location = new URL(res.headers.get('location'));
-
-    assert.equal(location.searchParams.get('status'), 'partial');
-    assert.equal(location.searchParams.get('reason'), 'platform_not_entitled');
-    assert.equal(location.searchParams.get('platform'), 'epic', 'выбранная платформа возвращается странице');
+    assert.equal(location.searchParams.get('reason'), 'sync_queued');
+    assert.equal(location.searchParams.get('platform'), 'epic');
     assert.equal(location.searchParams.get('actualPlatform'), 'frontier');
-    assert.match(location.searchParams.get('detail'), /epic/i);
-    assert.match(location.searchParams.get('detail'), /frontier/i);
-    assert.match(capiReasonText(location.searchParams.get('reason')).hint, /auth\.frontierstore\.net/);
+    await runQueuedWorker(mod);
+    const job = mod.db.tables.capi_sync_jobs[0];
+    assert.equal(job.result.reason, 'platform_not_entitled');
+    assert.match(job.result.error, /epic/i);
+    assert.match(job.result.error, /frontier/i);
+    assert.match(capiReasonText('platform_not_entitled').hint, /auth\.frontierstore\.net/);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-maybe('пустой журнал (204) — не ошибка: профиль всё равно сохранён', async () => {
+maybe('пустой журнал (204) — не ошибка: фоновый worker сохраняет профиль', async () => {
   const { mod, dir } = await buildRoutes();
   const frontier = fakeFrontier({ journalStatus: 204 });
   try {
     const res = await mod.callback.GET(callbackRequest(dir));
-    assert.equal(new URL(res.headers.get('location')).searchParams.get('status'), 'success');
+    assert.equal(new URL(res.headers.get('location')).searchParams.get('status'), 'partial');
+    await runQueuedWorker(mod);
+    assert.equal(mod.db.tables.capi_sync_jobs[0].status, 'succeeded');
+    assert.equal(mod.db.tables.capi_sync_jobs[0].result.journalStatus, 'empty');
     assert.equal(mod.db.tables.capi_profiles[0].credits, 4200000);
   } finally {
     frontier.restore();
@@ -411,18 +432,16 @@ maybe('пустой журнал (204) — не ошибка: профиль в�
   }
 });
 
-maybe('отставшая схема БД: профиль пишется без недостающих колонок', async () => {
+maybe('отставшая схема БД: worker пишет доступные поля привязки и профиля', async () => {
   const { mod, dir } = await buildRoutes();
   const frontier = fakeFrontier();
   try {
-    // База без миграции 20261002000000: нет loan/cqc_rank/frontier_id.
     mod.db.missingColumns = new Set(['loan', 'cqc_rank', 'frontier_id', 'platform', 'linked_at', 'last_error', 'last_error_at']);
-
     const res = await mod.callback.GET(callbackRequest(dir));
-    assert.equal(new URL(res.headers.get('location')).searchParams.get('status'), 'success');
-
+    assert.equal(new URL(res.headers.get('location')).searchParams.get('reason'), 'sync_queued');
+    await runQueuedWorker(mod);
     const profileRow = mod.db.tables.capi_profiles[0];
-    assert.equal(profileRow.credits, 4200000, 'данные сохранены, несмотря на отставшую схему');
+    assert.equal(profileRow.credits, 4200000);
     assert.equal('loan' in profileRow, false);
     assert.equal(mod.db.tables.capi_tokens[0].access_token, 'access-1');
   } finally {
@@ -454,30 +473,44 @@ maybe('несовпадение state и отсутствие кода объя�
   }
 });
 
-maybe('ручной синк отвечает 200 и сообщает состояние журнала', async () => {
+maybe('ручной синк быстро ставит durable job в очередь, worker пишет измеримые этапы', async () => {
   const { mod, dir } = await buildRoutes();
-  assert.equal(mod.sync.maxDuration, 60, 'manual CAPI sync must opt into the extended function window');
+  assert.equal(mod.sync.maxDuration, undefined, 'браузерный запрос больше не выполняет долгую синхронизацию');
   const frontier = fakeFrontier({ journalStatus: 204 });
   try {
     mod.db.tables.capi_tokens = [{
-      user_id: 'user-1',
-      access_token: 'access-1',
-      refresh_token: 'refresh-1',
-      expires_at: new Date(Date.now() + 3600_000).toISOString(),
-      cmdr_name: 'Nova',
-      is_active: true,
+      user_id: 'user-1', access_token: 'access-1', refresh_token: 'refresh-1',
+      expires_at: new Date(Date.now() + 3600_000).toISOString(), cmdr_name: 'Nova', is_active: true,
     }];
 
     const res = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
     const body = await res.json();
+    assert.equal(res.status, 202);
+    assert.equal(body.job.status, 'queued');
+    assert.equal(frontier.calls.length, 0, 'enqueue request не должен вызывать Frontier');
+    const duplicate = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
+    assert.equal(duplicate.status, 202);
+    assert.equal((await duplicate.json()).job.id, body.job.id, 'повторный клик присоединяется к активному заданию');
+    assert.equal(mod.db.tables.capi_sync_jobs.length, 1);
+    const active = await mod.sync.GET(new Request('https://colony.test/api/capi/sync'));
+    assert.equal((await active.json()).job.status, 'queued');
 
-    assert.equal(res.status, 200, 'пустой журнал — не пятисотка');
-    assert.equal(body.synced, true);
-    assert.equal(body.journalStatus, 'empty');
-    assert.equal(body.cmdrName, 'Nova');
+    const worker = await mod.syncWorker.POST(new Request('https://colony.test/api/cron/capi-sync-jobs', { method: 'POST' }));
+    assert.equal(worker.status, 200);
+    const job = mod.db.tables.capi_sync_jobs[0];
+    assert.equal(job.status, 'succeeded');
+    assert.equal(job.result.journalStatus, 'empty');
+    assert.equal(job.result.cmdrName, 'Nova');
+    assert.ok(job.total_duration_ms >= 0);
+    assert.ok(job.stage_timings.some((timing) => timing.stage === 'profile_request'));
+    assert.ok(job.stage_timings.some((timing) => timing.stage === 'journal_request'));
     assert.equal(mod.db.tables.capi_profiles[0].current_system, 'Colonia');
     assert.equal(frontier.calls.some((call) => call.url.includes('/communitygoals')), false,
-      'foreground sync must not wait on the optional Community Goals catalogue endpoint');
+      'foreground worker does not wait on optional Community Goals catalogue endpoint');
+
+    const status = await mod.syncStatus.GET(new Request(`https://colony.test/api/capi/sync/${body.job.id}`), { params: { jobId: body.job.id } });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).job.status, 'succeeded');
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
@@ -518,9 +551,14 @@ for (const platform of ['epic', 'steam', 'frontier']) {
       const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: platform }));
       const location = new URL(res.headers.get('location'));
       assert.equal(location.searchParams.get('status'), 'partial');
-      assert.equal(location.searchParams.get('reason'), 'entitlement_unavailable');
+      assert.equal(location.searchParams.get('reason'), 'sync_queued');
       assert.equal(location.searchParams.get('actualPlatform'), platform);
-      assert.match(location.searchParams.get('detail'), /HTTP 400/);
+      assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+      await runQueuedWorker(mod);
+      const result = mod.db.tables.capi_sync_jobs[0].result;
+      assert.equal(result.reason, 'entitlement_unavailable');
+      assert.equal(result.needsReauth, false);
+      assert.equal(result.platform, platform);
       assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
       assert.equal(mod.db.tables.capi_tokens[0].refresh_token, 'refresh-1');
       assert.match(mod.db.tables.capi_tokens[0].last_error, /Авторизация сохранена/);
@@ -534,32 +572,37 @@ for (const platform of ['epic', 'steam', 'frontier']) {
   });
 }
 
-maybe('колбэк: обычный Bad Request не превращается в «игра не куплена»', async () => {
+maybe('колбэк не маскирует долгий Bad Request; background result не объявляет entitlement ошибку', async () => {
   const { mod, dir } = await buildRoutes();
   const frontier = fakeFrontier({ profileStatus: 400, profileError: 'Bad Request: invalid query', platform: 'epic' });
   try {
     const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
-    const location = new URL(res.headers.get('location'));
-    assert.equal(location.searchParams.get('reason'), 'profile_unavailable');
+    assert.equal(new URL(res.headers.get('location')).searchParams.get('reason'), 'sync_queued');
+    await runQueuedWorker(mod);
+    const result = mod.db.tables.capi_sync_jobs[0].result;
+    assert.equal(result.reason, 'profile_unavailable');
     assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
-    assert.match(location.searchParams.get('detail'), /invalid query/);
-    assert.doesNotMatch(mod.db.tables.capi_tokens[0].last_error, /куплен|Steam\/Epic/);
+    assert.match(result.error, /invalid query/);
+    assert.doesNotMatch(result.error, /куплен|Steam\/Epic/);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-maybe('колбэк: неизвестная платформа не объявляется неверной, /decode может подтвердить EGS', async () => {
+maybe('платформа неизвестна до sync; worker бережёт OAuth и учитывает подтверждённый /decode', async () => {
   for (const decodedIdentity of [null, { usr: { customer_id: 777, platform: 'epic' } }]) {
     const { mod, dir } = await buildRoutes();
     const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR,
       platform: null, meStatus: 503, decodedIdentity });
     try {
       const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
-      const location = new URL(res.headers.get('location'));
-      assert.equal(location.searchParams.get('reason'), 'entitlement_unavailable');
-      assert.equal(location.searchParams.get('actualPlatform'), decodedIdentity ? 'epic' : null);
+      assert.equal(new URL(res.headers.get('location')).searchParams.get('reason'), 'sync_queued');
+      await runQueuedWorker(mod);
+      const result = mod.db.tables.capi_sync_jobs[0].result;
+      assert.equal(result.reason, 'entitlement_unavailable');
+      assert.equal(result.platform, decodedIdentity ? 'epic' : null);
+      assert.equal(result.needsReauth, false);
       assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
       if (!decodedIdentity) assert.match(mod.db.tables.capi_tokens[0].last_error, /не доказательство/);
     } finally {
@@ -569,41 +612,46 @@ maybe('колбэк: неизвестная платформа не объявл
   }
 });
 
-maybe('отозванный refresh даёт token_rejected, а не сообщение об отсутствии игры', async () => {
+maybe('отозванный refresh определяется worker-ом после редиректа и не выглядит как отсутствие игры', async () => {
   const { mod, dir } = await buildRoutes();
   const frontier = fakeFrontier({ profileStatus: 401, refreshStatus: 400, platform: 'epic' });
   try {
     const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
-    const location = new URL(res.headers.get('location'));
-    assert.equal(location.searchParams.get('reason'), 'token_rejected');
+    assert.equal(new URL(res.headers.get('location')).searchParams.get('reason'), 'sync_queued');
+    await runQueuedWorker(mod);
+    const result = mod.db.tables.capi_sync_jobs[0].result;
+    assert.equal(result.reason, 'token_rejected');
+    assert.equal(result.needsReauth, true);
     assert.equal(mod.db.tables.capi_tokens[0].is_active, false);
-    assert.doesNotMatch(mod.db.tables.capi_tokens[0].last_error, /куплен|игр/);
+    assert.doesNotMatch(result.error, /куплен|игр/);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-maybe('ручной синк восстанавливает старый ложный is_active=false и повторяется без нового OAuth', async () => {
+maybe('фоновый ручной синк сохраняет привязку при отказе entitlement и допускает повтор', async () => {
   const { mod, dir } = await buildRoutes();
   let frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR, platform: 'epic' });
   mod.db.tables.capi_tokens = [{ user_id: 'user-1', access_token: 'access-1', refresh_token: 'refresh-1',
     expires_at: new Date(Date.now() + 3600_000).toISOString(), platform: 'epic', is_active: false }];
   try {
-    const res = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
-    const json = await res.json();
-    assert.equal(res.status, 502, 'не 401: сессия Frontier не отозвана');
-    assert.equal(json.needsReauth, false);
-    assert.equal(json.reason, 'entitlement_unavailable');
-    assert.equal(json.kind, 'no_entitlement');
-    assert.equal(json.status, 400);
-    assert.equal(json.platform, 'epic');
+    let res = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
+    assert.equal(res.status, 202);
+    await mod.syncWorker.POST(new Request('https://colony.test/api/cron/capi-sync-jobs', { method: 'POST' }));
+    let job = mod.db.tables.capi_sync_jobs[0];
+    assert.equal(job.status, 'failed');
+    assert.equal(job.result.needsReauth, false, 'entitlement отказ не означает потерю OAuth');
+    assert.equal(job.result.reason, 'entitlement_unavailable');
     assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
-    assert.match(json.detail, /purchase Elite/);
+
     frontier.restore();
     frontier = fakeFrontier({ platform: 'epic' });
-    const retry = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
-    assert.equal(retry.status, 200);
+    res = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
+    assert.equal(res.status, 202);
+    await mod.syncWorker.POST(new Request('https://colony.test/api/cron/capi-sync-jobs', { method: 'POST' }));
+    job = mod.db.tables.capi_sync_jobs[1];
+    assert.equal(job.status, 'succeeded');
     assert.equal(mod.db.tables.capi_tokens[0].last_error, null);
     assert.equal(mod.db.tables.capi_tokens[0].last_error_at, null);
     assert.equal(mod.db.tables.capi_tokens[0].access_token, 'access-1');
@@ -675,10 +723,12 @@ maybe('неизвестная платформа не оставляет ста�
     expires_at: new Date(Date.now() + 3600_000).toISOString(), is_active: false }];
   try {
     const res = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
-    const json = await res.json();
-    assert.equal(json.needsReauth, false);
-    assert.equal(json.reason, 'entitlement_unavailable');
-    assert.equal(json.platform, null);
+    assert.equal(res.status, 202);
+    await mod.syncWorker.POST(new Request('https://colony.test/api/cron/capi-sync-jobs', { method: 'POST' }));
+    const result = mod.db.tables.capi_sync_jobs[0].result;
+    assert.equal(result.needsReauth, false);
+    assert.equal(result.reason, 'entitlement_unavailable');
+    assert.equal(result.platform, null);
     assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
   } finally {
     frontier.restore();
