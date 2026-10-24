@@ -30,6 +30,10 @@ import { parseCapiJournal, journalPath } from './journal.ts';
 import { ENTITLEMENT_RECOVERY_HINT, NO_ENTITLEMENT_MESSAGE, isNoEntitlementResponse } from './entitlement.ts';
 
 const CAPI_BASE = 'https://companion.orerve.net';
+// Profile/journal bodies can be slow or large. Thirty seconds caused avoidable
+// aborts while the response was still being read; keep a bounded but more
+// tolerant window and let the user retry if Frontier is genuinely unavailable.
+const DEFAULT_CAPI_TIMEOUT_MS = 60_000;
 /** Данные Legacy-галактики живут на отдельном хосте (Odyssey Update 14). */
 export const CAPI_LEGACY_BASE = 'https://legacy-companion.orerve.net';
 
@@ -51,6 +55,7 @@ export type CapiErrorKind =
   | 'no_content'
   | 'rate_limited'
   | 'server'
+  | 'timeout'
   | 'network'
   | 'malformed';
 
@@ -112,6 +117,8 @@ export function describeCapiError(err: unknown): string {
           + (err.detail ? `: ${err.detail}` : '');
       case 'malformed':
         return 'Companion API Frontier вернул нечитаемый ответ';
+      case 'timeout':
+        return 'Companion API Frontier не успел ответить за отведённое время. Токены сохранены; повторите синхронизацию позже.';
       case 'network':
       default:
         return `Не удалось связаться с Companion API: ${err.message}`;
@@ -137,7 +144,17 @@ export class CapiClient {
   constructor(accessToken: string, options: { base?: string; timeoutMs?: number } = {}) {
     this.accessToken = accessToken;
     this.base = options.base || CAPI_BASE;
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_CAPI_TIMEOUT_MS;
+  }
+
+  private transportError(endpoint: string, err: unknown): CapiError {
+    const message = err instanceof Error ? err.message : String(err);
+    const name = err instanceof Error ? err.name : '';
+    const timedOut = name === 'TimeoutError' || /(?:aborted due to|timed?\s*out|timeout)/i.test(message);
+    return new CapiError(timedOut ? 'timeout' : 'network', endpoint, 0, message, {
+      detail: message.slice(0, 300),
+      host: this.base,
+    });
   }
 
   /** Сырой запрос: сюда сведён весь разбор кодов ответа Frontier. */
@@ -154,7 +171,7 @@ export class CapiClient {
         },
       });
     } catch (err) {
-      throw new CapiError('network', endpoint, 0, err instanceof Error ? err.message : String(err));
+      throw this.transportError(endpoint, err);
     }
 
     if (res.status === 401 || res.status === 403 || res.status === 422) {
@@ -163,7 +180,12 @@ export class CapiClient {
     if (res.status === 400) {
       // У 400 бывают разные причины. Даже сообщение о покупке не доказывает,
       // что пилот вошёл почтой вместо EGS: CAPI и OAuth — разные проверки.
-      const body = await res.text().catch(() => '');
+      let body: string;
+      try {
+        body = await res.text();
+      } catch (err) {
+        throw this.transportError(endpoint, err);
+      }
       const safeBody = this.accessToken ? body.split(this.accessToken).join('[redacted]') : body;
       const detail = safeBody.replace(/\s+/g, ' ').trim().slice(0, 300);
       throw new CapiError(isNoEntitlementResponse(body) ? 'no_entitlement' : 'server', endpoint, 400,
@@ -182,7 +204,14 @@ export class CapiClient {
       throw new CapiError('server', endpoint, res.status, undefined, { host: this.base });
     }
 
-    return { status: res.status, body: await res.text(), partial: res.status === 206 };
+    try {
+      return { status: res.status, body: await res.text(), partial: res.status === 206 };
+    } catch (err) {
+      // Отмена может произойти ПОСЛЕ получения заголовков, пока читается
+      // большой журнал/профиль. Раньше этот AbortError обходил классификацию
+      // выше, и пилот видел сырое английское сообщение без endpoint и host.
+      throw this.transportError(endpoint, err);
+    }
   }
 
   /** JSON-эндпоинты. Пустое тело — отдельный случай, а не SyntaxError. */
@@ -285,7 +314,7 @@ export class CapiClient {
         },
       });
     } catch (err) {
-      throw new CapiError('network', endpoint, 0, err instanceof Error ? err.message : String(err));
+      throw this.transportError(endpoint, err);
     }
 
     // Тот же разбор, что и в request(): иначе просроченный токен отдавал
@@ -298,6 +327,10 @@ export class CapiClient {
     if (res.status === 102 || res.status === 204) throw new CapiError('no_content', endpoint, res.status);
     if (!res.ok) throw new CapiError('server', endpoint, res.status);
 
-    return res.blob();
+    try {
+      return await res.blob();
+    } catch (err) {
+      throw this.transportError(endpoint, err);
+    }
   }
 }

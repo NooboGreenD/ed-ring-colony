@@ -176,6 +176,25 @@ test('400 распознаётся как «аккаунт без Elite Dangerou
   );
 });
 
+test('таймаут чтения тела CAPI сохраняет endpoint/host и не трактуется как потеря токена', async () => {
+  const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+  await withFetch(async () => ({
+    status: 200,
+    ok: true,
+    text: async () => { throw timeout; },
+  }), async () => {
+    await assert.rejects(() => new CapiClient('token').getProfile(), (err) => {
+      assert.equal(err.kind, 'timeout');
+      assert.equal(err.endpoint, '/profile');
+      assert.equal(err.host, 'https://companion.orerve.net');
+      assert.equal(isUnauthorizedError(err), false);
+      assert.equal(needsCapiRelink(err), false);
+      assert.match(describeCapiError(err), /не успел ответить за отведённое время/);
+      return true;
+    });
+  });
+});
+
 test('прочие 4xx/5xx остаются «ошибкой сервера»', async () => {
   await withFetch(async () => new Response('nope', { status: 500 }), async () => {
     await assert.rejects(() => new CapiClient('token').getProfile(), (err) => {
