@@ -85,6 +85,23 @@ test('список audience после колбэка сохраняет «Ав�
   }
 });
 
+test('подтверждённая Frontier-платформа при отказе в entitlement предлагает явный вход через EGS и Steam, не отвязку', async () => {
+  const ui = await renderCapi({ binding: {
+    ...BINDING,
+    platform: 'frontier',
+    lastError: 'CAPI Frontier не подтвердил доступ к Elite Dangerous. Frontier подтвердил платформу «frontier».',
+  } });
+  try {
+    assert.match(ui.text(), /токен подтверждён как Frontier Store/);
+    assert.match(ui.text(), /выйдите из старой сессии на auth\.frontierstore\.net/);
+    assert.equal(ui.dom.window.document.querySelector('a[href="/api/capi/auth?platform=epic"]')?.textContent, 'Переподключить через Epic Games Store');
+    assert.equal(ui.dom.window.document.querySelector('a[href="/api/capi/auth?platform=steam"]')?.textContent, 'Переподключить через Steam');
+    assert.ok(ui.dom.window.document.querySelector('button.danger-btn'), 'отвязка не выполняется автоматически');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
 test('ошибка шлюза ручной синхронизации показывает HTTP статус вместо общего сообщения', async () => {
   const ui = await renderCapi({ api: (url) => {
     if (url === '/api/capi/sync') return { status: 504, body: {} };
