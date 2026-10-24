@@ -3,10 +3,9 @@ import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
 
 export const dynamic = 'force-dynamic';
-// CAPI may take several sequential Frontier calls (profile, goals, journal),
-// each with a bounded 60s network timeout. Do not let a serverless platform
-// cut the handler at its shorter default and replace the useful JSON error
-// with an opaque gateway response.
+// Keep an explicit execution allowance for deployments that honor Next's
+// route duration setting. The production VPS also has an outer proxy timeout;
+// the manual path skips optional Community Goals enrichment to stay shorter.
 export const maxDuration = 60;
 
 /**
@@ -43,7 +42,17 @@ export async function POST(req: Request) {
     );
   }
 
-  const result = await syncCapiPilot(svc, user.id, tokenRow);
+  const startedAt = Date.now();
+  // Community Goals are optional catalog enrichment, not commander sync data.
+  // The scheduled catalog fallback handles them separately; don't make the
+  // user's foreground request wait on a third Frontier endpoint.
+  const result = await syncCapiPilot(svc, user.id, tokenRow, { skipCommunityGoals: true });
+  console.info('[CAPI Sync] manual sync finished', {
+    elapsedMs: Date.now() - startedAt,
+    profileSaved: result.profileSaved,
+    journalStatus: result.journalStatus,
+    ok: result.ok,
+  });
   for (const warning of result.warnings) console.warn('[CAPI Sync]', warning);
 
   if (!result.ok) {
