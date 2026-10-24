@@ -276,7 +276,8 @@ export default function AccountPage() {
   };
 
   const linkFrontier = () => {
-    window.location.href = '/api/capi/auth';
+    // The dedicated page exposes platform choice, status, diagnostics and retry.
+    window.location.href = '/account/capi';
   };
 
   const unlinkFrontier = async () => {
@@ -975,11 +976,16 @@ export default function AccountPage() {
             </span>
           </div>
 
-          {capiLinked ? (
-            <button type="button" onClick={unlinkFrontier} className="btn danger-btn" style={{ fontSize: 12 }}>{t('account.unlinkFrontier')}</button>
-          ) : (
-            <button type="button" onClick={linkFrontier} className="btn btn-orange" style={{ fontSize: 12 }}>{t('account.linkFrontier')}</button>
-          )}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {capiLinked ? (
+              <button type="button" onClick={unlinkFrontier} className="btn danger-btn" style={{ fontSize: 12 }}>{t('account.unlinkFrontier')}</button>
+            ) : (
+              <button type="button" onClick={linkFrontier} className="btn btn-orange" style={{ fontSize: 12 }}>{t('account.linkFrontier')}</button>
+            )}
+            <Link href="/account/capi" className="btn btn-cyan" style={{ fontSize: 12 }}>
+              Управление CAPI и диагностика
+            </Link>
+          </div>
 
           <h3 style={{ marginTop: 24 }}>{t('account.password')}</h3>
           <form className="auth-form" style={{ width: "100%", maxWidth: 420 }} onSubmit={setPassword}>

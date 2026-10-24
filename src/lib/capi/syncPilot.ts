@@ -55,8 +55,10 @@ export interface CapiSyncResult extends Partial<Omit<CapiFailure, 'error' | 'nee
 }
 
 export interface SyncOptions {
-  /** Не трогать журнал (быстрая проверка привязки после OAuth). */
+  /** Не трогать журнал (быстрая проверка привязки после OAuth/Helper). */
   skipJournal?: boolean;
+  /** Не запрашивать необязательный каталог Community Goals. */
+  skipCommunityGoals?: boolean;
   /** Подмена обновления токена в тестах. */
   refreshFn?: RefreshFn;
   now?: Date;
@@ -171,16 +173,18 @@ export async function syncCapiPilot(
   }
   result.profileSaved = true;
 
-  // ── Community Goals from Frontier CAPI ──────────────────────────
-  // This is an independent, authenticated source: it keeps the public CG
-  // catalogue populated even when Inara has not allowlisted our API client.
-  // A failure here is optional and must not make profile/journal sync fail.
-  try {
-    const communityGoals = await session.run((client) => client.getCommunityGoals());
-    await syncCommunityGoalsFromCapi(svc, communityGoals);
-  } catch (err) {
-    if (!(err instanceof CapiError && err.kind === 'no_content')) {
-      warnings.push(`Community Goals Frontier CAPI не получены: ${describeCapiError(err)}`);
+  if (!options.skipCommunityGoals) {
+    // ── Community Goals from Frontier CAPI ──────────────────────────
+    // This is an independent, authenticated source: it keeps the public CG
+    // catalogue populated even when Inara has not allowlisted our API client.
+    // A failure here is optional and must not make profile/journal sync fail.
+    try {
+      const communityGoals = await session.run((client) => client.getCommunityGoals());
+      await syncCommunityGoalsFromCapi(svc, communityGoals);
+    } catch (err) {
+      if (!(err instanceof CapiError && err.kind === 'no_content')) {
+        warnings.push(`Community Goals Frontier CAPI не получены: ${describeCapiError(err)}`);
+      }
     }
   }
 

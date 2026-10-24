@@ -228,9 +228,13 @@ export default function CapiPage() {
 
   return (
     <div style={{ padding: '24px 20px', maxWidth: 800 }}>
-      <h2 style={{ fontSize: 18, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', marginBottom: 20 }}>
+      <h2 style={{ fontSize: 18, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', marginBottom: 12 }}>
         FRONTIER CAPI
       </h2>
+      <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 20 }}>
+        Эта привязка принадлежит сайту. Colonial Helper может запрашивать синхронизацию только через токен проекта;
+        Frontier-токены остаются на сервере и без привязки на сайте Helper не получит доступ.
+      </p>
 
       {notice && (
         <div className={`capi-notice capi-notice-${notice.kind}`}>
