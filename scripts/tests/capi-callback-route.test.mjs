@@ -476,6 +476,8 @@ maybe('ручной синк отвечает 200 и сообщает состо
     assert.equal(body.journalStatus, 'empty');
     assert.equal(body.cmdrName, 'Nova');
     assert.equal(mod.db.tables.capi_profiles[0].current_system, 'Colonia');
+    assert.equal(frontier.calls.some((call) => call.url.includes('/communitygoals')), false,
+      'foreground sync must not wait on the optional Community Goals catalogue endpoint');
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
