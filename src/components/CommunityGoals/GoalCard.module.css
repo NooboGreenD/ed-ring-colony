@@ -40,10 +40,11 @@
 .expiry strong { color: var(--text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .sourceLink { padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--cg-cyan); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
 .sourceLink:hover { border-color: var(--cg-cyan); color: var(--text); }
-.goalInfo { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 9px; margin-top: 17px; }
+.goalInfo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "description task"; gap: 9px; margin-top: 17px; }
 .infoBlock { min-width: 0; padding: 12px 13px; border: 1px solid var(--line); border-radius: 6px; background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 88%, transparent), color-mix(in srgb, var(--bg) 70%, transparent)); }
-.taskBlock { border-left: 2px solid var(--cg-cyan); }
-.rewardBlock { border-left: 2px solid var(--cg-accent); background: linear-gradient(145deg, color-mix(in srgb, var(--cg-accent) 7%, var(--panel)), color-mix(in srgb, var(--bg) 70%, transparent)); }
+.descriptionBlock { grid-area: description; border-left: 2px solid var(--cg-accent); }
+.taskBlock { grid-area: task; border-left: 2px solid var(--cg-cyan); }
+.rewardBlock { grid-column: 1 / -1; border-left: 2px solid var(--cg-accent); background: linear-gradient(145deg, color-mix(in srgb, var(--cg-accent) 7%, var(--panel)), color-mix(in srgb, var(--bg) 70%, transparent)); }
 .infoTitle { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .11em; text-transform: uppercase; }
 .infoIcon { color: var(--cg-cyan); font-size: 15px; line-height: 1; }
 .rewardIcon { color: var(--cg-accent); font-size: 15px; line-height: 1; }
@@ -109,6 +110,11 @@
 @media (max-width: 760px) {
   .content { padding: 15px; }
   .dashboard { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  .goalInfo { grid-template-columns: minmax(0, 1fr); grid-template-areas: "description" "task"; }
+  .rewardBlock { grid-column: 1; }
 }
 
 @media (max-width: 480px) {

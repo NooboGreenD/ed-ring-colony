@@ -183,8 +183,9 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
   const sourceWidth = total === null ? 0 : Math.min(100, (total / compareBase) * 100);
   const objectiveText = goal.objective?.trim() || null;
   const descriptionText = goal.description?.trim() || null;
-  const taskText = objectiveText || descriptionText;
-  const additionalDescription = descriptionText && objectiveText && descriptionText !== objectiveText
+  // Keep the narrative description on the left and the actionable objective
+  // on the right. If both upstream fields contain the same text, show it once.
+  const distinctDescription = descriptionText && descriptionText !== objectiveText
     ? descriptionText
     : null;
 
@@ -214,18 +215,18 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           </div>
         </header>
 
-        {taskText || additionalDescription || goal.reward ? (
+        {distinctDescription || objectiveText || goal.reward ? (
           <section className={styles.goalInfo} aria-label={t('cg.goalInformation')}>
-            {taskText && (
-              <div className={`${styles.infoBlock} ${styles.taskBlock}`}>
-                <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">◈</span>{t('cg.objective')}</div>
-                <p>{taskText}</p>
+            {distinctDescription && (
+              <div className={`${styles.infoBlock} ${styles.descriptionBlock}`}>
+                <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">▤</span>{t('cg.details')}</div>
+                <p>{distinctDescription}</p>
               </div>
             )}
-            {additionalDescription && (
-              <div className={styles.infoBlock}>
-                <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">▤</span>{t('cg.details')}</div>
-                <p>{additionalDescription}</p>
+            {objectiveText && (
+              <div className={`${styles.infoBlock} ${styles.taskBlock}`}>
+                <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">◈</span>{t('cg.objective')}</div>
+                <p>{objectiveText}</p>
               </div>
             )}
             {goal.reward && (
