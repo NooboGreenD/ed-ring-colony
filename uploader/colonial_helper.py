@@ -895,6 +895,7 @@ class ColonialHelperApp:
     # Сколько точек держим в спарклайнах (при шаге 2 с — около 6 минут).
     PILOT_SERIES_LIMIT = 180
     PILOT_SAMPLE_SECONDS = 2.0
+    PILOT_REFRESH_INTERVAL_MS = 2500
 
     @staticmethod
     def _pilot_percent(value) -> float:
@@ -951,7 +952,7 @@ class ColonialHelperApp:
         self.tab_pilot.bind("<Configure>", self._on_pilot_resize)
 
         self._rebuild_pilot_layout()
-        self._refresh_pilot_infographic()
+        # Первый снимок и таймер запускаются при открытии этой страницы.
 
     # -- раскладка ---------------------------------------------------------
     def _on_pilot_compact_changed(self):
@@ -980,7 +981,11 @@ class ColonialHelperApp:
             width = int(self.root.winfo_width())
         except Exception:
             width = 0
-        return width if width > 0 else 1100
+        # До первого отображения Tk возвращает ширину 1 px, хотя геометрия
+        # окна уже задана как 1180 px. Не строим заранее заведомо неверную
+        # одноколоночную раскладку, которую пришлось бы целиком пересоздавать
+        # при первом открытии страницы.
+        return width if width >= 400 else 1180
 
     def _pilot_column_count(self) -> int:
         width = self._pilot_window_width()
@@ -1199,6 +1204,22 @@ class ColonialHelperApp:
             return
 
     # -- обновление --------------------------------------------------------
+    def _pilot_is_visible(self) -> bool:
+        """Инфографика обновляется только пока её страница показана."""
+        try:
+            return self.notebook.select() == str(self.tab_pilot)
+        except Exception:
+            return False
+
+    def _pilot_cancel_refresh(self):
+        job = getattr(self, "_pilot_refresh_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+            self._pilot_refresh_job = None
+
     def _pilot_sample_series(self, state: dict):
         """Снять точку для спарклайнов (не чаще раза в PILOT_SAMPLE_SECONDS)."""
         now = time.monotonic()
@@ -1326,13 +1347,16 @@ class ColonialHelperApp:
             pass
         # Обновление идёт ровно одной цепочкой: кнопка «Обновить» и смена
         # раскладки не должны плодить параллельные таймеры.
-        if self._pilot_refresh_job is None and self.root.winfo_exists():
-            self._pilot_refresh_job = self.root.after(1000, self._pilot_tick)
+        if (self._pilot_refresh_job is None and self._pilot_is_visible()
+                and self.root.winfo_exists()):
+            self._pilot_refresh_job = self.root.after(
+                self.PILOT_REFRESH_INTERVAL_MS, self._pilot_tick)
 
     def _pilot_tick(self):
-        """Плановый тик автообновления (освобождает слот таймера)."""
+        """Обновлять плитки только на видимой странице и не чаще 0,4 Гц."""
         self._pilot_refresh_job = None
-        self._refresh_pilot_infographic()
+        if self._pilot_is_visible():
+            self._refresh_pilot_infographic()
 
     def _pilot_set(self, key: str, text: str):
         label = self._pilot_tiles.get(key)
@@ -5075,7 +5099,17 @@ class ColonialHelperApp:
             self._queue_scan_for_upload(event)
 
     def _on_notebook_tab_changed(self, _event=None):
-        """Переключили вкладку: карте и экзобиологии нужны свежие данные."""
+        """Переключили вкладку: активные страницы получают свежие данные."""
+        try:
+            selected_tab = self.notebook.select()
+            if selected_tab == str(self.tab_pilot):
+                if self._pilot_refresh_job is None:
+                    self._refresh_pilot_infographic()
+            else:
+                self._pilot_cancel_refresh()
+        except Exception:
+            pass
+
         if self._map_visible():
             self._map_redraw_now()
             self._map_refresh_from_raven()
@@ -6083,6 +6117,7 @@ class ColonialHelperApp:
 
     def _get_overlay_data(self) -> dict:
         """Собрать данные для обновления оверлея."""
+        game_state = self.overlay_manager.game_state()
         data = {
             "online": self.api.is_connected,
             "status_detail": (
@@ -6092,9 +6127,9 @@ class ColonialHelperApp:
                 f"Inara: {'ON' if self.inara_api.enabled else 'OFF'}"
             ),
             "watcher_active": self.watcher_active,
-            "game_running": self.overlay_manager.game_running,
-            "game_focused": bool(self.overlay_manager.game_state().focused),
-            "game_detail": self.overlay_manager.game_state().process_name or "",
+            "game_running": bool(game_state.running),
+            "game_focused": bool(game_state.focused),
+            "game_detail": game_state.process_name or "",
             "exobiology": self._exobiology_overlay_state(),
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
