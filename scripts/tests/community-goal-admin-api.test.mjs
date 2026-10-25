@@ -76,6 +76,7 @@ for (const filename of [
   '20261026090000_community_goal_commander_reports.sql',
   '20261027090000_community_goal_admin.sql',
   '20261028090000_community_goal_fallback_sources.sql',
+  '20261030090000_community_goal_game_identity.sql',
 ]) await db.exec(readFileSync(`${TEST_ROOT}/supabase/migrations/${filename}`, 'utf8'));
 await db.exec(`
   CREATE TABLE public.capi_tokens(
@@ -144,8 +145,46 @@ test('admin API requires the admin role and can create, edit, moderate, and dele
   assert.equal(list.goals.length, 0);
 });
 
+test('admin can moderate the current journal queue in one guarded bulk database update', async () => {
+  const svc = mod.createServiceClient();
+  const rows = [
+    { cg_id: 710001, title: 'Active journal goal', source: 'journal', moderation_status: 'pending', is_complete: false, expiry_date: '2030-01-01T00:00:00Z' },
+    { cg_id: 710002, title: 'Expired journal goal', source: 'journal', moderation_status: 'pending', is_complete: false, expiry_date: '2020-01-01T00:00:00Z' },
+    { cg_id: 710003, title: 'Completed journal goal', source: 'journal', moderation_status: 'pending', is_complete: true, expiry_date: '2030-01-01T00:00:00Z' },
+    { cg_id: 710004, title: 'Active CAPI goal', source: 'capi', moderation_status: 'pending', is_complete: false, expiry_date: '2030-01-01T00:00:00Z' },
+    { cg_id: 710005, title: 'Already rejected journal goal', source: 'journal', moderation_status: 'rejected', is_complete: false, expiry_date: '2030-01-01T00:00:00Z' },
+    { cg_id: 710006, title: 'Journal goal without an expiry', source: 'journal', moderation_status: 'pending', is_complete: false, expiry_date: null },
+  ];
+  const { error: insertError } = await svc.from('community_goals').insert(rows);
+  assert.equal(insertError, null);
+
+  const response = await mod.adminRoute.POST(request('POST', { action: 'bulk-approve-current-journal' }));
+  assert.equal(response.status, 200);
+  assert.equal((await body(response)).updated, 1);
+  const data = (await svc.from('community_goals').select('cg_id,moderation_status').in('cg_id', rows.map((row) => row.cg_id))).data;
+  const status = Object.fromEntries(data.map((row) => [row.cg_id, row.moderation_status]));
+  assert.equal(status[710001], 'approved');
+  assert.equal(status[710002], 'pending', 'expired history remains out of the bulk approval');
+  assert.equal(status[710003], 'pending', 'completed rows remain untouched');
+  assert.equal(status[710004], 'pending', 'other sources remain untouched');
+  assert.equal(status[710005], 'rejected', 'explicit moderator decisions remain untouched');
+
+  const archivedResponse = await mod.adminRoute.POST(request('POST', { action: 'bulk-archive-stale-journal' }));
+  assert.equal(archivedResponse.status, 200);
+  assert.equal((await body(archivedResponse)).updated, 3);
+  const afterArchive = (await svc.from('community_goals').select('cg_id,moderation_status').in('cg_id', rows.map((row) => row.cg_id))).data;
+  const archivedStatus = Object.fromEntries(afterArchive.map((row) => [row.cg_id, row.moderation_status]));
+  assert.equal(archivedStatus[710002], 'hidden');
+  assert.equal(archivedStatus[710003], 'hidden');
+  assert.equal(archivedStatus[710006], 'hidden');
+  assert.equal(archivedStatus[710001], 'approved', 'active approved CG is not archived');
+  assert.equal(archivedStatus[710004], 'pending', 'other sources are not archived');
+  assert.equal(archivedStatus[710005], 'rejected', 'previous decisions are not overwritten');
+});
+
 test('Inara sync retains completed records and moderator edits; public API hides unapproved and internal fields', async () => {
   mod.inaraState.goals = [{
+    communitygoalGameID: 9124,
     communitygoalName: 'Inara CG original',
     starsystemName: 'Colonia',
     stationName: 'Jaques Station',
@@ -168,6 +207,20 @@ test('Inara sync retains completed records and moderator edits; public API hides
     id: inaraGoal.id, title: 'Moderator title', moderation_status: 'hidden',
   })));
   assert.equal(changed.goal.title, 'Moderator title');
+
+  await mod.catalog.syncCommunityGoalsFromCapi(mod.createServiceClient(), { goals: [{
+    cg_id: 9124,
+    title: 'Inara CG original — CAPI wording',
+    system_name: 'Colonia',
+    station_name: 'Jaques Station',
+    description: 'Objective details supplied by Frontier CAPI.',
+    objective: 'Deliver supplies.',
+  }] });
+  const enriched = (await mod.createServiceClient().from('community_goals').select('*').eq('id', inaraGoal.id).single()).data;
+  assert.equal(enriched.source, 'inara', 'lower-priority source cannot replace the canonical source');
+  assert.equal(enriched.moderation_status, 'hidden', 'enrichment cannot undo moderation');
+  assert.equal(enriched.description, 'Objective details supplied by Frontier CAPI.', 'independent source fills a missing description');
+  assert.equal(enriched.game_cg_id, 9124, 'independent source supplies the reconciliation ID');
 
   mod.inaraState.goals = [{ ...mod.inaraState.goals[0], contributionsTotal: 6000 }];
   await mod.adminRoute.POST(request('POST', { action: 'sync' }));
@@ -221,7 +274,7 @@ test('admin syncs Frontier CAPI independently through the site-owned active bind
   assert.equal(row.moderation_status, 'approved');
 
   const adminState = await body(await mod.adminRoute.GET(request('GET')));
-  assert.equal(adminState.sources.catalog.capi.records, 1);
+  assert.equal(adminState.sources.catalog.capi.records, 2, 'source metrics include CAPI rows already in the catalog');
   assert.ok(adminState.sources.catalog.capi.latestAt);
   assert.equal(adminState.sources.helperReports.latestAt, null);
 });
@@ -243,7 +296,14 @@ test('Frontier CAPI fills the catalogue without Inara and promotes matching jour
     observed_at: '2026-10-24T12:00:00Z',
   };
 
-  assert.equal(await mod.catalog.syncCommunityGoalsFromJournal(svc, [report]), 1);
+  assert.equal(await mod.catalog.syncCommunityGoalsFromJournal(svc, [
+    { ...report, game_cg_id: 429, title: 'Expired historical goal', expiry_date: '2026-10-24T00:00:00Z' },
+    { ...report, game_cg_id: 430, title: 'Completed historical goal', is_complete: true },
+  ], { now: new Date('2026-10-25T00:00:00Z') }), 0,
+    'history-only and already completed CGs must not enter the moderation queue');
+  assert.equal(await mod.catalog.syncCommunityGoalsFromJournal(svc, [report], {
+    now: new Date('2026-10-25T00:00:00Z'),
+  }), 1);
   const journalRowResult = await svc.from('community_goals').select('*').eq('title', report.title).single();
   assert.equal(journalRowResult.error, null);
   const journalRow = journalRowResult.data;
@@ -257,9 +317,10 @@ test('Frontier CAPI fills the catalogue without Inara and promotes matching jour
   await svc.from('community_goals').update({ manual_overrides: { title: 'Moderator-approved title' } }).eq('id', journalRow.id);
   assert.equal(await mod.catalog.syncCommunityGoalsFromCapi(svc, { goals: [{
     cg_id: 428,
-    title: report.title,
+    // Same game CGID, but varied catalog text/location from the live source.
+    title: `${report.title} — live listing`,
     system_name: report.system_name,
-    station_name: report.station_name,
+    station_name: 'Galileo Orbital',
     expiry_date: report.expiry_date,
     description: 'A Frontier-issued community event.',
     objective: 'Deliver supplies.',
@@ -277,6 +338,8 @@ test('Frontier CAPI fills the catalogue without Inara and promotes matching jour
   assert.equal(upgraded.moderation_status, 'approved', 'authenticated CAPI data clears journal-only pending status');
   assert.deepEqual(upgraded.manual_overrides, { title: 'Moderator-approved title' });
   assert.equal(upgraded.cg_id, journalRow.cg_id, 'cross-source identity keeps one catalogue row');
+  assert.equal(upgraded.game_cg_id, report.game_cg_id, 'the source CGID is stored separately from the catalogue ID');
+  assert.equal(upgraded.title, `${report.title} — live listing`, 'the best source can refresh changed catalog text');
 
   const afterCapi = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=active')));
   const publicGoal = afterCapi.goals.find((goal) => goal.cg_id === journalRow.cg_id);
@@ -291,7 +354,7 @@ test('Frontier CAPI fills the catalogue without Inara and promotes matching jour
     system_name: report.system_name,
     station_name: report.station_name,
     expiry_date: report.expiry_date,
-    description: 'A refreshed description.',
+    // A sparse refresh must not erase descriptive text from the prior snapshot.
     objective: 'Deliver supplies.',
     reward: 'Credits and recognition.',
     tier_current: 4,
@@ -302,4 +365,5 @@ test('Frontier CAPI fills the catalogue without Inara and promotes matching jour
   }] });
   const hiddenAfterRefresh = await svc.from('community_goals').select('*').eq('id', journalRow.id).single();
   assert.equal(hiddenAfterRefresh.data.moderation_status, 'hidden', 'automatic refresh never overrides a moderator decision');
+  assert.equal(hiddenAfterRefresh.data.description, 'A Frontier-issued community event.', 'sparse sync keeps the last useful description');
 });

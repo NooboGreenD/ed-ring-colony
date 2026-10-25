@@ -40,6 +40,15 @@ test('normalizes the documented Inara Community Goals response fields', () => {
   assert.ok(Number.isInteger(row.cg_id) && row.cg_id > 0);
 });
 
+test('keeps an objective distinct from an absent description instead of inventing descriptive text', () => {
+  const row = normalizeCommunityGoal({
+    communitygoalName: 'Supply convoy',
+    goalObjectiveText: 'Deliver medical supplies.',
+  });
+  assert.equal(row.objective, 'Deliver medical supplies.');
+  assert.equal(row.description, null);
+});
+
 test('uses a stable numeric identity when Inara omits a Community Goal ID', () => {
   const first = normalizeCommunityGoal(inaraGoal);
   const sameGoal = normalizeCommunityGoal({ ...inaraGoal, contributionsTotal: 3000000000 });
