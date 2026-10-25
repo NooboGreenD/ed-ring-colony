@@ -17,11 +17,14 @@ for (const actual of ['epic', 'steam', 'frontier']) {
   });
 }
 
-test('переподключение только при подтверждённом несовпадении, не по выбору audience', () => {
+test('расхождение requested/identity платформы не аннулирует OAuth при CAPI entitlement 400', () => {
   const mismatch = assessCapiEntitlement('EGS', 'frontier');
-  assert.equal(mismatch.needsReauth, true);
+  assert.equal(mismatch.needsReauth, false);
   assert.equal(mismatch.reason, 'platform_not_entitled');
-  assert.match(mismatch.hint, /auth\.frontierstore\.net/);
+  assert.equal(mismatch.platform, 'frontier');
+  assert.match(mismatch.hint, /не доказывает, что OAuth неверный/);
+  assert.match(mismatch.hint, /Сохранённую привязку не отключаем/);
+  assert.doesNotMatch(mismatch.hint, /выйдите из аккаунта|войдите кнопкой/);
   for (const actual of [null, '', 'unknown']) {
     const unknown = assessCapiEntitlement('epic', actual);
     assert.equal(unknown.needsReauth, false);

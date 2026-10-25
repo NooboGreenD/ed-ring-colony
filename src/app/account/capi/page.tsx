@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { IconCheck, IconError, IconSync, IconWaiting } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
 import { capiReasonText, describeJournalStatus } from '@/lib/capi/messages';
+import { NO_ENTITLEMENT_MESSAGE } from '@/lib/capi/entitlement';
 import { platformSelection } from '@/lib/capi/platform';
 
 interface CapiProfileData {
@@ -360,7 +361,13 @@ export default function CapiPage() {
   // заходил в игру, CAPI на обслуживании), и предлагать «подключить»
   // повторно в такой ситуации — вводить пилота в заблуждение.
   const linked = Boolean(binding?.linked);
-  const needsReauth = linked && binding?.tokenActive === false;
+  // Earlier releases incorrectly set is_active=false when CAPI returned an
+  // entitlement 400 plus a requested/identity platform difference. Recover
+  // that known false-negative without forcing another OAuth loop; a real token
+  // rejection/refresh failure has a different diagnostic and stays inactive.
+  const legacyEntitlementMismatch = Boolean(binding?.lastError?.includes(NO_ENTITLEMENT_MESSAGE)
+    && /Запрошена платформа: .+Frontier выдал токен платформы/i.test(binding.lastError));
+  const needsReauth = linked && binding?.tokenActive === false && !legacyEntitlementMismatch;
   const hasCapiError = linked && !needsReauth && Boolean(binding?.lastError);
   const frontierStoreEntitlementError = hasCapiError
     && binding?.platform === 'frontier'
@@ -500,20 +507,14 @@ export default function CapiPage() {
               <div className="capi-notice capi-notice-partial" style={{ marginTop: 12 }}>
                 <strong><IconWaiting size={14} /> Ошибка получения данных CAPI, не потеря авторизации</strong>
                 <div className="capi-notice-hint">{binding?.lastError}</div>
-                <div className="capi-notice-hint">
-                  {frontierStoreEntitlementError
-                    ? 'Сейчас токен подтверждён как Frontier Store, а CAPI не видит право на игру. Повтор синхронизации сам по себе платформу не изменит. Если игра куплена в Epic или Steam, ниже можно начать вход через точный магазин; текущие данные сайта не удаляются.'
-                    : 'Сохранённые токены не удалены. Можно повторить синхронизацию и открыть диагностику без нового входа.'}
-                </div>
-                {frontierStoreEntitlementError && (
-                  <div style={{ marginTop: 10, padding: 10, border: '1px solid var(--line)', borderRadius: 4 }}>
-                    <div className="capi-notice-hint" style={{ marginBottom: 8 }}>
-                      Перед входом выйдите из старой сессии на auth.frontierstore.net или откройте приватное окно. На странице Frontier нажмите кнопку Epic/Steam, а не вход через почту. Это не отвязывает CAPI от сайта.
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <a href="/api/capi/auth?platform=epic" className="btn btn-orange">Переподключить через Epic Games Store</a>
-                      <a href="/api/capi/auth?platform=steam" className="btn">Переподключить через Steam</a>
-                    </div>
+                {frontierStoreEntitlementError ? (
+                  <div className="capi-notice-hint" style={{ marginTop: 8 }}>
+                    Наличие «frontier» в identity токена не доказывает, что вы вошли не через Epic. Frontier фиксирует известные сбои CAPI для EGS-аккаунтов: OAuth и /me могут работать, а /profile отвечает HTTP 400. Повторная авторизация не исправляет серверную проверку права и не запускается автоматически; привязка сайта сохранена.{' '}
+                    <a href="https://issues.frontierstore.net/issue-detail/21258" target="_blank" rel="noreferrer">Инцидент Frontier #21258</a>. Журнальные события по-прежнему можно передавать через Colonial Helper, но профильные поля появятся после восстановления CAPI.
+                  </div>
+                ) : (
+                  <div className="capi-notice-hint">
+                    Сохранённые токены не удалены. Можно повторить синхронизацию и открыть диагностику без нового входа.
                   </div>
                 )}
               </div>

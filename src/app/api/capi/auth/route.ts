@@ -99,10 +99,10 @@ export async function GET(req: NextRequest) {
   // Верификатор — одноразовый секрет этого потока: только cookie, никогда не
   // в URL и не в localStorage.
   response.cookies.set(CAPI_PKCE_COOKIE, pkce.verifier, cookieOptions);
-  // Выбранная платформа — не секрет, но и терять её нельзя: колбэк сравнит
-  // «что просили» с тем, что реально выдал Frontier (частый случай —
-  // оставшаяся сессия почтой на auth.frontierstore.net выдаёт frontier-токен
-  // вместо Steam/Epic).
+  // Выбранная платформа — не секрет, но терять её нельзя: диагностика
+  // сопоставит «что запрашивали» с platform claim в identity Frontier.
+  // Расхождение полезно сохранить как факт, но само по себе не доказывает
+  // неверный способ входа или отсутствие магазинной лицензии.
   response.cookies.set(CAPI_PLATFORM_COOKIE, audience, cookieOptions);
 
   const linkState = signLinkState(user.id);
