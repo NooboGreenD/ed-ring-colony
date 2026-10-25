@@ -126,6 +126,18 @@ export async function GET(req: Request) {
       active: rows.filter((row) => !row.is_complete).length,
       completed: rows.filter((row) => row.is_complete).length,
       pending: rows.filter((row) => row.moderation_status === 'pending').length,
+      pendingJournalActive: rows.filter((row) => row.source === 'journal'
+        && row.moderation_status === 'pending'
+        && row.is_complete !== true
+        && typeof row.expiry_date === 'string'
+        && Date.parse(row.expiry_date) > Date.now()).length,
+      pendingJournalStale: rows.filter((row) => row.source === 'journal'
+        && row.moderation_status === 'pending'
+        && (row.is_complete === true || typeof row.expiry_date !== 'string'
+          || !Number.isFinite(Date.parse(row.expiry_date)) || Date.parse(row.expiry_date) <= Date.now())).length,
+      missingGoalText: rows.filter((row) => !String(row.objective || '').trim()
+        && !String(row.description || '').trim()
+        && !String(row.reward || '').trim()).length,
       hidden: rows.filter((row) => row.moderation_status === 'hidden').length,
       rejected: rows.filter((row) => row.moderation_status === 'rejected').length,
       manual: sources.manual.records,
@@ -153,6 +165,42 @@ export async function POST(req: Request) {
   }
 
   const svc = createServiceClient();
+  if (body.action === 'bulk-approve-current-journal') {
+    const now = new Date().toISOString();
+    const { data, error } = await svc.from('community_goals').update({
+      moderation_status: 'approved',
+      updated_at: now,
+      updated_by: accountId(auth.actor),
+    })
+      .eq('source', 'journal')
+      .eq('moderation_status', 'pending')
+      .eq('is_complete', false)
+      .gt('expiry_date', now)
+      .select('id');
+    if (error) return NextResponse.json({ error: error.message }, { status: 500, headers });
+    return NextResponse.json({ ok: true, updated: Array.isArray(data) ? data.length : 0 }, { headers });
+  }
+  if (body.action === 'bulk-archive-stale-journal') {
+    const now = new Date().toISOString();
+    const patch = {
+      moderation_status: 'hidden',
+      updated_at: now,
+      updated_by: accountId(auth.actor),
+    };
+    let updated = 0;
+    for (const applyFilter of [
+      (query: any) => query.eq('is_complete', true),
+      (query: any) => query.lte('expiry_date', now),
+      (query: any) => query.is('expiry_date', null),
+    ]) {
+      const { data, error } = await applyFilter(svc.from('community_goals').update(patch)
+        .eq('source', 'journal').eq('moderation_status', 'pending')).select('id');
+      if (error) return NextResponse.json({ error: error.message }, { status: 500, headers });
+      updated += Array.isArray(data) ? data.length : 0;
+    }
+    return NextResponse.json({ ok: true, updated }, { headers });
+  }
+
   if (body.action === 'sync') {
     const apiKey = process.env.INARA_API_KEY;
     if (!apiKey) return NextResponse.json({

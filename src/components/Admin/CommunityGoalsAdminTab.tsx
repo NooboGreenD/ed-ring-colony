@@ -177,6 +177,19 @@ export default function CommunityGoalsAdminTab() {
     active: goals.filter((goal) => !goal.is_complete).length,
     completed: goals.filter((goal) => goal.is_complete).length,
     pending: goals.filter((goal) => goal.moderation_status === 'pending').length,
+    pendingJournalActive: goals.filter((goal) => goal.source === 'journal'
+      && goal.moderation_status === 'pending'
+      && !goal.is_complete
+      && Boolean(goal.expiry_date)
+      && Date.parse(goal.expiry_date || '') > Date.now()).length,
+    pendingJournalStale: goals.filter((goal) => goal.source === 'journal'
+      && goal.moderation_status === 'pending'
+      && (goal.is_complete || !goal.expiry_date
+        || !Number.isFinite(Date.parse(goal.expiry_date))
+        || Date.parse(goal.expiry_date) <= Date.now())).length,
+    missingGoalText: goals.filter((goal) => !goal.objective?.trim()
+      && !goal.description?.trim()
+      && !goal.reward?.trim()).length,
     hidden: goals.filter((goal) => goal.moderation_status === 'hidden').length,
     rejected: goals.filter((goal) => goal.moderation_status === 'rejected').length,
   }), [goals]);
@@ -200,6 +213,52 @@ export default function CommunityGoalsAdminTab() {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Синхронизация Inara не удалась');
+      setMessage('');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function approveActiveJournalBatch() {
+    const confirmed = window.confirm(
+      'Опубликовать одним действием все активные и незавершённые CG, которые Helper обнаружил по игровым журналам и которые ждут модерации? Истёкшие, завершённые, скрытые и уже отклонённые записи не затрагиваются.',
+    );
+    if (!confirmed) return;
+    setWorking(true);
+    setError('');
+    setMessage('Публикуем подтверждённые активные CG из очереди журналов…');
+    try {
+      const data = await readResponse(await authFetch('/api/admin/community-goals', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'bulk-approve-current-journal' }),
+      }));
+      setMessage(`Опубликовано активных CG из журналов: ${Number(data.updated || 0)}. Новые находки с данными CAPI/Inara публикуются автоматически.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось обработать очередь CG');
+      setMessage('');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function archiveStaleJournalBatch() {
+    const confirmed = window.confirm(
+      'Скрыть все ожидающие журнальные CG, которые уже завершены, просрочены или не имеют срока окончания? Записи не удаляются и их можно вернуть в публикацию вручную.',
+    );
+    if (!confirmed) return;
+    setWorking(true);
+    setError('');
+    setMessage('Убираем неактуальные журнальные CG из очереди…');
+    try {
+      const data = await readResponse(await authFetch('/api/admin/community-goals', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'bulk-archive-stale-journal' }),
+      }));
+      setMessage(`Скрыто из очереди неактуальных CG: ${Number(data.updated || 0)}. Записи сохранены и могут быть восстановлены вручную.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось очистить устаревшую очередь CG');
       setMessage('');
     } finally {
       setWorking(false);
@@ -346,7 +405,7 @@ export default function CommunityGoalsAdminTab() {
         <div>
           <h2 style={{ marginBottom: 6 }}>Community Goals — синхронизация и модерация</h2>
           <p style={{ color: 'var(--muted)', maxWidth: 900, fontSize: 13, marginTop: 0 }}>
-            Каталог сводит независимые данные Inara, Frontier CAPI и игровых журналов. CAPI запрашивается только через сохранённую сайтом Frontier-привязку; Colonial Helper отправляет снимки CG из локального Journal и не создаёт отдельный OAuth. Журнальные находки без независимого подтверждения ожидают модерации, а ручные правки сохраняются поверх синхронизаций.
+            Каталог сводит независимые данные Inara, Frontier CAPI и игровых журналов, сопоставляя источники по ID CG и затем по нормализованным полям. CAPI использует только принадлежащую сайту Frontier-привязку; Helper отправляет журнал и личные снимки отдельно и не создаёт отдельный OAuth. Истёкшая история не попадает в очередь, а активные находки из журналов можно обработать одним подтверждённым пакетным действием. Когда источники дают описание/цель/награду, каталог сохраняет их при неполных обновлениях; выдуманный текст не подставляется.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -357,6 +416,8 @@ export default function CommunityGoalsAdminTab() {
             {working ? 'Обработка…' : 'Запросить Frontier CAPI'}
           </button>
           <button type="button" className="btn" disabled={working} onClick={() => void load()}>Обновить список</button>
+          <button type="button" className="btn btn-cyan" disabled={working || counts.pendingJournalActive === 0} onClick={() => void approveActiveJournalBatch()} title="Только незавершённые журнальные CG с будущим сроком окончания; скрытые, отклонённые и истёкшие не затрагиваются.">Опубликовать активные журнальные CG ({counts.pendingJournalActive})</button>
+          <button type="button" className="btn" disabled={working || counts.pendingJournalStale === 0} onClick={() => void archiveStaleJournalBatch()} title="Скрыть завершённые, просроченные и CG без срока из очереди. Записи сохраняются.">Скрыть неактуальные ({counts.pendingJournalStale})</button>
           <button type="button" className="btn btn-orange" disabled={working} onClick={openCreate}>Создать колонизационную CG</button>
         </div>
       </div>
@@ -366,6 +427,9 @@ export default function CommunityGoalsAdminTab() {
         <span>Активных: <strong>{counts.active}</strong></span>
         <span>Завершённых: <strong>{counts.completed}</strong></span>
         <span>Ожидают модерации: <strong>{counts.pending}</strong></span>
+        <span>Активных журнальных к публикации: <strong>{counts.pendingJournalActive}</strong></span>
+        <span>Неактуальных в очереди: <strong>{counts.pendingJournalStale}</strong></span>
+        <span>Без цели / описания / награды: <strong>{counts.missingGoalText}</strong></span>
         <span>Скрытых: <strong>{counts.hidden}</strong></span>
         <span>Отклонённых: <strong>{counts.rejected}</strong></span>
       </div>

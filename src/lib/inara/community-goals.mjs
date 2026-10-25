@@ -1,7 +1,7 @@
 /**
  * Convert the documented Inara getCommunityGoalsRecent payload to the
- * community_goals table shape. Inara does not expose a goal ID in this
- * read-only event, so use a stable numeric key derived from its identity.
+ * community_goals table shape. Inara may omit the in-game ID, so the
+ * catalogue also carries a stable numeric key derived from normalized identity.
  */
 
 function asText(value) {
@@ -79,9 +79,12 @@ export function normalizeCommunityGoal(goal) {
 
   return {
     cg_id: id,
+    // Keep the Frontier game ID separately for cross-source reconciliation.
+    // `cg_id` can be a generated stable hash when Inara omits the source ID.
+    game_cg_id: sourceId !== null && Number.isInteger(sourceId) && sourceId > 0 ? sourceId : null,
     identity_key: communityGoalIdentityKey(goal),
     title,
-    description: description || objective || null,
+    description: description || null,
     system_name: systemName || null,
     station_name: stationName || null,
     objective: objective || null,
