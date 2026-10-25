@@ -109,7 +109,8 @@
 | [ATLAS-RING-LIMITS-FIX.md](ATLAS-RING-LIMITS-FIX.md) | 12.10 · #118 | 504 на кольце, требования к маршруту | Актуально; геометрия расширена в #124/#128 |
 | [TEST-SUITE-SPEED.md](TEST-SUITE-SPEED.md) | 12.10 · #119 | Параллельный прогон тестов | Механизм актуален, цифры — на дату |
 | [NEBULA-VISUAL-FIX.md](NEBULA-VISUAL-FIX.md) | 11.10 · #116 | Туманности на карте | Актуально |
-| [CAPI-ENTITLEMENT-FIX.md](CAPI-ENTITLEMENT-FIX.md) | 10.10 · #112 | HTTP 400 CAPI после верного входа через EGS/Steam | **Актуальный разбор CAPI** |
+| [CAPI-EGS-PROFILE-400-CONTEXT.md](CAPI-EGS-PROFILE-400-CONTEXT.md) | 25.10 · case note | Свежая диагностика EGS, HTTP 400, таймлайн и возможные обходы | **Текущий контекст; причина на стороне Frontier вероятна, но не доказана** |
+| [CAPI-ENTITLEMENT-FIX.md](CAPI-ENTITLEMENT-FIX.md) | 10.10 · #112 | HTTP 400 CAPI после верного входа через EGS/Steam | Общая логика OAuth/entitlement; конкретный кейс — в case note |
 | [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md) | 09.10 · #110 | Стабильность подключений CAPI, источник сводки пилота | Актуально, кроме трактовки HTTP 400 (см. ENTITLEMENT) |
 | [BUILD-KIT-KEYS-FIX.md](BUILD-KIT-KEYS-FIX.md) | 09.10 · #109 | Встраивание ключей в комплект первой сборки | Актуально |
 | [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md) | 09.10 · #105 | `colonisation_events` 12+ ГБ → `colonisation_sites` | **Действующая схема** |
