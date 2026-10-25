@@ -1,0 +1,63 @@
+"""Contracts for the desktop launcher feed and its non-authenticated request."""
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+
+import launcher_ui  # noqa: E402
+
+
+class FakeResponse:
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "news": [{"id": 42, "title": "Project news", "body": "Details", "published_at": "2026-10-25T12:00:00Z"}],
+            "galnet": [{"id": 5, "nid": "galnet-1", "title": "Galnet", "body": "Story"}],
+        }
+
+
+class FakeSession:
+    def __init__(self):
+        self.call = None
+
+    def get(self, url, **kwargs):
+        self.call = (url, kwargs)
+        return FakeResponse()
+
+
+class LauncherUiTests(unittest.TestCase):
+    def test_home_data_normalization_limits_records_and_stringifies_ids(self):
+        rows = [{"id": number, "title": f"News {number}"} for number in range(5)]
+        result = launcher_ui.normalize_home_data({"news": rows, "galnet": "bad"})
+        self.assertEqual(len(result["news"]), 3)
+        self.assertEqual(result["news"][0]["id"], "0")
+        self.assertEqual(result["galnet"], [])
+
+    def test_feed_request_uses_public_localized_endpoint_without_account_tokens(self):
+        session = FakeSession()
+        result = launcher_ui.fetch_home_data(session=session, site_url="https://example.test/")
+        url, kwargs = session.call
+        self.assertEqual(url, "https://example.test/api/home-data")
+        self.assertEqual(kwargs["params"], {"locale": "ru"})
+        self.assertNotIn("Authorization", kwargs["headers"])
+        self.assertEqual(result["news"][0]["id"], "42")
+        self.assertEqual(result["galnet"][0]["nid"], "galnet-1")
+
+    def test_cms_html_is_rendered_as_readable_plain_text(self):
+        self.assertEqual(launcher_ui.plain_text("<p>Hello &amp; <b>galaxy</b></p><br>again"),
+                         "Hello & galaxy again")
+
+    def test_article_links_use_existing_site_routes(self):
+        self.assertEqual(launcher_ui._article_url("news", {"id": "42"}),
+                         "https://edringcolony.ru/news/42")
+        self.assertEqual(launcher_ui._article_url("galnet", {"nid": "story-1"}),
+                         "https://edringcolony.ru/galnet/story-1")
+
+
+if __name__ == "__main__":
+    unittest.main()

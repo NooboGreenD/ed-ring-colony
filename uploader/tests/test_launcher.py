@@ -71,6 +71,13 @@ class LauncherTests(unittest.TestCase):
             (self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8"))
         return launcher.choose_version(self.root, folder, manifest)
 
+    def test_dashboard_version_selection_does_not_consume_rollback_attempt(self):
+        manifest = json.loads((self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8"))
+        bundle_updater.install_from_directory(self.root, self.embedded, manifest, keys=self.keys)
+        self.assertEqual(launcher.choose_version(self.root, self.embedded, manifest,
+                                                  record_launch=False), "1.0.0")
+        self.assertEqual(bundle.load_state(self.root)["pending"]["attempts"], 0)
+
     # -- TLS / certifi ----------------------------------------------------
     def test_tls_ca_bundle_is_persisted_outside_pyinstaller_temp_directory(self):
         extraction = self.work / "_MEI12345"
@@ -204,13 +211,22 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(launcher.entry_module({}), "colonial_helper")
         self.assertEqual(launcher.entry_module({"entry": ENTRY}), "fake_app")
 
+    def test_normal_start_shows_dashboard_and_does_not_launch_until_requested(self):
+        dashboard = mock.Mock()
+        dashboard.show_launcher.return_value = False
+        with mock.patch.object(bundle, "install_root", return_value=self.root):
+            with mock.patch.object(launcher, "embedded_bundle", return_value=(None, None)):
+                with mock.patch.dict(sys.modules, {"launcher_ui": dashboard}):
+                    self.assertEqual(launcher.main([]), 0)
+        dashboard.show_launcher.assert_called_once_with(self.root, None, None)
+
     def test_main_runs_the_installed_code(self):
         manifest = json.loads((self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8"))
         with mock.patch.object(launcher, "frozen_dir", return_value=self.work), \
              mock.patch.dict(os.environ, {bundle.HOME_ENV: str(self.root)}):
             shutil.rmtree(self.work / launcher.EMBEDDED_DIR, ignore_errors=True)
             shutil.copytree(self.embedded, self.work / launcher.EMBEDDED_DIR)
-            code = launcher.main([])
+            code = launcher.main(["--run-helper"])
             # Переменные читает уже запущенный код программы, поэтому
             # проверяем их внутри того же окружения.
             self.assertEqual(os.environ[launcher.ENV_LAUNCHER], launcher.LAUNCHER_VERSION)

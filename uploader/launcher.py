@@ -8,12 +8,12 @@
 
 Порядок запуска::
 
-    exe → launcher.main()
-          ├─ есть установленная версия? нет → раскладываем встроенную
-          ├─ версия не отметилась здоровой два запуска? → откат на прошлую
-          ├─ sha256 всех файлов сходятся с подписанным манифестом? нет → откат
-          ├─ встроенный пакет новее установленного? → ставим встроенный
-          └─ sys.path ← каталог версии, import colonial_helper, main()
+    Setup.exe → устанавливает ColonialHelper.exe и ярлыки
+    exe → launcher.main() → стартовый экран (новости сайта + Galnet)
+          ├─ «Запустить» → выбор/проверка версии, испытательный запуск и rollback
+          └─ «Обновить» → подписанный пакетный updater → установка версии
+
+При прямом запуске с `--run-helper` bootstrap-поток запускает Helper без экрана.
 
 Главное правило: **что бы ни случилось, программа должна запуститься.**
 Любая ошибка обновлений заканчивается запуском того кода, который точно есть:
@@ -37,7 +37,7 @@ import bundle
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.0.1"
+LAUNCHER_VERSION = "1.1.0"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
@@ -225,7 +225,8 @@ def install_embedded(root, folder: Path, manifest: Dict[str, Any]) -> str:
 
 
 def choose_version(root, embedded_dir: Optional[Path],
-                   embedded_manifest: Optional[Dict[str, Any]]) -> str:
+                   embedded_manifest: Optional[Dict[str, Any]],
+                   record_launch: bool = True) -> str:
     """Какую версию запускать. Здесь же — откат и лечение установки."""
     state = bundle.load_state(root)
     current = str(state.get("current") or "")
@@ -258,7 +259,7 @@ def choose_version(root, embedded_dir: Optional[Path],
         if installed:
             current = installed
 
-    if current:
+    if current and record_launch:
         bundle.note_launch(root, current)
     return current
 
@@ -312,15 +313,15 @@ def report_failure(root, message: str, details: str = "") -> None:
         pass
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def run_helper(argv: Optional[List[str]] = None) -> int:
+    """Запустить Colonial Helper через прежний проверенный bootstrap-поток."""
     args = list(sys.argv[1:] if argv is None else argv)
     root = bundle.install_root()
+    embedded_dir, embedded_manifest = embedded_bundle()
 
     if "--launcher-version" in args:
         print(LAUNCHER_VERSION)
         return 0
-
-    embedded_dir, embedded_manifest = embedded_bundle()
 
     if "--bundle-info" in args:
         state = bundle.load_state(root)
@@ -386,6 +387,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     report_failure(root, "Не найден код программы: ни установленного пакета, "
                          "ни встроенной копии")
     return 1
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    direct_flags = {"--run-helper", "--reinstall", "--launcher-version", "--bundle-info"}
+    if any(flag in args for flag in direct_flags):
+        helper_args = [arg for arg in args if arg != "--run-helper"]
+        return run_helper(helper_args)
+
+    root = bundle.install_root()
+    embedded_dir, embedded_manifest = embedded_bundle()
+    try:
+        from launcher_ui import show_launcher
+        launch_requested = show_launcher(root, embedded_dir, embedded_manifest)
+    except Exception as exc:
+        log(root, f"стартовый экран не загрузился: {exc}; запускаем Helper напрямую")
+        launch_requested = True
+    return run_helper(args) if launch_requested else 0
 
 
 if __name__ == "__main__":

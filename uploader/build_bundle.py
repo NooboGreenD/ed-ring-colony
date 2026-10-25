@@ -50,7 +50,8 @@ import bundle  # noqa: E402
 #: `updater.py` держим в списке и для старых каталогов, где он ещё лежит:
 #: обновления теперь идут только через сервер проекта, и модуль GitHub API
 #: в пакет пилоту не нужен.
-EXCLUDE = {"build_exe.py", "build_bundle.py", "launcher.py", "updater.py"}
+EXCLUDE = {"build_exe.py", "build_bundle.py", "build_installer.py", "installer.py",
+           "launcher.py", "launcher_ui.py", "updater.py"}
 
 #: Переменные окружения для CI.
 KEY_ENV = "UPLOADER_SIGN_KEY"
