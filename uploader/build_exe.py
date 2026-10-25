@@ -38,10 +38,12 @@ BUNDLE_OUT = HERE / "dist" / "bundle"
 
 #: Пакеты, которые PyInstaller должен забрать целиком (данные + подмодули).
 COLLECT_PACKAGES = ("ttkbootstrap",)
+#: Данные certifi нужны Requests для проверки TLS и должны быть в onefile exe.
+COLLECT_DATA_PACKAGES = ("certifi",)
 
 #: Библиотеки, которые обязаны быть в сборке, даже если импортируются лениво.
 ALWAYS_INCLUDE = (
-    "requests", "pyperclip", "tkinter", "tkinter.ttk", "tkinter.filedialog",
+    "requests", "certifi", "pyperclip", "tkinter", "tkinter.ttk", "tkinter.filedialog",
     "tkinter.messagebox", "tkinter.simpledialog", "tkinter.font",
     "tkinter.colorchooser", "tkinter.scrolledtext",
     "ttkbootstrap", "ttkbootstrap.style", "ttkbootstrap.themes",
@@ -86,6 +88,16 @@ def collect_imports(source: Path, own: set[str]) -> list[str]:
     return sorted(name for name in found if name.split(".")[0] not in own)
 
 
+def collect_package_args() -> list[str]:
+    """PyInstaller options for package resources and submodules."""
+    args: list[str] = []
+    for package in COLLECT_PACKAGES:
+        args += ["--collect-data", package, "--collect-submodules", package]
+    for package in COLLECT_DATA_PACKAGES:
+        args += ["--collect-data", package]
+    return args
+
+
 def main() -> int:
     import PyInstaller.__main__
 
@@ -124,8 +136,7 @@ def main() -> int:
     ]
     for name in hidden:
         args += ["--hidden-import", name]
-    for package in COLLECT_PACKAGES:
-        args += ["--collect-data", package, "--collect-submodules", package]
+    args.extend(collect_package_args())
     if icon_path.exists():
         args.append(f"--icon={icon_path}")
 
