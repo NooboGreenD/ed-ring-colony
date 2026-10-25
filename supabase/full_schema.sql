@@ -17878,3 +17878,81 @@ WHERE progress_source IS NULL
   AND (tier_current IS NOT NULL OR tier_max IS NOT NULL OR contributors IS NOT NULL OR contributions_total IS NOT NULL);
 
 NOTIFY pgrst, 'reload schema';
+
+-- ┌────────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261101090000_community_goal_progress_history.sql       │
+-- └────────────────────────────────────────────────────────────────────┘
+
+CREATE TABLE IF NOT EXISTS public.community_goal_progress_history (
+  cg_id               INTEGER NOT NULL REFERENCES public.community_goals(cg_id) ON DELETE CASCADE,
+  snapshot_hour       TIMESTAMPTZ NOT NULL,
+  observed_at         TIMESTAMPTZ NOT NULL,
+  source              TEXT NOT NULL CHECK (source IN ('inara', 'capi')),
+  tier_current        INTEGER,
+  tier_max            INTEGER,
+  contributors        INTEGER,
+  contributions_total BIGINT NOT NULL CHECK (contributions_total >= 0),
+  PRIMARY KEY (cg_id, snapshot_hour)
+);
+
+INSERT INTO public.community_goal_progress_history (
+  cg_id, snapshot_hour, observed_at, source,
+  tier_current, tier_max, contributors, contributions_total
+)
+SELECT
+  cg_id,
+  date_trunc('hour', COALESCE(progress_updated_at, source_updated_at, updated_at)),
+  COALESCE(progress_updated_at, source_updated_at, updated_at),
+  progress_source,
+  tier_current,
+  tier_max,
+  contributors,
+  contributions_total
+FROM public.community_goals
+WHERE progress_source IN ('inara', 'capi')
+  AND contributions_total IS NOT NULL
+  AND contributions_total >= 0
+ON CONFLICT (cg_id, snapshot_hour) DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS idx_community_goal_progress_history_time
+  ON public.community_goal_progress_history (snapshot_hour, cg_id);
+
+ALTER TABLE public.community_goal_progress_history ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.community_goal_progress_history FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.community_goal_progress_history TO service_role;
+
+NOTIFY pgrst, 'reload schema';
+
+-- ┌────────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261102090000_frontier_public_community_goals.sql      │
+-- └────────────────────────────────────────────────────────────────────┘
+
+ALTER TABLE public.community_goals
+  DROP CONSTRAINT IF EXISTS community_goals_source_check,
+  ADD CONSTRAINT community_goals_source_check
+    CHECK (source IN ('inara', 'capi', 'journal', 'frontier', 'manual')),
+  ADD COLUMN IF NOT EXISTS contributions_target BIGINT,
+  ADD COLUMN IF NOT EXISTS target_source TEXT,
+  ADD COLUMN IF NOT EXISTS target_updated_at TIMESTAMPTZ;
+
+ALTER TABLE public.community_goals
+  DROP CONSTRAINT IF EXISTS community_goals_progress_source_check,
+  ADD CONSTRAINT community_goals_progress_source_check
+    CHECK (progress_source IS NULL OR progress_source IN ('inara', 'capi', 'journal', 'frontier', 'manual')),
+  DROP CONSTRAINT IF EXISTS community_goals_target_source_check,
+  ADD CONSTRAINT community_goals_target_source_check
+    CHECK (target_source IS NULL OR target_source = 'frontier'),
+  DROP CONSTRAINT IF EXISTS community_goals_contributions_target_check,
+  ADD CONSTRAINT community_goals_contributions_target_check
+    CHECK (contributions_target IS NULL OR contributions_target >= 0);
+
+ALTER TABLE public.community_goal_progress_history
+  DROP CONSTRAINT IF EXISTS community_goal_progress_history_source_check,
+  ADD CONSTRAINT community_goal_progress_history_source_check
+    CHECK (source IN ('inara', 'capi', 'frontier'));
+
+GRANT SELECT (
+  contributions_target
+) ON public.community_goals TO anon, authenticated;
+
+NOTIFY pgrst, 'reload schema';

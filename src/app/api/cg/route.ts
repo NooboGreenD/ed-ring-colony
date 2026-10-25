@@ -6,6 +6,14 @@ import { readAllRows } from '@/lib/readAllRows';
 
 export const dynamic = 'force-dynamic';
 
+interface ContributionHistoryRow {
+  cg_id: number;
+  snapshot_hour: string;
+  observed_at: string;
+  source: 'inara' | 'capi' | 'frontier';
+  contributions_total: number | string;
+}
+
 interface CommanderReportRow {
   user_id: string;
   goal_key: string;
@@ -56,6 +64,28 @@ export async function GET(req: Request) {
   }
 
   const identities = Array.from(new Set(identityByGoalId.values()));
+  const goalCatalogIds = Array.from(new Set(goals
+    .map((goal) => Number(goal.cg_id))
+    .filter((id) => Number.isSafeInteger(id) && id > 0)));
+  const progressHistoryByGoal = new Map<number, ContributionHistoryRow[]>();
+  if (goalCatalogIds.length > 0) {
+    const historyResult = await readAllRows((from, to) => svc
+      .from('community_goal_progress_history')
+      .select('cg_id,snapshot_hour,observed_at,source,contributions_total')
+      .in('cg_id', goalCatalogIds)
+      .order('snapshot_hour', { ascending: true })
+      .order('cg_id', { ascending: true })
+      .range(from, to));
+    if (historyResult.error) {
+      console.warn('[CG] Contribution history unavailable:', historyResult.error.message);
+    } else {
+      for (const point of historyResult.data as ContributionHistoryRow[]) {
+        if (!progressHistoryByGoal.has(point.cg_id)) progressHistoryByGoal.set(point.cg_id, []);
+        progressHistoryByGoal.get(point.cg_id)!.push(point);
+      }
+    }
+  }
+
   let reportRows: CommanderReportRow[] = [];
   if (identities.length > 0) {
     const { data: reports, error: reportsError } = await svc
@@ -124,6 +154,7 @@ export async function GET(req: Request) {
     tier_max: goal.tier_max,
     contributors: goal.contributors,
     contributions_total: goal.contributions_total,
+    contributions_target: goal.contributions_target ?? null,
     is_complete: goal.is_complete,
     is_colonisation_related: goal.is_colonisation_related,
     expiry_date: goal.expiry_date,
@@ -131,6 +162,7 @@ export async function GET(req: Request) {
     source_updated_at: goal.source_updated_at,
     progress_source: goal.progress_source,
     progress_updated_at: goal.progress_updated_at,
+    contribution_history: progressHistoryByGoal.get(Number(goal.cg_id)) || [],
     updated_at: goal.updated_at,
     commander_reports: goal.commander_reports,
   }));

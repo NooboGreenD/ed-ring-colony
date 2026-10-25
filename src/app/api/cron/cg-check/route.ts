@@ -3,38 +3,61 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { InaraClient } from '@/lib/inara/client';
 import { normalizeCommunityGoals } from '@/lib/inara/community-goals.mjs';
-import { upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
+import { syncCommunityGoalsFromFrontier, upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
+import { fetchFrontierPublicCommunityGoals } from '@/lib/frontierCommunityGoals.mjs';
 
 export const dynamic = 'force-dynamic';
 
 async function handle() {
   const svc = createServiceClient();
-  const apiKey = process.env.INARA_API_KEY;
+  const results: Record<string, unknown> = {};
+  const errors: string[] = [];
+  let totalUpdated = 0;
 
-  if (!apiKey) {
-    return NextResponse.json({
-      ok: true,
-      skipped: true,
-      reason: 'INARA_API_KEY not configured',
-      fallbackSources: ['Frontier CAPI community-goals endpoint', 'commander journal uploads (moderator review)'],
-    });
-  }
-
+  // This website endpoint is independent of a commander OAuth binding, so it
+  // continues to populate the public catalogue even when Inara/CAPI is absent.
   try {
-    const inara = new InaraClient(apiKey);
-    const goals = await inara.getCommunityGoals();
-    const rows = normalizeCommunityGoals(goals);
-
-    const updated = await upsertCommunityGoalCatalog(svc, rows, 'inara');
-    return NextResponse.json({ updated, received: rows.length, source: 'inara' });
+    const payload = await fetchFrontierPublicCommunityGoals();
+    const received = Array.isArray(payload.activeInitiatives) ? payload.activeInitiatives.length : 0;
+    const updated = await syncCommunityGoalsFromFrontier(svc, payload);
+    results.frontier = { received, updated };
+    totalUpdated += updated;
   } catch (err: unknown) {
-    console.error('[Cron CG]', err);
-    const message = err instanceof Error ? err.message : 'Unknown Inara sync error';
-    return NextResponse.json({
-      error: message,
-      fallbackSources: ['Frontier CAPI community-goals endpoint', 'commander journal uploads (moderator review)'],
-    }, { status: 500 });
+    const message = err instanceof Error ? err.message : 'Unknown Frontier public initiatives sync error';
+    console.error('[Cron CG] Frontier public sync failed:', err);
+    errors.push(`Frontier public initiatives: ${message}`);
+    results.frontier = { error: message };
   }
+
+  const apiKey = process.env.INARA_API_KEY;
+  if (apiKey) {
+    try {
+      const inara = new InaraClient(apiKey);
+      const goals = await inara.getCommunityGoals();
+      const rows = normalizeCommunityGoals(goals);
+      const updated = await upsertCommunityGoalCatalog(svc, rows, 'inara');
+      results.inara = { updated, received: rows.length };
+      totalUpdated += updated;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown Inara sync error';
+      console.error('[Cron CG] Inara sync failed:', err);
+      errors.push(`Inara: ${message}`);
+      results.inara = { error: message };
+    }
+  } else {
+    results.inara = { skipped: true, reason: 'INARA_API_KEY not configured' };
+  }
+
+  const succeeded = Object.values(results).some((result) =>
+    Boolean(result && typeof result === 'object' && ('updated' in result || 'received' in result)),
+  );
+  return NextResponse.json({
+    ok: errors.length === 0,
+    updated: totalUpdated,
+    sources: results,
+    errors,
+    fallbackSources: ['Frontier public initiatives', 'Frontier CAPI community-goals endpoint', 'commander journal uploads (moderator review)'],
+  }, { status: succeeded ? 200 : 502 });
 }
 
 export async function GET(req: Request) {

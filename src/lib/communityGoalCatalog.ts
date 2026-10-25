@@ -1,6 +1,7 @@
 import { communityGoalIdentityKey, normalizeCommunityGoal } from './inara/community-goals.mjs';
+import { normalizeFrontierPublicCommunityGoals } from './frontierCommunityGoals.mjs';
 
-type GoalSource = 'inara' | 'capi' | 'journal';
+type GoalSource = 'inara' | 'capi' | 'journal' | 'frontier';
 type ServiceClient = any;
 type CatalogGoal = Record<string, any> & {
   identity_key: string;
@@ -11,11 +12,18 @@ type CatalogGoal = Record<string, any> & {
 const SOURCE_PRIORITY: Record<GoalSource | 'manual', number> = {
   journal: 1,
   capi: 2,
-  inara: 3,
-  manual: 4,
+  frontier: 3,
+  inara: 4,
+  manual: 5,
 };
 const MAX_CG_ID = 2_147_483_647;
 const PROGRESS_FIELDS = ['tier_current', 'tier_max', 'contributors', 'contributions_total'] as const;
+
+function hasContributionTotal(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0;
+}
 
 /** Keep high-priority catalog text, but let newer official snapshots refresh live progress values. */
 function applyProgressSnapshot(
@@ -31,6 +39,7 @@ function applyProgressSnapshot(
     candidate[field] !== null && candidate[field] !== undefined && candidate[field] !== '',
   );
   const mayUpdate = hasIncomingProgress && (!existing || incomingAt >= previousAt);
+  let changed = false;
 
   for (const field of PROGRESS_FIELDS) {
     if (mayUpdate && candidate[field] !== null && candidate[field] !== undefined && candidate[field] !== '') {
@@ -43,12 +52,31 @@ function applyProgressSnapshot(
   if (mayUpdate) {
     target.progress_source = source;
     target.progress_updated_at = new Date(incomingAt).toISOString();
-    return true;
+    changed = true;
+  } else {
+    target.progress_source = existing?.progress_source ?? existing?.source ?? null;
+    target.progress_updated_at = existing?.progress_updated_at ?? existing?.source_updated_at ?? null;
   }
 
-  target.progress_source = existing?.progress_source ?? existing?.source ?? null;
-  target.progress_updated_at = existing?.progress_updated_at ?? existing?.source_updated_at ?? null;
-  return false;
+  if (hasContributionTotal(candidate.contributions_target)) {
+    const previousTargetAt = Date.parse(existing?.target_updated_at || '') || 0;
+    if (!existing || incomingAt >= previousTargetAt) {
+      target.contributions_target = Number(candidate.contributions_target);
+      target.target_source = source;
+      target.target_updated_at = new Date(incomingAt).toISOString();
+      changed = true;
+    } else if (existing) {
+      target.contributions_target = existing.contributions_target;
+      target.target_source = existing.target_source ?? null;
+      target.target_updated_at = existing.target_updated_at ?? null;
+    }
+  } else if (existing) {
+    target.contributions_target = existing.contributions_target ?? null;
+    target.target_source = existing.target_source ?? null;
+    target.target_updated_at = existing.target_updated_at ?? null;
+  }
+
+  return changed;
 }
 
 function stableId(identity: string): number {
@@ -210,7 +238,7 @@ export async function upsertCommunityGoalCatalog(
   const gameIds = Array.from(new Set(goals
     .map((goal) => Number(goal.game_cg_id))
     .filter((id) => Number.isSafeInteger(id) && id > 0)));
-  const selectColumns = 'cg_id,game_cg_id,identity_key,source,source_updated_at,progress_source,progress_updated_at,tier_current,tier_max,contributors,contributions_total,moderation_status,title,description,system_name,station_name,objective,reward,expiry_date,inara_url,raw_data';
+  const selectColumns = 'cg_id,game_cg_id,identity_key,source,source_updated_at,progress_source,progress_updated_at,tier_current,tier_max,contributors,contributions_total,contributions_target,target_source,target_updated_at,moderation_status,title,description,system_name,station_name,objective,reward,expiry_date,inara_url,raw_data';
   const { data: existingRows, error: lookupError } = await svc
     .from('community_goals')
     .select(selectColumns)
@@ -288,6 +316,9 @@ export async function upsertCommunityGoalCatalog(
   for (const row of Array.isArray(idRows) ? idRows : []) identityById.set(row.cg_id, row.identity_key || '');
 
   const rows = [];
+  const progressHistoryRows: Record<string, any>[] = [];
+  const snapshotTime = new Date(now);
+  snapshotTime.setUTCMinutes(0, 0, 0);
   const reservedIds = new Set(identityById.keys());
   for (const { goal, existing } of candidates) {
     if (existing?.source === 'manual') continue;
@@ -317,7 +348,22 @@ export async function upsertCommunityGoalCatalog(
           changed = true;
         }
       }
-      if (applyProgressSnapshot(enrichment, goal, existing, source, now)) changed = true;
+      const progressChanged = applyProgressSnapshot(enrichment, goal, existing, source, now);
+      if (progressChanged) {
+        changed = true;
+        if ((source === 'inara' || source === 'capi' || source === 'frontier') && hasContributionTotal(goal.contributions_total)) {
+          progressHistoryRows.push({
+            cg_id: enrichment.cg_id,
+            snapshot_hour: snapshotTime.toISOString(),
+            observed_at: now,
+            source,
+            tier_current: enrichment.tier_current,
+            tier_max: enrichment.tier_max,
+            contributors: enrichment.contributors,
+            contributions_total: goal.contributions_total,
+          });
+        }
+      }
       if (changed) rows.push(enrichment);
       continue;
     }
@@ -362,7 +408,19 @@ export async function upsertCommunityGoalCatalog(
         }
       }
     }
-    applyProgressSnapshot(row, goal, existing, source, now);
+    const progressChanged = applyProgressSnapshot(row, goal, existing, source, now);
+    if (progressChanged && (source === 'inara' || source === 'capi' || source === 'frontier') && hasContributionTotal(goal.contributions_total)) {
+      progressHistoryRows.push({
+        cg_id: row.cg_id,
+        snapshot_hour: snapshotTime.toISOString(),
+        observed_at: now,
+        source,
+        tier_current: row.tier_current,
+        tier_max: row.tier_max,
+        contributors: row.contributors,
+        contributions_total: goal.contributions_total,
+      });
+    }
     if (!existing) {
       row.moderation_status = source === 'journal' && options.pendingJournalGoals !== false ? 'pending' : 'approved';
     } else {
@@ -380,11 +438,21 @@ export async function upsertCommunityGoalCatalog(
   if (rows.length === 0) return 0;
   const { error } = await svc.from('community_goals').upsert(rows, { onConflict: 'cg_id' });
   if (error) throw new Error(`Community Goal catalog upsert failed: ${error.message}`);
+  if (progressHistoryRows.length > 0) {
+    const { error: historyError } = await svc
+      .from('community_goal_progress_history')
+      .upsert(progressHistoryRows, { onConflict: 'cg_id,snapshot_hour' });
+    if (historyError) throw new Error(`Community Goal progress history upsert failed: ${historyError.message}`);
+  }
   return rows.length;
 }
 
 export async function syncCommunityGoalsFromCapi(svc: ServiceClient, payload: unknown): Promise<number> {
   return upsertCommunityGoalCatalog(svc, normalizeCapiCommunityGoals(payload), 'capi');
+}
+
+export async function syncCommunityGoalsFromFrontier(svc: ServiceClient, payload: unknown): Promise<number> {
+  return upsertCommunityGoalCatalog(svc, normalizeFrontierPublicCommunityGoals(payload), 'frontier');
 }
 
 export async function syncCommunityGoalsFromJournal(
