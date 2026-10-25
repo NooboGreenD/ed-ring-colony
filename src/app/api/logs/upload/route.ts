@@ -118,6 +118,7 @@ export async function POST(req: Request) {
       constructionInserted: telemetry?.constructionInserted ?? 0,
       constructionDuplicates: telemetry?.constructionDuplicates ?? 0,
       communityGoalReportsStored: ingest.communityGoalReportsStored,
+      communityGoalCatalogUpdated: ingest.communityGoalCatalogUpdated,
       snapshotInserted: telemetry?.snapshotInserted ?? 0,
       pilotStatsUpdated: telemetry?.pilotStatsUpdated ?? false,
       // 'web_source' — сводка пилота защищена загрузкой журналов на сайте

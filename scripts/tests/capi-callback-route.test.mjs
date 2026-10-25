@@ -255,7 +255,7 @@ const JOURNAL_NDJSON = [
 
 /** Подменяет сеть: сервер токенов Frontier + CAPI. */
 function fakeFrontier({ profile = PROFILE_JSON, profileStatus = 200, profileError = 'error',
-  journal = JOURNAL_NDJSON, journalStatus = 200, platform = 'frontier',
+  journal = JOURNAL_NDJSON, journalStatus = 200, communityGoals = { goals: [] }, platform = 'frontier',
   meStatus = 200, decodedIdentity = null, refreshStatus = 200 } = {}) {
   const calls = [];
   const original = globalThis.fetch;
@@ -287,6 +287,9 @@ function fakeFrontier({ profile = PROFILE_JSON, profileStatus = 200, profileErro
       return journalStatus === 200
         ? new Response(journal, { status: 200 })
         : new Response(journalStatus === 204 ? null : 'error', { status: journalStatus });
+    }
+    if (url.includes('/communitygoals')) {
+      return new Response(JSON.stringify(communityGoals), { status: 200 });
     }
     return new Response('{}', { status: 200 });
   };
@@ -391,6 +394,10 @@ maybe('400 о покупке после OAuth сохраняет привязк�
     assert.equal(result.platform, 'frontier');
     assert.equal(mod.db.tables.capi_tokens[0].is_active, true, 'an EGS/Frontier identity difference must not invalidate OAuth');
     assert.match(mod.db.tables.capi_tokens[0].last_error, /не подтвердил|CAPI/i);
+    const goalsRequest = frontier.calls.findIndex((call) => call.url.includes('/communitygoals'));
+    const profileRequest = frontier.calls.findIndex((call) => call.url.includes('/profile'));
+    assert.ok(goalsRequest >= 0, 'Community Goals are fetched independently even if /profile is refused');
+    assert.ok(goalsRequest < profileRequest, 'independent catalog request runs before the fragile profile request');
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });

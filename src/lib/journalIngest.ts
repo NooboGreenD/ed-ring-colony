@@ -46,6 +46,7 @@ export interface JournalBatchOutcome {
   reset: Awaited<ReturnType<typeof resetJournalData>> | null;
   projects: ProjectSyncResult | null;
   communityGoalReportsStored: number;
+  communityGoalCatalogUpdated: number;
 }
 
 /** Нужна ли очистка перед этой пачкой: флаг читается только в первой. */
@@ -125,15 +126,16 @@ export async function ingestJournalBatch(svc: Svc, input: JournalBatchInput): Pr
   } catch (reportError) {
     console.warn(`${logTag} private Community Goal reports could not be stored:`, (reportError as Error).message);
   }
+  let communityGoalCatalogUpdated = 0;
   try {
-    await syncCommunityGoalsFromJournal(svc, reportPayload);
+    communityGoalCatalogUpdated = await syncCommunityGoalsFromJournal(svc, reportPayload);
   } catch (catalogError) {
     // Journal-only catalogue entries are pending moderator review; an optional
     // discovery path must not turn a successful journal upload into a failure.
     console.warn(`${logTag} Community Goal catalogue fallback failed:`, (catalogError as Error).message);
   }
 
-  return { deliveries, telemetry, reset, projects, communityGoalReportsStored };
+  return { deliveries, telemetry, reset, projects, communityGoalReportsStored, communityGoalCatalogUpdated };
 }
 
 /** Короткая сводка реакций для ответа клиенту. */

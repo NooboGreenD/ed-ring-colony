@@ -2,6 +2,7 @@
   --cg-accent: var(--orange, #e67e22);
   --cg-cyan: var(--cyan, #48b9d8);
   position: relative;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--cg-accent) 24%, var(--line));

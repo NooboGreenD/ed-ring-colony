@@ -38,12 +38,24 @@ export class InaraClient {
   async getCommunityGoals() { return inaraState.goals; }
 }
 `;
+const CAPI_SESSION_STUB = `
+export const capiState = { goals: [], calls: 0 };
+export async function capiSession() {
+  return {
+    async run(callback) {
+      capiState.calls += 1;
+      return callback({ getCommunityGoals: async () => ({ goals: capiState.goals }) });
+    },
+  };
+}
+`;
 const ENTRY = `
 export * as adminRoute from '@/app/api/admin/community-goals/route';
 export * as publicRoute from '@/app/api/cg/route';
 export { state, createServiceClient } from '@/lib/supabaseServer';
 export { authState } from '@/lib/billing/auth';
 export { inaraState } from '@/lib/inara/client';
+export { capiState } from '@/lib/capi/session';
 export * as catalog from '@/lib/communityGoalCatalog';
 `;
 
@@ -65,6 +77,16 @@ for (const filename of [
   '20261027090000_community_goal_admin.sql',
   '20261028090000_community_goal_fallback_sources.sql',
 ]) await db.exec(readFileSync(`${TEST_ROOT}/supabase/migrations/${filename}`, 'utf8'));
+await db.exec(`
+  CREATE TABLE public.capi_tokens(
+    user_id uuid PRIMARY KEY REFERENCES auth.users(id),
+    is_active boolean NOT NULL DEFAULT true,
+    access_token text NOT NULL,
+    refresh_token text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+  GRANT ALL ON public.capi_tokens TO service_role;
+`);
 await db.exec('SET ROLE service_role');
 
 const bundle = await bundleFile({
@@ -74,6 +96,7 @@ const bundle = await bundleFile({
     '@/lib/supabaseServer': SUPABASE_STUB,
     '@/lib/billing/auth': AUTH_STUB,
     '@/lib/inara/client': INARA_STUB,
+    '@/lib/capi/session': CAPI_SESSION_STUB,
   },
   platform: 'node',
 });
@@ -161,6 +184,46 @@ test('Inara sync retains completed records and moderator edits; public API hides
   assert.equal(publicResponse.goals[0].title, 'Moderator title');
   assert.equal('manual_overrides' in publicResponse.goals[0], false);
   assert.equal('moderation_status' in publicResponse.goals[0], false);
+});
+
+test('admin syncs Frontier CAPI independently through the site-owned active binding and reports source freshness', async () => {
+  const unavailable = await mod.adminRoute.POST(request('POST', { action: 'sync-capi' }));
+  const unavailableBody = await body(unavailable);
+  assert.equal(unavailable.status, 409, JSON.stringify(unavailableBody));
+  assert.match(unavailableBody.error, /Нет активной Frontier OAuth-привязки сайта/);
+
+  const svc = mod.createServiceClient();
+  await svc.from('capi_tokens').insert({
+    user_id: '11111111-1111-4111-8111-111111111111',
+    is_active: true,
+    access_token: 'server-only-access-token',
+    refresh_token: 'server-only-refresh-token',
+  });
+  mod.capiState.goals = [{
+    cg_id: 9123,
+    title: 'CAPI independent-source goal',
+    system_name: 'Colonia',
+    station_name: 'Jaques Station',
+    expiry_date: '2026-12-01T12:00:00Z',
+    objective: 'Deliver supplies.',
+    contributions_total: 12345,
+  }];
+
+  const response = await mod.adminRoute.POST(request('POST', { action: 'sync-capi' }));
+  assert.equal(response.status, 200);
+  const result = await body(response);
+  assert.equal(result.source, 'capi');
+  assert.equal(result.received, 1);
+  assert.equal(result.synced, 1);
+  assert.equal(mod.capiState.calls, 1);
+  const row = (await svc.from('community_goals').select('*').eq('title', 'CAPI independent-source goal').single()).data;
+  assert.equal(row.source, 'capi');
+  assert.equal(row.moderation_status, 'approved');
+
+  const adminState = await body(await mod.adminRoute.GET(request('GET')));
+  assert.equal(adminState.sources.catalog.capi.records, 1);
+  assert.ok(adminState.sources.catalog.capi.latestAt);
+  assert.equal(adminState.sources.helperReports.latestAt, null);
 });
 
 test('Frontier CAPI fills the catalogue without Inara and promotes matching journal discoveries safely', async () => {

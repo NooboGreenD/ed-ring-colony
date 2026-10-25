@@ -31,6 +31,16 @@ interface CommunityGoalRow {
   updated_at: string | null;
 }
 
+interface SourceFreshness {
+  records: number;
+  latestAt: string | null;
+}
+
+interface CommunityGoalSources {
+  catalog: Partial<Record<'inara' | 'capi' | 'journal' | 'manual', SourceFreshness>>;
+  helperReports: { latestAt: string | null };
+}
+
 interface GoalDraft {
   title: string;
   description: string;
@@ -123,6 +133,7 @@ function sourceLabel(source: CommunityGoalRow['source']) {
 
 export default function CommunityGoalsAdminTab() {
   const [goals, setGoals] = useState<CommunityGoalRow[]>([]);
+  const [sources, setSources] = useState<CommunityGoalSources | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');
@@ -139,6 +150,7 @@ export default function CommunityGoalsAdminTab() {
     try {
       const data = await readResponse(await authFetch('/api/admin/community-goals', { cache: 'no-store' }));
       setGoals(Array.isArray(data.goals) ? data.goals : []);
+      setSources(data.sources && typeof data.sources === 'object' ? data.sources : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить Community Goals');
     } finally {
@@ -168,11 +180,13 @@ export default function CommunityGoalsAdminTab() {
     hidden: goals.filter((goal) => goal.moderation_status === 'hidden').length,
     rejected: goals.filter((goal) => goal.moderation_status === 'rejected').length,
   }), [goals]);
-  const latestInaraUpdate = useMemo(() => goals
-    .filter((goal) => goal.source === 'inara' && goal.source_updated_at)
-    .map((goal) => goal.source_updated_at as string)
-    .sort()
-    .at(-1) || null, [goals]);
+  const sourceStatusItems = [
+    { key: 'inara', label: 'Inara', stats: sources?.catalog.inara },
+    { key: 'capi', label: 'Frontier CAPI', stats: sources?.catalog.capi },
+    { key: 'journal', label: 'Каталог из журналов', stats: sources?.catalog.journal },
+    { key: 'manual', label: 'Ручные записи', stats: sources?.catalog.manual },
+  ];
+  const sourceDate = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : 'нет данных';
 
   async function syncNow() {
     setWorking(true);
@@ -186,6 +200,24 @@ export default function CommunityGoalsAdminTab() {
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Синхронизация Inara не удалась');
+      setMessage('');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function syncCapiNow() {
+    setWorking(true);
+    setError('');
+    setMessage('Запрашиваем Community Goals через сохранённую привязку сайта…');
+    try {
+      const data = await readResponse(await authFetch('/api/admin/community-goals', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'sync-capi' }),
+      }));
+      setMessage(`Frontier CAPI: получено ${data.received}, синхронизировано ${data.synced}. Этот запрос не получает профиль командира и не создаёт отдельную OAuth-привязку.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Синхронизация Frontier CAPI не удалась');
       setMessage('');
     } finally {
       setWorking(false);
@@ -314,12 +346,15 @@ export default function CommunityGoalsAdminTab() {
         <div>
           <h2 style={{ marginBottom: 6 }}>Community Goals — синхронизация и модерация</h2>
           <p style={{ color: 'var(--muted)', maxWidth: 900, fontSize: 13, marginTop: 0 }}>
-            Inara остаётся основным источником текущих и недавних CG. Если её API недоступен, каталог дополнительно пополняется через Frontier CAPI при синхронизации привязанных командиров; CG, найденные только в игровых журналах, появятся здесь на модерации. Локальные правки и решения модератора сохраняются при последующих синхронизациях.
+            Каталог сводит независимые данные Inara, Frontier CAPI и игровых журналов. CAPI запрашивается только через сохранённую сайтом Frontier-привязку; Colonial Helper отправляет снимки CG из локального Journal и не создаёт отдельный OAuth. Журнальные находки без независимого подтверждения ожидают модерации, а ручные правки сохраняются поверх синхронизаций.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-cyan" disabled={working} onClick={() => void syncNow()}>
-            {working ? 'Обработка…' : 'Синхронизировать с Inara'}
+            {working ? 'Обработка…' : 'Синхронизировать Inara'}
+          </button>
+          <button type="button" className="btn" disabled={working} onClick={() => void syncCapiNow()}>
+            {working ? 'Обработка…' : 'Запросить Frontier CAPI'}
           </button>
           <button type="button" className="btn" disabled={working} onClick={() => void load()}>Обновить список</button>
           <button type="button" className="btn btn-orange" disabled={working} onClick={openCreate}>Создать колонизационную CG</button>
@@ -333,7 +368,21 @@ export default function CommunityGoalsAdminTab() {
         <span>Ожидают модерации: <strong>{counts.pending}</strong></span>
         <span>Скрытых: <strong>{counts.hidden}</strong></span>
         <span>Отклонённых: <strong>{counts.rejected}</strong></span>
-        <span>Последнее обновление источника Inara: <strong>{latestInaraUpdate ? new Date(latestInaraUpdate).toLocaleString() : '—'}</strong></span>
+      </div>
+
+      <div style={{ ...cardStyle, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+        {sourceStatusItems.map(({ key, label, stats }) => (
+          <div key={key} style={{ minWidth: 0, padding: 10, border: '1px solid var(--line)', borderRadius: 4 }}>
+            <strong>{label}</strong>
+            <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 5 }}>Записей в каталоге: {stats?.records ?? 0}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>Последние данные: {sourceDate(stats?.latestAt)}</div>
+          </div>
+        ))}
+        <div style={{ minWidth: 0, padding: 10, border: '1px solid var(--line)', borderRadius: 4 }}>
+          <strong>Отчёты Helper</strong>
+          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 5 }}>Последний Journal-снимок: {sourceDate(sources?.helperReports.latestAt)}</div>
+          <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>Отправка идёт при загрузке журналов; личный вклад не публикуется в каталоге.</div>
+        </div>
       </div>
 
       {message && <p role="status" style={{ color: 'var(--green, #6fcf97)' }}>{message}</p>}

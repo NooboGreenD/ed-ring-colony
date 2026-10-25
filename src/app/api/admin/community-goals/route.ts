@@ -2,8 +2,11 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 import { normalizeCommunityGoals } from '@/lib/inara/community-goals.mjs';
-import { upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
+import { syncCommunityGoalsFromCapi, upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
 import { InaraClient } from '@/lib/inara/client';
+import { CapiError, describeCapiError } from '@/lib/capi/client';
+import { capiSession } from '@/lib/capi/session';
+import { safeCapiDiagnostic } from '@/lib/capi/syncJobs';
 import {
   COMMUNITY_GOAL_EDITABLE_FIELDS,
   effectiveCommunityGoal,
@@ -15,6 +18,7 @@ import { createServiceClient } from '@/lib/supabaseServer';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 const headers = { 'Cache-Control': 'no-store' };
 const MAX_TEXT_LENGTH: Record<string, number> = {
@@ -95,6 +99,26 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: result.error.message }, { status: 500, headers });
   }
   const rows = result.data.map((row: Record<string, any>) => effectiveCommunityGoal(row));
+  const sourceNames = ['inara', 'capi', 'journal', 'manual'] as const;
+  const sources = Object.fromEntries(sourceNames.map((source) => [source, {
+    records: 0,
+    latestAt: null as string | null,
+  }]));
+  for (const row of rows) {
+    const source = row.source as typeof sourceNames[number];
+    if (!source || !sources[source]) continue;
+    sources[source].records += 1;
+    const updatedAt = typeof row.source_updated_at === 'string' ? row.source_updated_at : null;
+    if (updatedAt && (!sources[source].latestAt || updatedAt > sources[source].latestAt!)) {
+      sources[source].latestAt = updatedAt;
+    }
+  }
+  const { data: latestHelperReport } = await svc.from('community_goal_commander_reports')
+    .select('observed_at')
+    .eq('source', 'helper')
+    .order('observed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
   return NextResponse.json({
     goals: rows,
     counts: {
@@ -104,9 +128,14 @@ export async function GET(req: Request) {
       pending: rows.filter((row) => row.moderation_status === 'pending').length,
       hidden: rows.filter((row) => row.moderation_status === 'hidden').length,
       rejected: rows.filter((row) => row.moderation_status === 'rejected').length,
-      manual: rows.filter((row) => row.source === 'manual').length,
-      capi: rows.filter((row) => row.source === 'capi').length,
-      journal: rows.filter((row) => row.source === 'journal').length,
+      manual: sources.manual.records,
+      capi: sources.capi.records,
+      journal: sources.journal.records,
+      inara: sources.inara.records,
+    },
+    sources: {
+      catalog: sources,
+      helperReports: { latestAt: latestHelperReport?.observed_at ?? null },
     },
   }, { headers });
 }
@@ -141,6 +170,37 @@ export async function POST(req: Request) {
       return NextResponse.json({
         error: `${message}. В это время каталог продолжает получать официальные CG из Frontier CAPI; журнальные находки доступны в очереди модерации.`,
         fallbackSources: ['Frontier CAPI', 'commander journal uploads'],
+      }, { status: 502, headers });
+    }
+  }
+
+  if (body.action === 'sync-capi') {
+    const { data: token, error: tokenError } = await svc.from('capi_tokens')
+      .select('*')
+      .eq('is_active', true)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (tokenError) return NextResponse.json({ error: tokenError.message }, { status: 500, headers });
+    if (!token) return NextResponse.json({
+      error: 'Нет активной Frontier OAuth-привязки сайта для чтения CAPI. Helper не создаёт отдельную Frontier-привязку.',
+      source: 'capi',
+    }, { status: 409, headers });
+
+    try {
+      const session = await capiSession(svc, token.user_id, token);
+      const payload = await session.run((client) => client.getCommunityGoals());
+      const received = Array.isArray(payload.goals) ? payload.goals.length : 0;
+      const synced = await syncCommunityGoalsFromCapi(svc, payload);
+      return NextResponse.json({ ok: true, source: 'capi', received, synced }, { headers });
+    } catch (error) {
+      const message = safeCapiDiagnostic(error instanceof CapiError
+        ? describeCapiError(error)
+        : error instanceof Error ? error.message : String(error));
+      console.error('[admin/community-goals] Frontier CAPI sync failed:', message);
+      return NextResponse.json({
+        error: `Frontier CAPI sync failed: ${message}. Inara and Colonial Helper journal sources remain independent.`,
+        source: 'capi',
       }, { status: 502, headers });
     }
   }
