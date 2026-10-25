@@ -78,6 +78,8 @@ for (const filename of [
   '20261028090000_community_goal_fallback_sources.sql',
   '20261030090000_community_goal_game_identity.sql',
   '20261031090000_community_goal_progress_freshness.sql',
+  '20261101090000_community_goal_progress_history.sql',
+  '20261102090000_frontier_public_community_goals.sql',
 ]) await db.exec(readFileSync(`${TEST_ROOT}/supabase/migrations/${filename}`, 'utf8'));
 await db.exec(`
   CREATE TABLE public.capi_tokens(
@@ -104,6 +106,10 @@ const bundle = await bundleFile({
 });
 const mod = await import(bundle);
 mod.state.db = db;
+globalThis.fetch = async () => new Response(JSON.stringify({ activeInitiatives: [] }), {
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+});
 
 test.after(async () => db.close());
 
@@ -231,6 +237,11 @@ test('Inara sync retains completed records and moderator edits; public API hides
   assert.equal(enriched.contributions_total, 5500);
   assert.equal(enriched.progress_source, 'capi');
   assert.ok(enriched.progress_updated_at);
+  const progressHistory = await mod.createServiceClient().from('community_goal_progress_history').select('*').eq('cg_id', inaraGoal.cg_id);
+  assert.equal(progressHistory.error, null);
+  assert.equal(progressHistory.data.length, 1, 'multiple sources in one hour share one chart bucket');
+  assert.equal(progressHistory.data[0].source, 'capi');
+  assert.equal(progressHistory.data[0].contributions_total, 5500);
 
   mod.inaraState.goals = [{ ...mod.inaraState.goals[0], contributionsTotal: 6000 }];
   await mod.adminRoute.POST(request('POST', { action: 'sync' }));
@@ -248,6 +259,8 @@ test('Inara sync retains completed records and moderator edits; public API hides
   assert.equal(publicResponse.goals[0].title, 'Moderator title');
   assert.equal(publicResponse.goals[0].progress_source, 'capi');
   assert.ok(publicResponse.goals[0].progress_updated_at);
+  assert.equal(publicResponse.goals[0].contribution_history.length, 1);
+  assert.equal(publicResponse.goals[0].contribution_history[0].contributions_total, 5500);
   assert.equal('manual_overrides' in publicResponse.goals[0], false);
   assert.equal('moderation_status' in publicResponse.goals[0], false);
 });
@@ -379,4 +392,92 @@ test('Frontier CAPI fills the catalogue without Inara and promotes matching jour
   const hiddenAfterRefresh = await svc.from('community_goals').select('*').eq('id', journalRow.id).single();
   assert.equal(hiddenAfterRefresh.data.moderation_status, 'hidden', 'automatic refresh never overrides a moderator decision');
   assert.equal(hiddenAfterRefresh.data.description, 'A Frontier-issued community event.', 'sparse sync keeps the last useful description');
+});
+
+test('public Frontier initiatives populate the shared catalogue and source global progress history', async () => {
+  const svc = mod.createServiceClient();
+  const payload = { activeInitiatives: [{
+    id: 99124,
+    title: 'Frontier public description test',
+    bulletin: 'Public bulletin text from the Frontier website.',
+    objective: 'Deliver certified materials.',
+    qty: 120000,
+    target_qty: 250000,
+    expiry: '2030-06-01 12:00:00',
+    starsystem_name: 'Test System',
+    market_name: 'Test Port',
+  }] };
+
+  assert.equal(await mod.catalog.syncCommunityGoalsFromFrontier(svc, payload), 1);
+  const stored = (await svc.from('community_goals').select('*').eq('game_cg_id', 99124).single()).data;
+  assert.equal(stored.source, 'frontier');
+  assert.equal(stored.description, 'Public bulletin text from the Frontier website.');
+  assert.equal(stored.objective, 'Deliver certified materials.');
+  assert.equal(stored.contributions_total, 120000);
+  assert.equal(stored.contributions_target, 250000);
+  assert.equal(stored.target_source, 'frontier');
+  assert.equal(stored.progress_source, 'frontier');
+
+  const history = await svc.from('community_goal_progress_history').select('*').eq('cg_id', stored.cg_id);
+  assert.equal(history.error, null);
+  assert.equal(history.data.length, 1);
+  assert.equal(history.data[0].source, 'frontier');
+  assert.equal(history.data[0].contributions_total, 120000);
+
+  const publicResult = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=active')));
+  const visible = publicResult.goals.find((goal) => goal.cg_id === stored.cg_id);
+  assert.equal(visible.description, 'Public bulletin text from the Frontier website.');
+  assert.equal(visible.contributions_target, 250000);
+  assert.equal('raw_data' in visible, false);
+
+  await svc.from('community_goals').update({
+    source: 'inara',
+    description: 'Existing Inara description remains canonical.',
+    objective: 'Existing Inara objective.',
+  }).eq('cg_id', stored.cg_id);
+  await mod.catalog.syncCommunityGoalsFromFrontier(svc, { activeInitiatives: [{
+    ...payload.activeInitiatives[0],
+    bulletin: 'A later public bulletin should not overwrite the richer Inara text.',
+    objective: 'A later public objective.',
+    qty: 130000,
+  }] });
+  const preserved = (await svc.from('community_goals').select('*').eq('cg_id', stored.cg_id).single()).data;
+  assert.equal(preserved.source, 'inara', 'public Frontier source does not downgrade Inara as the canonical text source');
+  assert.equal(preserved.description, 'Existing Inara description remains canonical.');
+  assert.equal(preserved.objective, 'Existing Inara objective.');
+  assert.equal(preserved.contributions_total, 130000, 'Frontier public snapshots can still refresh global progress');
+});
+
+test('admin source sync uses public Frontier initiatives without an Inara key', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousInaraKey = process.env.INARA_API_KEY;
+  process.env.INARA_API_KEY = '';
+  globalThis.fetch = async () => new Response(JSON.stringify({ activeInitiatives: [{
+    id: 99125,
+    title: 'Admin public Frontier sync test',
+    bulletin: 'Description available without pilot binding.',
+    objective: 'Deliver scientific equipment.',
+    qty: 42,
+    target_qty: 100,
+    expiry: '2030-07-01T12:00:00Z',
+    starsystem_name: 'Independent System',
+    market_name: 'Independent Port',
+  }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  try {
+    const response = await mod.adminRoute.POST(request('POST', { action: 'sync' }));
+    const result = await body(response);
+    assert.equal(response.status, 200);
+    assert.equal(result.sources.frontier.received, 1);
+    assert.equal(result.sources.frontier.synced, 1);
+    assert.equal(result.sources.inara.skipped, true);
+    const stored = (await mod.createServiceClient().from('community_goals')
+      .select('*').eq('game_cg_id', 99125).single()).data;
+    assert.equal(stored.description, 'Description available without pilot binding.');
+    assert.equal(stored.source, 'frontier');
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousInaraKey === undefined) delete process.env.INARA_API_KEY;
+    else process.env.INARA_API_KEY = previousInaraKey;
+  }
 });

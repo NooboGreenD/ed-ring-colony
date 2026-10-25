@@ -52,7 +52,7 @@
 .infoUnavailable p { margin: 0; line-height: 1.6; }
 .infoUnavailable a { flex: 0 0 auto; color: var(--cg-cyan); }
 .dashboard { display: grid; grid-template-columns: minmax(260px, .9fr) minmax(320px, 1.1fr); gap: 12px; margin-top: 18px; }
-.progressPanel, .metricsPanel, .reportPanel { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 86%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--bg) 42%, transparent); }
+.progressPanel, .metricsPanel, .reportPanel, .historyPanel { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 86%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--bg) 42%, transparent); }
 .progressPanel, .metricsPanel { padding: 14px; }
 .sectionHeading { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .13em; text-transform: uppercase; }
 .signal { width: 5px; height: 5px; border-radius: 50%; background: var(--cg-accent); box-shadow: 0 0 8px var(--cg-accent); }
@@ -79,6 +79,16 @@
 .coverageTrack { height: 5px; margin-top: 6px; }
 .coverageTrack span { background: linear-gradient(90deg, var(--cg-cyan), var(--cg-accent)); }
 .coverage > small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; }
+.historyPanel { margin-top: 12px; padding: 14px; }
+.historyHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.historyHeader > strong { color: var(--cg-accent); font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.historyEmpty { margin: 14px 0 2px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.historySvg { display: block; width: 100%; height: auto; margin-top: 8px; overflow: visible; }
+.historyGridline { stroke: var(--line); stroke-width: 1; }
+.historyAxisLabel { fill: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.historyLine { fill: none; stroke: var(--cg-cyan); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.historyPoint { fill: var(--cg-accent); stroke: var(--panel); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.historyFootnote { margin-top: 2px; color: var(--muted); font-size: 9px; text-align: right; }
 .reportPanel { margin-top: 12px; padding: 12px 14px; }
 .reportHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .reportHeader > div { display: grid; gap: 3px; }
@@ -105,7 +115,7 @@
   .header { gap: 10px; }
   .headerMeta { gap: 7px; }
   .content { padding: 13px; }
-  .progressPanel, .metricsPanel { padding: 11px; }
+  .progressPanel, .metricsPanel, .historyPanel { padding: 11px; }
   .progressBody { gap: 14px; }
   .metric { min-height: 86px; padding: 7px; }
   .metricLabel { font-size: 8px; }

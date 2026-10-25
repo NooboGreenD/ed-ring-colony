@@ -2,7 +2,8 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 import { normalizeCommunityGoals } from '@/lib/inara/community-goals.mjs';
-import { syncCommunityGoalsFromCapi, upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
+import { syncCommunityGoalsFromCapi, syncCommunityGoalsFromFrontier, upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
+import { fetchFrontierPublicCommunityGoals } from '@/lib/frontierCommunityGoals.mjs';
 import { InaraClient } from '@/lib/inara/client';
 import { CapiError, describeCapiError } from '@/lib/capi/client';
 import { capiSession } from '@/lib/capi/session';
@@ -99,7 +100,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: result.error.message }, { status: 500, headers });
   }
   const rows = result.data.map((row: Record<string, any>) => effectiveCommunityGoal(row));
-  const sourceNames = ['inara', 'capi', 'journal', 'manual'] as const;
+  const sourceNames = ['frontier', 'inara', 'capi', 'journal', 'manual'] as const;
   const sources = Object.fromEntries(sourceNames.map((source) => [source, {
     records: 0,
     latestAt: null as string | null,
@@ -144,6 +145,7 @@ export async function GET(req: Request) {
       capi: sources.capi.records,
       journal: sources.journal.records,
       inara: sources.inara.records,
+      frontier: sources.frontier.records,
     },
     sources: {
       catalog: sources,
@@ -202,24 +204,61 @@ export async function POST(req: Request) {
   }
 
   if (body.action === 'sync') {
-    const apiKey = process.env.INARA_API_KEY;
-    if (!apiKey) return NextResponse.json({
-      error: 'Не задан INARA_API_KEY. Каталог продолжит получать данные из CAPI и журналов; новые журнальные CG ожидают модерации.',
-      fallbackSources: ['Frontier CAPI', 'commander journal uploads'],
-    }, { status: 503, headers });
+    const results: Record<string, unknown> = {};
+    const errors: string[] = [];
+    let anySucceeded = false;
+
     try {
-      const sourceGoals = await new InaraClient(apiKey).getCommunityGoals();
-      const rows = normalizeCommunityGoals(sourceGoals);
-      const synced = await upsertCommunityGoalCatalog(svc, rows, 'inara');
-      return NextResponse.json({ ok: true, synced, received: sourceGoals.length, completed: rows.filter((row) => row.is_complete).length }, { headers });
+      const payload = await fetchFrontierPublicCommunityGoals();
+      const received = Array.isArray(payload.activeInitiatives) ? payload.activeInitiatives.length : 0;
+      const synced = await syncCommunityGoalsFromFrontier(svc, payload);
+      results.frontier = { received, synced };
+      anySucceeded = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error('[admin/community-goals] Inara sync failed:', message);
+      console.error('[admin/community-goals] Frontier public sync failed:', message);
+      results.frontier = { error: message };
+      errors.push(`Frontier public initiatives: ${message}`);
+    }
+
+    const apiKey = process.env.INARA_API_KEY;
+    if (apiKey) {
+      try {
+        const sourceGoals = await new InaraClient(apiKey).getCommunityGoals();
+        const rows = normalizeCommunityGoals(sourceGoals);
+        const synced = await upsertCommunityGoalCatalog(svc, rows, 'inara');
+        results.inara = {
+          received: rows.length,
+          synced,
+          completed: rows.filter((row) => row.is_complete).length,
+        };
+        anySucceeded = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[admin/community-goals] Inara sync failed:', message);
+        results.inara = { error: message };
+        errors.push(`Inara: ${message}`);
+      }
+    } else {
+      results.inara = { skipped: true, reason: 'INARA_API_KEY not configured' };
+    }
+
+    if (!anySucceeded) {
       return NextResponse.json({
-        error: `${message}. В это время каталог продолжает получать официальные CG из Frontier CAPI; журнальные находки доступны в очереди модерации.`,
+        error: errors.join('; ') || 'Не удалось обновить каталог',
+        sources: results,
         fallbackSources: ['Frontier CAPI', 'commander journal uploads'],
       }, { status: 502, headers });
     }
+    const inaraResult = results.inara && typeof results.inara === 'object' ? results.inara as Record<string, any> : {};
+    return NextResponse.json({
+      ok: errors.length === 0,
+      sources: results,
+      warnings: errors,
+      received: inaraResult.received ?? 0,
+      synced: inaraResult.synced ?? 0,
+      completed: inaraResult.completed ?? 0,
+    }, { headers });
   }
 
   if (body.action === 'sync-capi') {

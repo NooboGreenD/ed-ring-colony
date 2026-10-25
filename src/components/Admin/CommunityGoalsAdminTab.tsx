@@ -24,7 +24,7 @@ interface CommunityGoalRow {
   is_colonisation_related: boolean;
   inara_url: string | null;
   source_updated_at: string | null;
-  source: 'inara' | 'capi' | 'journal' | 'manual';
+  source: 'frontier' | 'inara' | 'capi' | 'journal' | 'manual';
   moderation_status: ModerationStatus;
   manual_overrides: Record<string, unknown>;
   admin_note: string | null;
@@ -37,7 +37,7 @@ interface SourceFreshness {
 }
 
 interface CommunityGoalSources {
-  catalog: Partial<Record<'inara' | 'capi' | 'journal' | 'manual', SourceFreshness>>;
+  catalog: Partial<Record<'frontier' | 'inara' | 'capi' | 'journal' | 'manual', SourceFreshness>>;
   helperReports: { latestAt: string | null };
 }
 
@@ -126,6 +126,7 @@ function statusLabel(status: ModerationStatus) {
 
 function sourceLabel(source: CommunityGoalRow['source']) {
   if (source === 'manual') return 'Локальная';
+  if (source === 'frontier') return 'Frontier (публичный список)';
   if (source === 'capi') return 'Frontier CAPI';
   if (source === 'journal') return 'Игровой журнал';
   return 'Inara';
@@ -194,6 +195,7 @@ export default function CommunityGoalsAdminTab() {
     rejected: goals.filter((goal) => goal.moderation_status === 'rejected').length,
   }), [goals]);
   const sourceStatusItems = [
+    { key: 'frontier', label: 'Frontier (публичный список)', stats: sources?.catalog.frontier },
     { key: 'inara', label: 'Inara', stats: sources?.catalog.inara },
     { key: 'capi', label: 'Frontier CAPI', stats: sources?.catalog.capi },
     { key: 'journal', label: 'Каталог из журналов', stats: sources?.catalog.journal },
@@ -204,15 +206,25 @@ export default function CommunityGoalsAdminTab() {
   async function syncNow() {
     setWorking(true);
     setError('');
-    setMessage('Запрашиваем актуальный список у Inara…');
+    setMessage('Запрашиваем публичный список Frontier и данные Inara…');
     try {
       const data = await readResponse(await authFetch('/api/admin/community-goals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'sync' }),
       }));
-      setMessage(`Синхронизация завершена: получено ${data.received}, обновлено ${data.synced}, завершённых в ответе Inara — ${data.completed}. Ранее загруженные CG не удаляются.`);
+      const frontier = data.sources?.frontier;
+      const inara = data.sources?.inara;
+      const frontierStatus = frontier?.error
+        ? `Frontier: ошибка (${frontier.error})`
+        : `Frontier: получено ${frontier?.received ?? 0}, обновлено ${frontier?.synced ?? 0}`;
+      const inaraStatus = inara?.skipped
+        ? 'Inara пропущена (не задан INARA_API_KEY)'
+        : inara?.error
+          ? `Inara: ошибка (${inara.error})`
+          : `Inara: получено ${inara?.received ?? 0}, обновлено ${inara?.synced ?? 0}`;
+      setMessage(`Синхронизация завершена. ${frontierStatus}; ${inaraStatus}. Ранее загруженные CG не удаляются.`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Синхронизация Inara не удалась');
+      setError(err instanceof Error ? err.message : 'Синхронизация Community Goals не удалась');
       setMessage('');
     } finally {
       setWorking(false);
@@ -405,12 +417,12 @@ export default function CommunityGoalsAdminTab() {
         <div>
           <h2 style={{ marginBottom: 6 }}>Community Goals — синхронизация и модерация</h2>
           <p style={{ color: 'var(--muted)', maxWidth: 900, fontSize: 13, marginTop: 0 }}>
-            Каталог сводит независимые данные Inara, Frontier CAPI и игровых журналов, сопоставляя источники по ID CG и затем по нормализованным полям. CAPI использует только принадлежащую сайту Frontier-привязку; Helper отправляет журнал и личные снимки отдельно и не создаёт отдельный OAuth. Истёкшая история не попадает в очередь, а активные находки из журналов можно обработать одним подтверждённым пакетным действием. Когда источники дают описание/цель/награду, каталог сохраняет их при неполных обновлениях; выдуманный текст не подставляется.
+            Каталог сводит независимый публичный список Frontier, Inara, Frontier CAPI и игровые журналы, сопоставляя источники по ID CG и затем по нормализованным полям. CAPI использует только принадлежащую сайту Frontier-привязку; Helper отправляет журнал и личные снимки отдельно и не создаёт отдельный OAuth. Истёкшая история не попадает в очередь, а активные находки из журналов можно обработать одним подтверждённым пакетным действием. Когда источники дают описание/цель/награду, каталог сохраняет их при неполных обновлениях; выдуманный текст не подставляется.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-cyan" disabled={working} onClick={() => void syncNow()}>
-            {working ? 'Обработка…' : 'Синхронизировать Inara'}
+            {working ? 'Обработка…' : 'Синхронизировать источники'}
           </button>
           <button type="button" className="btn" disabled={working} onClick={() => void syncCapiNow()}>
             {working ? 'Обработка…' : 'Запросить Frontier CAPI'}

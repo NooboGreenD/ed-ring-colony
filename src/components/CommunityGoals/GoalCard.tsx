@@ -16,6 +16,7 @@ export interface CommunityGoal {
   tier_max: number | null;
   contributors: number | null;
   contributions_total: number | string | null;
+  contributions_target: number | string | null;
   commander_reports: {
     commander_count: number;
     player_contribution_total: number;
@@ -27,8 +28,14 @@ export interface CommunityGoal {
   expiry_date: string | null;
   inara_url: string | null;
   source_updated_at: string | null;
-  progress_source: 'inara' | 'capi' | 'journal' | 'manual' | null;
+  progress_source: 'inara' | 'capi' | 'frontier' | 'journal' | 'manual' | null;
   progress_updated_at: string | null;
+  contribution_history: {
+    snapshot_hour: string;
+    observed_at: string;
+    source: 'inara' | 'capi' | 'frontier';
+    contributions_total: number | string;
+  }[];
 }
 
 function finiteNonNegative(value: unknown): number | null {
@@ -50,11 +57,107 @@ function formatDate(value: string | null, locale: string): string | null {
 function progressSourceLabel(source: CommunityGoal['progress_source']): string {
   switch (source) {
     case 'capi': return 'Frontier CAPI';
+    case 'frontier': return 'Frontier';
     case 'inara': return 'INARA';
     case 'journal': return 'Journal';
     case 'manual': return 'Manual';
     default: return '—';
   }
+}
+
+function ContributionHistory({
+  history,
+  goalId,
+  title,
+  locale,
+}: {
+  history: CommunityGoal['contribution_history'];
+  goalId: number;
+  title: string;
+  locale: string;
+}) {
+  const { t } = useI18n();
+  const points = history.flatMap((point) => {
+    const value = finiteNonNegative(point.contributions_total);
+    const time = Date.parse(point.observed_at || point.snapshot_hour);
+    return value === null || !Number.isFinite(time) ? [] : [{ time, value }];
+  }).sort((a, b) => a.time - b.time);
+  const formatPointDate = (time: number, withTime = false) => new Date(time).toLocaleString(locale,
+    withTime ? { dateStyle: 'medium', timeStyle: 'short' } : { day: 'numeric', month: 'short' },
+  );
+
+  return (
+    <section className={styles.historyPanel} aria-label={`${t('cg.historyTitle')}: ${title}`}>
+      <div className={styles.historyHeader}>
+        <div className={styles.sectionHeading}><span className={styles.signal} />{t('cg.historyTitle')}<span className={styles.sectionRule} /></div>
+        {points.length > 0 && <strong>{formatNumber(points[points.length - 1].value, locale)}</strong>}
+      </div>
+      {points.length < 2 ? (
+        <p className={styles.historyEmpty}>
+          {points.length === 1
+            ? `${t('cg.historyOnePoint')} ${formatPointDate(points[0].time, true)}`
+            : t('cg.historyNoData')}
+        </p>
+      ) : (() => {
+        const width = 760;
+        const height = 220;
+        const left = 78;
+        const right = 16;
+        const top = 16;
+        const bottom = 38;
+        const plotWidth = width - left - right;
+        const plotHeight = height - top - bottom;
+        const firstTime = points[0].time;
+        const lastTime = points[points.length - 1].time;
+        const timeSpan = Math.max(1, lastTime - firstTime);
+        const maxValue = Math.max(1, ...points.map((point) => point.value));
+        const coords = points.map((point) => ({
+          ...point,
+          x: left + ((point.time - firstTime) / timeSpan) * plotWidth,
+          y: top + (1 - point.value / maxValue) * plotHeight,
+        }));
+        const linePath = coords.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
+        const areaPath = `${linePath} L ${coords[coords.length - 1].x.toFixed(2)} ${(top + plotHeight).toFixed(2)} L ${coords[0].x.toFixed(2)} ${(top + plotHeight).toFixed(2)} Z`;
+        const labelIndexes = new Set([0, Math.floor((coords.length - 1) / 2), coords.length - 1]);
+        const labelPoints = coords.filter((_, index) => labelIndexes.has(index));
+        const gradientId = `cg-history-gradient-${goalId}`;
+
+        return (
+          <>
+            <svg className={styles.historySvg} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${t('cg.historyTitle')}: ${title}`}>
+              <defs>
+                <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stopColor="var(--cg-accent)" stopOpacity=".28" />
+                  <stop offset="100%" stopColor="var(--cg-accent)" stopOpacity="0" />
+                </linearGradient>
+              </defs>
+              {[0, 0.5, 1].map((fraction) => {
+                const y = top + plotHeight * (1 - fraction);
+                return (
+                  <g key={fraction}>
+                    <line className={styles.historyGridline} x1={left} x2={width - right} y1={y} y2={y} />
+                    <text className={styles.historyAxisLabel} x={left - 9} y={y + 4} textAnchor="end">
+                      {formatNumber(maxValue * fraction, locale)}
+                    </text>
+                  </g>
+                );
+              })}
+              <path d={areaPath} fill={`url(#${gradientId})`} />
+              <path className={styles.historyLine} d={linePath} />
+              {labelPoints.map((point) => (
+                <circle key={`${point.time}-${point.value}`} className={styles.historyPoint} cx={point.x} cy={point.y} r="3.5">
+                  <title>{`${formatPointDate(point.time, true)} · ${formatNumber(point.value, locale)}`}</title>
+                </circle>
+              ))}
+              <text className={styles.historyAxisLabel} x={left} y={height - 8} textAnchor="start">{formatPointDate(firstTime)}</text>
+              <text className={styles.historyAxisLabel} x={width - right} y={height - 8} textAnchor="end">{formatPointDate(lastTime)}</text>
+            </svg>
+            <div className={styles.historyFootnote}>{t('cg.historySince')} {formatPointDate(firstTime, true)}</div>
+          </>
+        );
+      })()}
+    </section>
+  );
 }
 
 export default function GoalCard({ goal }: { goal: CommunityGoal }) {
@@ -63,6 +166,7 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
   const max = finiteNonNegative(goal.tier_max);
   const participants = finiteNonNegative(goal.contributors);
   const total = finiteNonNegative(goal.contributions_total);
+  const target = finiteNonNegative(goal.contributions_target);
   const reports = goal.commander_reports;
   const reportedCommanders = finiteNonNegative(reports?.commander_count);
   const trackedContribution = finiteNonNegative(reports?.player_contribution_total);
@@ -165,7 +269,7 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
               <div className={styles.metric}>
                 <span className={styles.metricIcon} aria-hidden="true">◈</span>
                 <span className={styles.metricLabel}>{t('cg.contributions')}</span>
-                <strong>{formatNumber(total, locale)}</strong>
+                <strong>{formatNumber(total, locale)}{target !== null ? ` / ${formatNumber(target, locale)}` : ''}</strong>
                 <small>{t('cg.globalSource')}</small>
               </div>
               <div className={styles.metric}>
@@ -193,6 +297,13 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           </section>
         </div>
 
+        <ContributionHistory
+          history={goal.contribution_history || []}
+          goalId={goal.cg_id}
+          title={goal.title}
+          locale={locale}
+        />
+
         {(journalTotal !== null || trackedContribution !== null) && (
           <section className={styles.reportPanel}>
             <div className={styles.reportHeader}>
@@ -209,7 +320,7 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
                 <div className={styles.compareRow}>
                   <span>{progressSourceLabel(goal.progress_source)}</span>
                   <div className={styles.compareTrack}><span className={styles.sourceBar} style={{ width: `${sourceWidth}%` }} /></div>
-                  <strong>{formatNumber(total, locale)}</strong>
+                  <strong>{formatNumber(total, locale)}{target !== null ? ` / ${formatNumber(target, locale)}` : ''}</strong>
                 </div>
               </div>
             )}
