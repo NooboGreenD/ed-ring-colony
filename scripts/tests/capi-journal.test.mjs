@@ -198,6 +198,7 @@ test('таймаут чтения тела CAPI сохраняет endpoint/host
   }), async () => {
     await assert.rejects(() => new CapiClient('token').getProfile(), (err) => {
       assert.equal(err.kind, 'timeout');
+      assert.equal(err.status, 200, 'preserve the status from headers received before the body timed out');
       assert.equal(err.endpoint, '/profile');
       assert.equal(err.host, 'https://companion.orerve.net');
       assert.equal(err.transportPhase, 'response_body');
