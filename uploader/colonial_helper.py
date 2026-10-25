@@ -87,6 +87,8 @@ from journal_parser import (
 )
 from route_tracker import RouteTracker
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
+from ui_scroll import SmoothScrollController
+from ui_navigation import SidebarNavigator
 from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
@@ -175,8 +177,8 @@ class ColonialHelperApp:
     def __init__(self, root: tb.Window):
         self.root = root
         self.root.title(f"{APP_NAME} v{VERSION}")
-        self.root.geometry("900x650")
-        self.root.minsize(800, 550)
+        self.root.geometry("1180x790")
+        self.root.minsize(980, 630)
 
         try:
             self.root.iconbitmap("colonial_helper.ico")
@@ -405,6 +407,10 @@ class ColonialHelperApp:
             except Exception:
                 pass
         self._setup_styles()
+        # Один координатор вместо конкурирующих bind_all/unbind_all на каждой
+        # вкладке: он маршрутизирует колесо по области курсора и двигает Canvas
+        # короткой неблокирующей анимацией.
+        self._smooth_scroll = SmoothScrollController(self.root)
 
         # UI
         self._build_header()
@@ -598,51 +604,56 @@ class ColonialHelperApp:
         self.status_detail.pack(side=RIGHT)
 
     # ============================================================
-    #  Notebook
+    #  Навигация по разделам
     # ============================================================
     def _build_notebook(self):
-        self.notebook = tb.Notebook(self.root, padding=10)
-        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=5)
+        # Вместо девяти сжимающихся горизонтальных вкладок — постоянная
+        # боковая навигация и рабочая область в стиле стартового лаунчера.
+        # Все прежние страницы остаются теми же Tk-фреймами: меняется только
+        # способ перехода между ними.
+        self.notebook = SidebarNavigator(
+            self.root, tb, on_change=self._on_notebook_tab_changed)
+        page_host = self.notebook.content_area
 
-        self.tab_auth = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_auth, text=" Подключение ")
+        self.tab_auth = tb.Frame(page_host)
+        self.notebook.add(self.tab_auth, text="Подключение")
         self._build_tab_auth()
 
-        self.tab_pilot = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_pilot, text=" Пилот ")
+        self.tab_pilot = tb.Frame(page_host)
+        self.notebook.add(self.tab_pilot, text="Пилот")
         self._build_tab_pilot()
 
-        self.tab_upload = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_upload, text=" Загрузка логов ")
+        self.tab_upload = tb.Frame(page_host)
+        self.notebook.add(self.tab_upload, text="Загрузка логов")
         self._build_tab_upload()
 
-        self.tab_route = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_route, text=" Маршрут ")
+        self.tab_route = tb.Frame(page_host)
+        self.notebook.add(self.tab_route, text="Маршрут")
         self._build_tab_route()
 
-        self.tab_colony = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_colony, text=" Колонизатор ")
+        self.tab_colony = tb.Frame(page_host)
+        self.notebook.add(self.tab_colony, text="Колонизатор")
         self._build_tab_colony()
 
-        self.tab_map = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_map, text=" Карта системы ")
+        self.tab_map = tb.Frame(page_host)
+        self.notebook.add(self.tab_map, text="Карта системы")
         self._build_tab_map()
 
-        self.tab_overlay = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_overlay, text=" Оверлей ")
+        self.tab_overlay = tb.Frame(page_host)
+        self.notebook.add(self.tab_overlay, text="Оверлей")
         self._build_tab_overlay()
 
-        self.tab_exobio = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_exobio, text=" Экзобиология ")
+        self.tab_exobio = tb.Frame(page_host)
+        self.notebook.add(self.tab_exobio, text="Экзобиология")
         self._build_tab_exobio()
 
-        self.tab_log = tb.Frame(self.notebook)
-        self.notebook.add(self.tab_log, text=" Лог ")
+        self.tab_log = tb.Frame(page_host)
+        self.notebook.add(self.tab_log, text="Лог")
         self._build_tab_log()
 
-        # Карта системы перерисовывается, когда вкладку открыли: рисовать её
-        # в фоне бессмысленно, а данные к тому времени уже успевают устареть.
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
+        # Инициализируем активную страницу уже после создания всех функций и
+        # виджетов: обработчик изменения вкладки обращается к карте/оверлею.
+        self.notebook.select(self.tab_auth)
 
     # ============================================================
     #  Вкладка: Подключение
@@ -1550,17 +1561,17 @@ class ColonialHelperApp:
     #  Вкладка: Колонизатор
     # ============================================================
     def _scrollable_frame(self, parent, padding: int = 15):
-        """Прокручиваемая область вкладки.
+        """Scrollable, width-fitting content area for long settings pages.
 
-        На вкладках «Подключение», «Колонизатор» и «Оверлей» элементов больше, чем
-        помещается в окно 800×550, поэтому содержимое живёт внутри canvas.
-        Колесо мыши привязывается к canvas при входе курсора и отвязывается
-        при выходе — иначе последняя построенная вкладка перехватывала бы
-        прокрутку у всех остальных (так было с `bind_all` на этапе сборки).
+        Wheel routing is centralized in ``SmoothScrollController``. A page no
+        longer installs/removes process-wide bindings when the pointer enters or
+        leaves its canvas, so notebook changes cannot cancel another page's
+        handler. Scroll-region updates remain tied to content-size changes only.
         """
         viewport = tb.Frame(parent)
         viewport.pack(fill=BOTH, expand=True)
-        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
+        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0,
+                           background=COLOR_BG)
         scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=RIGHT, fill=Y)
@@ -1569,18 +1580,7 @@ class ColonialHelperApp:
         window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
         frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
-
-        def on_enter(_event=None):
-            canvas.bind_all("<MouseWheel>", lambda ev: canvas.yview_scroll(int(-ev.delta / 120), "units"))
-
-        def on_leave(_event=None):
-            try:
-                canvas.unbind_all("<MouseWheel>")
-            except Exception:
-                pass
-
-        canvas.bind("<Enter>", on_enter)
-        canvas.bind("<Leave>", on_leave)
+        self._smooth_scroll.register(canvas, viewport, frame, scrollbar)
         return frame
 
     def _build_tab_colony(self):

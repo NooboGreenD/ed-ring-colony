@@ -95,6 +95,10 @@ class MapTabTestBase(unittest.TestCase):
         from test_initial_upload_flow import install_gui_stubs, make_root
 
         install_gui_stubs()
+        toolkit = sys.modules["ttkbootstrap"]
+        for widget_name in ("Frame", "Button", "Label"):
+            widget = getattr(toolkit, widget_name)
+            widget.side_effect = lambda *args, _name=widget_name, **kwargs: mock.MagicMock(name=_name)
         for name in ("colonial_helper", "api_client", "event_dispatch", "journal_parser",
                      "overlay", "ship_tracker", "route_tracker", "game_monitor",
                      "exobiology", "colonisation", "carrier", "raven_colonial_api",
@@ -147,15 +151,15 @@ class MapTabBuildTests(MapTabTestBase):
             self.assertTrue(hasattr(self.app, attribute), f"нет {attribute}")
         self.assertIsNotNone(self.app.system_map)
 
-    def test_tab_added_after_colony(self):
-        texts = [str(call.kwargs.get("text")) for call in self.app.notebook.add.call_args_list]
-        self.assertIn(" Карта системы ", texts)
-        self.assertLess(texts.index(" Колонизатор "), texts.index(" Карта системы "),
-                        f"порядок вкладок: {texts}")
+    def test_map_page_is_registered_after_colony_page(self):
+        texts = [self.app.notebook._titles[page] for page in self.app.notebook._pages]
+        self.assertIn("Карта системы", texts)
+        self.assertLess(texts.index("Колонизатор"), texts.index("Карта системы"),
+                        f"порядок страниц: {texts}")
 
-    def test_notebook_tab_changed_is_bound(self):
-        bindings = [str(call.args[0]) for call in self.app.notebook.bind.call_args_list]
-        self.assertIn("<<NotebookTabChanged>>", bindings)
+    def test_sidebar_selection_notifies_page_change_handler(self):
+        self.assertEqual(self.app.notebook.on_change.__func__,
+                         self.app._on_notebook_tab_changed.__func__)
 
     def test_status_shows_unknown_system_at_start(self):
         texts = [str(call.kwargs.get("text")) for call in self.app.map_status.config.call_args_list]
@@ -1523,7 +1527,7 @@ class MapScene3DTests(MapTabTestBase):
         mock_browser.assert_not_called()
         self.assertEqual(self.app.map_view_mode.get(), "3d")
         self.assertEqual(self.app.config["map_view_mode"], "3d")
-        self.app.notebook.select.assert_called_with(self.app.tab_map)
+        self.assertEqual(self.app.notebook.select(), str(self.app.tab_map))
 
     def test_open_with_focus_keeps_the_object_selected(self):
         self.prepare()
@@ -1597,11 +1601,11 @@ class MapScene3DTests(MapTabTestBase):
     def test_motion_tick_advances_time_and_pauses_off_tab(self):
         view = self.to_3d()
         view.motion = True
-        self.app.notebook.select.return_value = "tab-other"
+        self.app.notebook.select(self.app.tab_auth)
         self.app._map_motion_tick()
         self.assertIsNone(self.app._map3d_job, "тикает в скрытой вкладке")
         self.assertEqual(view.motion_offset_days, 0.0)
-        self.app.notebook.select.return_value = str(self.app.tab_map)
+        self.app.notebook.select(self.app.tab_map)
         self.app._map_motion_tick()
         self.assertGreater(view.motion_offset_days, 0.0, "время движения не идёт")
         self.assertIsNotNone(self.app._map3d_job)

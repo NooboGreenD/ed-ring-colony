@@ -72,6 +72,9 @@ def install_gui_stubs():
         setattr(tkinter_stub, var_name, _TkVar)
 
     ttkbootstrap_stub = _FakeModule("ttkbootstrap")
+    # Frames have identity in the real UI (sidebar pages are separate parent
+    # windows); return unique stubs so navigation tests model that correctly.
+    ttkbootstrap_stub.Frame.side_effect = lambda *args, **kwargs: mock.MagicMock(name="Frame")
     constants_stub = _ConstantsModule("ttkbootstrap.constants")
     scrolled_stub = _FakeModule("ttkbootstrap.scrolled")
 
