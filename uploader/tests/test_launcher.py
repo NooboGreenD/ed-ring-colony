@@ -71,6 +71,59 @@ class LauncherTests(unittest.TestCase):
             (self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8"))
         return launcher.choose_version(self.root, folder, manifest)
 
+    # -- TLS / certifi ----------------------------------------------------
+    def test_tls_ca_bundle_is_persisted_outside_pyinstaller_temp_directory(self):
+        extraction = self.work / "_MEI12345"
+        certifi_dir = extraction / "certifi"
+        certifi_dir.mkdir(parents=True)
+        source = certifi_dir / "cacert.pem"
+        source.write_bytes(b"-----BEGIN CERTIFICATE-----\\nCA bundle\\n")
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            pinned = launcher.configure_tls_ca_bundle(
+                self.root, bundled_path=source, extraction_dir=extraction)
+            self.assertIsNotNone(pinned)
+            pinned_path = Path(pinned)
+            self.assertTrue(pinned_path.is_file())
+            self.assertEqual(pinned_path.read_bytes(), source.read_bytes())
+            self.assertNotEqual(pinned_path.parent, certifi_dir)
+            self.assertEqual(os.environ["REQUESTS_CA_BUNDLE"], pinned)
+            self.assertEqual(os.environ["CURL_CA_BUNDLE"], pinned)
+            self.assertEqual(os.environ["SSL_CERT_FILE"], pinned)
+
+            # Симулируем удаление Windows/PyInstaller временной папки во время
+            # долгой сессии и следующий запуск с оставшимся stale _MEI путём.
+            source.unlink()
+            old_extraction = self.work / "_MEI000033782"
+            old_certifi = old_extraction / "certifi" / "cacert.pem"
+            old_certifi.parent.mkdir(parents=True)
+            old_certifi.write_bytes(b"old temporary bundle")
+            os.environ["REQUESTS_CA_BUNDLE"] = str(old_certifi)
+            os.environ["CURL_CA_BUNDLE"] = str(old_certifi)
+            os.environ["SSL_CERT_FILE"] = str(old_certifi)
+            recovered = launcher.configure_tls_ca_bundle(
+                self.root, bundled_path=source, extraction_dir=extraction)
+            self.assertEqual(recovered, pinned)
+            self.assertEqual(os.environ["REQUESTS_CA_BUNDLE"], pinned)
+            self.assertEqual(os.environ["CURL_CA_BUNDLE"], pinned)
+            self.assertEqual(os.environ["SSL_CERT_FILE"], pinned)
+
+    def test_tls_ca_bundle_preserves_valid_external_requests_override(self):
+        custom = self.work / "custom-ca.pem"
+        custom.write_bytes(b"custom CA bundle")
+        extraction = self.work / "_MEI12345"
+        source_dir = extraction / "certifi"
+        source_dir.mkdir(parents=True)
+        source = source_dir / "cacert.pem"
+        source.write_bytes(b"-----BEGIN CERTIFICATE-----\\nBundled CA\\n")
+
+        with mock.patch.dict(os.environ, {"REQUESTS_CA_BUNDLE": str(custom)}, clear=True):
+            pinned = launcher.configure_tls_ca_bundle(
+                self.root, bundled_path=source, extraction_dir=extraction)
+            self.assertEqual(os.environ["REQUESTS_CA_BUNDLE"], str(custom))
+            self.assertEqual(os.environ["CURL_CA_BUNDLE"], pinned)
+            self.assertEqual(os.environ["SSL_CERT_FILE"], pinned)
+
     # -- первый запуск ----------------------------------------------------
     def test_first_run_installs_the_embedded_package(self):
         version = self.choose()

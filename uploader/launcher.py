@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -36,7 +37,7 @@ import bundle
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.0.0"
+LAUNCHER_VERSION = "1.0.1"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
@@ -78,6 +79,116 @@ def frozen_dir() -> Path:
     if base:
         return Path(base)
     return Path(__file__).resolve().parent
+
+
+def _path_is_inside(path: str, directory: str) -> bool:
+    """Проверить принадлежность пути каталогу, включая Windows без учёта регистра."""
+    try:
+        candidate = os.path.normcase(os.path.abspath(path))
+        parent = os.path.normcase(os.path.abspath(directory))
+        return os.path.commonpath((candidate, parent)) == parent
+    except (OSError, ValueError):
+        return False
+
+
+def _is_pyinstaller_temp_path(path: str, extraction_dir: str) -> bool:
+    """Распознать и текущий, и оставшийся от предыдущего процесса каталог `_MEI`."""
+    if extraction_dir and _path_is_inside(path, extraction_dir):
+        return True
+    normalized = os.path.normcase(os.path.abspath(path))
+    return any(part.lower().startswith("_mei") for part in Path(normalized).parts)
+
+
+def _readable_ca_bundle(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def configure_tls_ca_bundle(root, bundled_path=None, extraction_dir=None) -> Optional[str]:
+    """Закрепить CA bundle вне временного `_MEI` каталога PyInstaller.
+
+    PyInstaller onefile задаёт путь certifi внутри `%TEMP%\\_MEI...`. Если
+    Windows очистит этот временный каталог, уже работающий процесс продолжит
+    использовать удалённый путь и все новые HTTPS-запросы Requests начнут
+    падать с `invalid path`. Копируем штатный certifi bundle в постоянный
+    каталог приложения до импорта кода с Requests и направляем TLS-клиенты
+    туда. Проверка TLS не отключается.
+
+    Внешний пользовательский bundle сохраняется, если он существует и не
+    лежит во временном каталоге приложения. Устаревшие пути `_MEI` заменяются.
+    """
+    extraction_dir = str(extraction_dir or getattr(sys, "_MEIPASS", "") or "")
+    if bundled_path is None:
+        if not extraction_dir:
+            return None
+        bundled_path = Path(extraction_dir) / "certifi" / "cacert.pem"
+    else:
+        bundled_path = Path(bundled_path)
+
+    target = None
+    try:
+        if _readable_ca_bundle(bundled_path):
+            content = bundled_path.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()[:16]
+            cert_dir = Path(root) / "certs"
+            cert_dir.mkdir(parents=True, exist_ok=True)
+            target = cert_dir / f"cacert-{digest}.pem"
+            if not _readable_ca_bundle(target) or target.read_bytes() != content:
+                temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+                temporary.write_bytes(content)
+                os.replace(temporary, target)
+        else:
+            # Если исходный `_MEI` уже удалён, используем последний ранее
+            # закреплённый certifi snapshot. При отсутствии копии ниже ничего
+            # не ослабляем — Requests останется с проверкой TLS и сообщит ошибку.
+            cert_dir = Path(root) / "certs"
+            candidates = sorted(cert_dir.glob("cacert-*.pem"),
+                                key=lambda item: item.stat().st_mtime, reverse=True)
+            target = next((item for item in candidates if _readable_ca_bundle(item)), None)
+    except OSError as exc:
+        log(root, f"не удалось закрепить CA bundle: {exc}")
+
+    if target is None:
+        log(root, f"CA bundle недоступен: {bundled_path}")
+        return None
+
+    target_text = str(target.resolve())
+
+    def has_custom_bundle(variable: str) -> bool:
+        configured = os.environ.get(variable, "").strip()
+        if not configured:
+            return False
+        configured_path = Path(configured).expanduser()
+        is_ephemeral = _is_pyinstaller_temp_path(configured, extraction_dir)
+        return _readable_ca_bundle(configured_path) and not is_ephemeral
+
+    # Requests gives REQUESTS_CA_BUNDLE precedence over CURL_CA_BUNDLE. Do not
+    # create a new REQUESTS override when a valid CURL override already exists.
+    request_bundle = has_custom_bundle("REQUESTS_CA_BUNDLE")
+    curl_bundle = has_custom_bundle("CURL_CA_BUNDLE")
+    if not request_bundle:
+        if curl_bundle:
+            os.environ.pop("REQUESTS_CA_BUNDLE", None)
+        else:
+            os.environ["REQUESTS_CA_BUNDLE"] = target_text
+    if not curl_bundle:
+        os.environ["CURL_CA_BUNDLE"] = target_text
+
+    if not has_custom_bundle("SSL_CERT_FILE"):
+        os.environ["SSL_CERT_FILE"] = target_text
+
+    # PyInstaller may also point OpenSSL at a directory under `_MEI`; discard
+    # only a stale/ephemeral override, not a valid user-provided CA directory.
+    cert_dir_override = os.environ.get("SSL_CERT_DIR", "").strip()
+    if cert_dir_override:
+        directory = Path(cert_dir_override).expanduser()
+        is_ephemeral = _is_pyinstaller_temp_path(cert_dir_override, extraction_dir)
+        if is_ephemeral or not directory.is_dir():
+            os.environ.pop("SSL_CERT_DIR", None)
+
+    return target_text
 
 
 def embedded_bundle() -> Tuple[Optional[Path], Optional[Dict[str, Any]]]:
@@ -223,6 +334,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             "embedded": (embedded_manifest or {}).get("version", ""),
         }, ensure_ascii=False, indent=2))
         return 0
+
+    # Run before choose_version/run_module: both the updater and app code can
+    # make HTTPS requests, and neither may capture a transient _MEI CA path.
+    configure_tls_ca_bundle(root)
 
     if "--reinstall" in args and embedded_dir and embedded_manifest:
         # Аварийный ход: «поставь то, что в exe, и забудь про скачанное».
