@@ -991,11 +991,9 @@ class OverlayTabTests(unittest.TestCase):
 
     def test_overlay_tab_keeps_hud_visible_while_editing(self):
         manager = self.app.overlay_manager
-        self.app.notebook.select.return_value = str(self.app.tab_overlay)
-        self.app._on_notebook_tab_changed()
+        self.app.notebook.select(self.app.tab_overlay)
         self.assertTrue(manager._ui_editing)
-        self.app.notebook.select.return_value = "другая вкладка"
-        self.app._on_notebook_tab_changed()
+        self.app.notebook.select(self.app.tab_auth)
         self.assertFalse(manager._ui_editing)
 
     def test_idle_choice_roundtrip(self):

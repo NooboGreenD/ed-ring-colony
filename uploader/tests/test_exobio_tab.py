@@ -22,6 +22,10 @@ class ExobioTabTests(unittest.TestCase):
         from test_initial_upload_flow import install_gui_stubs, make_root
 
         install_gui_stubs()
+        toolkit = sys.modules["ttkbootstrap"]
+        for widget_name in ("Frame", "Button", "Label"):
+            widget = getattr(toolkit, widget_name)
+            widget.side_effect = lambda *args, _name=widget_name, **kwargs: mock.MagicMock(name=_name)
         for name in ("colonial_helper", "api_client", "event_dispatch", "journal_parser",
                      "overlay", "ship_tracker", "route_tracker", "game_monitor",
                      "exobiology", "colonisation", "carrier", "raven_colonial_api"):
@@ -52,9 +56,10 @@ class ExobioTabTests(unittest.TestCase):
 
         self.assertEqual(set(self.app._exobio_genus_vars), set(GENUS_VALUE_CR))
 
-    def test_tab_is_added_to_notebook(self):
-        texts = [call.kwargs.get("text") for call in self.app.notebook.add.call_args_list]
-        self.assertIn(" Экзобиология ", texts)
+    def test_exobio_page_is_registered_in_sidebar_navigation(self):
+        titles = [self.app.notebook._titles[page] for page in self.app.notebook._pages]
+        self.assertIn("Экзобиология", titles)
+        self.assertEqual(titles.index("Экзобиология"), 7)
 
     # -- чекбоксы доезжают до настроек --------------------------------------
     def test_checking_boxes_writes_settings(self):
@@ -192,10 +197,9 @@ class ExobioTabTests(unittest.TestCase):
         self.assertEqual(len(state["system_bodies"]), 1)
         self.assertEqual(state["system_bodies"][0]["body"], "CacheSys 1")
 
-    def test_notebook_tab_change_refreshes_exobio_tab(self):
+    def test_navigation_change_refreshes_exobio_page(self):
         with mock.patch.object(self.app, "_update_tab_exobio") as update_mock:
-            self.app.notebook.select = mock.MagicMock(return_value=str(self.app.tab_exobio))
-            self.app._on_notebook_tab_changed(None)
+            self.app.notebook.select(self.app.tab_exobio)
             update_mock.assert_called_once()
 
 
