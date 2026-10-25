@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -302,6 +303,21 @@ class BundleUpdateTests(unittest.TestCase):
         command = bundle_updater.restart_command()
         self.assertTrue(command)
         self.assertEqual(command[0], sys.executable)
+
+    def test_frozen_restart_resets_pyinstaller_onefile_environment(self):
+        started = {}
+
+        def spawn(command, **kwargs):
+            started["command"] = command
+            started["kwargs"] = kwargs
+            return object()
+
+        with mock.patch.object(bundle_updater.sys, "frozen", True, create=True):
+            self.assertTrue(bundle_updater.restart_program(spawn=spawn))
+
+        self.assertEqual(started["command"][0], sys.executable)
+        self.assertEqual(started["kwargs"]["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+        self.assertEqual(started["kwargs"]["env"].get("PATH"), os.environ.get("PATH"))
 
     def test_restart_program_reports_failure(self):
         def broken(*args, **kwargs):
