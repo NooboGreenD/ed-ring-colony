@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { assessCapiEntitlement, isNoEntitlementResponse } from '../../src/lib/capi/entitlement.ts';
 import { normalizePlatform, platformSelection } from '../../src/lib/capi/platform.ts';
 import { fetchFrontierIdentity, parseFrontierIdentity } from '../../src/lib/capi/oauth.ts';
-import { CapiClient, needsCapiRelink } from '../../src/lib/capi/client.ts';
+import { CapiClient, CapiError, needsCapiRelink } from '../../src/lib/capi/client.ts';
+import { diagnoseCapiFailure } from '../../src/lib/capi/failure.ts';
 
 const PURCHASE = 'Please Visit the store to purchase Elite: Dangerous.';
 
@@ -34,6 +35,19 @@ test('расхождение requested/identity платформы не анну
   for (const actual of ['frontier', 'steam', 'epic']) {
     assert.equal(assessCapiEntitlement('frontier,steam,epic', actual).needsReauth, false);
   }
+});
+
+test('ручный синк без requested_platform не объявляется OAuth выбором auto', async () => {
+  const failure = await diagnoseCapiFailure(
+    new CapiError('no_entitlement', '/profile', 400, undefined, { detail: 'Please Visit the store to purchase Elite: Dangerous.', host: 'https://companion.orerve.net' }),
+    'access-token',
+    { identity: { frontierId: '777', email: null, platform: 'frontier' } },
+  );
+  assert.match(failure.detail, /OAuth-платформа не указана в параметрах задания/);
+  assert.match(failure.detail, /это не означает выбор «авто»/);
+  assert.match(failure.detail, /Платформа identity Frontier: frontier/);
+  assert.equal(failure.reason, 'entitlement_unavailable');
+  assert.equal(failure.needsReauth, false);
 });
 
 test('авто не превращается в первый элемент frontier после колбэка', () => {

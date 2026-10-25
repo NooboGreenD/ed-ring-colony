@@ -49,8 +49,11 @@ export async function diagnoseCapiFailure(
   result.needsReauth = advice.needsReauth;
   result.reason = advice.reason;
   result.platform = advice.platform;
-  result.detail = `Запрошена платформа: ${options.requestedPlatform || 'авто/неизвестно'}. `
-    + `Подтверждена платформа: ${advice.platform || 'неизвестно'}. `
+  const requestedPlatformDetail = options.requestedPlatform
+    ? `Запрошенная OAuth-платформа: ${options.requestedPlatform}. `
+    : 'OAuth-платформа не указана в параметрах задания (это не означает выбор «авто»). ';
+  result.detail = `${requestedPlatformDetail}`
+    + `Платформа identity Frontier: ${advice.platform || 'неизвестно'}. `
     + `CAPI ${err.endpoint}: HTTP ${err.status}. ${err.detail}`;
   return result;
 }
