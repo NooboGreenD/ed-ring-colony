@@ -537,7 +537,13 @@ def restart_command() -> List[str]:
 
 
 def restart_program(spawn=None) -> bool:
-    """Запустить новый процесс и попросить текущий завершиться.
+    """Запустить независимый процесс и попросить текущий завершиться.
+
+    В PyInstaller onefile простой Popen наследует внутреннее окружение
+    bootloader и новый процесс может использовать временную папку `_MEIPASS`
+    старого. При завершении старый процесс удалит её из-под нового. Публичный
+    флаг PYINSTALLER_RESET_ENVIRONMENT заставляет bootloader сделать новую
+    распаковку — это необходимо для перезапуска, переживающего текущий процесс.
 
     Возвращает True, если процесс стартовал: решение «выходить ли сейчас»
     принимает интерфейс — ему нужно успеть закрыть окна и сохранить настройки.
@@ -546,6 +552,8 @@ def restart_program(spawn=None) -> bool:
     launch = spawn or subprocess.Popen
     try:
         kwargs: Dict[str, Any] = {"close_fds": True}
+        if getattr(sys, "frozen", False):
+            kwargs["env"] = {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
         if sys.platform.startswith("win"):
             # Новый процесс не должен умереть вместе с текущим окном консоли.
             kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
