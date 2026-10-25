@@ -200,9 +200,23 @@ test('таймаут чтения тела CAPI сохраняет endpoint/host
       assert.equal(err.kind, 'timeout');
       assert.equal(err.endpoint, '/profile');
       assert.equal(err.host, 'https://companion.orerve.net');
+      assert.equal(err.transportPhase, 'response_body');
       assert.equal(isUnauthorizedError(err), false);
       assert.equal(needsCapiRelink(err), false);
       assert.match(describeCapiError(err), /не успел ответить за отведённое время/);
+      return true;
+    });
+  });
+});
+
+test('таймаут до получения HTTP-заголовков помечается отдельной фазой', async () => {
+  const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+  await withFetch(async () => { throw timeout; }, async () => {
+    await assert.rejects(() => new CapiClient('token').getProfile(), (err) => {
+      assert.equal(err.kind, 'timeout');
+      assert.equal(err.transportPhase, 'response_headers');
+      assert.equal(err.endpoint, '/profile');
+      assert.equal(isUnauthorizedError(err), false);
       return true;
     });
   });

@@ -91,7 +91,8 @@ export async function syncCapiPilot(
     ok: false,
     cmdrName: tokenRow.cmdr_name ?? null,
     profileSaved: false,
-    journalStatus: options.skipJournal ? 'skipped' : 'error',
+    // Not attempted until the profile and its persistence stages have passed.
+    journalStatus: 'skipped',
     eventsImported: 0,
     eventsDuplicate: 0,
     eventsSkipped: 0,
@@ -231,6 +232,9 @@ export async function syncCapiPilot(
 
   // ── 6. Журнал и события колонизации ─────────────────────────────
   if (!options.skipJournal) {
+    // Once the journal stage starts, an error is the default unless we record
+    // a successful, empty, or partial response below.
+    result.journalStatus = 'error';
     await stage('journal_request');
     try {
       const journal = await session.run((client) => client.getJournal());
