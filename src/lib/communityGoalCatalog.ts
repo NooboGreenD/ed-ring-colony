@@ -15,6 +15,41 @@ const SOURCE_PRIORITY: Record<GoalSource | 'manual', number> = {
   manual: 4,
 };
 const MAX_CG_ID = 2_147_483_647;
+const PROGRESS_FIELDS = ['tier_current', 'tier_max', 'contributors', 'contributions_total'] as const;
+
+/** Keep high-priority catalog text, but let newer official snapshots refresh live progress values. */
+function applyProgressSnapshot(
+  target: Record<string, any>,
+  candidate: CatalogGoal,
+  existing: Record<string, any> | undefined,
+  source: GoalSource,
+  observedAt: string,
+): boolean {
+  const incomingAt = Date.parse(candidate.source_updated_at || observedAt) || Date.parse(observedAt);
+  const previousAt = Date.parse(existing?.progress_updated_at || existing?.source_updated_at || '') || 0;
+  const hasIncomingProgress = PROGRESS_FIELDS.some((field) =>
+    candidate[field] !== null && candidate[field] !== undefined && candidate[field] !== '',
+  );
+  const mayUpdate = hasIncomingProgress && (!existing || incomingAt >= previousAt);
+
+  for (const field of PROGRESS_FIELDS) {
+    if (mayUpdate && candidate[field] !== null && candidate[field] !== undefined && candidate[field] !== '') {
+      target[field] = candidate[field];
+    } else if (existing && existing[field] !== undefined) {
+      target[field] = existing[field];
+    }
+  }
+
+  if (mayUpdate) {
+    target.progress_source = source;
+    target.progress_updated_at = new Date(incomingAt).toISOString();
+    return true;
+  }
+
+  target.progress_source = existing?.progress_source ?? existing?.source ?? null;
+  target.progress_updated_at = existing?.progress_updated_at ?? existing?.source_updated_at ?? null;
+  return false;
+}
 
 function stableId(identity: string): number {
   let hash = 0x811c9dc5;
@@ -175,7 +210,7 @@ export async function upsertCommunityGoalCatalog(
   const gameIds = Array.from(new Set(goals
     .map((goal) => Number(goal.game_cg_id))
     .filter((id) => Number.isSafeInteger(id) && id > 0)));
-  const selectColumns = 'cg_id,game_cg_id,identity_key,source,source_updated_at,moderation_status,title,description,system_name,station_name,objective,reward,expiry_date,inara_url,raw_data';
+  const selectColumns = 'cg_id,game_cg_id,identity_key,source,source_updated_at,progress_source,progress_updated_at,tier_current,tier_max,contributors,contributions_total,moderation_status,title,description,system_name,station_name,objective,reward,expiry_date,inara_url,raw_data';
   const { data: existingRows, error: lookupError } = await svc
     .from('community_goals')
     .select(selectColumns)
@@ -282,6 +317,7 @@ export async function upsertCommunityGoalCatalog(
           changed = true;
         }
       }
+      if (applyProgressSnapshot(enrichment, goal, existing, source, now)) changed = true;
       if (changed) rows.push(enrichment);
       continue;
     }
@@ -326,6 +362,7 @@ export async function upsertCommunityGoalCatalog(
         }
       }
     }
+    applyProgressSnapshot(row, goal, existing, source, now);
     if (!existing) {
       row.moderation_status = source === 'journal' && options.pendingJournalGoals !== false ? 'pending' : 'approved';
     } else {

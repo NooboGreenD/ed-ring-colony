@@ -77,6 +77,7 @@ for (const filename of [
   '20261027090000_community_goal_admin.sql',
   '20261028090000_community_goal_fallback_sources.sql',
   '20261030090000_community_goal_game_identity.sql',
+  '20261031090000_community_goal_progress_freshness.sql',
 ]) await db.exec(readFileSync(`${TEST_ROOT}/supabase/migrations/${filename}`, 'utf8'));
 await db.exec(`
   CREATE TABLE public.capi_tokens(
@@ -215,19 +216,29 @@ test('Inara sync retains completed records and moderator edits; public API hides
     station_name: 'Jaques Station',
     description: 'Objective details supplied by Frontier CAPI.',
     objective: 'Deliver supplies.',
+    tier_current: 4,
+    tier_max: 5,
+    contributors: 43,
+    contributions_total: 5500,
   }] });
   const enriched = (await mod.createServiceClient().from('community_goals').select('*').eq('id', inaraGoal.id).single()).data;
   assert.equal(enriched.source, 'inara', 'lower-priority source cannot replace the canonical source');
   assert.equal(enriched.moderation_status, 'hidden', 'enrichment cannot undo moderation');
   assert.equal(enriched.description, 'Objective details supplied by Frontier CAPI.', 'independent source fills a missing description');
   assert.equal(enriched.game_cg_id, 9124, 'independent source supplies the reconciliation ID');
+  assert.equal(enriched.tier_current, 4, 'newer CAPI snapshot refreshes progress despite Inara text priority');
+  assert.equal(enriched.contributors, 43);
+  assert.equal(enriched.contributions_total, 5500);
+  assert.equal(enriched.progress_source, 'capi');
+  assert.ok(enriched.progress_updated_at);
 
   mod.inaraState.goals = [{ ...mod.inaraState.goals[0], contributionsTotal: 6000 }];
   await mod.adminRoute.POST(request('POST', { action: 'sync' }));
   const afterSync = await body(await mod.adminRoute.GET(request('GET')));
   const refreshed = afterSync.goals.find((goal) => goal.id === inaraGoal.id);
   assert.equal(refreshed.title, 'Moderator title', 'moderator override survives upstream sync');
-  assert.equal(refreshed.contributions_total, 6000, 'unmodified fields continue following Inara');
+  assert.equal(refreshed.contributions_total, 5500, 'older Inara progress does not overwrite the newer CAPI snapshot');
+  assert.equal(refreshed.progress_source, 'capi');
 
   const hiddenResponse = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=completed')));
   assert.equal(hiddenResponse.goals.length, 0, 'hidden records are not public');
@@ -235,6 +246,8 @@ test('Inara sync retains completed records and moderator edits; public API hides
   const publicResponse = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=completed')));
   assert.equal(publicResponse.goals.length, 1);
   assert.equal(publicResponse.goals[0].title, 'Moderator title');
+  assert.equal(publicResponse.goals[0].progress_source, 'capi');
+  assert.ok(publicResponse.goals[0].progress_updated_at);
   assert.equal('manual_overrides' in publicResponse.goals[0], false);
   assert.equal('moderation_status' in publicResponse.goals[0], false);
 });

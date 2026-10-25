@@ -129,6 +129,8 @@ export async function GET(req: Request) {
     expiry_date: goal.expiry_date,
     inara_url: goal.inara_url,
     source_updated_at: goal.source_updated_at,
+    progress_source: goal.progress_source,
+    progress_updated_at: goal.progress_updated_at,
     updated_at: goal.updated_at,
     commander_reports: goal.commander_reports,
   }));

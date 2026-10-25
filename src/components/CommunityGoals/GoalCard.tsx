@@ -27,6 +27,8 @@ export interface CommunityGoal {
   expiry_date: string | null;
   inara_url: string | null;
   source_updated_at: string | null;
+  progress_source: 'inara' | 'capi' | 'journal' | 'manual' | null;
+  progress_updated_at: string | null;
 }
 
 function finiteNonNegative(value: unknown): number | null {
@@ -45,34 +47,14 @@ function formatDate(value: string | null, locale: string): string | null {
   return Number.isFinite(date.getTime()) ? date.toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' }) : null;
 }
 
-function ProgressRing({ current, max, label }: { current: number | null; max: number | null; label: string }) {
-  const size = 112;
-  const stroke = 8;
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const ratio = current !== null && max !== null && max > 0 ? Math.max(0, Math.min(1, current / max)) : 0;
-  const percent = Math.round(ratio * 100);
-
-  return (
-    <div className={styles.ringWrap}>
-      <svg className={styles.ring} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`${label}: ${percent}%`}>
-        <circle className={styles.ringTrack} cx={size / 2} cy={size / 2} r={radius} />
-        <circle
-          className={styles.ringValue}
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          strokeDasharray={`${circumference * ratio} ${circumference}`}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        />
-      </svg>
-      <div className={styles.ringCenter}>
-        <strong>{current === null ? '—' : `${current}`}</strong>
-        <span>{max === null ? label : `/ ${max} ${label}`}</span>
-      </div>
-      <span className={styles.ringCaption}>{label}</span>
-    </div>
-  );
+function progressSourceLabel(source: CommunityGoal['progress_source']): string {
+  switch (source) {
+    case 'capi': return 'Frontier CAPI';
+    case 'inara': return 'INARA';
+    case 'journal': return 'Journal';
+    case 'manual': return 'Manual';
+    default: return '—';
+  }
 }
 
 export default function GoalCard({ goal }: { goal: CommunityGoal }) {
@@ -89,11 +71,12 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
     ? Math.min(100, (reportedCommanders / participants) * 100)
     : null;
   const expiry = formatDate(goal.expiry_date, locale);
-  const sourceUpdated = formatDate(goal.source_updated_at, locale);
+  const progressUpdated = goal.progress_updated_at
+    ? new Date(goal.progress_updated_at).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
+    : null;
   const compareBase = Math.max(total ?? 0, journalTotal ?? 0, 1);
   const journalWidth = journalTotal === null ? 0 : Math.min(100, (journalTotal / compareBase) * 100);
-  const inaraWidth = total === null ? 0 : Math.min(100, (total / compareBase) * 100);
-  const progressPercent = current !== null && max !== null && max > 0 ? Math.round(Math.min(100, current / max * 100)) : null;
+  const sourceWidth = total === null ? 0 : Math.min(100, (total / compareBase) * 100);
   const objectiveText = goal.objective?.trim() || null;
   const descriptionText = goal.description?.trim() || null;
   const taskText = objectiveText || descriptionText;
@@ -160,26 +143,18 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           <section className={styles.progressPanel} aria-label={t('cg.progress')}>
             <div className={styles.sectionHeading}><span className={styles.signal} />{t('cg.progress')}<span className={styles.sectionRule} /></div>
             <div className={styles.progressBody}>
-              <ProgressRing current={current} max={max} label={t('cg.progress')} />
+              <div className={styles.tierValue} aria-label={`${t('cg.currentTier')}: ${current ?? '—'} / ${max ?? '—'}`}>
+                <div className={styles.tierNumbers}>
+                  <strong>{current ?? '—'}</strong><span>/</span><strong>{max ?? '—'}</strong>
+                </div>
+                <span className={styles.tierCaption}>{t('cg.currentTier')}</span>
+              </div>
               <div className={styles.progressDetails}>
                 <div className={styles.progressLabelRow}>
                   <span>{t('cg.tierProgress')}</span>
-                  <strong>{progressPercent === null ? '—' : `${progressPercent}%`}</strong>
+                  <strong>{current === null || max === null ? '—' : `${current} / ${max}`}</strong>
                 </div>
-                <div
-                  className={styles.progressTrack}
-                  role="progressbar"
-                  aria-label={t('cg.tierProgress')}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={progressPercent ?? 0}
-                >
-                  <span style={{ width: `${progressPercent ?? 0}%` }} />
-                </div>
-                <div className={styles.progressMeta}>
-                  <span>{t('cg.currentTier')}</span>
-                  <span>{current === null ? '—' : `${t('cg.progress')} ${current}`}{max === null ? '' : ` / ${max}`}</span>
-                </div>
+                <p className={styles.progressHint}>{t('cg.tierHint')}</p>
               </div>
             </div>
           </section>
@@ -191,7 +166,7 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
                 <span className={styles.metricIcon} aria-hidden="true">◈</span>
                 <span className={styles.metricLabel}>{t('cg.contributions')}</span>
                 <strong>{formatNumber(total, locale)}</strong>
-                <small>{t('cg.goal')}</small>
+                <small>{t('cg.globalSource')}</small>
               </div>
               <div className={styles.metric}>
                 <span className={styles.metricIcon} aria-hidden="true">◎</span>
@@ -232,8 +207,8 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
                   <strong>{formatNumber(journalTotal, locale)}</strong>
                 </div>
                 <div className={styles.compareRow}>
-                  <span>Inara</span>
-                  <div className={styles.compareTrack}><span className={styles.inaraBar} style={{ width: `${inaraWidth}%` }} /></div>
+                  <span>{progressSourceLabel(goal.progress_source)}</span>
+                  <div className={styles.compareTrack}><span className={styles.sourceBar} style={{ width: `${sourceWidth}%` }} /></div>
                   <strong>{formatNumber(total, locale)}</strong>
                 </div>
               </div>
@@ -247,9 +222,9 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           </section>
         )}
 
-        {sourceUpdated && (
+        {progressUpdated && (
           <footer className={styles.footer}>
-            <span className={styles.updated}>{t('cg.updated')}: {sourceUpdated}</span>
+            <span className={styles.updated}>{t('cg.progressSource')}: {progressSourceLabel(goal.progress_source)} · {progressUpdated}</span>
           </footer>
         )}
       </div>
