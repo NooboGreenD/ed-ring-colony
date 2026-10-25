@@ -382,12 +382,14 @@ maybe('400 о покупке после OAuth сохраняет привязк�
     const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
     assert.equal(new URL(res.headers.get('location')).searchParams.get('reason'), 'sync_queued');
     assert.equal(mod.db.tables.capi_sync_jobs[0].requested_platform, 'epic');
+    // Simulate a previous version having incorrectly marked this still-valid token inactive.
+    mod.db.tables.capi_tokens[0].is_active = false;
     await runQueuedWorker(mod);
     const result = mod.db.tables.capi_sync_jobs[0].result;
     assert.equal(result.reason, 'platform_not_entitled');
-    assert.equal(result.needsReauth, true);
+    assert.equal(result.needsReauth, false);
     assert.equal(result.platform, 'frontier');
-    assert.equal(mod.db.tables.capi_tokens[0].is_active, false);
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true, 'an EGS/Frontier identity difference must not invalidate OAuth');
     assert.match(mod.db.tables.capi_tokens[0].last_error, /не подтвердил|CAPI/i);
   } finally {
     frontier.restore();
@@ -409,7 +411,8 @@ maybe('фоновая проверка EGS объясняет несоответ
     assert.equal(job.result.reason, 'platform_not_entitled');
     assert.match(job.result.error, /epic/i);
     assert.match(job.result.error, /frontier/i);
-    assert.match(capiReasonText('platform_not_entitled').hint, /auth\.frontierstore\.net/);
+    assert.match(capiReasonText('platform_not_entitled').hint, /не доказывает неверный вход/);
+    assert.equal(capiReasonText('platform_not_entitled').retryAuth, false);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });

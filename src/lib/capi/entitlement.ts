@@ -26,14 +26,18 @@ export function assessCapiEntitlement(requestedPlatform: unknown, actualPlatform
 
   if (mismatch) {
     return {
+      // Keep the requested/observed difference as diagnostic evidence, but
+      // don't invalidate OAuth on an entitlement HTTP 400. EGS-linked users
+      // have a documented Frontier CAPI failure even when OAuth succeeds;
+      // the reported identity platform alone does not prove a bad login.
       reason: 'platform_not_entitled' as const,
-      needsReauth: true,
+      needsReauth: false,
       platform: actual,
-      hint: `Запрошена платформа: ${requested}. Frontier выдал токен платформы «${actual}». `
-        + 'Выйдите из аккаунта на auth.frontierstore.net (или начните подключение в приватном окне) '
-        + (normalizePlatform(requested) === 'steam' || normalizePlatform(requested) === 'epic'
-          ? 'и войдите кнопкой выбранного магазина Steam/Epic, а не почтой.'
-          : 'и выберите способ входа, соответствующий платформе покупки игры.'),
+      hint: `Запрошена платформа: ${requested}; в identity Frontier указана «${actual}». `
+        + 'Это расхождение само по себе не доказывает, что OAuth неверный или покупка отсутствует. '
+        + 'Для EGS известны случаи, когда OAuth проходит, но CAPI отвечает HTTP 400. '
+        + 'Сохранённую привязку не отключаем; повторный OAuth может не помочь. '
+        + 'Проверьте состояние CAPI позже или передайте ошибку в поддержку Frontier.',
     };
   }
 

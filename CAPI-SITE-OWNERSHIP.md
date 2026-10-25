@@ -86,6 +86,14 @@ EDMarketConnector (EDMC) как практический пример; эти м
   `frontier,steam,epic` и платформенный выбор на странице сайта сохраняются.
   После OAuth фактическую identity следует диагностировать, а не угадывать по
   тексту произвольного HTTP 400.
+- В частности, `requestedPlatform=epic`, `identity.platform=frontier` и ответ
+  CAPI HTTP 400 «Please Visit the store to purchase Elite: Dangerous» **не
+  доказывают**, что пользователь вошёл не той кнопкой или потерял OAuth.
+  Frontier issue tracker #21258 содержит EGS-репорты с рабочими OAuth/`/me`,
+  но отказом CAPI, в том числе при разных способах OAuth. Сохранять расхождение
+  в диагностике можно; автоматически отключать токен или отправлять пилота на
+  повторный OAuth — нельзя. Только подтверждённый отказ credentials (401/403/422
+  либо ошибка refresh) является основанием помечать авторизацию неактивной.
 - Frontier просит User-Agent вида `EDCD-[A-Za-z]+-[.0-9]+`. Сайт выставляет
   его в запросах OAuth/CAPI.
 - CAPI `/profile` — структура с `commander`, `ship`, `lastSystem` и `ships`;

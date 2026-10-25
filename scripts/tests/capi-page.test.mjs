@@ -87,18 +87,35 @@ test('список audience после колбэка сохраняет «Ав�
   }
 });
 
-test('подтверждённая Frontier-платформа при отказе в entitlement предлагает явный вход через EGS и Steam, не отвязку', async () => {
+test('ошибка CAPI у Frontier identity не запускает цикл повторного OAuth для EGS', async () => {
   const ui = await renderCapi({ binding: {
     ...BINDING,
     platform: 'frontier',
     lastError: 'CAPI Frontier не подтвердил доступ к Elite Dangerous. Frontier подтвердил платформу «frontier».',
   } });
   try {
-    assert.match(ui.text(), /токен подтверждён как Frontier Store/);
-    assert.match(ui.text(), /выйдите из старой сессии на auth\.frontierstore\.net/);
-    assert.equal(ui.dom.window.document.querySelector('a[href="/api/capi/auth?platform=epic"]')?.textContent, 'Переподключить через Epic Games Store');
-    assert.equal(ui.dom.window.document.querySelector('a[href="/api/capi/auth?platform=steam"]')?.textContent, 'Переподключить через Steam');
+    assert.match(ui.text(), /не доказывает, что вы вошли не через Epic/);
+    assert.match(ui.text(), /Инцидент Frontier #21258/);
+    assert.equal(ui.dom.window.document.querySelector('a[href="/api/capi/auth?platform=epic"]'), null, 'do not send this user through another OAuth loop');
+    assert.equal(ui.dom.window.document.querySelector('a[href="/api/capi/auth?platform=steam"]'), null);
+    assert.ok(ui.dom.window.document.querySelector('a[href="https://issues.frontierstore.net/issue-detail/21258"]'));
     assert.ok(ui.dom.window.document.querySelector('button.danger-btn'), 'отвязка не выполняется автоматически');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('старый false is_active от ложного platform mismatch не запускает повторный OAuth', async () => {
+  const ui = await renderCapi({ binding: {
+    ...BINDING,
+    platform: 'frontier',
+    tokenActive: false,
+    lastError: 'CAPI Frontier не подтвердил доступ к Elite Dangerous. Запрошена платформа: epic. Frontier выдал токен платформы «frontier». Выйдите из аккаунта на auth.frontierstore.net.',
+  } });
+  try {
+    assert.doesNotMatch(ui.text(), /Требуется повторная авторизация|Переподключить/);
+    assert.match(ui.text(), /Инцидент Frontier #21258/);
+    assert.ok([...ui.dom.window.document.querySelectorAll('button')].some((button) => button.textContent.includes('Синхронизировать')));
   } finally {
     await ui.cleanup();
   }

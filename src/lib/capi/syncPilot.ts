@@ -136,7 +136,7 @@ export async function syncCapiPilot(
       last_error: failure.error.slice(0, 500),
       last_error_at: now.toISOString(),
       ...(failure.platform ? { platform: failure.platform } : {}),
-      ...(failure.reason === 'entitlement_unavailable' ? { is_active: true } : {}),
+      ...(['entitlement_unavailable', 'platform_not_entitled'].includes(failure.reason) ? { is_active: true } : {}),
     }, { column: 'user_id', value: userId });
     if (!failedWrite.ok) warnings.push('Не удалось сохранить диагностику CAPI');
     return result;
