@@ -149,11 +149,16 @@ export class CapiClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CAPI_TIMEOUT_MS;
   }
 
-  private transportError(endpoint: string, err: unknown, transportPhase: 'response_headers' | 'response_body'): CapiError {
+  private transportError(
+    endpoint: string,
+    err: unknown,
+    transportPhase: 'response_headers' | 'response_body',
+    httpStatus = 0,
+  ): CapiError {
     const message = err instanceof Error ? err.message : String(err);
     const name = err instanceof Error ? err.name : '';
     const timedOut = name === 'TimeoutError' || /(?:aborted due to|timed?\s*out|timeout)/i.test(message);
-    return new CapiError(timedOut ? 'timeout' : 'network', endpoint, 0, message, {
+    return new CapiError(timedOut ? 'timeout' : 'network', endpoint, httpStatus, message, {
       detail: message.slice(0, 300),
       host: this.base,
       transportPhase,
@@ -187,7 +192,7 @@ export class CapiClient {
       try {
         body = await res.text();
       } catch (err) {
-        throw this.transportError(endpoint, err, 'response_body');
+        throw this.transportError(endpoint, err, 'response_body', res.status);
       }
       const safeBody = this.accessToken ? body.split(this.accessToken).join('[redacted]') : body;
       const detail = safeBody.replace(/\s+/g, ' ').trim().slice(0, 300);
@@ -213,7 +218,7 @@ export class CapiClient {
       // Отмена может произойти ПОСЛЕ получения заголовков, пока читается
       // большой журнал/профиль. Раньше этот AbortError обходил классификацию
       // выше, и пилот видел сырое английское сообщение без endpoint и host.
-      throw this.transportError(endpoint, err, 'response_body');
+      throw this.transportError(endpoint, err, 'response_body', res.status);
     }
   }
 
@@ -340,7 +345,7 @@ export class CapiClient {
     try {
       return await res.blob();
     } catch (err) {
-      throw this.transportError(endpoint, err, 'response_body');
+      throw this.transportError(endpoint, err, 'response_body', res.status);
     }
   }
 }

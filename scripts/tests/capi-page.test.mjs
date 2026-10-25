@@ -153,7 +153,7 @@ test('фоновый синк опрашивает статус задания �
         id: 'job-1', status: 'failed', stage: 'failed', total_duration_ms: 1234,
         stage_timings: [{ stage: 'profile_request', durationMs: 1000 }],
         result: { error: BINDING.lastError, needsReauth: false, journalStatus: 'error', reason: 'profile_unavailable', errorKind: 'timeout',
-          endpoint: '/profile', host: 'https://companion.orerve.net', httpStatus: 0, transportPhase: 'response_headers',
+          endpoint: '/profile', host: 'https://companion.orerve.net', httpStatus: 200, transportPhase: 'response_body',
           detail: 'The operation was aborted due to timeout', warnings: [] },
       } } };
     }
@@ -170,8 +170,8 @@ test('фоновый синк опрашивает статус задания �
     assert.match(ui.text(), /CAPI endpoint: \/profile · https:\/\/companion\.orerve\.net/);
     assert.match(ui.text(), /Тип ошибки: timeout · profile_unavailable/);
     assert.match(ui.text(), /журнал не запрашивался/);
-    assert.match(ui.text(), /Транспорт: ожидание HTTP-заголовков/);
-    assert.match(ui.text(), /HTTP: ответ не получен/);
+    assert.match(ui.text(), /Транспорт: чтение тела HTTP-ответа/);
+    assert.match(ui.text(), /HTTP: 200/);
     assert.match(ui.text(), /The operation was aborted due to timeout/);
     assert.ok(ui.dom.window.document.querySelector('.capi-status-pending'));
   } finally {
