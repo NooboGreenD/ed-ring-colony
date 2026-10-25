@@ -8121,8 +8121,9 @@ class ColonialHelperApp:
             community_goal_reports_ok = bool(community_result.get("ok"))
             if community_goal_reports_ok:
                 stored = int(community_result.get("stored", 0) or 0)
-                self.root.after(0, lambda n=stored: self.log(
-                    f"Отчёты Community Goals: сохранено обновлений — {n}", "success"))
+                catalog_updated = int(community_result.get("communityGoalCatalogUpdated", 0) or 0)
+                self.root.after(0, lambda n=stored, c=catalog_updated: self.log(
+                    f"Community Goals: личных снимков сохранено — {n}; записей каталога обновлено — {c}", "success"))
             else:
                 error_text = community_result.get("error", "ошибка")
                 self.root.after(0, lambda e=error_text: self.log(
@@ -8942,7 +8943,12 @@ class ColonialHelperApp:
             else:
                 result = self.api.upload_community_goal_reports(community_goal_reports, cmdr_name)
                 if result.get("ok"):
-                    log(f"Первичная загрузка: отчёты CG сохранены ({result.get('stored', 0)})", "success")
+                    log(
+                        "Первичная загрузка: Community Goals — личных снимков "
+                        f"{result.get('stored', 0)}, записей каталога обновлено "
+                        f"{result.get('communityGoalCatalogUpdated', 0)}",
+                        "success",
+                    )
                 else:
                     self._community_goal_collector.requeue(community_goal_reports)
                     log(f"Первичная загрузка: отчёты CG не отправлены — {result.get('error', 'ошибка')}", "warn")
@@ -10798,6 +10804,11 @@ class ColonialHelperApp:
                     community_goal_collector.requeue(community_goal_reports)
                     self.root.after(0, lambda e=result.get("error", "ошибка"):
                         self.log(f"[Watcher] Отчёты CG не отправлены: {e}", "warn"))
+                else:
+                    stored = int(result.get("stored", 0) or 0)
+                    catalog_updated = int(result.get("communityGoalCatalogUpdated", 0) or 0)
+                    self.root.after(0, lambda n=stored, c=catalog_updated: self.log(
+                        f"[Watcher] CG: личных снимков — {n}, записей каталога обновлено — {c}", "success"))
 
         if construction_events and self.api.is_connected:
             construction_result = self.api.upload_construction_events(construction_events, cmdr_name)

@@ -548,12 +548,14 @@ class ApiClientUploadTests(unittest.TestCase):
                 "constructionInserted": len(payload.get("construction_events", [])),
                 "snapshotInserted": len(payload.get("construction_events", [])),
                 "communityGoalReportsStored": len(payload.get("community_goal_reports", [])),
+                "communityGoalCatalogUpdated": len(payload.get("community_goal_reports", [])),
             }), {
                 "inserted": len(payload.get("deliveries", [])),
                 "eventsFound": 0,
                 "constructionInserted": len(payload.get("construction_events", [])),
                 "snapshotInserted": len(payload.get("construction_events", [])),
                 "communityGoalReportsStored": len(payload.get("community_goal_reports", [])),
+                "communityGoalCatalogUpdated": len(payload.get("community_goal_reports", [])),
             }
 
         client._post_upload = fake_post
@@ -667,6 +669,7 @@ class ApiClientUploadTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["stored"], 1200)
         self.assertEqual(result["communityGoalReportsStored"], 1200)
+        self.assertEqual(result["communityGoalCatalogUpdated"], 1200)
         self.assertEqual(calls["count"], 3)
         self.assertLessEqual(calls["max_rows"], 500)
 

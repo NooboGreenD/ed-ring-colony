@@ -126,7 +126,14 @@ export async function POST(req: Request) {
     const telemetry = ingest.telemetry;
     const resetOutcome = ingest.reset;
 
-    return NextResponse.json({ ...outcome, telemetry, reset: resetOutcome, projects: projectSyncSummary(ingest.projects) });
+    return NextResponse.json({
+      ...outcome,
+      telemetry,
+      reset: resetOutcome,
+      projects: projectSyncSummary(ingest.projects),
+      communityGoalReportsStored: ingest.communityGoalReportsStored,
+      communityGoalCatalogUpdated: ingest.communityGoalCatalogUpdated,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';
     console.error('[logs/import] Failed:', message);

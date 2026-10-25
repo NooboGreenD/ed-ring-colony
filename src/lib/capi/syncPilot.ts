@@ -119,6 +119,22 @@ export async function syncCapiPilot(
     return result;
   }
 
+  // Community Goals are a public catalogue endpoint, independent from the
+  // commander profile. Try it before /profile so an entitlement refusal on
+  // /profile does not suppress a usable second CAPI data source.
+  if (!options.skipCommunityGoals) {
+    await stage('community_goals_request');
+    try {
+      const communityGoals = await session.run((client) => client.getCommunityGoals());
+      await stage('community_goals_save');
+      await syncCommunityGoalsFromCapi(svc, communityGoals);
+    } catch (err) {
+      if (!(err instanceof CapiError && err.kind === 'no_content')) {
+        warnings.push(`Community Goals Frontier CAPI не получены: ${describeCapiError(err)}`);
+      }
+    }
+  }
+
   let profile;
   await stage('profile_request');
   try {
@@ -187,23 +203,6 @@ export async function syncCapiPilot(
     return result;
   }
   result.profileSaved = true;
-
-  if (!options.skipCommunityGoals) {
-    await stage('community_goals_request');
-    // ── Community Goals from Frontier CAPI ──────────────────────────
-    // This is an independent, authenticated source: it keeps the public CG
-    // catalogue populated even when Inara has not allowlisted our API client.
-    // A failure here is optional and must not make profile/journal sync fail.
-    try {
-      const communityGoals = await session.run((client) => client.getCommunityGoals());
-      await stage('community_goals_save');
-      await syncCommunityGoalsFromCapi(svc, communityGoals);
-    } catch (err) {
-      if (!(err instanceof CapiError && err.kind === 'no_content')) {
-        warnings.push(`Community Goals Frontier CAPI не получены: ${describeCapiError(err)}`);
-      }
-    }
-  }
 
   // ── 4. pilot_stats: витрина досье и рейтингов ───────────────────
   // Досье (/cmdr/<name>) читает pilot_stats в первую очередь, поэтому синк

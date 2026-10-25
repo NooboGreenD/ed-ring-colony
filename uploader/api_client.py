@@ -191,8 +191,8 @@ class ApiClient:
         """Параллельно отправить пачки на /api/logs/upload и собрать результат."""
         total_chunks = len(chunks)
         lock = threading.Lock()
-        state = {"inserted": 0, "events": 0, "snapshots": 0, "reports": 0, "deferred": 0,
-                 "failed": 0, "done": 0, "last_error": ""}
+        state = {"inserted": 0, "events": 0, "snapshots": 0, "reports": 0, "catalog_updated": 0,
+                 "deferred": 0, "failed": 0, "done": 0, "last_error": ""}
 
         def notify_progress():
             if not progress_cb:
@@ -277,6 +277,7 @@ class ApiClient:
                         state["snapshots"] += int((data or {}).get("snapshotInserted", 0) or 0)
                     else:
                         state["reports"] += int((data or {}).get("communityGoalReportsStored", 0) or 0)
+                        state["catalog_updated"] += int((data or {}).get("communityGoalCatalogUpdated", 0) or 0)
                     # Сервер больше не отвечает 500 на statement_timeout, а
                     # возвращает число строк, которые база не приняла. Без
                     # этого счётчика помощник отчитался бы об успехе, молча
@@ -319,6 +320,7 @@ class ApiClient:
         else:
             result["stored"] = state["reports"]
             result["communityGoalReportsStored"] = state["reports"]
+            result["communityGoalCatalogUpdated"] = state["catalog_updated"]
         result["chunks"] = total_chunks
         result["chunks_failed"] = state["failed"]
         result["deferred"] = state["deferred"]
