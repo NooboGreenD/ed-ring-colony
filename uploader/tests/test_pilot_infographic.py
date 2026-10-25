@@ -102,6 +102,12 @@ class PilotInfographicTests(unittest.TestCase):
         with mock.patch.object(app, "_pilot_window_width", return_value=700):
             self.assertEqual(app._pilot_column_count(), 1)
 
+    def test_unmapped_window_uses_configured_startup_width(self):
+        # Tk reports 1px before mapping, despite geometry("1180x790").
+        with mock.patch.object(self.app.root, "winfo_width", return_value=1):
+            self.assertEqual(self.app._pilot_window_width(), 1180)
+            self.assertEqual(self.app._pilot_column_count(), 2)
+
     def test_compact_mode_is_denser(self):
         app = self.app
         app._pilot_compact = True
@@ -116,6 +122,7 @@ class PilotInfographicTests(unittest.TestCase):
 
     # -- структура вкладки -------------------------------------------------
     def test_tab_builds_kpi_tiles_bars_and_canvases(self):
+        self.assertIsNone(self.app._pilot_refresh_job, "скрытая страница не должна стартовать таймер")
         tiles = self.app._pilot_tiles
         for key in ("kpi_tons", "kpi_deliveries", "kpi_cargo", "kpi_systems"):
             self.assertIn(key, tiles, f"нет крупного показателя {key}")
@@ -163,17 +170,33 @@ class PilotInfographicTests(unittest.TestCase):
         self.assertEqual(_text(app._pilot_tiles["kpi_deliveries"]), "3")
         self.assertEqual(_text(app._pilot_tiles["kpi_systems"]), "2")
 
+    def test_pilot_timer_does_not_poll_hidden_page(self):
+        app = self.app
+        app._pilot_refresh_job = None
+        with mock.patch.object(app, "_pilot_is_visible", return_value=False), \
+             mock.patch.object(app, "_refresh_pilot_infographic") as refresh:
+            app._pilot_tick()
+        refresh.assert_not_called()
+
+        app.root.after.reset_mock()
+        app._refresh_pilot_infographic()
+        self.assertFalse(any(
+            call.args and call.args[0] == app.PILOT_REFRESH_INTERVAL_MS
+            for call in app.root.after.call_args_list
+        ))
+
     def test_refresh_uses_single_timer(self):
         """Повторные вызовы не должны плодить цепочки root.after()."""
         app = self.app
         app.root.after.reset_mock()
         app._pilot_refresh_job = None
-        app._refresh_pilot_infographic()
-        app._refresh_pilot_infographic()
-        app._refresh_pilot_infographic()
+        with mock.patch.object(app, "_pilot_is_visible", return_value=True):
+            app._refresh_pilot_infographic()
+            app._refresh_pilot_infographic()
+            app._refresh_pilot_infographic()
 
         timers = [call for call in app.root.after.call_args_list
-                  if call.args and call.args[0] == 1000]
+                  if call.args and call.args[0] == app.PILOT_REFRESH_INTERVAL_MS]
         self.assertEqual(len(timers), 1)
 
     def test_refresh_survives_broken_state(self):
