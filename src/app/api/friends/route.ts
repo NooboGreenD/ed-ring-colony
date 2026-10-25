@@ -80,6 +80,14 @@ function legacySchemaForRow(row: FriendRow | null | undefined): FriendSchema {
     : "legacy";
 }
 
+function schemaForRelationshipRow(row: FriendRow | null | undefined): FriendSchema {
+  if (row && (
+    Object.prototype.hasOwnProperty.call(row, "requester_id")
+    || Object.prototype.hasOwnProperty.call(row, "addressee_id")
+  )) return "modern";
+  return legacySchemaForRow(row);
+}
+
 function schemaSupportsStatus(schema: FriendSchema): boolean {
   return schema !== "legacy";
 }
@@ -221,7 +229,12 @@ async function findRelationshipByBody(
     ? modernQuery.eq("id", id)
     : modernQuery.eq("requester_id", requesterId).eq("addressee_id", addresseeId);
   const modernResponse = await modernQuery.maybeSingle();
-  if (!modernResponse.error && modernResponse.data) return { row: modernResponse.data, schema: "modern" };
+  if (!modernResponse.error && modernResponse.data) {
+    // Looking up by the shared `id` column succeeds on both schemas. Detect
+    // the row's actual shape before normalising/authorising accept and cancel;
+    // otherwise legacy user_id/friend_id rows look like two missing members.
+    return { row: modernResponse.data, schema: schemaForRelationshipRow(modernResponse.data) };
+  }
   // Fall through to the original user_id/friend_id layout for all modern
   // query failures; deployed schema caches do not use one consistent error
   // code for missing columns.
