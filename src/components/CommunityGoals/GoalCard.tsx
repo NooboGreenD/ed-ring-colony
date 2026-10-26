@@ -171,9 +171,21 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
   const reportedCommanders = finiteNonNegative(reports?.commander_count);
   const trackedContribution = finiteNonNegative(reports?.player_contribution_total);
   const journalTotal = finiteNonNegative(reports?.journal_current_total);
-  const reportCoverage = participants && reportedCommanders !== null
-    ? Math.min(100, (reportedCommanders / participants) * 100)
+  const maximumTier = max !== null && Math.floor(max) > 0 ? Math.floor(max) : null;
+  const reachedTier = current === null
+    ? null
+    : Math.min(Math.max(0, Math.floor(current)), maximumTier ?? Math.floor(current));
+  const nextTier = maximumTier !== null && reachedTier !== null && reachedTier < maximumTier
+    ? reachedTier + 1
     : null;
+  const tierSegmentCount = maximumTier === null ? 0 : Math.min(maximumTier, 12);
+  const tierSegments = Array.from({ length: tierSegmentCount }, (_, index) => {
+    const startTier = Math.floor(index * maximumTier! / tierSegmentCount) + 1;
+    const endTier = Math.floor((index + 1) * maximumTier! / tierSegmentCount);
+    const reached = reachedTier !== null && endTier <= reachedTier;
+    const next = !reached && nextTier !== null && nextTier >= startTier && nextTier <= endTier;
+    return { tier: endTier, reached, next };
+  });
   const expiry = formatDate(goal.expiry_date, locale);
   const progressUpdated = goal.progress_updated_at
     ? new Date(goal.progress_updated_at).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })
@@ -236,103 +248,92 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
               </div>
             )}
           </section>
-        ) : (
-          <section className={`${styles.goalInfo} ${styles.infoUnavailable}`} aria-label={t('cg.goalInformation')}>
-            <span className={styles.infoIcon} aria-hidden="true">ⓘ</span>
-            <p>{t('cg.noGoalInfo')}</p>
-            {goal.inara_url && <a href={goal.inara_url} target="_blank" rel="noreferrer">{t('cg.viewSource')} ↗</a>}
-          </section>
-        )}
+        ) : null}
 
         <div className={styles.dashboard}>
           <section className={styles.progressPanel} aria-label={t('cg.progress')}>
             <div className={styles.sectionHeading}><span className={styles.signal} />{t('cg.progress')}<span className={styles.sectionRule} /></div>
-            <div className={styles.progressBody}>
-              <div className={styles.tierValue} aria-label={`${t('cg.currentTier')}: ${current ?? '—'} / ${max ?? '—'}`}>
-                <div className={styles.tierNumbers}>
-                  <strong>{current ?? '—'}</strong><span>/</span><strong>{max ?? '—'}</strong>
-                </div>
-                <span className={styles.tierCaption}>{t('cg.currentTier')}</span>
+            <div className={styles.tierProgress}>
+              <div className={styles.tierProgressLabels}>
+                <strong className={styles.tierValue}>{reachedTier ?? '—'}<span> / {maximumTier ?? '—'}</span></strong>
+                {nextTier !== null
+                  ? <span className={styles.nextTier}>{t('cg.nextTier')} <strong>{nextTier}</strong></span>
+                  : reachedTier !== null && maximumTier !== null
+                    ? <span className={styles.nextTier}>{t('cg.tiersComplete')}</span>
+                    : null}
               </div>
-              <div className={styles.progressDetails}>
-                <div className={styles.progressLabelRow}>
-                  <span>{t('cg.tierProgress')}</span>
-                  <strong>{current === null || max === null ? '—' : `${current} / ${max}`}</strong>
+              {tierSegments.length > 0 && (
+                <div
+                  className={styles.tierTrack}
+                  role="img"
+                  aria-label={`${t('cg.progress')}: ${reachedTier ?? '—'} / ${maximumTier}; ${nextTier !== null ? `${t('cg.nextTier')} ${nextTier}` : reachedTier !== null ? t('cg.tiersComplete') : ''}`}
+                >
+                  {tierSegments.map((segment, index) => (
+                    <span
+                      key={`${segment.tier}-${index}`}
+                      className={`${styles.tierSegment} ${segment.reached ? styles.tierSegmentReached : ''} ${segment.next ? styles.tierSegmentNext : ''}`}
+                    />
+                  ))}
                 </div>
-                <p className={styles.progressHint}>{t('cg.tierHint')}</p>
-              </div>
+              )}
             </div>
           </section>
 
           <section className={styles.metricsPanel} aria-label={t('cg.goalTelemetry')}>
-            <div className={styles.sectionHeading}><span className={styles.signal} />{t('cg.goalTelemetry')}<span className={styles.sectionRule} /></div>
             <div className={styles.metrics}>
               <div className={styles.metric}>
-                <span className={styles.metricIcon} aria-hidden="true">◈</span>
                 <span className={styles.metricLabel}>{t('cg.contributions')}</span>
                 <strong>{formatNumber(total, locale)}{target !== null ? ` / ${formatNumber(target, locale)}` : ''}</strong>
-                <small>{t('cg.globalSource')}</small>
               </div>
               <div className={styles.metric}>
-                <span className={styles.metricIcon} aria-hidden="true">◎</span>
                 <span className={styles.metricLabel}>{t('cg.contributors')}</span>
                 <strong>{formatNumber(participants, locale)}</strong>
-                <small>{t('cg.globalSource')}</small>
-              </div>
-              <div className={styles.metric}>
-                <span className={styles.metricIcon} aria-hidden="true">⌁</span>
-                <span className={styles.metricLabel}>{t('cg.commanderReports')}</span>
-                <strong>{formatNumber(reportedCommanders, locale)}</strong>
-                <small>{t('cg.trackedCommanders')}</small>
               </div>
             </div>
-            {reportCoverage !== null && (
-              <div className={styles.coverage}>
-                <div className={styles.coverageLabel}><span>{t('cg.reportCoverage')}</span><strong>{Math.round(reportCoverage)}%</strong></div>
-                <div className={styles.coverageTrack} role="img" aria-label={`${t('cg.reportCoverage')}: ${Math.round(reportCoverage)}%`}>
-                  <span style={{ width: `${reportCoverage}%` }} />
-                </div>
-                <small>{formatNumber(reportedCommanders, locale)} / {formatNumber(participants, locale)} · {t('cg.trackedCommanders')}</small>
-              </div>
-            )}
           </section>
         </div>
 
-        <ContributionHistory
-          history={goal.contribution_history || []}
-          goalId={goal.cg_id}
-          title={goal.title}
-          locale={locale}
-        />
+        <details className={styles.extraData}>
+          <summary>
+            <span>{t('cg.moreData')}</span>
+            {reportedCommanders !== null && <small>{formatNumber(reportedCommanders, locale)} · {t('cg.commanderReports')}</small>}
+          </summary>
+          <ContributionHistory
+            history={goal.contribution_history || []}
+            goalId={goal.cg_id}
+            title={goal.title}
+            locale={locale}
+          />
 
-        {(journalTotal !== null || trackedContribution !== null) && (
-          <section className={styles.reportPanel}>
-            <div className={styles.reportHeader}>
-              <div><span className={styles.sectionHeading}><span className={styles.signal} />{t('cg.journalCompare')}</span><small>{t('cg.reportedContribution')}</small></div>
-              {reports?.reported_at && <time dateTime={reports.reported_at}>{new Date(reports.reported_at).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })}</time>}
-            </div>
-            {journalTotal !== null && total !== null && (
-              <div className={styles.compareChart}>
-                <div className={styles.compareRow}>
-                  <span>{t('cg.journal')}</span>
-                  <div className={styles.compareTrack}><span className={styles.journalBar} style={{ width: `${journalWidth}%` }} /></div>
-                  <strong>{formatNumber(journalTotal, locale)}</strong>
-                </div>
-                <div className={styles.compareRow}>
-                  <span>{progressSourceLabel(goal.progress_source)}</span>
-                  <div className={styles.compareTrack}><span className={styles.sourceBar} style={{ width: `${sourceWidth}%` }} /></div>
-                  <strong>{formatNumber(total, locale)}{target !== null ? ` / ${formatNumber(target, locale)}` : ''}</strong>
-                </div>
+          {(journalTotal !== null || trackedContribution !== null) && (
+            <section className={styles.reportPanel}>
+              <div className={styles.reportHeader}>
+                <div><span className={styles.sectionHeading}><span className={styles.signal} />{t('cg.journalCompare')}</span><small>{t('cg.reportedContribution')}</small></div>
+                {reports?.reported_at && <time dateTime={reports.reported_at}>{new Date(reports.reported_at).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })}</time>}
               </div>
-            )}
-            {trackedContribution !== null && (
-              <div className={styles.trackedContribution}>
-                <span>{t('cg.trackedContributionTotal')}</span>
-                <strong>{formatNumber(trackedContribution, locale)}</strong>
-              </div>
-            )}
-          </section>
-        )}
+              {journalTotal !== null && total !== null && (
+                <div className={styles.compareChart}>
+                  <div className={styles.compareRow}>
+                    <span>{t('cg.journal')}</span>
+                    <div className={styles.compareTrack}><span className={styles.journalBar} style={{ width: `${journalWidth}%` }} /></div>
+                    <strong>{formatNumber(journalTotal, locale)}</strong>
+                  </div>
+                  <div className={styles.compareRow}>
+                    <span>{progressSourceLabel(goal.progress_source)}</span>
+                    <div className={styles.compareTrack}><span className={styles.sourceBar} style={{ width: `${sourceWidth}%` }} /></div>
+                    <strong>{formatNumber(total, locale)}{target !== null ? ` / ${formatNumber(target, locale)}` : ''}</strong>
+                  </div>
+                </div>
+              )}
+              {trackedContribution !== null && (
+                <div className={styles.trackedContribution}>
+                  <span>{t('cg.trackedContributionTotal')}</span>
+                  <strong>{formatNumber(trackedContribution, locale)}</strong>
+                </div>
+              )}
+            </section>
+          )}
+        </details>
 
         {progressUpdated && (
           <footer className={styles.footer}>
