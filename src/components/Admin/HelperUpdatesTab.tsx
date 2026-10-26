@@ -508,7 +508,7 @@ export default function HelperUpdatesTab() {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(link.href), 1_000);
-      setMessage('Комплект скачан. Распакуйте его на Windows и запустите BUILD-WINDOWS.bat, затем загрузите готовый EXE ниже.');
+      setMessage('Комплект скачан. BUILD-WINDOWS.bat соберёт ColonialHelperSetup.exe для первичной установки и ColonialHelper.exe для канала обновлений.');
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Не удалось подготовить комплект сборки');
       setMessage('');
@@ -523,6 +523,10 @@ export default function HelperUpdatesTab() {
       return;
     }
     if (!launcherFile || !launcherVersion.trim()) return;
+    if (launcherFile.name !== 'ColonialHelper.exe') {
+      setError('Загрузите dist\\ColonialHelper.exe — это лаунчер для обновлений. ColonialHelperSetup.exe предназначен для первичной установки и сюда не подходит.');
+      return;
+    }
     setBusy(true);
     setError('');
     setMessage('Подготавливаю фрагменты ColonialHelper.exe…');
@@ -944,22 +948,23 @@ export default function HelperUpdatesTab() {
         )}
 
         <div style={{ borderTop: '1px solid #2d3033', marginTop: 16, paddingTop: 12 }}>
-          <strong>Базовая сборка ColonialHelper.exe</strong>
+          <strong>Первая сборка Windows: Setup + лаунчер</strong>
           <p style={{ color: '#9ca3af', fontSize: 12, margin: '4px 0 8px' }}>
-            Первичный EXE скачивается пилотом один раз, после чего получает небольшие пакетные обновления.
-            Сервер Linux готовит комплект с актуальным кодом и ключами, а сам Windows EXE собирается на доверенной Windows-машине.
-            При публикации EXE передаётся частями до 4 МиБ; при 413 размер уменьшается автоматически.
+            BUILD-WINDOWS.bat теперь собирает оба артефакта: ColonialHelperSetup.exe для первичной установки пользователям и ColonialHelper.exe — лаунчер/payload, который нужен существующему каналу обновлений.
+            Setup распространяйте как установщик. Ниже загружается только ColonialHelper.exe; не загружайте туда Setup, иначе он заменит базовый лаунчер для обновлений.
+            Сборка выполняется на доверенной Windows-машине; при загрузке лаунчер передаётся частями до 4 МиБ.
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 9 }}>
             <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" aria-label="Версия базовой сборки" style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
             <button className="btn btn-cyan" disabled={releaseBusy || !launcherVersion.trim()} onClick={() => void downloadLauncherBuildKit()}>
-              Создать первичный EXE — скачать комплект
+              Скачать комплект сборки Setup + EXE
             </button>
-            <span style={{ color: '#6b7280', fontSize: 11 }}>В ZIP: BUILD-WINDOWS.bat и инструкция</span>
+            <span style={{ color: '#6b7280', fontSize: 11 }}>В ZIP: сборка Setup и payload лаунчера</span>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingTop: 9, borderTop: '1px dashed #2d3033' }}>
             <input type="file" accept=".exe,application/vnd.microsoft.portable-executable" onChange={(event) => setLauncherFile(event.target.files?.[0] ?? null)} style={{ color: '#9ca3af', fontSize: 12 }} />
-            <button className="btn" disabled={releaseBusy || !launcherFile || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить готовый EXE на сервер</button>
+            {launcherFile && <span style={{ color: launcherFile.name === 'ColonialHelper.exe' ? '#9ca3af' : '#fca5a5', fontSize: 11 }}>{launcherFile.name} — требуется файл ColonialHelper.exe</span>}
+            <button className="btn" disabled={releaseBusy || !launcherFile || launcherFile.name !== 'ColonialHelper.exe' || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить ColonialHelper.exe для обновлений</button>
           </div>
         </div>
       </div>
