@@ -8,7 +8,10 @@ from ctypes import wintypes
 WS_CAPTION = 0x00C00000
 WS_THICKFRAME = 0x00040000
 WS_MAXIMIZEBOX = 0x00010000
+WS_EX_APPWINDOW = 0x00040000
+WS_EX_TOOLWINDOW = 0x00000080
 GWL_STYLE = -16
+GWL_EXSTYLE = -20
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
@@ -89,6 +92,15 @@ def remove_native_caption(window, user32=None, *, allow_resize=True,
             if int(get_style(hwnd, GWL_STYLE)) != desired:
                 return False
 
+        # Tk's overrideredirect window must still be represented in the taskbar
+        # and Alt+Tab. Remove TOOLWINDOW (if set) and explicitly enable APPWINDOW.
+        ex_style = int(get_style(hwnd, GWL_EXSTYLE))
+        desired_ex_style = (ex_style | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
+        if desired_ex_style != ex_style:
+            set_style(hwnd, GWL_EXSTYLE, desired_ex_style)
+            if int(get_style(hwnd, GWL_EXSTYLE)) != desired_ex_style:
+                return False
+
         flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
         api.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
                                      ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
@@ -134,6 +146,13 @@ def add_custom_titlebar(window, tk, title: str, *, close_command=None,
     """
     if not sys.platform.startswith("win"):
         return None
+
+    # Set this before Tk maps the toplevel so it never paints the native caption.
+    # The Win32 style update below preserves resizing/maximize and taskbar presence.
+    try:
+        window.overrideredirect(True)
+    except Exception:
+        pass
 
     bar = tk.Frame(window, bg=background, height=34, highlightthickness=0)
     bar.pack(side="top", fill="x")
@@ -205,12 +224,9 @@ def add_custom_titlebar(window, tk, title: str, *, close_command=None,
                 return
             except Exception:
                 pass
-        # Never leave two visible title bars if this Windows/Tk build rejects
-        # the native style change entirely.
-        try:
-            bar.destroy()
-        except Exception:
-            pass
+        # Keep the custom bar: overrideredirect(True) above already prevents
+        # the native caption from being mapped even if an optional style bit
+        # could not be changed on this particular Tk build.
 
     try:
         # Give Tk time to create/map the native HWND before changing its style.

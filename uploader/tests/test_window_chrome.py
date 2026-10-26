@@ -29,12 +29,15 @@ class WindowChromeTests(unittest.TestCase):
         original = window_chrome.WS_CAPTION | window_chrome.WS_THICKFRAME | window_chrome.WS_MAXIMIZEBOX
         user32 = mock.Mock()
         user32.GetAncestor.return_value = outer_hwnd
-        style = {"value": original}
-        user32.GetWindowLongPtrW.side_effect = lambda _hwnd, _index: style["value"]
+        style = {
+            window_chrome.GWL_STYLE: original,
+            window_chrome.GWL_EXSTYLE: window_chrome.WS_EX_TOOLWINDOW,
+        }
+        user32.GetWindowLongPtrW.side_effect = lambda _hwnd, index: style[index]
 
-        def set_style(_hwnd, _index, value):
-            old = style["value"]
-            style["value"] = value
+        def set_style(_hwnd, index, value):
+            old = style[index]
+            style[index] = value
             return old
 
         user32.SetWindowLongPtrW.side_effect = set_style
@@ -48,9 +51,12 @@ class WindowChromeTests(unittest.TestCase):
             self.assertTrue(window_chrome.remove_native_caption(Window(), user32=user32))
 
         user32.GetAncestor.assert_called_once_with(child_hwnd, window_chrome.GA_ROOT)
-        user32.SetWindowLongPtrW.assert_called_once_with(
-            outer_hwnd, window_chrome.GWL_STYLE, original & ~window_chrome.WS_CAPTION,
-        )
+        user32.SetWindowLongPtrW.assert_has_calls([
+            mock.call(outer_hwnd, window_chrome.GWL_STYLE,
+                      original & ~window_chrome.WS_CAPTION),
+            mock.call(outer_hwnd, window_chrome.GWL_EXSTYLE,
+                      window_chrome.WS_EX_APPWINDOW),
+        ])
         self.assertEqual(
             user32.SetWindowPos.call_args.args[-1],
             window_chrome.SWP_NOMOVE | window_chrome.SWP_NOSIZE
@@ -63,12 +69,15 @@ class WindowChromeTests(unittest.TestCase):
         original = window_chrome.WS_CAPTION | window_chrome.WS_THICKFRAME | window_chrome.WS_MAXIMIZEBOX
         user32 = mock.Mock()
         user32.GetAncestor.return_value = hwnd
-        style = {"value": original}
-        user32.GetWindowLongPtrW.side_effect = lambda _hwnd, _index: style["value"]
+        style = {
+            window_chrome.GWL_STYLE: original,
+            window_chrome.GWL_EXSTYLE: window_chrome.WS_EX_TOOLWINDOW,
+        }
+        user32.GetWindowLongPtrW.side_effect = lambda _hwnd, index: style[index]
 
-        def set_style(_hwnd, _index, value):
-            old = style["value"]
-            style["value"] = value
+        def set_style(_hwnd, index, value):
+            old = style[index]
+            style[index] = value
             return old
 
         user32.SetWindowLongPtrW.side_effect = set_style
@@ -83,11 +92,13 @@ class WindowChromeTests(unittest.TestCase):
                 Window(), user32=user32, allow_resize=False, allow_maximize=False,
             ))
 
-        self.assertEqual(
-            user32.SetWindowLongPtrW.call_args.args[-1],
-            original & ~window_chrome.WS_CAPTION & ~window_chrome.WS_THICKFRAME
-            & ~window_chrome.WS_MAXIMIZEBOX,
-        )
+        user32.SetWindowLongPtrW.assert_has_calls([
+            mock.call(hwnd, window_chrome.GWL_STYLE,
+                      original & ~window_chrome.WS_CAPTION & ~window_chrome.WS_THICKFRAME
+                      & ~window_chrome.WS_MAXIMIZEBOX),
+            mock.call(hwnd, window_chrome.GWL_EXSTYLE,
+                      window_chrome.WS_EX_APPWINDOW),
+        ])
 
     def test_drag_uses_native_move_on_the_outer_toplevel(self):
         child_hwnd = 0x1234
@@ -118,6 +129,7 @@ class WindowChromeTests(unittest.TestCase):
              mock.patch.object(window_chrome, "remove_native_caption", return_value=True), \
              mock.patch.object(window_chrome, "_begin_native_drag", return_value=True) as drag:
             bar = window_chrome.add_custom_titlebar(window, tk, "Test")
+            window.overrideredirect.assert_called_once_with(True)
             bindings = [call for call in bar.bind.call_args_list if call.args[0] == "<ButtonPress-1>"]
             self.assertTrue(bindings)
             self.assertEqual(bindings[0].args[1](mock.Mock()), "break")
