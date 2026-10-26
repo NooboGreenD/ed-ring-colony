@@ -1,4 +1,5 @@
 """Windows-only custom chrome removes the native caption and uses native dragging."""
+import ctypes
 import sys
 import unittest
 from pathlib import Path
@@ -22,6 +23,30 @@ class WindowChromeTests(unittest.TestCase):
         user32 = mock.Mock()
         self.assertEqual(window_chrome._window_handle(Window(), user32), 0x5678)
         user32.GetAncestor.assert_not_called()
+
+    def test_native_caption_is_tinted_to_match_the_dark_ui(self):
+        hwnd = 0x5678
+        window = mock.Mock()
+        window.wm_frame.return_value = hex(hwnd)
+        user32 = mock.Mock()
+        dwmapi = mock.Mock()
+        dwmapi.DwmSetWindowAttribute.return_value = 0
+
+        with mock.patch.object(window_chrome.sys, "platform", "win32"):
+            self.assertTrue(window_chrome.style_native_caption(window, dwmapi, user32))
+
+        calls = dwmapi.DwmSetWindowAttribute.call_args_list
+        self.assertEqual([call.args[1] for call in calls], [
+            window_chrome.DWMWA_USE_IMMERSIVE_DARK_MODE,
+            window_chrome.DWMWA_CAPTION_COLOR,
+            window_chrome.DWMWA_TEXT_COLOR,
+            window_chrome.DWMWA_BORDER_COLOR,
+        ])
+        self.assertEqual(calls[1].args[0], hwnd)
+        self.assertEqual(
+            ctypes.cast(calls[1].args[2], ctypes.POINTER(ctypes.c_int)).contents.value,
+            window_chrome.CAPTION_BG_COLORREF,
+        )
 
     def test_caption_is_removed_from_the_outer_toplevel_hwnd(self):
         child_hwnd = 0x1234
@@ -139,6 +164,7 @@ class WindowChromeTests(unittest.TestCase):
     def test_non_windows_keeps_native_decorations(self):
         with mock.patch.object(window_chrome.sys, "platform", "linux"):
             self.assertFalse(window_chrome.remove_native_caption(object()))
+            self.assertFalse(window_chrome.style_native_caption(object()))
             self.assertIsNone(window_chrome.add_custom_titlebar(object(), object(), "title"))
 
 

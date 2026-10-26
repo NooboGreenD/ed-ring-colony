@@ -21,6 +21,13 @@ GA_ROOT = 2
 WM_SYSCOMMAND = 0x0112
 SC_MOVE = 0xF010
 HTCAPTION = 2
+DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
+CAPTION_BG_COLORREF = 0x0022201E
+CAPTION_TEXT_COLORREF = 0x00F4F3F2
 
 
 def _window_handle(window, user32=None) -> int:
@@ -51,6 +58,41 @@ def _window_handle(window, user32=None) -> int:
         # Older/nonstandard Tk builds may already return the top-level HWND.
         pass
     return hwnd
+
+
+def style_native_caption(window, dwmapi=None, user32=None) -> bool:
+    """Color the single native caption to match Colonial Helper's dark UI.
+
+    The caption-color attributes are supported on recent Windows builds. The
+    immersive-dark-mode fallback also helps on older Windows 10 releases.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        api = user32 or ctypes.WinDLL("user32", use_last_error=True)
+        hwnd = _window_handle(window, api)
+        if not hwnd:
+            return False
+        dwm = dwmapi or ctypes.WinDLL("dwmapi", use_last_error=True)
+        set_attribute = dwm.DwmSetWindowAttribute
+        set_attribute.argtypes = [wintypes.HWND, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD]
+        set_attribute.restype = ctypes.c_long
+
+        def apply(attribute, value):
+            native_value = ctypes.c_int(value)
+            result = set_attribute(hwnd, attribute, ctypes.byref(native_value),
+                                   ctypes.sizeof(native_value))
+            return int(result) == 0
+
+        dark_mode = (apply(DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+                     or apply(DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, 1))
+        caption = apply(DWMWA_CAPTION_COLOR, CAPTION_BG_COLORREF)
+        text = apply(DWMWA_TEXT_COLOR, CAPTION_TEXT_COLORREF)
+        apply(DWMWA_BORDER_COLOR, CAPTION_BG_COLORREF)
+        return dark_mode or caption or text
+    except Exception:
+        return False
 
 
 def remove_native_caption(window, user32=None, *, allow_resize=True,
