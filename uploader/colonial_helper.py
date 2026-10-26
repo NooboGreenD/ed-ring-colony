@@ -6,10 +6,12 @@ GUI приложение на ttkbootstrap с live-watcher журналов Elit
 и оверлеем HUD для игры (Borderless Windowed).
 """
 
+import errno
 import os
 import sys
 import json
 import math
+import tempfile
 import time
 import threading
 import tkinter as tk
@@ -156,6 +158,52 @@ DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "
 # обновлять код пакетом нечего: обновляется git-клон, а не установка.
 LAUNCHER_VERSION = os.environ.get("COLONIAL_HELPER_LAUNCHER", "")
 ACTIVE_BUNDLE_VERSION = os.environ.get("COLONIAL_HELPER_ACTIVE_VERSION", "")
+_JOURNAL_OFFSETS_LOCK = threading.RLock()
+
+
+def _atomic_write_journal_offsets(path: Path, payload: dict, *, replace=None, sleep=None):
+    """Write offsets via a unique same-directory file; retry transient Windows locks.
+
+    A fixed ``.tmp`` name can be shared by separate Helper processes. One process
+    may then rename or truncate another process's open temporary file. ``mkstemp``
+    gives each writer a private file while keeping the final replace on one volume.
+    """
+    replace = replace or os.replace
+    sleep = sleep or time.sleep
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f"{path.name}.{os.getpid()}.", suffix=".tmp", dir=str(path.parent)
+    )
+    temp_path = Path(temp_name)
+    try:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+        fd = -1  # fdopen now owns the descriptor
+        with handle:
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        for attempt in range(6):
+            try:
+                replace(temp_path, path)
+                return
+            except OSError as exc:
+                winerror = getattr(exc, "winerror", None)
+                retryable = (winerror in (5, 32)
+                             or exc.errno in (errno.EACCES, errno.EBUSY, errno.EPERM))
+                if not retryable or attempt == 5:
+                    raise
+                sleep(min(0.05 * (2 ** attempt), 0.4))
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
 
 def bundle_mode() -> bool:
@@ -8935,11 +8983,16 @@ class ColonialHelperApp:
 
     def _save_journal_offsets(self):
         path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
-        tmp = path.with_suffix(".tmp")
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"target": self._upload_target(), "offsets": self.last_file_mtimes}, fh)
-            tmp.replace(path)
+            # Snapshot and serialize in one critical section so two watcher
+            # threads in this process cannot overlap saves or mutate the dict
+            # while it is being encoded.
+            with _JOURNAL_OFFSETS_LOCK:
+                payload = {
+                    "target": self._upload_target(),
+                    "offsets": dict(self.last_file_mtimes),
+                }
+                _atomic_write_journal_offsets(path, payload)
         except OSError as exc:
             self.root.after(0, lambda e=exc: self.log(f"Не удалось сохранить состояние журналов: {e}", "warn"))
 
@@ -9090,7 +9143,8 @@ class ColonialHelperApp:
 
     def _watcher_loop(self):
         offsets = self._load_journal_offsets()
-        self.last_file_mtimes = {}
+        with _JOURNAL_OFFSETS_LOCK:
+            self.last_file_mtimes = {}
         first_reconciliation = not bool(offsets)
         # Сессия наблюдения начинается заново: текущее состояние площадок
         # уходит на сайт один раз (повтор всё равно схлопывается по
@@ -9101,7 +9155,8 @@ class ColonialHelperApp:
             try:
                 # Первый запуск проверяет историю с начала файлов; после этого
                 # сохраняются byte offsets, как в EDDiscovery.
-                self.last_file_mtimes[str(f)] = int(offsets.get(str(f), 0)) if not first_reconciliation else 0
+                with _JOURNAL_OFFSETS_LOCK:
+                    self.last_file_mtimes[str(f)] = int(offsets.get(str(f), 0)) if not first_reconciliation else 0
             except (OSError, ValueError):
                 pass
         startup_reconciliation = first_reconciliation or any(
@@ -9142,7 +9197,8 @@ class ColonialHelperApp:
                     # live=False: историческая сверка. События во внешние API
                     # (EDSM/Inara/Raven) не уходят и в оверлей сессии не пишутся.
                     processed = self._process_journal_changes(f, start, size, live=False)
-                    self.last_file_mtimes[str(f)] = start + processed
+                    with _JOURNAL_OFFSETS_LOCK:
+                        self.last_file_mtimes[str(f)] = start + processed
                     done_bytes += processed
                     self._save_journal_offsets()
                     self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
@@ -9180,7 +9236,8 @@ class ColonialHelperApp:
                         # EDSM/Inara/Raven и в оверлей.
                         processed = self._process_journal_changes(f, last_size, current_size, live=True)
                         # Обновляем только на фактически обработанные байты (полные строки)
-                        self.last_file_mtimes[fpath] = last_size + processed
+                        with _JOURNAL_OFFSETS_LOCK:
+                            self.last_file_mtimes[fpath] = last_size + processed
                         self._save_journal_offsets()
             except Exception as e:
                 self.root.after(0, lambda e=e: self.log(f"Watcher ошибка: {e}", "error"))

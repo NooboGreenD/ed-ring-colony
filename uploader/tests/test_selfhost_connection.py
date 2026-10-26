@@ -1,7 +1,10 @@
 """Domain migration, credentials isolation and real API request regression tests."""
+import concurrent.futures
 import json
+import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -129,6 +132,7 @@ class UploadCacheScopeTests(unittest.TestCase):
         from test_initial_upload_flow import install_gui_stubs
         install_gui_stubs()
         import colonial_helper
+        cls.module = colonial_helper
         cls.App = colonial_helper.ColonialHelperApp
 
     def setUp(self):
@@ -161,6 +165,53 @@ class UploadCacheScopeTests(unittest.TestCase):
         self.assertEqual(self.app._load_journal_offsets(), {"journal.log": 200})
         self.app.api.user_id = "user-b"
         self.assertEqual(self.app._load_journal_offsets(), {})
+
+    def test_offset_atomic_write_uses_distinct_temp_files_for_concurrent_writers(self):
+        target = Path(self.temp.name) / ".colonial_helper_journal_offsets.json"
+        temp_paths = []
+        paths_lock = threading.Lock()
+
+        def write(index):
+            payload = {"target": "site|user", "offsets": {f"journal-{index}": index}}
+
+            def replace(source, destination):
+                with paths_lock:
+                    temp_paths.append(Path(source))
+                os.replace(source, destination)
+
+            self.module._atomic_write_journal_offsets(target, payload, replace=replace, sleep=lambda _: None)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(write, range(8)))
+
+        self.assertEqual(len(temp_paths), 8)
+        self.assertEqual(len(set(temp_paths)), 8)
+        self.assertEqual(len(list(target.parent.glob(f"{target.name}.*.tmp"))), 0)
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(saved["target"], "site|user")
+        self.assertEqual(len(saved["offsets"]), 1)
+
+    def test_offset_atomic_write_retries_windows_sharing_violation(self):
+        target = Path(self.temp.name) / ".colonial_helper_journal_offsets.json"
+        attempts = []
+        delays = []
+
+        def replace(source, destination):
+            attempts.append((source, destination))
+            if len(attempts) < 3:
+                error = OSError("sharing violation")
+                error.winerror = 32
+                raise error
+            os.replace(source, destination)
+
+        self.module._atomic_write_journal_offsets(
+            target, {"target": "site|user", "offsets": {"journal.log": 42}},
+            replace=replace, sleep=delays.append,
+        )
+
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(delays, [0.05, 0.1])
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["offsets"], {"journal.log": 42})
 
     def test_legacy_watcher_offsets_force_one_reconciliation(self):
         file = self.app.config_path.with_name(".colonial_helper_journal_offsets.json")

@@ -15,6 +15,8 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 GA_ROOT = 2
+WM_NCLBUTTONDOWN = 0x00A1
+HTCAPTION = 2
 
 
 def _window_handle(window, user32=None) -> int:
@@ -89,8 +91,29 @@ def remove_native_caption(window, user32=None, *, allow_resize=True,
         return False
 
 
+def _begin_native_drag(window, user32=None) -> bool:
+    """Delegate title-bar movement to Windows instead of redrawing per mouse event."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        api = user32 or ctypes.WinDLL("user32", use_last_error=True)
+        hwnd = _window_handle(window, api)
+        if not hwnd:
+            return False
+        api.ReleaseCapture.argtypes = []
+        api.ReleaseCapture.restype = wintypes.BOOL
+        api.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                     ctypes.c_size_t, ctypes.c_ssize_t]
+        api.SendMessageW.restype = ctypes.c_ssize_t
+        api.ReleaseCapture()
+        api.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
+        return True
+    except Exception:
+        return False
+
+
 def _drag_geometry(start: dict, pointer_x: int, pointer_y: int) -> str:
-    """Move using the original dimensions; title-bar dragging can never resize."""
+    """Fallback drag geometry that retains the original fixed window dimensions."""
     left = max(0, int(start["left"]) + int(pointer_x) - int(start["pointer_x"]))
     top = max(0, int(start["top"]) + int(pointer_y) - int(start["pointer_y"]))
     return f"{int(start['width'])}x{int(start['height'])}+{left}+{top}"
@@ -102,9 +125,9 @@ def add_custom_titlebar(window, tk, title: str, *, close_command=None,
                         allow_resize=True):
     """Add branded controls and remove the native title bar on Windows.
 
-    Other platforms retain their native decorations. Dragging updates only the
-    position component of a fixed geometry, so it cannot accidentally stretch a
-    non-resizable installer window.
+    Other platforms retain their native decorations. On Windows, dragging is
+    delegated to the native window manager to avoid per-motion Tk geometry
+    redraws; the installer still has resize styles disabled.
     """
     if not sys.platform.startswith("win"):
         return None
@@ -151,23 +174,16 @@ def add_custom_titlebar(window, tk, title: str, *, close_command=None,
             if allow_maximize and window.state() in ("zoomed", "maximized"):
                 window.state("normal")
                 window.update_idletasks()
-                width = int(window.winfo_width())
-                height = int(window.winfo_height())
-                start = {
-                    "pointer_x": int(event.x_root), "pointer_y": int(event.y_root),
-                    "left": max(0, int(event.x_root) - 80),
-                    "top": max(0, int(event.y_root) - 16),
-                    "width": width, "height": height,
-                }
-            else:
-                window.update_idletasks()
-                start = {
-                    "pointer_x": int(event.x_root), "pointer_y": int(event.y_root),
-                    "left": int(window.winfo_x()), "top": int(window.winfo_y()),
-                    "width": int(window.winfo_width()),
-                    "height": int(window.winfo_height()),
-                }
-            window._custom_chrome_drag = start
+            if _begin_native_drag(window):
+                window._custom_chrome_drag = None
+                return "break"
+            window.update_idletasks()
+            window._custom_chrome_drag = {
+                "pointer_x": int(event.x_root), "pointer_y": int(event.y_root),
+                "left": int(window.winfo_x()), "top": int(window.winfo_y()),
+                "width": int(window.winfo_width()),
+                "height": int(window.winfo_height()),
+            }
         except Exception:
             window._custom_chrome_drag = None
         return "break"

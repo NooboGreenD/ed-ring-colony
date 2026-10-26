@@ -61,6 +61,25 @@ class WindowChromeTests(unittest.TestCase):
             & ~window_chrome.WS_MAXIMIZEBOX,
         )
 
+    def test_drag_uses_native_move_on_the_outer_toplevel(self):
+        child_hwnd = 0x1234
+        outer_hwnd = 0x5678
+        user32 = mock.Mock()
+        user32.GetAncestor.return_value = outer_hwnd
+        user32.ReleaseCapture.return_value = 1
+
+        class Window:
+            def winfo_id(self):
+                return child_hwnd
+
+        with mock.patch.object(window_chrome.sys, "platform", "win32"):
+            self.assertTrue(window_chrome._begin_native_drag(Window(), user32=user32))
+
+        user32.ReleaseCapture.assert_called_once_with()
+        user32.SendMessageW.assert_called_once_with(
+            outer_hwnd, window_chrome.WM_NCLBUTTONDOWN, window_chrome.HTCAPTION, 0,
+        )
+
     def test_drag_geometry_only_changes_position(self):
         start = {"left": 120, "top": 75, "pointer_x": 150, "pointer_y": 90,
                  "width": 600, "height": 455}
