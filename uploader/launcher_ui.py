@@ -108,13 +108,121 @@ def format_date(value: str) -> str:
         return value[:32]
 
 
-def plain_text(value: str) -> str:
-    """Make CMS HTML snippets readable in a simple Tk label."""
+def _article_markup(value: str) -> str:
+    """Convert safe CMS HTML/Markdown fragments into a small Markdown subset."""
     text = html.unescape(str(value or ""))
-    text = re.sub(r"<\s*br\s*/?\s*>", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"</\s*(p|div|li|h[1-6])\s*>", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]*>", " ", text)
-    return " ".join(text.split())
+    text = re.sub(r"<\s*script\b[^>]*>.*?</\s*script\s*>", "", text,
+                  flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<\s*style\b[^>]*>.*?</\s*style\s*>", "", text,
+                  flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*/?\s*(p|div|section|article)\b[^>]*>", "\n\n", text,
+                  flags=re.IGNORECASE)
+    text = re.sub(r"<\s*h[1-6]\b[^>]*>", "\n\n# ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*h[1-6]\s*>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*li\b[^>]*>", "\n- ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*li\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*(strong|b)\b[^>]*>", "**", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*(strong|b)\s*>", "**", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*(em|i)\b[^>]*>", "*", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*(em|i)\s*>", "*", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*code\b[^>]*>", "`", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*code\s*>", "`", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*blockquote\b[^>]*>", "\n> ", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*blockquote\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]*>", "", text)
+    text = text.replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    normalized = []
+    blank = False
+    for line in lines:
+        if not line:
+            if normalized and not blank:
+                normalized.append("")
+            blank = True
+            continue
+        normalized.append(line)
+        blank = False
+    return "\n".join(normalized).strip()
+
+
+_INLINE_MARKUP = re.compile(
+    r"(?P<link>\[([^\]]+)\]\((?:https?://|/)[^)]*\))"
+    r"|(?P<strong>\*\*.+?\*\*|__.+?__)"
+    r"|(?P<code>`[^`]+`)"
+    r"|(?P<em>(?<!\*)\*[^*\n]+\*(?!\*)|(?<!_)_[^_\n]+_(?!_))"
+)
+
+
+def article_blocks(value: str):
+    """Parse headings, paragraphs, lists and inline emphasis for Tk Text."""
+    text = _article_markup(value)
+    blocks = []
+    paragraph = []
+
+    def inline_segments(line):
+        segments = []
+        cursor = 0
+        for match in _INLINE_MARKUP.finditer(line):
+            if match.start() > cursor:
+                segments.append((line[cursor:match.start()], ()))
+            token = match.group(0)
+            if match.lastgroup == "link":
+                segments.append((match.group(2), ("link",)))
+            elif match.lastgroup == "strong":
+                segments.append((token[2:-2], ("strong",)))
+            elif match.lastgroup == "code":
+                segments.append((token[1:-1], ("code",)))
+            else:
+                segments.append((token[1:-1], ("em",)))
+            cursor = match.end()
+        if cursor < len(line):
+            segments.append((line[cursor:], ()))
+        return segments
+
+    def flush_paragraph():
+        if paragraph:
+            blocks.append(("paragraph", inline_segments(" ".join(paragraph))))
+            paragraph.clear()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            flush_paragraph()
+            continue
+        heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
+        bullet = re.match(r"^[-*+]\s+(.+)$", stripped)
+        ordered = re.match(r"^(\d+)[.)]\s+(.+)$", stripped)
+        quote = re.match(r"^>\s?(.*)$", stripped)
+        if heading or bullet or ordered or quote:
+            flush_paragraph()
+            if heading:
+                blocks.append(("heading", inline_segments(heading.group(2))))
+            elif bullet:
+                blocks.append(("bullet", inline_segments(bullet.group(1))))
+            elif ordered:
+                blocks.append((f"ordered:{ordered.group(1)}", inline_segments(ordered.group(2))))
+            else:
+                blocks.append(("quote", inline_segments(quote.group(1))))
+        else:
+            paragraph.append(stripped)
+    flush_paragraph()
+    return blocks
+
+
+def plain_text(value: str) -> str:
+    """Readable plain-text preview used by tests and non-rich-text fallbacks."""
+    lines = []
+    for kind, segments in article_blocks(value):
+        text = "".join(segment for segment, _tags in segments)
+        if kind == "bullet":
+            text = f"• {text}"
+        elif kind.startswith("ordered:"):
+            text = f"{kind.split(':', 1)[1]}. {text}"
+        elif kind == "quote":
+            text = f"“{text}”"
+        lines.append(text)
+    return "\n".join(lines)
 
 
 def _article_url(kind: str, article: Dict[str, str]) -> str:
@@ -289,6 +397,8 @@ class LauncherDashboard:
         self.feed_window = self.canvas.create_window((0, 0), window=self.feed_inner, anchor="nw")
         self.feed_inner.bind("<Configure>", lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.feed_window, width=event.width))
+        self._last_feed_wraplength = 0
+        self.canvas.bind("<Configure>", self._on_feed_canvas_resize, add="+")
         self.canvas.bind_all("<MouseWheel>", self._mousewheel)
 
         footer = self._frame(outer, bg=BG)
@@ -321,6 +431,80 @@ class LauncherDashboard:
                               width=146 if key == "news" else 67)
         self._render_feed(key)
 
+    def _feed_wraplength(self, canvas_width=None) -> int:
+        width = int(canvas_width or 0)
+        if width < 100:
+            try:
+                width = int(self.canvas.winfo_width())
+            except Exception:
+                width = 0
+        if width < 100:
+            try:
+                width = int(self.root.winfo_width()) - 330
+            except Exception:
+                width = 420
+        return max(240, min(900, width - 56))
+
+    def _on_feed_canvas_resize(self, event):
+        wraplength = self._feed_wraplength(event.width)
+        previous = getattr(self, "_last_feed_wraplength", 0)
+        if abs(wraplength - previous) < 24:
+            return
+        self._last_feed_wraplength = wraplength
+        if getattr(self, "feed_loaded", False):
+            try:
+                self.root.after_idle(lambda: self._render_feed(self.current_tab))
+            except Exception:
+                pass
+
+    def _render_article_body(self, parent, raw: str, wraplength: int):
+        tk = self.tk
+        blocks = article_blocks(raw)
+        if not blocks:
+            return
+        readable = plain_text(raw)
+        if len(readable) > 900:
+            readable = readable[:897].rsplit(" ", 1)[0] + "…"
+            blocks = [("paragraph", [(readable, ())])]
+        chars_per_line = max(34, int(wraplength / 7.2))
+        estimated_lines = sum(
+            max(1, (len("".join(part for part, _tags in segments)) + chars_per_line - 1)
+                // chars_per_line)
+            for _kind, segments in blocks
+        ) + max(0, len(blocks) - 1)
+        body = tk.Text(
+            parent, width=1, height=max(2, min(14, estimated_lines)),
+            bg=PANEL_ALT, fg=MUTED, wrap="word", relief="flat", bd=0,
+            highlightthickness=0, padx=0, pady=0, takefocus=False,
+            font=("Segoe UI", 9), spacing1=1, spacing3=2,
+        )
+        body.tag_configure("strong", font=("Segoe UI", 9, "bold"), foreground=TEXT)
+        body.tag_configure("em", font=("Segoe UI", 9, "italic"))
+        body.tag_configure("code", font=("Consolas", 9), foreground=CYAN,
+                           background=BG)
+        body.tag_configure("link", foreground=CYAN, underline=True)
+        body.tag_configure("heading", font=("Segoe UI", 10, "bold"), foreground=TEXT,
+                           spacing1=4, spacing3=3)
+        body.tag_configure("quote", foreground=MUTED, lmargin1=14, lmargin2=14)
+        body.tag_configure("bullet", foreground=ORANGE, font=("Segoe UI", 9, "bold"))
+        for index, (kind, segments) in enumerate(blocks):
+            if index:
+                body.insert("end", "\n")
+            is_ordered = kind.startswith("ordered:")
+            block_style = "heading" if kind == "heading" else "quote" if kind == "quote" else None
+            if kind == "bullet":
+                body.insert("end", "•  ", ("bullet",))
+            elif is_ordered:
+                body.insert("end", f"{kind.split(':', 1)[1]}.  ", ("bullet",))
+            for segment, tags in segments:
+                applied = tuple(tags) + ((block_style,) if block_style else ())
+                if applied:
+                    body.insert("end", segment, applied)
+                else:
+                    body.insert("end", segment)
+        body.configure(state="disabled")
+        body.pack(fill="x", anchor="w", pady=(0, 9))
+
     def _render_feed(self, key: str):
         tk = self.tk
         for child in self.feed_inner.winfo_children():
@@ -336,7 +520,7 @@ class LauncherDashboard:
             self._label(self.feed_inner, title, bg=PANEL, fg=MUTED,
                         justify="left", wraplength=560, font=("Segoe UI", 11)).pack(anchor="w", padx=22, pady=22)
             return
-        wraplength = max(340, min(660, self.root.winfo_width() - 570))
+        wraplength = self._feed_wraplength()
         for article in articles:
             card = tk.Frame(self.feed_inner, bg=PANEL_ALT, highlightbackground=LINE,
                             highlightthickness=1)
@@ -351,13 +535,7 @@ class LauncherDashboard:
             self._label(content, title, bg=PANEL_ALT, fg=TEXT,
                         justify="left", anchor="w", wraplength=wraplength,
                         font=("Segoe UI", 12, "bold")).pack(fill="x", anchor="w", pady=(5, 4))
-            body = plain_text(article.get("body", ""))
-            if len(body) > 380:
-                body = body[:377].rsplit(" ", 1)[0] + "…"
-            if body:
-                self._label(content, body, bg=PANEL_ALT, fg=MUTED,
-                            justify="left", anchor="w", wraplength=wraplength,
-                            font=("Segoe UI", 9)).pack(fill="x", anchor="w", pady=(0, 9))
+            self._render_article_body(content, article.get("body", ""), wraplength)
             self._button(content, "Читать на сайте ↗",
                          lambda item=article, kind=key: webbrowser.open(_article_url(kind, item)),
                          fg=CYAN, bg=PANEL_ALT, activebackground=LINE,

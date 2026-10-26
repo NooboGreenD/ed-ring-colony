@@ -91,7 +91,7 @@ from route_tracker import RouteTracker
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from ui_scroll import SmoothScrollController
 from ui_navigation import SidebarNavigator
-from window_chrome import style_native_caption
+from window_chrome import add_custom_titlebar
 from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
@@ -150,7 +150,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.8"
+VERSION = "2.18.9"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -509,12 +509,35 @@ class ColonialHelperApp:
     # ============================================================
     def _setup_styles(self):
         s = self.style
+        surface = "#252a2e"
+        s.configure("App.TFrame", background=COLOR_BG)
+        s.configure("Sidebar.TFrame", background=surface, bordercolor=COLOR_LINE)
+        s.configure("Workspace.TFrame", background=surface, bordercolor=COLOR_LINE,
+                    relief="solid", borderwidth=1)
+        s.configure("WorkspaceHeader.TFrame", background=surface)
+        s.configure("WorkspaceContent.TFrame", background=surface)
+        s.configure("Accent.TFrame", background=COLOR_ORANGE)
+        s.configure("NavMarker.TFrame", background=COLOR_LINE)
+        s.configure("Brand.TLabel", background=surface, foreground=COLOR_CYAN)
+        s.configure("SidebarMeta.TLabel", background=surface, foreground=COLOR_MUTED)
+        s.configure("WorkspaceTitle.TLabel", background=surface, foreground=COLOR_TEXT)
+        s.configure("WorkspaceMeta.TLabel", background=surface, foreground=COLOR_CYAN)
+        s.configure("Navigation.TButton", font=("Segoe UI", 9, "bold"),
+                    padding=(9, 7), anchor="w")
+        s.configure("TButton", font=("Segoe UI", 9), padding=(9, 6))
+        s.configure("TEntry", fieldbackground="#202428", foreground=COLOR_TEXT,
+                    bordercolor=COLOR_LINE, padding=(8, 6))
+        s.configure("TCombobox", fieldbackground="#202428", foreground=COLOR_TEXT,
+                    bordercolor=COLOR_LINE, padding=(7, 5))
+        s.configure("TLabelframe", background=surface, bordercolor=COLOR_LINE)
+        s.configure("TLabelframe.Label", background=surface, foreground=COLOR_CYAN,
+                    font=("Segoe UI", 9, "bold"))
         s.configure("Orange.TButton", foreground=COLOR_ORANGE, bordercolor=COLOR_ORANGE)
         s.configure("Cyan.TButton", foreground=COLOR_CYAN, bordercolor=COLOR_CYAN)
         s.configure("Green.TButton", foreground=COLOR_GREEN, bordercolor=COLOR_GREEN)
         s.configure("Red.TButton", foreground=COLOR_RED, bordercolor=COLOR_RED)
         s.configure("Orange.TEntry", fieldbackground=COLOR_PANEL)
-        s.configure("Muted.TLabel", foreground=COLOR_MUTED)
+        s.configure("Muted.TLabel", background=COLOR_BG, foreground=COLOR_MUTED)
 
     # ============================================================
     #  Шапка
@@ -527,35 +550,36 @@ class ColonialHelperApp:
     }
 
     def _build_header(self):
-        # Keep one caption in the main app and tint the Windows caption to match
-        # the dark UI, rather than stacking a custom row beneath it.
-        try:
-            self.root.after(100, lambda: style_native_caption(self.root))
-        except Exception:
-            style_native_caption(self.root)
-        frame = tb.Frame(self.root, padding=10)
-        frame.pack(fill=X, pady=(0, 5))
+        # Match the branded borderless chrome used by the launcher and Setup.
+        add_custom_titlebar(
+            self.root, tk, f"COLONIAL HELPER  /  v{VERSION}",
+            close_command=self._on_close, allow_maximize=True,
+        )
 
+        frame = tb.Frame(self.root, padding=(14, 12), relief="solid", borderwidth=1)
+        frame.pack(fill=X, padx=14, pady=(12, 8))
+
+        identity = tb.Frame(frame)
+        identity.pack(fill=X)
         title = tb.Label(
-            frame,
-            text="◆ COLONIAL HELPER",
-            font=("Consolas", 14, "bold"),
+            identity,
+            text="◆  ED RING COLONY",
+            font=("Segoe UI", 16, "bold"),
             foreground=COLOR_ORANGE,
         )
-        title.pack(anchor=W)
-
+        title.pack(side=LEFT, anchor=W)
         subtitle = tb.Label(
-            frame,
-            text="Standalone uploader for ED Ring Colony  |  F12 — показать/скрыть оверлей",
+            identity,
+            text="ПАНЕЛЬ УПРАВЛЕНИЯ  ·  F12 — показать или скрыть оверлей",
             font=("Segoe UI", 9),
             foreground=COLOR_MUTED,
         )
-        subtitle.pack(anchor=W)
+        subtitle.pack(side=LEFT, anchor=W, padx=(14, 0), pady=(4, 0))
 
-        # Обновления: кнопка проверки, канал и автопроверка при запуске.
-        update_frame = tb.Frame(frame)
-        update_frame.pack(fill=X, pady=(6, 0))
-
+        # Update controls remain the same widgets and callbacks; only their
+        # visual grouping changes so the release channel is easy to scan.
+        update_frame = tb.Frame(frame, padding=(9, 7), relief="solid", borderwidth=1)
+        update_frame.pack(fill=X, pady=(11, 7))
         self.update_button = tb.Button(
             update_frame,
             text="⟳  Обновить программу",
@@ -581,14 +605,11 @@ class ColonialHelperApp:
             value=bool(self.config.get("update_check_enabled", True)))
         tb.Checkbutton(
             update_frame,
-            text="проверять при запуске",
+            text="Проверять при запуске",
             variable=self.update_auto_var,
             command=self._on_update_settings_changed,
         ).pack(side=LEFT)
 
-        # Лечение установки: нужно, когда файл пакета испорчен (антивирус,
-        # сбой записи) — тогда пофайловой дельте верить нельзя, и пакет
-        # скачивается целиком. Кнопка есть только там, где есть что лечить.
         if bundle_mode():
             tb.Button(
                 update_frame,
@@ -600,66 +621,45 @@ class ColonialHelperApp:
 
         self.update_hint = tb.Label(
             update_frame,
-            text=f"установлена v{VERSION}",
-            font=("Consolas", 9),
+            text=f"Установлена v{VERSION}",
+            font=("Consolas", 9, "bold"),
             foreground=COLOR_MUTED,
         )
-        self.update_hint.pack(side=RIGHT)
+        self.update_hint.pack(side=RIGHT, padx=(8, 0))
 
-        # Настоящий индикатор выполнения: текст «37 %» плохо заметен и не
-        # показывает, зависло ли скачивание. При проверке/подготовке работает
-        # indeterminate, при передаче байтов — determinate 0..100.
         self.update_progress = tb.Progressbar(
             frame,
             mode="determinate",
             maximum=100,
             bootstyle="info-striped",
         )
-        # До начала операции не занимает место в шапке.
 
-        # Индикатор игры: запущен ли клиент Elite Dangerous и в фокусе ли он.
-        game_frame = tb.Frame(frame)
-        game_frame.pack(fill=X, pady=(6, 0))
-
-        self.game_dot = tb.Label(game_frame, text="●", font=("Segoe UI", 11), foreground=COLOR_MUTED)
-        self.game_dot.pack(side=LEFT, padx=(0, 6))
-
+        indicators = tb.Frame(frame)
+        indicators.pack(fill=X, pady=(0, 7))
+        self.game_dot = tb.Label(
+            indicators, text="●", font=("Segoe UI", 10), foreground=COLOR_MUTED)
+        self.game_dot.pack(side=LEFT, padx=(2, 6))
         self.game_label = tb.Label(
-            game_frame,
-            text="Игра: проверка…",
-            font=("Consolas", 10),
-            foreground=COLOR_MUTED,
-        )
+            indicators, text="Игра: проверка…", font=("Segoe UI", 9),
+            foreground=COLOR_MUTED)
         self.game_label.pack(side=LEFT)
-
         self.game_hint = tb.Label(
-            game_frame,
-            text="",
-            font=("Consolas", 9),
-            foreground=COLOR_MUTED,
-        )
+            indicators, text="", font=("Segoe UI", 9), foreground=COLOR_MUTED)
         self.game_hint.pack(side=RIGHT)
 
-        self.status_frame = tb.Frame(frame, relief="solid", borderwidth=1, padding=8)
-        self.status_frame.pack(fill=X, pady=(10, 0))
-
-        self.status_dot = tb.Label(self.status_frame, text="●", font=("Segoe UI", 12), foreground=COLOR_MUTED)
+        self.status_frame = tb.Frame(
+            frame, relief="solid", borderwidth=1, padding=(10, 8))
+        self.status_frame.pack(fill=X)
+        self.status_dot = tb.Label(
+            self.status_frame, text="●", font=("Segoe UI", 11), foreground=COLOR_MUTED)
         self.status_dot.pack(side=LEFT, padx=(0, 8))
-
         self.status_text = tb.Label(
-            self.status_frame,
-            text="Не подключено",
-            font=("Consolas", 11, "bold"),
-            foreground=COLOR_MUTED,
-        )
+            self.status_frame, text="Не подключено",
+            font=("Segoe UI", 10, "bold"), foreground=COLOR_MUTED)
         self.status_text.pack(side=LEFT)
-
         self.status_detail = tb.Label(
-            self.status_frame,
-            text="Введите API токен",
-            font=("Consolas", 10),
-            foreground=COLOR_MUTED,
-        )
+            self.status_frame, text="Введите API токен",
+            font=("Segoe UI", 9), foreground=COLOR_MUTED)
         self.status_detail.pack(side=RIGHT)
 
     # ============================================================
@@ -6751,15 +6751,18 @@ class ColonialHelperApp:
     #  Статус-бар внизу
     # ============================================================
     def _build_status_bar(self):
+        status_bar = tb.Frame(self.root, style="App.TFrame", padding=(14, 5))
+        status_bar.pack(fill=X, side=BOTTOM)
+        tb.Separator(status_bar, orient=HORIZONTAL).pack(fill=X, pady=(0, 5))
         self.bottom_status = tb.Label(
-            self.root,
+            status_bar,
             text="Готов",
             font=("Consolas", 9),
-            foreground=COLOR_MUTED,
+            style="Muted.TLabel",
             anchor=W,
-            padding=5,
+            padding=(2, 1),
         )
-        self.bottom_status.pack(fill=X, side=BOTTOM)
+        self.bottom_status.pack(fill=X)
 
     # ============================================================
     #  Обновление программы

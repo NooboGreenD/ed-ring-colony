@@ -50,7 +50,27 @@ class LauncherUiTests(unittest.TestCase):
 
     def test_cms_html_is_rendered_as_readable_plain_text(self):
         self.assertEqual(launcher_ui.plain_text("<p>Hello &amp; <b>galaxy</b></p><br>again"),
-                         "Hello & galaxy again")
+                         "Hello & galaxy\nagain")
+
+    def test_markdown_news_formatting_is_parsed_without_visible_markup(self):
+        body = "# Update\n\n**Bold** and *italic*\n- first item\n2. second item"
+        self.assertEqual(launcher_ui.plain_text(body),
+                         "Update\nBold and italic\n• first item\n2. second item")
+        kinds = [kind for kind, _segments in launcher_ui.article_blocks(body)]
+        self.assertEqual(kinds, ["heading", "paragraph", "bullet", "ordered:2"])
+
+    def test_html_headings_and_lists_remain_separate_blocks(self):
+        body = "<h2>Update</h2><p>First paragraph</p><ul><li>one</li><li><b>two</b></li></ul>"
+        self.assertEqual(launcher_ui.plain_text(body),
+                         "Update\nFirst paragraph\n• one\n• two")
+        kinds = [kind for kind, _segments in launcher_ui.article_blocks(body)]
+        self.assertEqual(kinds, ["heading", "paragraph", "bullet", "bullet"])
+
+    def test_links_and_inline_code_keep_readable_labels(self):
+        blocks = launcher_ui.article_blocks("Read [the update](https://example.test/news) and `journal.log`.")
+        self.assertEqual("".join(text for text, _tags in blocks[0][1]),
+                         "Read the update and journal.log.")
+        self.assertIn(("the update", ("link",)), blocks[0][1])
 
     def test_article_links_use_existing_site_routes(self):
         self.assertEqual(launcher_ui._article_url("news", {"id": "42"}),
