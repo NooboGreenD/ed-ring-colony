@@ -21,14 +21,20 @@ HTCAPTION = 2
 
 
 def _window_handle(window, user32=None) -> int:
-    """Resolve Tk's client HWND to the actual top-level HWND on Windows."""
+    """Resolve Tk's outer WM frame HWND, falling back to its client HWND."""
+    # Tk exposes the actual Windows frame through wm_frame(). winfo_id() can be
+    # a child/client HWND; styling that handle leaves the visible caption intact.
+    try:
+        frame = int(str(window.wm_frame()), 0)
+        if frame:
+            return frame
+    except (AttributeError, TypeError, ValueError):
+        pass
+
     try:
         hwnd = int(window.winfo_id())
     except (AttributeError, TypeError, ValueError):
-        try:
-            hwnd = int(str(window.wm_frame()), 0)
-        except (AttributeError, TypeError, ValueError):
-            return 0
+        return 0
 
     if not hwnd or user32 is None:
         return hwnd

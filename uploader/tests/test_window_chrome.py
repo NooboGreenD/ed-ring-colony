@@ -11,6 +11,18 @@ import window_chrome  # noqa: E402
 
 
 class WindowChromeTests(unittest.TestCase):
+    def test_prefers_tk_outer_frame_handle_over_client_handle(self):
+        class Window:
+            def wm_frame(self):
+                return "0x5678"
+
+            def winfo_id(self):
+                return 0x1234
+
+        user32 = mock.Mock()
+        self.assertEqual(window_chrome._window_handle(Window(), user32), 0x5678)
+        user32.GetAncestor.assert_not_called()
+
     def test_caption_is_removed_from_the_outer_toplevel_hwnd(self):
         child_hwnd = 0x1234
         outer_hwnd = 0x5678
