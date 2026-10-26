@@ -18,8 +18,7 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 GA_ROOT = 2
-WM_SYSCOMMAND = 0x0112
-SC_MOVE = 0xF010
+WM_NCLBUTTONDOWN = 0x00A1
 HTCAPTION = 2
 DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -169,9 +168,10 @@ def _begin_native_drag(window, user32=None) -> bool:
                                      ctypes.c_size_t, ctypes.c_ssize_t]
         api.SendMessageW.restype = ctypes.c_ssize_t
         api.ReleaseCapture()
-        # SC_MOVE enters the native modal move loop. Unlike updating Tk geometry
-        # on every pointer event, Windows moves and repaints the HWND as a unit.
-        api.SendMessageW(hwnd, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0)
+        # Use the standard non-client caption drag message for a borderless
+        # window. Windows then owns the move loop and Tk does not synthesize
+        # geometry changes or receive a competing system-command sequence.
+        api.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
         return True
     except Exception:
         return False
