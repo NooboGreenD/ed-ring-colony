@@ -93,7 +93,8 @@ export default function PayStatusPage({ params }: { params: Promise<{ intentId: 
         )}
       </div>
       <div style={{ display: "flex", gap: 12 }}>
-        <Link href="/premium-shop" style={{ color: "var(--cyan)", fontSize: 13 }}>← В магазин</Link>
+        <Link href="/subscriptions" style={{ color: "var(--cyan)", fontSize: 13 }}>Подписки и помощь проекту</Link>
+        <Link href="/premium-shop" style={{ color: "var(--cyan)", fontSize: 13 }}>Премиум-магазин</Link>
         <Link href="/account?tab=premium" style={{ color: "var(--cyan)", fontSize: 13 }}>Мой премиум-кабинет</Link>
       </div>
     </div>

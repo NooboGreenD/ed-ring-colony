@@ -267,13 +267,13 @@ class BillingRepository {
     return list.map((s) => ({ ...s, plan: plans.find((p) => p.id === s.plan_id) }));
   }
 
-  /** Marks active-but-expired subscriptions as expired (lazy expiry). */
+  /** Marks active/trial subscriptions past their expiry as expired (lazy expiry). */
   private async expireStale(list: UserSubscription[]): Promise<UserSubscription[]> {
     const a = await this.db();
     const now = Date.now();
     const out: UserSubscription[] = [];
     for (const s of list) {
-      if (s.status === 'active' && s.expires_at && new Date(s.expires_at).getTime() < now) {
+      if ((s.status === 'active' || s.status === 'trial') && s.expires_at && new Date(s.expires_at).getTime() < now) {
         await a.update('user_subscriptions', s.id, { status: 'expired', updated_at: nowIso() });
         out.push({ ...s, status: 'expired' });
       } else out.push(s);
@@ -284,8 +284,8 @@ class BillingRepository {
   async getUserSubscription(userId: string): Promise<UserSubscription | null> {
     if (!userId) return null;
     const a = await this.db();
-    let list = await a.list<UserSubscription>('user_subscriptions', { eq: { user_id: userId, status: 'active' }, order: { column: 'expires_at', ascending: false } });
-    list = (await this.expireStale(list)).filter((s) => s.status === 'active');
+    let list = await a.list<UserSubscription>('user_subscriptions', { in: { user_id: [userId], status: ['active', 'trial'] }, order: { column: 'expires_at', ascending: false } });
+    list = (await this.expireStale(list)).filter((s) => s.status === 'active' || s.status === 'trial');
     const sub = list[0];
     if (!sub) return null;
     return { ...sub, plan: await this.getPlanById(sub.plan_id) };

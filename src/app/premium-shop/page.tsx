@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { ShopItem, UserInventoryItem, EquippedCosmetics, UserBalance, UserSubscription, BillingPlan, CreditPack, PublicPaymentProvider } from "@/types/billing";
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
 import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
@@ -10,10 +11,10 @@ import CosmeticTitle from "@/components/Cosmetics/CosmeticTitle";
 import { invalidateCosmetics } from "@/components/Cosmetics/useCosmetics";
 import { previewSkin } from "@/components/Cosmetics/HudSkinProvider";
 import { authFetch } from "@/lib/supabaseClient";
-import { IconCrown, IconCheck, IconX, IconSearch, IconLock, IconCreditCard } from "@/components/Icons";
+import { IconCheck, IconX, IconSearch, IconLock, IconCreditCard } from "@/components/Icons";
 import { ThemeSwatch } from "@/components/Admin/Billing/ProductManager";
 
-type Category = "all" | "frame" | "badge" | "skin" | "glow" | "title" | "inventory" | "plans";
+type Category = "all" | "frame" | "badge" | "skin" | "glow" | "title" | "inventory";
 
 const CATEGORY_LABEL: Record<string, string> = { frame: "Рамка аватара", badge: "Знак отличия", skin: "HUD-тема", glow: "Свечение позывного", title: "Почетный титул" };
 const RARITY_COLOR: Record<string, string> = { legendary: "#fbbf24", epic: "#c084fc", rare: "#38bdf8", common: "#9ca3af" };
@@ -41,6 +42,7 @@ function ItemPreview({ item, size = "md" }: { item: ShopItem; size?: "sm" | "md"
 }
 
 export default function PremiumShopPage() {
+  const router = useRouter();
   const [items, setItems] = useState<ShopItem[]>([]);
   const [plans, setPlans] = useState<BillingPlan[]>([]);
   const [inventory, setInventory] = useState<UserInventoryItem[]>([]);
@@ -51,10 +53,12 @@ export default function PremiumShopPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState("guest");
   const [authenticated, setAuthenticated] = useState(false);
+  const [isPreview, setIsPreview] = useState(false);
   const [providers, setProviders] = useState<PublicPaymentProvider[]>([]);
   const [packs, setPacks] = useState<CreditPack[]>([]);
   const [pendingPayments, setPendingPayments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [category, setCategory] = useState<Category>("all");
   const [search, setSearch] = useState("");
@@ -66,7 +70,6 @@ export default function PremiumShopPage() {
   const [selectedPack, setSelectedPack] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [buyingItem, setBuyingItem] = useState<ShopItem | null>(null);
-  const [buyingPlan, setBuyingPlan] = useState<BillingPlan | null>(null);
   const [busy, setBusy] = useState(false);
   const equipLock = useRef(false);
   const [equipping, setEquipping] = useState(false);
@@ -79,13 +82,20 @@ export default function PremiumShopPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const [itemsRes, stateRes] = await Promise.all([authFetch("/api/shop/items", { cache: "no-store" }), authFetch("/api/shop/user-state", { cache: "no-store" })]);
-      const itemsData = await itemsRes.json();
-      const st = await stateRes.json();
-      if (itemsData.success) setItems(itemsData.items || []);
+      const [itemsData, st] = await Promise.all([itemsRes.json(), stateRes.json()]);
+      if (!stateRes.ok || !st.success) throw new Error(st.error || "Не удалось проверить статус подписки");
+      if (itemsRes.ok && itemsData.success) setItems(itemsData.items || []);
+      else if (itemsRes.status !== 401 && itemsRes.status !== 403) {
+        throw new Error(itemsData.error || "Не удалось загрузить каталог премиум-магазина");
+      } else if (st.subscription || st.isPreview || (["admin", "moderator", "support_manager"].includes(st.role) && st.authenticated)) {
+        throw new Error(itemsData.error || "Не удалось подтвердить доступ к каталогу");
+      }
       if (st.success) {
         setAuthenticated(Boolean(st.authenticated || st.isPreview));
+        setIsPreview(Boolean(st.isPreview));
         setCmdrName(st.cmdrName || "CMDR");
         setUserId(st.userId || null);
         setUserRole(st.role || "guest");
@@ -103,7 +113,9 @@ export default function PremiumShopPage() {
         if (!selectedPack && st.settings?.credit_packs?.length) setSelectedPack(st.settings.credit_packs[1]?.id || st.settings.credit_packs[0].id);
       }
     } catch (e: any) {
-      showToast("Ошибка загрузки магазина: " + e.message, false);
+      const message = "Ошибка загрузки магазина: " + e.message;
+      setLoadError(message);
+      showToast(message, false);
     } finally {
       setLoading(false);
     }
@@ -113,9 +125,12 @@ export default function PremiumShopPage() {
   useEffect(() => {
     load();
     const q = new URLSearchParams(window.location.search);
+    if (q.get("tab") === "plans") {
+      router.replace("/subscriptions");
+      return;
+    }
     if (q.get("topup")) setShowTopup(true);
-    if (q.get("tab") === "plans") setCategory("plans");
-  }, [load]);
+  }, [load, router]);
 
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   const itemOf = (id?: string | null) => (id ? byId.get(id) || inventory.find((v) => v.item_id === id)?.item : undefined);
@@ -214,24 +229,6 @@ export default function PremiumShopPage() {
     }
   };
 
-  const subscribeWithCredits = async () => {
-    if (!buyingPlan || !requireAuth()) return;
-    setBusy(true);
-    try {
-      const res = await authFetch("/api/billing/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId: buyingPlan.id }) });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка");
-      showToast(`Подписка «${buyingPlan.name}» активирована!`);
-      setBuyingPlan(null);
-      invalidateCosmetics(userId || undefined);
-      load();
-    } catch (e: any) {
-      showToast(e.message, false);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const pack = packs.find((p) => p.id === selectedPack);
   const credits = balance?.credits || 0;
   const pFrame = itemOf(preview.frame);
@@ -239,6 +236,37 @@ export default function PremiumShopPage() {
   const pGlow = itemOf(preview.glow);
   const pTitle = itemOf(preview.title);
   const pSkin = itemOf(preview.skin);
+  const hasShopAccess = Boolean(subscription) || (authenticated && isPreview);
+
+  if (loading) {
+    return <div className="card" role="status" style={{ maxWidth: 760, margin: "40px auto", padding: 28, textAlign: "center", color: "var(--muted)" }}>Проверяем доступ к премиум-магазину…</div>;
+  }
+
+  if (loadError) {
+    return (
+      <div className="card" role="alert" style={{ maxWidth: 760, margin: "40px auto", padding: 28, textAlign: "center", borderTop: "2px solid #e74c3c" }}>
+        <p style={{ color: "#ff8b7e" }}>{loadError}</p>
+        <button type="button" onClick={() => void load()}>Повторить проверку</button>
+      </div>
+    );
+  }
+
+  if (!hasShopAccess) {
+    return (
+      <div className="card" style={{ maxWidth: 760, margin: "40px auto", padding: "clamp(22px, 5vw, 42px)", borderTop: "2px solid var(--orange)", textAlign: "center" }}>
+        <IconLock size={28} color="var(--orange)" />
+        <div className="kicker" style={{ marginTop: 14 }}>Доступ к каталогу ограничен</div>
+        <h1 style={{ margin: "10px 0", fontSize: "clamp(22px, 4vw, 32px)" }}>Премиум-магазин доступен подписчикам</h1>
+        <p style={{ maxWidth: 580, margin: "0 auto 20px", color: "var(--muted)", lineHeight: 1.7 }}>
+          Оформите любую активную подписку, чтобы открыть каталог косметики и улучшений. Подписка также помогает поддерживать развитие проекта.
+        </p>
+        <div style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+          <Link href="/subscriptions" className="btn btn-orange">Посмотреть подписки →</Link>
+          {!authenticated && <Link href="/login" className="btn btn-cyan">Войти</Link>}
+        </div>
+      </div>
+    );
+  }
 
   const ProviderPicker = () =>
     providers.length === 0 ? (
@@ -313,7 +341,7 @@ export default function PremiumShopPage() {
               {subscription ? (
                 <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>• {subscription.plan?.name} до {new Date(subscription.expires_at || "").toLocaleDateString("ru-RU")} • скидка {subscription.plan?.discount_pct || 0}%</span>
               ) : (
-                <button type="button" onClick={() => setCategory("plans")} style={{ fontSize: 11, padding: "1px 8px", border: "none", color: "var(--cyan)", background: "transparent", fontFamily: "ui-monospace, monospace" }}>• Стандартный статус — оформить подписку →</button>
+                <Link href="/subscriptions" style={{ fontSize: 11, color: "var(--cyan)", fontFamily: "ui-monospace, monospace" }}>• Стандартный статус — оформить подписку →</Link>
               )}
             </div>
           </div>
@@ -361,42 +389,8 @@ export default function PremiumShopPage() {
         {(["frame", "badge", "skin", "glow", "title"] as const).map((c) => (
           <button key={c} type="button" className={category === c ? "tab tab-active" : "tab"} onClick={() => setCategory(c)}>{CATEGORY_LABEL[c].toUpperCase()} ({counts[c] || 0})</button>
         ))}
-        <button type="button" className={category === "plans" ? "tab tab-active" : "tab"} onClick={() => setCategory("plans")} style={{ borderColor: "rgba(155,89,182,0.5)", color: category === "plans" ? "#c084fc" : "var(--muted)" }}><IconCrown size={11} /> ПОДПИСКИ</button>
         <button type="button" className={category === "inventory" ? "tab tab-active" : "tab"} onClick={() => setCategory("inventory")} style={{ borderColor: "var(--cyan)", color: category === "inventory" ? "var(--cyan)" : "var(--muted)" }}>МОЙ ИНВЕНТАРЬ ({inventory.length})</button>
       </div>
-
-      {/* Plans */}
-      {category === "plans" && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 18 }}>
-          {plans.map((plan) => {
-            const active = subscription?.plan_id === plan.id;
-            return (
-              <div key={plan.id} className="card" style={{ margin: 0, padding: 20, borderTop: `3px solid ${plan.color}`, display: "flex", flexDirection: "column", justifyContent: "space-between", position: "relative" }}>
-                {plan.is_popular && <span style={{ position: "absolute", top: 10, right: 10, fontSize: 9, padding: "2px 6px", background: `${plan.color}30`, color: plan.color, border: `1px solid ${plan.color}`, letterSpacing: 1, fontWeight: 700 }}>ПОПУЛЯРНЫЙ</span>}
-                <div>
-                  <div style={{ fontSize: 10, color: plan.color, letterSpacing: 2, fontWeight: 700 }}>{plan.badge_label}</div>
-                  <h3 style={{ margin: "4px 0 6px", color: "var(--text)" }}>{plan.name}</h3>
-                  <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.5 }}>{plan.description}</p>
-                  <ul style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: 12, color: "var(--text)", lineHeight: 1.7 }}>
-                    {plan.perks.map((p, i) => <li key={i}>{p}</li>)}
-                    {plan.discount_pct ? <li style={{ color: "#2ecc71" }}>Скидка {plan.discount_pct}% на все товары магазина</li> : null}
-                  </ul>
-                </div>
-                <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
-                    <span style={{ fontSize: 20, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: plan.color }}>{plan.price_rub} ₽<span style={{ fontSize: 11, color: "var(--muted)" }}> / {plan.period_days} дн</span></span>
-                    {plan.price_credits > 0 && <span style={{ fontSize: 12, color: "#38bdf8", fontFamily: "ui-monospace, monospace" }}>или {plan.price_credits.toLocaleString("ru-RU")} Кр.</span>}
-                  </div>
-                  <button type="button" className="btn-orange" style={{ width: "100%", padding: 8, fontSize: 12 }} onClick={() => (requireAuth() ? setBuyingPlan(plan) : null)}>
-                    {active ? "Продлить" : subscription ? "Сменить план" : "Оформить"}
-                  </button>
-                  {active && <div style={{ fontSize: 11, color: "#2ecc71", marginTop: 6, textAlign: "center" }}>✓ Активна до {new Date(subscription!.expires_at || "").toLocaleDateString("ru-RU")}</div>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
 
       {/* Inventory */}
       {category === "inventory" && (
@@ -442,7 +436,7 @@ export default function PremiumShopPage() {
       )}
 
       {/* Catalog */}
-      {category !== "inventory" && category !== "plans" && (
+      {category !== "inventory" && (
         <>
           <div style={{ position: "relative", maxWidth: 360 }}>
             <input type="text" placeholder="Поиск по каталогу..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", paddingLeft: 32 }} />
@@ -501,7 +495,7 @@ export default function PremiumShopPage() {
                             <button type="button" className="btn-orange" disabled={equipping} onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Надеть</button>
                           )
                         ) : item.is_locked_for_user ? (
-                          <button type="button" onClick={() => setCategory("plans")} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: reqPlan?.color || "#c084fc", color: reqPlan?.color || "#c084fc" }}>Нужна подписка</button>
+                          <Link href="/subscriptions" className="btn" style={{ flex: 1, textAlign: "center", padding: 8, fontSize: 11, borderColor: reqPlan?.color || "#c084fc", color: reqPlan?.color || "#c084fc" }}>Нужна подписка</Link>
                         ) : (
                           <button type="button" className="btn-orange" onClick={() => (requireAuth() ? setBuyingItem(item) : null)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Купить</button>
                         )}
@@ -547,26 +541,6 @@ export default function PremiumShopPage() {
               <button type="button" onClick={() => { setBuyingItem(null); setShowTopup(true); }} style={{ fontSize: 11, border: "none", color: "var(--cyan)", background: "transparent" }}>Пополнить баланс →</button>
             </div>
           )}
-        </Modal>
-      )}
-
-      {/* Plan modal */}
-      {buyingPlan && (
-        <Modal title={`ПОДПИСКА «${buyingPlan.name.toUpperCase()}»`} onClose={() => setBuyingPlan(null)}>
-          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>{buyingPlan.description}</p>
-          <div style={{ padding: "12px 14px", background: "#1c1e20", border: "1px solid var(--line)", borderRadius: 2, marginBottom: 14, fontSize: 13 }}>
-            <Row label="Период:" value={`${buyingPlan.period_days} дней`} />
-            <Row label="Цена:" value={`${buyingPlan.price_rub} ₽`} color={buyingPlan.color} />
-            {buyingPlan.price_credits > 0 && <Row label="Или кредитами:" value={`${buyingPlan.price_credits.toLocaleString("ru-RU")} Кр. (баланс ${credits.toLocaleString("ru-RU")})`} color="#38bdf8" />}
-            {subscription && subscription.plan_id === buyingPlan.id && <Row label="Текущая подписка:" value="будет продлена" color="#2ecc71" />}
-            {subscription && subscription.plan_id !== buyingPlan.id && <Row label="Текущая подписка:" value="будет заменена" color="#f39c12" />}
-          </div>
-          <div style={{ marginBottom: 14 }}><ProviderPicker /></div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
-            <button type="button" onClick={() => setBuyingPlan(null)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>Отмена</button>
-            {providers.length > 0 && <button type="button" className="btn-cyan" disabled={busy} onClick={() => checkout({ purpose: "subscription", planId: buyingPlan.id })}>{busy ? "..." : `Оплатить ${buyingPlan.price_rub} ₽`}</button>}
-            {buyingPlan.price_credits > 0 && <button type="button" className="btn-orange" disabled={busy || credits < buyingPlan.price_credits} onClick={subscribeWithCredits}>{credits < buyingPlan.price_credits ? "Недостаточно кредитов" : "Оплатить кредитами"}</button>}
-          </div>
         </Modal>
       )}
 

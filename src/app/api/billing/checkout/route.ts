@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
 import { requireUser, errorResponse } from '@/lib/billing/auth';
+import { hasPremiumShopAccess, SHOP_SUBSCRIPTION_REQUIRED } from '@/lib/billing/shopAccess';
 import { getDriver } from '@/lib/billing/providers';
 import { getSiteUrl } from '@/lib/siteUrl';
 import type { PaymentPurpose } from '@/types/billing';
@@ -33,6 +34,12 @@ export async function POST(req: Request) {
     const purpose = body.purpose as PaymentPurpose;
     const providerId = String(body.providerId || '');
     if (!['credit_topup', 'subscription', 'shop_purchase'].includes(purpose)) return NextResponse.json({ error: 'Неверная цель платежа' }, { status: 400 });
+    // Credits are only spendable in the premium shop, so require an active
+    // subscription for both catalogue purchases and credit top-ups. Subscription
+    // checkout itself remains available to anyone who wants to unlock the shop.
+    if ((purpose === 'credit_topup' || purpose === 'shop_purchase') && !(await hasPremiumShopAccess(actor))) {
+      return NextResponse.json({ error: SHOP_SUBSCRIPTION_REQUIRED, code: 'subscription_required' }, { status: 403 });
+    }
 
     const provider = await billingRepo.getProvider(providerId);
     const driver = getDriver(providerId);

@@ -5,6 +5,7 @@ import {
   IconDownload,
   IconGear,
   IconHeadphones,
+  IconHeart,
   IconNote,
   IconPlane,
   IconProfile,
@@ -253,6 +254,10 @@ export default function UserMenu() {
                   {mySquadron.tag ? `[${mySquadron.tag}] ` : ""}{mySquadron.name}
                 </Link>
               )}
+              <Link href="/subscriptions" className="user-menu-head-support" onClick={close} role="menuitem">
+                <IconHeart size={12} />
+                <span>{t('account.supportProject')}</span>
+              </Link>
             </div>
           </div>
 
