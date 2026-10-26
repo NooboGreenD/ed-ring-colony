@@ -141,8 +141,8 @@ class WindowChromeTests(unittest.TestCase):
 
         user32.ReleaseCapture.assert_called_once_with()
         user32.SendMessageW.assert_called_once_with(
-            outer_hwnd, window_chrome.WM_SYSCOMMAND,
-            window_chrome.SC_MOVE | window_chrome.HTCAPTION, 0,
+            outer_hwnd, window_chrome.WM_NCLBUTTONDOWN,
+            window_chrome.HTCAPTION, 0,
         )
 
     def test_drag_uses_native_window_manager_instead_of_geometry_updates(self):
