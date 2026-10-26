@@ -2,6 +2,7 @@
 import {
   IconChevronDown,
   IconCoins,
+  IconDownload,
   IconGear,
   IconHeadphones,
   IconNote,
@@ -304,6 +305,10 @@ export default function UserMenu() {
                 <IconStore size={15} />
                 <span className="user-menu-item-label">{t('account.shop')}</span>
               </Link>
+              <a href="/api/uploader/launcher/win64" download className="user-menu-item" onClick={close} role="menuitem">
+                <IconDownload size={15} />
+                <span className="user-menu-item-label">{t('account.downloadColonialHelper')}</span>
+              </a>
               <Link href="/support" className="user-menu-item" onClick={close} role="menuitem">
                 <IconHeadphones size={15} />
                 <span className="user-menu-item-label">{t('support.title')}</span>
