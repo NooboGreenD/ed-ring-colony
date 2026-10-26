@@ -47,7 +47,7 @@ export default function Home() {
           alt=""
           aria-hidden="true"
         />
-        <div className="hero-copy">
+        <div className="hero-copy" style={{ position: 'relative', zIndex: 1 }}>
           <div className="kicker">{kicker}</div>
           <h1>
             {title1}
