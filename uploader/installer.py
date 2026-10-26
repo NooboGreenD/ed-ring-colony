@@ -184,6 +184,7 @@ class SetupWindow:
         add_custom_titlebar(
             self.root, tk, "УСТАНОВЩИК COLONIAL HELPER",
             close_command=self.root.destroy, allow_maximize=False,
+            allow_resize=False,
         )
         self._center()
 
