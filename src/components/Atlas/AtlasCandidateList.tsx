@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useAtlas } from '@/components/Atlas/AtlasContext';
-import { IconCopy, IconCrosshair, IconSearch, IconStar, IconX } from '@/components/Icons';
+import { IconCopy, IconCrosshair, IconRoute, IconSearch, IconStar, IconX } from '@/components/Icons';
 import { toast } from '@/components/ui/Toaster';
 import {
   copyText,
@@ -154,6 +154,9 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
                 </button>
                 <button type="button" className="atlas-icon-btn" title="Показать на карте" onClick={() => onSelect(candidate)}>
                   <IconCrosshair size={12} />
+                </button>
+                <button type="button" className="atlas-icon-btn" title={`Маршрут корабля до ${candidate.system_name}`} onClick={() => window.dispatchEvent(new CustomEvent('atlas-route-target-selected', { detail: { name: candidate.system_name } }))}>
+                  <IconRoute size={12} />
                 </button>
                 <button type="button" className="atlas-icon-btn" title="Скопировать координаты" onClick={() => void onCopy(candidate)}>
                   <IconCopy size={12} />

@@ -503,6 +503,42 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 
+    def upload_ship_state(self, state: dict) -> dict:
+        """Передать приватный снимок текущего Loadout и состояния корабля."""
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        try:
+            resp = self._session.post(
+                f"{self.api_base}/cmdr/ship-state",
+                json={"token": self.token, **state},
+                allow_redirects=False,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
+    def pull_atlas_route(self) -> dict:
+        """Забрать один маршрут, явно отправленный владельцем из Atlas."""
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        try:
+            resp = self._session.post(
+                f"{self.api_base}/cmdr/route",
+                json={"token": self.token, "action": "poll"},
+                allow_redirects=False,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
     def upload_pilot_stats(self, stats: dict, cmdr: str = None) -> dict:
         """Отправить баланс и статистику пилота в БД проекта (/api/cmdr/stats)."""
         if not self.token or not stats:

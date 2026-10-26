@@ -16,8 +16,26 @@ export interface ModuleGrade {
 }
 
 type ModuleItem = [symbol: string, size: number, rating: string, mount: string];
+type ModuleCatalogEntry = { name: string; items: ModuleItem[] };
 
 let grades: Map<string, ModuleGrade> | undefined;
+let names: Map<string, string | null> | undefined;
+
+/** Каталожная подпись Frontier для точного различения вариантов одного класса. */
+export function moduleNameForSymbol(symbol: string | null | undefined): string | null {
+  if (!symbol) return null;
+  if (!names) {
+    names = new Map();
+    for (const module of items.modules as unknown as ModuleCatalogEntry[]) {
+      for (const [itemSymbol] of module.items) {
+        const key = moduleSymbolKey(itemSymbol);
+        const previous = names.get(key);
+        names.set(key, previous === undefined || previous === module.name ? module.name : null);
+      }
+    }
+  }
+  return names.get(moduleSymbolKey(symbol)) ?? null;
+}
 
 /** Символ без обёртки журнала/CAPI (`$hpt_…_name;`) в нижнем регистре. */
 export function moduleSymbolKey(symbol: string): string {

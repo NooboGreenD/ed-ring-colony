@@ -405,6 +405,8 @@ maybe('SLEF переносит корабль и его модули', async () 
   assert.ok(payload[0].data.Modules.some((module) => /Hardpoint/.test(module.Slot)));
 
   const back = lib.fromSlef(data, payload);
+  const strictBack = lib.fromSlef(data, payload, { strict: true });
+  assert.deepEqual(strictBack.issues, [], `точный режим должен однозначно восстановить типы модулей: ${strictBack.issues.map((issue) => issue.text).join('; ')}`);
   assert.ok(back.build, 'SLEF разобрался');
   assert.equal(back.build.ship, 'cobra_mk_iii');
   assert.equal(back.build.bulkhead, 2);
@@ -420,6 +422,38 @@ maybe('SLEF переносит корабль и его модули', async () 
   const broken = lib.fromSlef(data, { event: 'Loadout', Ship: 'unknown_ship_42', Modules: [] });
   assert.equal(broken.build, null);
   assert.equal(broken.issues[0].level, 'error');
+});
+
+maybe('игровой Loadout различает обычный FSD и SCO-вариант по Frontier symbol', async () => {
+  const lib = await libPromise;
+  const build = lib.defaultBuild(data, 'anaconda');
+  const sco = data.modules.fsd.find((module) => module.class === 6 && module.rating === 'A' && module.name === 'Frame Shift Drive (SCO)');
+  assert.ok(sco);
+  build.standard[2] = `fsd:${sco.id}`;
+  const payload = JSON.parse(lib.toSlef(data, build, 'test').text);
+  const fsd = payload[0].data.Modules.find((module) => module.Slot === 'FrameShiftDrive');
+  assert.match(fsd.Item, /Hyperdrive_Overcharge/);
+  const imported = lib.fromSlef(data, payload, { strict: true });
+  assert.equal(imported.build.standard[2], `fsd:${sco.id}`);
+  assert.deepEqual(imported.issues, []);
+});
+
+maybe('игровой Loadout переносит чертёж, качество и экспериментальный эффект', async () => {
+  const lib = await libPromise;
+  const sourceBuild = lib.defaultBuild(data, 'anaconda');
+  const payload = JSON.parse(lib.toSlef(data, sourceBuild, 'test').text);
+  const fsd = payload[0].data.Modules.find((module) => module.Slot === 'FrameShiftDrive');
+  fsd.Engineering = { BlueprintName: 'FSD_LongRange', Level: 5, Quality: 1 };
+  fsd.ExperimentalEffect = 'MassManager';
+  const baseline = lib.fromSlef(data, JSON.parse(lib.toSlef(data, sourceBuild, 'test').text));
+  const imported = lib.fromSlef(data, payload);
+  assert.ok(imported.build);
+  assert.equal(imported.build.standard[2], sourceBuild.standard[2]);
+  assert.deepEqual(imported.build.mods.S2, {
+    blueprint: 'FSD_LongRange', grade: 5, quality: 1, special: 'special_fsd_heavy',
+  });
+  const stats = lib.computeStats(data, imported.build);
+  assert.ok(stats.jumpRange > lib.computeStats(data, baseline.build).jumpRange, 'инженерный Loadout должен прибавлять дальность');
 });
 
 // ── 7. Merc Coin и параметры модулей ──────────────────────────────────

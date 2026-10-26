@@ -225,6 +225,26 @@ class ClientApiExtScansTests(unittest.TestCase):
             self.assertEqual(len(res["bodies"]), 1)
             self.assertEqual(res["bodies"][0]["name"], "Eol Prou RS-T d3-94 A")
 
+    def test_api_client_ship_state_and_atlas_route(self):
+        client = ApiClient(token="project-token")
+        with mock.patch.object(client._session, "post") as mock_post:
+            response = mock.MagicMock()
+            response.ok = True
+            response.status_code = 200
+            response.json.return_value = {"ok": True, "route": [{"name": "Sol", "x": 0, "y": 0, "z": 0}]}
+            mock_post.return_value = response
+
+            state = {"loadout": {"event": "Loadout", "Ship": "anaconda", "Modules": []}, "current_system": "Sol"}
+            self.assertTrue(client.upload_ship_state(state)["ok"])
+            self.assertIn("/cmdr/ship-state", mock_post.call_args.args[0])
+            self.assertEqual(mock_post.call_args.kwargs["json"]["loadout"]["Ship"], "anaconda")
+
+            result = client.pull_atlas_route()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["route"][0]["name"], "Sol")
+            self.assertIn("/cmdr/route", mock_post.call_args.args[0])
+            self.assertEqual(mock_post.call_args.kwargs["json"]["action"], "poll")
+
     def test_api_client_upload_pilot_stats_mocked(self):
         client = ApiClient(token="test-token-123")
         with mock.patch.object(client._session, "post") as mock_post:

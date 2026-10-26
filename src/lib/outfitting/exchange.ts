@@ -22,6 +22,7 @@
 import { STANDARD_GROUPS, buildSlots, findModule, moduleOf, moduleRef, modulesForSlot } from './calc';
 import { decodeBuild, defaultBuild, encodeBuild } from './build';
 import { bulkheadIndex, bulkheadSymbol, moduleSymbol, parseSymbol, shipCoriolisId, shipFdName } from './fdnames';
+import { moduleGrade, moduleNameForSymbol } from './moduleGrades';
 import type { OutfittingData, OutfittingModule, ShipBuild } from './types';
 
 export type ExchangeFormat = 'coriolis' | 'slef' | 'native';
@@ -174,6 +175,46 @@ interface LoadoutModule {
   Item: string;
   On?: boolean;
   Priority?: number;
+  Engineering?: {
+    BlueprintName?: string;
+    Level?: number;
+    Quality?: number;
+    Engineer?: string;
+  } | boolean;
+  ExperimentalEffect?: string;
+}
+
+function normalizedEngineeringName(value: unknown): string {
+  return String(value ?? '').replace(/^\$/, '').replace(/_name;?$/i, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function journalModification(
+  data: OutfittingData,
+  module: OutfittingModule | null,
+  entry: LoadoutModule,
+): { blueprint?: string; grade?: number; quality?: number; special?: string } | null {
+  const engineering = entry.Engineering;
+  const blueprintName = engineering && typeof engineering === 'object' ? engineering.BlueprintName : undefined;
+  const grade = engineering && typeof engineering === 'object' ? Number(engineering.Level) : NaN;
+  const quality = engineering && typeof engineering === 'object' ? Number(engineering.Quality) : NaN;
+  const result: { blueprint?: string; grade?: number; quality?: number; special?: string } = {};
+  if (typeof blueprintName === 'string' && blueprintName) {
+    if (data.blueprints[blueprintName] && (!module || data.moduleBlueprints[module.grp]?.blueprints?.[blueprintName])) {
+      result.blueprint = blueprintName;
+      result.grade = Number.isFinite(grade) ? Math.max(1, Math.min(5, Math.round(grade))) : 1;
+      result.quality = Number.isFinite(quality) ? Math.max(0, Math.min(1, quality)) : 1;
+    }
+  }
+  const experimental = entry.ExperimentalEffect;
+  if (typeof experimental === 'string' && experimental) {
+    const candidates = module ? (data.moduleBlueprints[module.grp]?.specials ?? []) : [];
+    const sought = normalizedEngineeringName(experimental);
+    const match = candidates.find((id) => normalizedEngineeringName(id) === sought
+      || normalizedEngineeringName(data.specials[id]?.name) === sought
+      || normalizedEngineeringName(data.specials[id]?.kind) === sought);
+    if (match) result.special = match;
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 /** Имя слота в журнале для нашего слота сборки. */
@@ -239,7 +280,7 @@ export function toSlef(data: OutfittingData, build: ShipBuild, appVersion: strin
 }
 
 /** Разбор SLEF или сырого события `Loadout` из журнала. */
-export function fromSlef(data: OutfittingData, parsed: unknown): ImportResult {
+export function fromSlef(data: OutfittingData, parsed: unknown, options: { strict?: boolean } = {}): ImportResult {
   const issues: ImportIssue[] = [];
   const root = Array.isArray(parsed) ? (parsed[0] as Record<string, unknown> | undefined) : (parsed as Record<string, unknown>);
   const loadout = (root && typeof root === 'object' && 'data' in root
@@ -268,7 +309,7 @@ export function fromSlef(data: OutfittingData, parsed: unknown): ImportResult {
   const used = new Set<string>();
 
   /** Поставить модуль в первый подходящий свободный слот раздела. */
-  const place = (section: 'standard' | 'hardpoints' | 'internal', module: OutfittingModule, preferred?: number): boolean => {
+  const place = (section: 'standard' | 'hardpoints' | 'internal', module: OutfittingModule, preferred?: number): string | null => {
     const candidates = slots
       .filter((slot) => slot.section === section && !used.has(slot.key))
       .sort((left, right) => {
@@ -289,9 +330,9 @@ export function fromSlef(data: OutfittingData, parsed: unknown): ImportResult {
       if (section === 'standard') build.standard[slot.index] = ref;
       else if (section === 'hardpoints') build.hardpoints[slot.index] = ref;
       else build.internal[slot.index] = ref;
-      return true;
+      return slot.key;
     }
-    return false;
+    return null;
   };
 
   // Крупные модули ставим первыми — иначе мелочь займёт большие отсеки.
@@ -306,24 +347,46 @@ export function fromSlef(data: OutfittingData, parsed: unknown): ImportResult {
     const slotName = String(entry.Slot ?? '');
     if (/armour/i.test(slotName) || /_armour_/i.test(item)) {
       build.bulkhead = bulkheadIndex(item);
+      const modification = journalModification(data, null, entry);
+      if (modification) build.mods.BH = modification;
+      else if (entry.Engineering && typeof entry.Engineering === 'object') {
+        issues.push({ level: 'warn', text: `${slotName || item}: инженерная модификация переборки не распознана` });
+      }
       continue;
     }
     if (/cargohatch/i.test(slotName) || /planetaryapproachsuite/i.test(slotName)) continue;
 
-    const spec = parseSymbol(item);
+    const parsedSpec = parseSymbol(item);
+    const catalogGrade = moduleGrade(item);
+    const spec = parsedSpec ? { ...parsedSpec, ...(catalogGrade ?? {}) } : null;
     if (!spec) {
       issues.push({ level: 'warn', text: `${slotName || item}: модуль не распознан` });
       continue;
     }
 
-    const list = (data.modules[spec.group] ?? []).filter((module) => module.class === spec.class);
-    const exact = list.find((module) => module.rating === spec.rating
+    const list = (data.modules[spec.group] ?? []).filter((module) => module.class === spec.class
+      && module.rating === spec.rating
       && (!spec.mount || !module.mount || module.mount === spec.mount));
-    const module = exact
-      ?? list.find((module) => !spec.mount || !module.mount || module.mount === spec.mount)
-      ?? list[0];
+    const label = moduleNameForSymbol(item);
+    const normalizedLabel = label ? normalizedEngineeringName(label) : '';
+    const named = normalizedLabel ? list.filter((candidate) => normalizedEngineeringName(candidate.name) === normalizedLabel) : [];
+    const symbol = normalizedEngineeringName(item);
+    const symbolMatched = list.filter((candidate) => normalizedEngineeringName(moduleSymbol(candidate)) === symbol);
+    const sameValue = (left: unknown, right: unknown) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+    const equivalentForRange = list.length > 0 && list.every((candidate) =>
+      sameValue(candidate.mass, list[0].mass)
+      && sameValue(candidate.preEngineered, list[0].preEngineered)
+      && sameValue(candidate.jumpboost, list[0].jumpboost)
+      && (spec.group !== 'fsd' || ['optmass', 'fuelmul', 'fuelpower', 'maxfuel'].every((key) => sameValue(candidate[key], list[0][key]))));
+    const module = named.length === 1 ? named[0]
+      : symbolMatched.length === 1 ? symbolMatched[0]
+        : list.length === 1 ? list[0]
+          : options.strict && equivalentForRange ? list[0]
+            : options.strict ? null
+              : list.find((candidate) => !spec.mount || !candidate.mount || candidate.mount === spec.mount) ?? list[0] ?? null;
     if (!module) {
-      issues.push({ level: 'warn', text: `${slotName || item}: нет такого модуля в справочнике` });
+      const reason = list.length > 1 ? 'неоднозначный вариант; оставлен без расчёта' : 'нет такого модуля в справочнике';
+      issues.push({ level: 'warn', text: `${slotName || item}: ${reason}` });
       continue;
     }
 
@@ -336,12 +399,27 @@ export function fromSlef(data: OutfittingData, parsed: unknown): ImportResult {
         : 'internal';
 
     const preferred = section === 'standard' && standardIndex >= 0 ? standardIndex : undefined;
-    if (!place(section, module, preferred)) {
+    const slotKey = place(section, module, preferred);
+    if (!slotKey) {
       issues.push({ level: 'warn', text: `${slotName || item}: подходящий слот не нашёлся` });
+      continue;
+    }
+    const modification = journalModification(data, module, entry);
+    if (modification) build.mods[slotKey] = modification;
+    else if (entry.Engineering && typeof entry.Engineering === 'object') {
+      const blueprintName = entry.Engineering.BlueprintName;
+      issues.push({ level: 'warn', text: blueprintName
+        ? `${slotName || item}: чертёж «${blueprintName}» не распознан для модуля`
+        : `${slotName || item}: инженерная модификация не содержит распознаваемого чертежа` });
+    }
+    if (entry.ExperimentalEffect && !modification?.special) {
+      issues.push({ level: 'warn', text: `${slotName || item}: экспериментальный эффект «${entry.ExperimentalEffect}» не распознан` });
     }
   }
 
-  issues.push({ level: 'warn', text: 'Инженерия из журнала не переносится: уровни чертежей нужно выставить вручную' });
+  if (incoming.some((entry) => entry.Engineering === true)) {
+    issues.push({ level: 'warn', text: 'В Loadout указано наличие инженерии без чертежа и уровня; точную инженерную дальность восстановить нельзя' });
+  }
   return { build, format: 'slef', name: build.name, issues };
 }
 

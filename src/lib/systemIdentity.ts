@@ -83,7 +83,7 @@ export function systemPageHref(name: unknown, options: { body?: string | null } 
   return options.body ? `${base}?body=${encodeURIComponent(options.body)}` : base;
 }
 
-export type AtlasSystemTab = 'search' | 'market' | 'nearby' | 'powerplay' | 'factions' | 'route-finder' | 'ring-route';
+export type AtlasSystemTab = 'search' | 'market' | 'nearby' | 'powerplay' | 'factions' | 'route-finder' | 'ship-route' | 'ring-route';
 
 /**
  * Атлас с наведением на систему. Вкладки PowerPlay и «Фракции» по `focus_id64`
