@@ -55,6 +55,16 @@ def log_path(root) -> Path:
     return Path(root) / "logs" / "launcher.log"
 
 
+def configured_update_channel() -> str:
+    """Read the user's update channel without importing the UI module."""
+    try:
+        config = json.loads((Path.home() / ".colonial_helper.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "stable"
+    channel = str(config.get("update_channel") or "stable").strip().lower() if isinstance(config, dict) else "stable"
+    return channel if channel in ("stable", "beta") else "stable"
+
+
 def log(root, message: str) -> None:
     """Короткий журнал запуска: он нужен, когда «программа не открывается»."""
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -340,8 +350,28 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
     # make HTTPS requests, and neither may capture a transient _MEI CA path.
     configure_tls_ca_bundle(root)
 
+    if "--repair" in args:
+        import bundle_updater
+
+        # Setup запускает repair после копирования свежего лаунчера: обновление
+        # получает целиком с сервера, не доверяя локальным файлам.
+        try:
+            result = bundle_updater.repair(root, channel=configured_update_channel())
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc)}
+        if result.get("ok"):
+            log(root, f"установка восстановлена из пакета сервера: {result.get('version', '')}")
+        else:
+            log(root, f"восстановление с сервера не удалось: {result.get('error', '?')}")
+            if embedded_dir and embedded_manifest:
+                try:
+                    install_embedded(root, embedded_dir, embedded_manifest)
+                    log(root, "восстановлена встроенная версия Setup")
+                except Exception as exc:
+                    log(root, f"не удалось восстановить встроенную версию Setup: {exc}")
+
     if "--reinstall" in args and embedded_dir and embedded_manifest:
-        # Аварийный ход: «поставь то, что в exe, и забудь про скачанное».
+        # Переустановка: «поставь то, что в Setup, и забудь про скачанное».
         install_embedded(root, embedded_dir, embedded_manifest)
 
     version = ""
@@ -391,7 +421,7 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    direct_flags = {"--run-helper", "--reinstall", "--launcher-version", "--bundle-info"}
+    direct_flags = {"--run-helper", "--repair", "--reinstall", "--launcher-version", "--bundle-info"}
     if any(flag in args for flag in direct_flags):
         helper_args = [arg for arg in args if arg != "--run-helper"]
         return run_helper(helper_args)

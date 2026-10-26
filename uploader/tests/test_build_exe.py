@@ -18,6 +18,9 @@ class BuildExeTests(unittest.TestCase):
         self.assertEqual(options[certifi_index - 1], "--collect-data")
         self.assertNotIn("--collect-submodules", options[certifi_index + 1:])
 
+    def test_window_chrome_is_explicitly_frozen_with_launcher(self):
+        self.assertIn("window_chrome", build_exe.ALWAYS_INCLUDE)
+
     def test_existing_theme_package_resources_are_still_collected(self):
         options = build_exe.collect_package_args()
         self.assertIn("--collect-data", options)

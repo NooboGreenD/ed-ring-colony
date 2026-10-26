@@ -89,6 +89,7 @@ from route_tracker import RouteTracker
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from ui_scroll import SmoothScrollController
 from ui_navigation import SidebarNavigator
+from window_chrome import add_custom_titlebar
 from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
@@ -478,6 +479,10 @@ class ColonialHelperApp:
     }
 
     def _build_header(self):
+        add_custom_titlebar(
+            self.root, tk, f"{APP_NAME} v{VERSION}",
+            close_command=self._on_close, allow_maximize=True,
+        )
         frame = tb.Frame(self.root, padding=10)
         frame.pack(fill=X, pady=(0, 5))
 
