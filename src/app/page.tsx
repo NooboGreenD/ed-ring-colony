@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import Starfield from '@/components/Starfield';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { MarkdownRenderer } from '@/lib/markdown';
 import { useEffect, useState } from 'react';
 
 export default function Home() {
@@ -89,7 +90,7 @@ export default function Home() {
             {n.cover_url && <img src={n.cover_url} alt={n.title} className="news-cover" />}
             <div className="news-date">{new Date(n.published_at).toLocaleString(locale)}</div>
             <h3>{n.title}</h3>
-            <div className="news-body-truncated">{n.body}</div>
+            <div className="news-body-truncated"><MarkdownRenderer content={n.body} /></div>
             <Link href={`/news/${n.id}`} className="btn btn-cyan" style={{ fontSize: 12, marginTop: 8 }}>
               {t('news.readMore')} &rarr;
             </Link>

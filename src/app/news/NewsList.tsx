@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { MarkdownRenderer } from '@/lib/markdown';
 
 interface NewsItem {
   id: number;
@@ -27,7 +28,7 @@ export default function NewsList({ news }: { news: NewsItem[] }) {
             {n.author ? ' · ' + n.author : ''}
           </div>
           <h3>{n.title}</h3>
-          <div className="news-body-truncated">{n.body}</div>
+          <div className="news-body-truncated"><MarkdownRenderer content={n.body} /></div>
           <Link href={`/news/${n.id}`} className="btn btn-cyan" style={{ fontSize: 12, marginTop: 8 }}>
             {t('news.readMore')} &rarr;
           </Link>
