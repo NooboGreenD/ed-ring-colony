@@ -15,7 +15,8 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 GA_ROOT = 2
-WM_NCLBUTTONDOWN = 0x00A1
+WM_SYSCOMMAND = 0x0112
+SC_MOVE = 0xF010
 HTCAPTION = 2
 
 
@@ -76,8 +77,10 @@ def remove_native_caption(window, user32=None, *, allow_resize=True,
         if not allow_maximize:
             desired &= ~WS_MAXIMIZEBOX
         if desired != style:
-            previous = set_style(hwnd, GWL_STYLE, desired)
-            if not previous:
+            set_style(hwnd, GWL_STYLE, desired)
+            # A zero return from SetWindowLongPtr can mean either failure or a
+            # legitimate previous value. Verify the style instead of guessing.
+            if int(get_style(hwnd, GWL_STYLE)) != desired:
                 return False
 
         flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
@@ -92,7 +95,7 @@ def remove_native_caption(window, user32=None, *, allow_resize=True,
 
 
 def _begin_native_drag(window, user32=None) -> bool:
-    """Delegate title-bar movement to Windows instead of redrawing per mouse event."""
+    """Ask Windows to perform a real move loop for this borderless top-level."""
     if not sys.platform.startswith("win"):
         return False
     try:
@@ -106,28 +109,22 @@ def _begin_native_drag(window, user32=None) -> bool:
                                      ctypes.c_size_t, ctypes.c_ssize_t]
         api.SendMessageW.restype = ctypes.c_ssize_t
         api.ReleaseCapture()
-        api.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
+        # SC_MOVE enters the native modal move loop. Unlike updating Tk geometry
+        # on every pointer event, Windows moves and repaints the HWND as a unit.
+        api.SendMessageW(hwnd, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0)
         return True
     except Exception:
         return False
-
-
-def _drag_geometry(start: dict, pointer_x: int, pointer_y: int) -> str:
-    """Fallback drag geometry that retains the original fixed window dimensions."""
-    left = max(0, int(start["left"]) + int(pointer_x) - int(start["pointer_x"]))
-    top = max(0, int(start["top"]) + int(pointer_y) - int(start["pointer_y"]))
-    return f"{int(start['width'])}x{int(start['height'])}+{left}+{top}"
 
 
 def add_custom_titlebar(window, tk, title: str, *, close_command=None,
                         background="#25282b", foreground="#f2f3f4",
                         accent="#e57b28", allow_maximize=True,
                         allow_resize=True):
-    """Add branded controls and remove the native title bar on Windows.
+    """Add a styled title bar and remove native caption decorations on Windows.
 
-    Other platforms retain their native decorations. On Windows, dragging is
-    delegated to the native window manager to avoid per-motion Tk geometry
-    redraws; the installer still has resize styles disabled.
+    Windows owns the move loop; the widget never repositions itself per mouse
+    event. Other platforms retain their native decorations.
     """
     if not sys.platform.startswith("win"):
         return None
@@ -169,57 +166,48 @@ def add_custom_titlebar(window, tk, title: str, *, close_command=None,
         button("□", toggle_maximize, "#3b4044")
     button("×", close_command or window.destroy, "#c84343")
 
-    def start_drag(event):
+    def start_drag(_event):
         try:
             if allow_maximize and window.state() in ("zoomed", "maximized"):
                 window.state("normal")
                 window.update_idletasks()
-            if _begin_native_drag(window):
-                window._custom_chrome_drag = None
-                return "break"
-            window.update_idletasks()
-            window._custom_chrome_drag = {
-                "pointer_x": int(event.x_root), "pointer_y": int(event.y_root),
-                "left": int(window.winfo_x()), "top": int(window.winfo_y()),
-                "width": int(window.winfo_width()),
-                "height": int(window.winfo_height()),
-            }
+            _begin_native_drag(window)
         except Exception:
-            window._custom_chrome_drag = None
-        return "break"
-
-    def move_drag(event):
-        start = getattr(window, "_custom_chrome_drag", None)
-        if start:
-            try:
-                window.geometry(_drag_geometry(start, event.x_root, event.y_root))
-            except Exception:
-                pass
-        return "break"
-
-    def stop_drag(_event):
-        window._custom_chrome_drag = None
+            pass
+        # Do not fall back to geometry() on every mouse event: that was the
+        # source of visible redraw trails on some Windows/Tk combinations.
         return "break"
 
     for widget in (bar, marker, label):
         widget.bind("<ButtonPress-1>", start_drag)
-        widget.bind("<B1-Motion>", move_drag)
-        widget.bind("<ButtonRelease-1>", stop_drag)
         widget.bind("<Double-Button-1>", lambda _event: toggle_maximize() if allow_maximize else None)
 
+    chrome_attempts = 0
+
     def apply_chrome():
-        if not remove_native_caption(
+        nonlocal chrome_attempts
+        if remove_native_caption(
             window, allow_resize=allow_resize, allow_maximize=allow_maximize,
         ):
-            # Prefer the familiar Windows frame over a duplicate title bar if
-            # this Tk/Windows combination does not permit changing its style.
+            return
+        chrome_attempts += 1
+        if chrome_attempts < 20:
+            # Tk can recreate or map the HWND after widget construction. Retry
+            # briefly rather than leaving the custom and native captions stacked.
             try:
-                bar.destroy()
+                window.after(100, apply_chrome)
+                return
             except Exception:
                 pass
+        # Never leave two visible title bars if this Windows/Tk build rejects
+        # the native style change entirely.
+        try:
+            bar.destroy()
+        except Exception:
+            pass
 
     try:
-        # Let Tk create/map the native HWND before altering its frame style.
+        # Give Tk time to create/map the native HWND before changing its style.
         window.after(50, apply_chrome)
     except Exception:
         apply_chrome()

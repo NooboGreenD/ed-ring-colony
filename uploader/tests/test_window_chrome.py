@@ -1,4 +1,4 @@
-"""Windows-only custom chrome keeps resize policy and drag geometry stable."""
+"""Windows-only custom chrome removes the native caption and uses native dragging."""
 import sys
 import unittest
 from pathlib import Path
@@ -17,7 +17,15 @@ class WindowChromeTests(unittest.TestCase):
         original = window_chrome.WS_CAPTION | window_chrome.WS_THICKFRAME | window_chrome.WS_MAXIMIZEBOX
         user32 = mock.Mock()
         user32.GetAncestor.return_value = outer_hwnd
-        user32.GetWindowLongPtrW.return_value = original
+        style = {"value": original}
+        user32.GetWindowLongPtrW.side_effect = lambda _hwnd, _index: style["value"]
+
+        def set_style(_hwnd, _index, value):
+            old = style["value"]
+            style["value"] = value
+            return old
+
+        user32.SetWindowLongPtrW.side_effect = set_style
         user32.SetWindowPos.return_value = 1
 
         class Window:
@@ -43,7 +51,15 @@ class WindowChromeTests(unittest.TestCase):
         original = window_chrome.WS_CAPTION | window_chrome.WS_THICKFRAME | window_chrome.WS_MAXIMIZEBOX
         user32 = mock.Mock()
         user32.GetAncestor.return_value = hwnd
-        user32.GetWindowLongPtrW.return_value = original
+        style = {"value": original}
+        user32.GetWindowLongPtrW.side_effect = lambda _hwnd, _index: style["value"]
+
+        def set_style(_hwnd, _index, value):
+            old = style["value"]
+            style["value"] = value
+            return old
+
+        user32.SetWindowLongPtrW.side_effect = set_style
         user32.SetWindowPos.return_value = 1
 
         class Window:
@@ -77,13 +93,24 @@ class WindowChromeTests(unittest.TestCase):
 
         user32.ReleaseCapture.assert_called_once_with()
         user32.SendMessageW.assert_called_once_with(
-            outer_hwnd, window_chrome.WM_NCLBUTTONDOWN, window_chrome.HTCAPTION, 0,
+            outer_hwnd, window_chrome.WM_SYSCOMMAND,
+            window_chrome.SC_MOVE | window_chrome.HTCAPTION, 0,
         )
 
-    def test_drag_geometry_only_changes_position(self):
-        start = {"left": 120, "top": 75, "pointer_x": 150, "pointer_y": 90,
-                 "width": 600, "height": 455}
-        self.assertEqual(window_chrome._drag_geometry(start, 210, 130), "600x455+180+115")
+    def test_drag_uses_native_window_manager_instead_of_geometry_updates(self):
+        tk = mock.Mock()
+        window = mock.Mock()
+        window.state.return_value = "normal"
+        window.after.return_value = "after#1"
+        with mock.patch.object(window_chrome.sys, "platform", "win32"), \
+             mock.patch.object(window_chrome, "remove_native_caption", return_value=True), \
+             mock.patch.object(window_chrome, "_begin_native_drag", return_value=True) as drag:
+            bar = window_chrome.add_custom_titlebar(window, tk, "Test")
+            bindings = [call for call in bar.bind.call_args_list if call.args[0] == "<ButtonPress-1>"]
+            self.assertTrue(bindings)
+            self.assertEqual(bindings[0].args[1](mock.Mock()), "break")
+            drag.assert_called_once_with(window)
+            window.geometry.assert_not_called()
 
     def test_non_windows_keeps_native_decorations(self):
         with mock.patch.object(window_chrome.sys, "platform", "linux"):
