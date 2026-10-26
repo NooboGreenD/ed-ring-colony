@@ -56,8 +56,31 @@ export async function GET(request: Request) {
       files.set(`ColonialHelper-build/${entry.name}`, data);
     }
 
-    const bat = `@echo off\r\nsetlocal\r\ncd /d "%~dp0"\r\nwhere py >nul 2>nul || (echo Python 3 is not installed. Install it from python.org and enable Add Python to PATH.& pause & exit /b 1)\r\npy -3 -m venv .venv || goto :error\r\ncall .venv\\Scripts\\activate.bat || goto :error\r\npython -m pip install --upgrade pip || goto :error\r\npython -m pip install -r requirements.txt pyinstaller || goto :error\r\npython build_exe.py || goto :error\r\necho.\r\necho READY: %CD%\\dist\\ColonialHelper.exe\r\nexplorer "%CD%\\dist"\r\npause\r\nexit /b 0\r\n:error\r\necho.\r\necho Build failed. See the error above.\r\npause\r\nexit /b 1\r\n`;
-    const guide = `# Первая сборка Colonial Helper ${version}\n\n1. Распакуйте весь архив на доверенной машине Windows 10/11.\n2. Установите 64-битный Python 3 (рекомендуется 3.11) с python.org и включите **Add Python to PATH**.\n3. Запустите **BUILD-WINDOWS.bat**. Первый запуск скачает зависимости.\n4. Готовый файл находится в **dist\\ColonialHelper.exe**.\n5. В админке, в этом же разделе, выберите EXE и нажмите «Загрузить exe на сервер».\n\nВ комплект уже встроены публичные ключи текущего сервера. Приватные ключи в архив не попадают. После публикации пользователи скачивают этот EXE один раз, а следующие релизы приходят пакетами обновлений.\n`;
+    const bat = [
+      '@echo off',
+      'setlocal',
+      'cd /d "%~dp0"',
+      'where py >nul 2>nul || (echo Python 3 is not installed. Install it from python.org and enable Add Python to PATH.& pause & exit /b 1)',
+      'py -3 -m venv .venv || goto :error',
+      'call .venv\\Scripts\\activate.bat || goto :error',
+      'python -m pip install --upgrade pip || goto :error',
+      'python -m pip install -r requirements.txt pyinstaller || goto :error',
+      'python build_exe.py || goto :error',
+      'python build_installer.py || goto :error',
+      'echo.',
+      'echo READY: %CD%\\dist\\ColonialHelperSetup.exe',
+      'echo Launcher payload for the updater: %CD%\\dist\\ColonialHelper.exe',
+      'explorer "%CD%\\dist"',
+      'pause',
+      'exit /b 0',
+      ':error',
+      'echo.',
+      'echo Build failed. See the error above.',
+      'pause',
+      'exit /b 1',
+      '',
+    ].join('\r\n');
+    const guide = `# Первая сборка Colonial Helper ${version}\n\n1. Распакуйте весь архив на доверенной машине Windows 10/11.\n2. Установите 64-битный Python 3 (рекомендуется 3.11) с python.org и включите **Add Python to PATH**.\n3. Запустите **BUILD-WINDOWS.bat**. Первый запуск скачает зависимости и соберёт оба файла.\n4. Для первичной установки и распространения используйте **dist\\ColonialHelperSetup.exe**. Он устанавливает лаунчер, создаёт ярлыки и запускает Helper.\n5. Файл **dist\\ColonialHelper.exe** — встроенный лаунчер/payload для штатной системы обновлений. В админке загружайте именно его в поле «Базовая сборка ColonialHelper.exe»; не заменяйте его установщиком Setup.\n\nВ комплект уже встроены публичные ключи текущего сервера. Приватные ключи в архив не попадают. Пользователям для первой установки раздаётся Setup; установленный лаунчер сохраняет получение пакетных обновлений.\n`;
     files.set('ColonialHelper-build/BUILD-WINDOWS.bat', Buffer.from(bat, 'utf8'));
     files.set('ColonialHelper-build/КАК-СОБРАТЬ.md', Buffer.from(guide, 'utf8'));
 

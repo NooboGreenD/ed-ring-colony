@@ -124,10 +124,19 @@ maybe('комплект первой сборки встраивает серв�
   assert.match(res.headers.get('content-disposition'), /ColonialHelper-build-8\.5\.0\.zip/);
 
   const files = readZip(body);
-  for (const name of ['bundle.py', 'launcher.py', 'build_exe.py', 'BUILD-WINDOWS.bat', 'КАК-СОБРАТЬ.md']) {
+  for (const name of ['bundle.py', 'launcher.py', 'build_exe.py', 'build_installer.py', 'installer.py', 'BUILD-WINDOWS.bat', 'КАК-СОБРАТЬ.md']) {
     assert.ok(files.has(`ColonialHelper-build/${name}`), `в комплекте есть ${name}`);
   }
   assert.ok([...files.keys()].every((name) => !name.includes('/tests/')), 'тесты в комплект не попадают');
+
+  const buildBat = files.get('ColonialHelper-build/BUILD-WINDOWS.bat').toString('utf8');
+  assert.match(buildBat, /python build_exe\.py/);
+  assert.match(buildBat, /python build_installer\.py/);
+  assert.ok(buildBat.includes('dist\\ColonialHelperSetup.exe'));
+  const guide = files.get('ColonialHelper-build/КАК-СОБРАТЬ.md').toString('utf8');
+  assert.match(guide, /ColonialHelperSetup\.exe/);
+  assert.match(guide, /ColonialHelper\.exe/);
+  assert.match(guide, /не заменяйте его установщиком Setup/i);
 
   const expected = kit.trustedPublicKeys();
   assert.equal(expected['kit-server'], serverKey.publicKey);
