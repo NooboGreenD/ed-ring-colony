@@ -41,7 +41,13 @@ export default function Home() {
         <Starfield />
         <div className="corner tl" />
         <div className="corner br" />
-        <div className="hero-copy" style={{ position: 'relative', zIndex: 1 }}>
+        <img
+          className="hero-mascot"
+          src="/images/mascot-ed-ring-colony.webp"
+          alt=""
+          aria-hidden="true"
+        />
+        <div className="hero-copy">
           <div className="kicker">{kicker}</div>
           <h1>
             {title1}

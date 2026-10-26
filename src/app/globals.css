@@ -490,6 +490,31 @@
     white-space: pre-line;
   }
 
+  .hero-copy {
+    position: relative;
+    z-index: 1;
+    align-self: flex-start;
+    width: min(720px, 55%);
+    margin-left: clamp(8px, 3vw, 44px);
+    text-align: left;
+  }
+
+  .hero-copy .btn-row {
+    justify-content: flex-start;
+  }
+
+  .hero-mascot {
+    position: absolute;
+    z-index: 0;
+    right: 1%;
+    bottom: 0;
+    width: min(42%, 620px);
+    height: auto;
+    pointer-events: none;
+    opacity: 0.88;
+    mix-blend-mode: screen;
+  }
+
   .btn-row {
     display: flex;
     gap: 18px;
@@ -2342,6 +2367,20 @@
     .hero {
       min-height: 60vh;
       padding: 40px 16px;
+    }
+    .hero-copy {
+      width: 100%;
+      margin-left: 0;
+      text-align: center;
+    }
+    .hero-copy .btn-row {
+      justify-content: center;
+    }
+    .hero-mascot {
+      width: min(58%, 360px);
+      right: -5%;
+      bottom: 6%;
+      opacity: 0.3;
     }
     .hero h1 {
       font-size: clamp(28px, 12vw, 48px) !important;
