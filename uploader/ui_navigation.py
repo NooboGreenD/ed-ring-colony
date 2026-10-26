@@ -85,7 +85,7 @@ class SidebarNavigator:
         button = self.tb.Button(
             row, text=title, command=lambda p=page: self.select(p),
             bootstyle="secondary-outline", style="Navigation.TButton",
-            padding=(9, 7), anchor="w",
+            padding=(9, 7),
         )
         button.pack(side="left", fill="x", expand=True)
         self._buttons[page] = button
