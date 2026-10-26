@@ -4,6 +4,7 @@ import { bundleFile } from './helpers/bundle.mjs';
 const catalog = await import(
   await bundleFile({ entry: 'src/lib/constructionBlueprints.ts' })
 );
+const commodities = await import('../../src/lib/commodities.ts');
 const upstream = await import(
   await bundleFile({ entry: 'src/lib/marketUpstream.ts' })
 );
@@ -110,6 +111,15 @@ const job = (overrides) => ({
   scan_log: [],
   found_stations: 0,
   ...overrides,
+});
+
+test('single-item search resolves ordinary and rare market goods beyond the construction list', () => {
+  assert.ok(!commodities.BUILD_COMMODITIES.includes('Gold'));
+  assert.ok(commodities.MARKET_COMMODITIES.includes('Gold'));
+  assert.ok(commodities.MARKET_COMMODITIES.includes('Lavian Brandy'));
+  assert.equal(commodities.resolveCommodity('gold'), 'Gold');
+  assert.equal(commodities.resolveCommodity('LavianBrandy'), 'Lavian Brandy');
+  assert.equal(commodities.resolveCommodity('unlisted query'), 'unlisted query');
 });
 
 test('construction catalog contains 55 selectable sites and 55 canonical materials, with nonzero baseline amounts', () => {

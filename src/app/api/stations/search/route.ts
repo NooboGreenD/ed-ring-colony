@@ -9,7 +9,8 @@ import {
 import { resolveStationPick, stationItemDisplay, stationQueryAliases, type StationPick } from '@/lib/stationSearchCatalog';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
+// Radius-filtered inventory matching can scan many station snapshots.
+export const maxDuration = 60;
 
 type ServiceClient = ReturnType<typeof createServiceClient>;
 type Query = ReturnType<typeof stationSearchSchema.parse>;
@@ -28,13 +29,16 @@ function isMissingListFunction(error: { code?: string; message?: string }): bool
 }
 
 export async function GET(request: Request) {
+  const startedAt = Date.now();
   const parsed = stationSearchSchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
   if (!parsed.success) return NextResponse.json({ error: 'Укажите запрос от 2 до 120 символов и корректные фильтры.' }, { status: 400 });
   const query = parsed.data;
+  let stage = 'create-service-client';
   try {
     const svc = createServiceClient();
     let center: ReferencePoint | null = null;
     if (query.reference) {
+      stage = 'resolve-reference-coordinates';
       center = await referenceSystemCoords(svc, query.reference);
       if (!center) return NextResponse.json({ error: 'Координаты опорной системы не найдены в БД. Выберите известную систему или ищите без ограничения расстояния.' }, { status: 404 });
     }
@@ -51,6 +55,7 @@ export async function GET(request: Request) {
     };
 
     if (query.group === 'station') {
+      stage = 'grouped-station-query';
       const found = await searchByStation(svc, query, filters, pick);
       const body: StationSearchStationsResponse = {
         kind: query.kind, query: text,
@@ -63,6 +68,7 @@ export async function GET(request: Request) {
     }
 
     // Плоский ответ (станция + позиция) — прежний контракт API.
+    stage = 'flat-station-query';
     const { data, error } = await svc.rpc(query.pad !== 'any' || query.carriers !== 'include' ? 'search_station_catalog_filtered' : 'search_station_catalog', {
       ...filters, page_offset: query.page * STATION_PAGE_SIZE, row_limit: STATION_PAGE_SIZE,
     });
@@ -75,7 +81,14 @@ export async function GET(request: Request) {
       source: 'project-db',
     });
   } catch (error) {
-    console.error('[Station Search]', error);
+    console.error('[Station Search]', {
+      stage,
+      duration_ms: Date.now() - startedAt,
+      kind: query.kind,
+      radius_ly: query.radius,
+      has_reference: !!query.reference,
+      error,
+    });
     return NextResponse.json({ error: 'Поиск станций временно недоступен. Проверьте подключение БД и применение миграций справочника станций.' }, { status: 503 });
   }
 }
