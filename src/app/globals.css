@@ -675,14 +675,12 @@
   .news-body {
     color: var(--text);
     line-height: 1.7;
-    white-space: pre-line;
     margin-top: 10px;
   }
 
   .news-body-truncated {
     color: var(--text);
     line-height: 1.7;
-    white-space: pre-line;
     margin-top: 10px;
     max-height: 6em;
     overflow: hidden;
@@ -690,6 +688,9 @@
     mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
     -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
   }
+
+  .news-body-truncated .post-content > :first-child { margin-top: 0; }
+  .news-body-truncated .post-content > :last-child { margin-bottom: 0; }
 
   .news-cover {
     width: 100%;

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import CommentSection from '@/components/Comments/CommentSection';
+import { MarkdownRenderer } from '@/lib/markdown';
 
 export default function NewsDetailPage() {
   const { t, locale } = useI18n();
@@ -37,8 +38,8 @@ export default function NewsDetailPage() {
       {item.cover_url && (
         <img src={item.cover_url} alt={item.title} className="news-cover" style={{ marginBottom: 16 }} />
       )}
-      <div className="news-body" style={{ lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
-        {item.body}
+      <div className="news-body" style={{ lineHeight: 1.7 }}>
+        <MarkdownRenderer content={item.body} />
       </div>
       <div style={{ marginTop: 24 }}>
         <Link href="/news" className="btn btn-cyan">
