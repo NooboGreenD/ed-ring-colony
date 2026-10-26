@@ -44,6 +44,8 @@
 .infoBlock { min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 88%, transparent), color-mix(in srgb, var(--bg) 70%, transparent)); }
 .descriptionBlock { grid-area: description; border-left: 2px solid var(--cg-accent); }
 .taskBlock { grid-area: task; border-left: 2px solid var(--cg-cyan); }
+.commodityLink { color: var(--cg-cyan); text-decoration: underline dotted; text-decoration-color: color-mix(in srgb, var(--cg-cyan) 65%, transparent); text-underline-offset: 2px; }
+.commodityLink:hover, .commodityLink:focus-visible { color: var(--text); text-decoration-style: solid; }
 .rewardBlock { grid-column: 1 / -1; border-left: 2px solid var(--cg-accent); background: linear-gradient(145deg, color-mix(in srgb, var(--cg-accent) 7%, var(--panel)), color-mix(in srgb, var(--bg) 70%, transparent)); }
 .infoTitle { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .11em; text-transform: uppercase; }
 .infoIcon { color: var(--cg-cyan); font-size: 15px; line-height: 1; }

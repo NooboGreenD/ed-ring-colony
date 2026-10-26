@@ -118,6 +118,7 @@ function AtlasPageInner() {
   const [candidatesLoadingMore, setCandidatesLoadingMore] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const initialMarketSystem = searchParams.get('system') || '';
+  const initialMarketCommodity = searchParams.get('commodity') || '';
   const [activeTab, setActiveTab] = useState<AtlasTab>(() => parseTab(searchParams.get('tab')));
   // Слой PowerPlay: данные и фильтр общие для вкладки и 3D-карты.
   const powerplay = useAtlasPowerplay({ tabActive: activeTab === 'powerplay' });
@@ -955,6 +956,7 @@ function AtlasPageInner() {
           {activeTab === 'market' && (
             <AtlasMarketSearch
               initialSystem={initialMarketSystem}
+              initialCommodity={initialMarketCommodity}
               onScanStart={resetMarketMapLayers}
               onScanUpdate={mergeMarketScanUpdate}
               onMarketResults={setMarketResults}

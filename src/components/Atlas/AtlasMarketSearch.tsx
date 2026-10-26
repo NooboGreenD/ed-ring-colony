@@ -106,6 +106,7 @@ interface MapMarketResult {
 
 interface AtlasMarketSearchProps {
   initialSystem?: string;
+  initialCommodity?: string;
   /** Clears stale overlays when a new market scan starts. */
   onScanStart?: () => void;
   onScanUpdate?: (systems: MapSystem[]) => void;
@@ -123,9 +124,9 @@ function formatRemaining(progress: SearchProgress): string {
   return `~${Math.round(seconds / 60)} мин`;
 }
 
-export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
+export default function AtlasMarketSearch({ initialSystem = '', initialCommodity = '', onScanStart, onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
   const [refSystem, setRefSystem] = useState(initialSystem || 'Sol');
-  const [commodity, setCommodity] = useState('Steel');
+  const [commodity, setCommodity] = useState(initialCommodity || 'Steel');
   const [radius, setRadius] = useState(50);
   const [mode, setMode] = useState<'single' | 'build'>('single');
   const [buildType, setBuildType] = useState('all');
@@ -144,10 +145,14 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
   const startAbortRef = useRef<AbortController | null>(null);
   const scanGenerationRef = useRef(0);
 
-  // Система из ?system= приходит позже первого рендера (родитель читает URL).
+  // Система и товар из ссылки CG подставляются в форму поиска Atlas.
   useEffect(() => {
     if (initialSystem) setRefSystem(initialSystem);
-  }, [initialSystem]);
+    if (initialCommodity) {
+      setCommodity(initialCommodity);
+      setMode('single');
+    }
+  }, [initialSystem, initialCommodity]);
 
   const clearPolling = useCallback(() => {
     if (intervalRef.current != null) {
