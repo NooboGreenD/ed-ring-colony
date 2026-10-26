@@ -189,6 +189,10 @@ class ColonialHelperApp:
         self.api = ApiClient()
         self.route = RouteTracker()
         self.ship = ShipTracker()
+        self._latest_loadout_event = None
+        self._ship_state_last_synced = None
+        self._ship_state_sync_inflight = False
+        self._ship_state_loadout_pending = False
         self.watcher_active = False
         self.watcher_thread = None
         self.watcher_stop_event = threading.Event()
@@ -1532,6 +1536,14 @@ class ColonialHelperApp:
             command=self._on_export_route,
             bootstyle="warning-outline",
             width=15,
+        ).pack(side=LEFT, padx=(0, 10))
+
+        tb.Button(
+            btn_frame,
+            text="Забрать из Atlas",
+            command=self._on_import_atlas_route,
+            bootstyle="primary-outline",
+            width=18,
         ).pack(side=LEFT, padx=(0, 10))
 
         tb.Button(
@@ -4859,6 +4871,53 @@ class ColonialHelperApp:
                 self.log(f"Сбой отправки статистики пилота: {exc}")
 
         threading.Thread(target=worker, daemon=True, name="SyncPilotStats").start()
+
+    def _maybe_sync_ship_state(self, ev: dict, *, live: bool):
+        """Upload only fresh journal state, outside the watcher thread's network path."""
+        if not live or not getattr(self, "api_client", None) or not self.api_client.is_connected:
+            return
+        event = ev.get("event")
+        if event == "Loadout":
+            # Keep the unmodified journal snapshot, including Engineering and
+            # ExperimentalEffect; ShipTracker intentionally stores only HUD data.
+            self._latest_loadout_event = dict(ev)
+            self._ship_state_loadout_pending = True
+        if event not in ("Loadout", "Location", "FSDJump", "Docked", "CarrierJump", "Cargo", "Status", "RefuelAll", "RefuelPartial"):
+            return
+        if not self._latest_loadout_event or self._ship_state_sync_inflight:
+            return
+        state = getattr(getattr(self, "ship", None), "state", None)
+        if state is None:
+            return
+        payload = {
+            "current_system": state.current_system or ev.get("StarSystem") or "",
+            "fuel_level": state.fuel_level,
+            "cargo_count": state.cargo_count,
+        }
+        previous = self._ship_state_last_synced
+        if event == "Status" and previous and not self._ship_state_loadout_pending:
+            same_fuel = abs(float(payload["fuel_level"] or 0) - float(previous.get("fuel_level") or 0)) < 0.5
+            if same_fuel and payload["cargo_count"] == previous.get("cargo_count") and payload["current_system"] == previous.get("current_system"):
+                return
+        if self._ship_state_loadout_pending:
+            payload["loadout"] = self._latest_loadout_event
+        self._ship_state_sync_inflight = True
+
+        def worker(snapshot=payload):
+            try:
+                result = self.api_client.upload_ship_state(snapshot)
+                if result.get("ok"):
+                    self._ship_state_last_synced = {key: snapshot[key] for key in ("current_system", "fuel_level", "cargo_count")}
+                    if snapshot.get("loadout") is self._latest_loadout_event:
+                        self._ship_state_loadout_pending = False
+                else:
+                    self.log(f"Не удалось синхронизировать Loadout: {result.get('error', 'ошибка')}", "warn")
+            except Exception as exc:
+                self.log(f"Сбой синхронизации Loadout: {exc}", "warn")
+            finally:
+                self._ship_state_sync_inflight = False
+
+        threading.Thread(target=worker, daemon=True, name="SyncShipState").start()
 
     def _update_pilot_stats_from_event(self, ev: dict):
         if not hasattr(self, "_pilot_stats"):
@@ -9926,6 +9985,7 @@ class ColonialHelperApp:
         self._feed_system_map(ev, live=live)
         # Отслеживание корабля
         self.ship.parse_event(ev)
+        self._maybe_sync_ship_state(ev, live=live)
         # Груз авианосца: те же события, что уходят в Raven (/api/fc/.../cargo),
         # только считаются локально для блока CARRIER в оверлее.
         self._feed_carrier(ev, live=live)
@@ -10909,6 +10969,38 @@ class ColonialHelperApp:
     # ============================================================
     #  Маршрут
     # ============================================================
+    def _on_import_atlas_route(self):
+        if not getattr(self, "api_client", None) or not self.api_client.is_connected:
+            self.log("Сначала подключите Colonial Helper к сайту через существующий токен проекта", "warn")
+            return
+
+        def worker():
+            result = self.api_client.pull_atlas_route()
+            def finish():
+                if not result.get("ok"):
+                    self.log(f"Не удалось получить маршрут из Atlas: {result.get('error', 'ошибка')}", "warn")
+                    return
+                points = result.get("route")
+                if not points:
+                    self.log("В Atlas нет ожидающего маршрута. Сначала постройте и передайте маршрут из вкладки Atlas → Маршрут корабля.", "info")
+                    return
+                try:
+                    nav_route = {"Route": [
+                        {"StarSystem": str(point["name"]), "StarPos": [point["x"], point["y"], point["z"]]}
+                        for point in points
+                    ]}
+                    self.route.load_from_navroute(nav_route)
+                    current = getattr(getattr(self, "ship", None), "state", None)
+                    if current and current.current_system:
+                        self.route.mark_visited(current.current_system)
+                    self._refresh_route_tree()
+                    self.log(f"Маршрут из Atlas загружен в Colonial Helper: {len(self.route.systems)} систем. Игровая навигация не изменялась.", "success")
+                except Exception as exc:
+                    self.log(f"Некорректный маршрут из Atlas: {exc}", "error")
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True, name="PullAtlasRoute").start()
+
     def _on_import_route(self):
         filepath = filedialog.askopenfilename(
             filetypes=[

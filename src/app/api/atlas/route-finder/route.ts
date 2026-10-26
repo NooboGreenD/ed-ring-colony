@@ -148,8 +148,12 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const { from_system, to_system, max_jump = 14.99, radius_around_path = 30 } = body;
-    // Colonisation chains must never exceed the 15 ly placement limit.
-    const effectiveMaxJump = Math.min(14.99, Math.max(1, Number(max_jump) || 14.99));
+    const routeMode = body.route_mode === 'ship' ? 'ship' : 'colonisation';
+    // Ship routing is a separate mode: it can use the real build's range,
+    // while colonisation keeps its established hard 14.99 ly placement limit.
+    const effectiveMaxJump = routeMode === 'ship'
+      ? Math.min(100, Math.max(1, Number(max_jump) || 1))
+      : Math.min(14.99, Math.max(1, Number(max_jump) || 14.99));
     const effectiveRadius = Math.min(100, Math.max(5, Number(radius_around_path) || 30));
     if (!from_system || !to_system) {
       return NextResponse.json({ error: 'from_system and to_system required' }, { status: 400 });
@@ -179,7 +183,7 @@ export async function POST(req: Request) {
     const cubeSize = useCube ? Math.min(effectiveRadius, EDSM_CUBE_MAX) : 0;
     const scanStep = useCube
       ? Math.max(cubeSize * 0.7, 50)
-      : Math.max(max_jump, 10);
+      : Math.max(effectiveMaxJump, 10);
     const rawSteps = Math.ceil(directDist / scanStep);
     const steps = Math.min(rawSteps, MAX_SCAN_POINTS);
     const actualStep = steps > 1 ? directDist / steps : directDist;
@@ -287,6 +291,16 @@ export async function POST(req: Request) {
     /* ── 3. A* ── */
     let route = findRouteAStar(fromCoords, toCoords, graphSystems, effectiveMaxJump);
     let syntheticWaypoints = false;
+    if (!route && routeMode === 'ship') {
+      return NextResponse.json({
+        error: 'Маршрут по известным системам не найден. Atlas не будет подставлять расчётные точки, которые нельзя выбрать в игре.',
+        from: { name: from_system, ...fromCoords },
+        to: { name: to_system, ...toCoords },
+        direct_distance: Math.round(directDist * 100) / 100,
+        systems_scanned: systems.length,
+        suggestion: 'Увеличьте радиус сканирования или проверьте дальность корабля.',
+      }, { status: 404 });
+    }
     if (!route) {
       // EDSM can have catalogue gaps. First add synthetic bridge points to the
       // graph, rather than replacing the known systems entirely. A* will then
@@ -314,7 +328,7 @@ export async function POST(req: Request) {
       for (let j = i + 1; j < graphNodes; j++) {
         const a = i === 0 ? fromCoords : i === 1 ? toCoords : graphSystems[i - 2];
         const b = j === 0 ? fromCoords : j === 1 ? toCoords : graphSystems[j - 2];
-        if (dist(a, b) <= max_jump) graphEdges++;
+        if (dist(a, b) <= effectiveMaxJump) graphEdges++;
       }
     }
 
@@ -364,6 +378,7 @@ export async function POST(req: Request) {
         to_system,
         direct_distance: Math.round(directDist * 100) / 100,
         max_jump: effectiveMaxJump,
+        route_mode: routeMode,
         radius_around_path: effectiveRadius,
         synthetic_waypoints: syntheticWaypoints,
         scan_points: scanPoints,

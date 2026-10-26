@@ -1042,6 +1042,11 @@ export default function GalaxyMap({
             )}
           </div>
           {systemSearchError && <div style={{ color: '#f87171', fontSize: 10, marginTop: 4 }}>{systemSearchError}</div>}
+          {galaxyPick && <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('atlas-route-target-selected', { detail: { name: galaxyPick.name } }))}
+            style={{ marginTop: 5, width: '100%', background: 'rgba(230,126,34,.15)', border: '1px solid rgba(230,126,34,.5)', color: '#ffd19b', padding: '5px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
+          >Маршрут корабля сюда: {galaxyPick.name}</button>}
         </div>
 
         <div style={{ marginBottom: 12, pointerEvents: 'auto' }}>

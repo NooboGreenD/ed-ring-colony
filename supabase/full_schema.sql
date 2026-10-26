@@ -17956,3 +17956,32 @@ GRANT SELECT (
 ) ON public.community_goals TO anon, authenticated;
 
 NOTIFY pgrst, 'reload schema';
+
+-- ┌────────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261103090000_ship_route_planner.sql                    │
+-- └────────────────────────────────────────────────────────────────────┘
+
+CREATE TABLE IF NOT EXISTS public.pilot_ship_state (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  loadout JSONB,
+  current_system TEXT,
+  fuel_level DOUBLE PRECISION,
+  cargo_count INTEGER,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  loadout_at TIMESTAMPTZ
+);
+ALTER TABLE public.pilot_ship_state ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.pilot_ship_state FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.pilot_ship_state TO service_role;
+
+CREATE TABLE IF NOT EXISTS public.helper_route_inbox (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  route JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  consumed_at TIMESTAMPTZ
+);
+ALTER TABLE public.helper_route_inbox ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.helper_route_inbox FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.helper_route_inbox TO service_role;
+
+NOTIFY pgrst, 'reload schema';

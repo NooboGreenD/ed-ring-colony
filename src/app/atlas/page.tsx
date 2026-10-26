@@ -12,6 +12,7 @@ import { AtlasCandidateList } from '@/components/Atlas/AtlasCandidateList';
 import { AtlasSearchHistory } from '@/components/Atlas/AtlasSearchHistory';
 import { AtlasFavorites } from '@/components/Atlas/AtlasFavorites';
 import AtlasRouteFinder from '@/components/Atlas/AtlasRouteFinder';
+import AtlasShipRouteFinder from '@/components/Atlas/AtlasShipRouteFinder';
 import AtlasMarketSearch from '@/components/Atlas/AtlasMarketSearch';
 import AtlasRingRouteFinder from '@/components/Atlas/AtlasRingRouteFinder';
 import { AtlasPowerplayPanel } from '@/components/Atlas/AtlasPowerplayPanel';
@@ -56,17 +57,18 @@ type ProjectItem = {
   squadron_name?: string;
 };
 
-type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market' | 'nearby' | 'powerplay' | 'factions';
+type AtlasTab = 'search' | 'route' | 'route-finder' | 'ship-route' | 'ring-route' | 'market' | 'nearby' | 'powerplay' | 'factions';
 
 const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }[] = [
   { id: 'search', label: 'Поиск', icon: <IconSearch size={14} />, hint: 'Поиск миров по типам (Alt+1)' },
   { id: 'route', label: 'Маршрут', icon: <IconMap size={14} />, hint: 'Маршрут проекта (Alt+2)' },
-  { id: 'route-finder', label: 'Маршрут A→B', icon: <IconRoute size={14} />, hint: 'Построение маршрута между системами (Alt+3)' },
-  { id: 'ring-route', label: 'Кольцо', icon: <IconGlobe size={14} />, hint: 'Галактическое кольцо колонизации (Alt+4)' },
-  { id: 'market', label: 'Рынок', icon: <IconStore size={14} />, hint: 'Поиск товаров для стройки (Alt+5)' },
-  { id: 'nearby', label: 'Поблизости', icon: <IconGlobe size={14} />, hint: 'Все системы в сфере/кубе 1–50 св.л. (Alt+6)' },
-  { id: 'powerplay', label: 'PowerPlay', icon: <IconPower size={14} />, hint: 'Системы под контролем держав PowerPlay (Alt+7)' },
-  { id: 'factions', label: 'Фракции', icon: <IconShieldHalf size={14} />, hint: 'Минорные фракции: поиск и их системы на карте (Alt+8)' },
+  { id: 'route-finder', label: 'Колонизация A→B', icon: <IconRoute size={14} />, hint: 'Маршрут с лимитом колонизации 14,99 св. л. (Alt+3)' },
+  { id: 'ship-route', label: 'Маршрут корабля', icon: <IconRoute size={14} />, hint: 'Маршрут по текущему Loadout из Colonial Helper (Alt+4)' },
+  { id: 'ring-route', label: 'Кольцо', icon: <IconGlobe size={14} />, hint: 'Галактическое кольцо колонизации (Alt+5)' },
+  { id: 'market', label: 'Рынок', icon: <IconStore size={14} />, hint: 'Поиск товаров для стройки (Alt+6)' },
+  { id: 'nearby', label: 'Поблизости', icon: <IconGlobe size={14} />, hint: 'Все системы в сфере/кубе 1–50 св.л. (Alt+7)' },
+  { id: 'powerplay', label: 'PowerPlay', icon: <IconPower size={14} />, hint: 'Системы под контролем держав PowerPlay (Alt+8)' },
+  { id: 'factions', label: 'Фракции', icon: <IconShieldHalf size={14} />, hint: 'Минорные фракции: поиск и их системы на карте (Alt+9)' },
 ];
 
 const CANDIDATE_PAGE_SIZE = 200;
@@ -259,6 +261,19 @@ function AtlasPageInner() {
     const tab = parseTab(searchParams.get('tab'));
     setActiveTab((current) => (current === tab ? current : tab));
   }, [searchParams]);
+
+  useEffect(() => {
+    const chooseRouteTarget = (event: Event) => {
+      const name = String((event as CustomEvent<{ name?: string }>).detail?.name ?? '').trim();
+      if (!name) return;
+      const params = new URLSearchParams(searchParams.toString());
+      params.set('tab', 'ship-route');
+      params.set('to', name);
+      router.replace(`/atlas?${params.toString()}`, { scroll: false });
+    };
+    window.addEventListener('atlas-route-target-selected', chooseRouteTarget);
+    return () => window.removeEventListener('atlas-route-target-selected', chooseRouteTarget);
+  }, [router, searchParams]);
 
   /* ── Alt+1..7 — быстрое переключение вкладок ── */
   useEffect(() => {
@@ -936,7 +951,11 @@ function AtlasPageInner() {
           )}
 
           {activeTab === 'route-finder' && (
-            <AtlasRouteFinder onRouteFound={handleRouteFound} />
+            <AtlasRouteFinder onRouteFound={handleRouteFound} initialTo={searchParams.get('to') || ''} />
+          )}
+
+          {activeTab === 'ship-route' && (
+            <AtlasShipRouteFinder initialTo={searchParams.get('to') || initialMarketSystem} onRouteFound={(route) => handleRouteFound(route, 'ship-route')} />
           )}
 
           {activeTab === 'ring-route' && (

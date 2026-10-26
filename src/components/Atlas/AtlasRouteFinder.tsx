@@ -64,6 +64,12 @@ interface RouteResult {
 
 interface Props {
   onRouteFound: (route: RoutePoint[]) => void;
+  mode?: 'colonisation' | 'ship';
+  initialFrom?: string;
+  initialTo?: string;
+  maxJumpRange?: number;
+  rangeDescription?: string;
+  rangeIssues?: string[];
 }
 
 type SearchPhase =
@@ -88,16 +94,27 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)} с`;
 }
 
-export default function AtlasRouteFinder({ onRouteFound }: Props) {
-  const [fromSystem, setFromSystem] = useState('');
-  const [toSystem, setToSystem] = useState('');
-  const [maxJump, setMaxJump] = useState(14.99);
+export default function AtlasRouteFinder({
+  onRouteFound,
+  mode = 'colonisation',
+  initialFrom = '',
+  initialTo = '',
+  maxJumpRange,
+  rangeDescription,
+  rangeIssues = [],
+}: Props) {
+  const shipMode = mode === 'ship';
+  const jumpLimit = shipMode ? Math.max(1, Math.min(100, maxJumpRange ?? 100)) : 14.99;
+  const [fromSystem, setFromSystem] = useState(initialFrom);
+  const [toSystem, setToSystem] = useState(initialTo);
+  const [maxJump, setMaxJump] = useState(shipMode ? jumpLimit : 14.99);
   const [radius, setRadius] = useState(30);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<RouteResult | null>(null);
   const [phase, setPhase] = useState<SearchPhase>({ stage: 'idle' });
   const [routeFilter, setRouteFilter] = useState('');
   const [showDetails, setShowDetails] = useState(false);
+  const [sendingRoute, setSendingRoute] = useState(false);
   const phaseTimers = useRef<number[]>([]);
 
   // Таймеры фаз раньше продолжали жить после размонтирования и дёргали setState.
@@ -119,7 +136,7 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
         publishAtlasSearchProgress({
           active: true,
           kind: 'route',
-          title: 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
+          title: shipMode ? 'МАРШРУТ ПО ДАЛЬНОСТИ КОРАБЛЯ' : 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
           stage: item.stage,
           percent: percentages[index],
           message: item.message,
@@ -128,7 +145,7 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
       }, elapsed);
       phaseTimers.current.push(timer);
     });
-  }, [clearPhaseTimers]);
+  }, [clearPhaseTimers, shipMode]);
 
   /**
    * Координаты точки маршрута для карты: сначала локальный каталог проекта,
@@ -170,7 +187,7 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
     setPhase({ stage: 'coords', message: 'Получение координат систем из EDSM…' });
     startAtlasSearchProgress({
       kind: 'route',
-      title: 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
+      title: shipMode ? 'МАРШРУТ ПО ДАЛЬНОСТИ КОРАБЛЯ' : 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
       stage: 'coords',
       percent: 4,
       message: `Определяем координаты ${fromSystem.trim()} и ${toSystem.trim()}`,
@@ -229,6 +246,7 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
           to_system: toSystem.trim(),
           max_jump: maxJump,
           radius_around_path: radius,
+          route_mode: shipMode ? 'ship' : 'colonisation',
         }),
       });
       const responseText = await res.text();
@@ -298,7 +316,7 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
       setLoading(false);
       setPhase({ stage: 'idle' });
     }
-  }, [animatePhases, clearPhaseTimers, fromSystem, maxJump, onRouteFound, radius, resolvePointForMap, toSystem]);
+  }, [animatePhases, clearPhaseTimers, fromSystem, maxJump, onRouteFound, radius, resolvePointForMap, shipMode, toSystem]);
 
   const downloadRoute = useCallback(() => {
     if (!result?.route?.length) return;
@@ -319,6 +337,25 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
     const ok = await copyText(text);
     toast(ok ? 'Маршрут скопирован в буфер' : 'Буфер обмена недоступен', ok ? 'success' : 'error');
   }, [result]);
+
+  const sendRouteToHelper = useCallback(async () => {
+    if (!result?.route?.length || !shipMode || sendingRoute) return;
+    setSendingRoute(true);
+    try {
+      const response = await fetch('/api/cmdr/route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ route: result.route }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || (response.status === 401 ? 'Войдите на сайт, чтобы передать маршрут в Helper.' : 'Не удалось передать маршрут.'));
+      toast('Маршрут передан в Colonial Helper. Импортируйте его на вкладке «Маршрут» Helper.', 'success');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Не удалось передать маршрут.', 'error');
+    } finally {
+      setSendingRoute(false);
+    }
+  }, [result, sendingRoute, shipMode]);
 
   const swapSystems = () => {
     setFromSystem(toSystem);
@@ -345,12 +382,14 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
   return (
     <div className="atlas-route-finder">
       <div className="atlas-search-panel">
-        <h3>Поиск маршрута колонизации</h3>
+        <h3>{shipMode ? 'Маршрут корабля' : 'Поиск маршрута колонизации'}</h3>
         <p className="atlas-route-desc">
-          Оптимальный маршрут между двумя системами с шагом не больше максимального прыжка.
-          Расчёт идёт по алгоритму A* на данных EDSM; для длинных трасс автоматически включается
-          режим кубов с перекрытием сканирования.
+          {shipMode
+            ? 'Маршрут строится по текущей дальности из игрового Loadout, с учётом модулей, инженерии, топлива и груза. Этот режим не использует лимит колонизации 14,99 св. л.'
+            : 'Оптимальный маршрут между двумя системами с шагом не больше максимального прыжка. Расчёт идёт по алгоритму A* на данных EDSM; для длинных трасс автоматически включается режим кубов с перекрытием сканирования.'}
         </p>
+        {shipMode && rangeDescription && <p className="atlas-list-counter">{rangeDescription}</p>}
+        {shipMode && rangeIssues.length > 0 && <div className="atlas-warning">Некоторые редкие модули Loadout не распознаны; дальность может быть оценочной. {rangeIssues.join(' · ')}</div>}
 
         <SystemSearchInput
           label="Точка А (откуда)"
@@ -376,18 +415,18 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
         <div className="atlas-two-col">
           <div className="atlas-search-field">
             <label htmlFor="atlas-max-jump">
-              Макс. прыжок: <strong>{maxJump.toFixed(2)} св.л.</strong>
+              {shipMode ? 'Предел прыжка' : 'Макс. прыжок'}: <strong>{maxJump.toFixed(2)} св.л.</strong>
             </label>
             <input
               id="atlas-max-jump"
               type="range"
-              min={5}
-              max={14.99}
+              min={1}
+              max={jumpLimit}
               step={0.01}
               value={maxJump}
               onChange={(event) => setMaxJump(Number(event.target.value))}
             />
-            <div className="atlas-range-scale"><span>5</span><span>14,99 (лимит колонизации)</span></div>
+            <div className="atlas-range-scale"><span>1</span><span>{shipMode ? `расчётный максимум ${jumpLimit.toFixed(2)}` : '14,99 (лимит колонизации)'}</span></div>
           </div>
         </div>
 
@@ -455,6 +494,9 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
               <button type="button" className="atlas-icon-btn" title="Скачать CSV" onClick={downloadRoute}>
                 <IconDownload size={12} />
               </button>
+              {shipMode && <button type="button" className="atlas-secondary-btn" onClick={() => void sendRouteToHelper()} disabled={sendingRoute}>
+                {sendingRoute ? 'Передаём…' : 'Передать в Helper'}
+              </button>}
             </div>
           </div>
 

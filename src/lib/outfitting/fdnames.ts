@@ -144,6 +144,13 @@ export function moduleSymbol(module: OutfittingModule): string | null {
   if (FIXED_INTERNAL[grp]) return FIXED_INTERNAL[grp];
   if (FIXED_UTILITY[grp]) return FIXED_UTILITY[grp];
 
+  if (grp === 'fsd' && /sco/i.test(module.name ?? '')) {
+    if (/mk\s*ii/i.test(module.name ?? '')) {
+      return `Int_Hyperdrive_Overcharge_Size${size}_Class${ratingClass}_OverchargeBooster_MkII`;
+    }
+    return `Int_Hyperdrive_Overcharge_Size${size}_Class${ratingClass}`;
+  }
+
   if (SIZED_UTILITY[grp]) {
     return `Hpt_${SIZED_UTILITY[grp]}_Size0_Class${ratingClass}`;
   }
@@ -212,7 +219,7 @@ export function parseSymbol(rawSymbol: string): ParsedSymbol | null {
   if (fixed) return { group: fixed, class: fixed === 'ss' ? 1 : 1, rating: fixed === 'ss' ? 'I' : 'I' };
 
   // Int_<Base>_Size<N>_Class<N>[_Fast|_Strong]
-  const internal = /^int_(.+?)_size(\d+)_class(\d+)(_fast|_strong)?$/i.exec(symbol);
+  const internal = /^int_(.+?)_size(\d+)_class(\d+)(_fast|_strong|_overchargebooster_mkii)?$/i.exec(symbol);
   if (internal) {
     const base = internal[1];
     const size = Number(internal[2]);
