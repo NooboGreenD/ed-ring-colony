@@ -211,6 +211,29 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(launcher.entry_module({}), "colonial_helper")
         self.assertEqual(launcher.entry_module({"entry": ENTRY}), "fake_app")
 
+    def test_setup_repair_uses_server_bundle_then_embedded_fallback(self):
+        embedded_manifest = json.loads(
+            (self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+        with (
+            mock.patch.object(bundle, "install_root", return_value=self.root),
+            mock.patch.object(launcher, "embedded_bundle", return_value=(self.embedded, embedded_manifest)),
+            mock.patch.object(launcher, "configure_tls_ca_bundle"),
+            mock.patch.object(launcher, "configured_update_channel", return_value="beta"),
+            mock.patch.dict(sys.modules, {"bundle_updater": bundle_updater}),
+            mock.patch.object(bundle_updater, "repair", return_value={"ok": False, "error": "offline"}) as repair,
+            mock.patch.object(launcher, "install_embedded") as install_embedded,
+            mock.patch.object(launcher, "choose_version", return_value="1.0.0"),
+            mock.patch.object(bundle, "read_manifest", return_value={"entry": ENTRY}),
+            mock.patch.object(launcher, "activate_path"),
+            mock.patch.object(launcher, "run_module", return_value=0),
+            mock.patch.object(launcher, "log"),
+        ):
+            self.assertEqual(launcher.run_helper(["--repair"]), 0)
+
+        repair.assert_called_once_with(self.root, channel="beta")
+        install_embedded.assert_called_once_with(self.root, self.embedded, embedded_manifest)
+
     def test_normal_start_shows_dashboard_and_does_not_launch_until_requested(self):
         dashboard = mock.Mock()
         dashboard.show_launcher.return_value = False

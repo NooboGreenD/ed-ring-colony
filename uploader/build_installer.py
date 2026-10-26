@@ -32,6 +32,7 @@ def main() -> int:
         "--specpath", str(HERE / "build"),
         "--add-data", f"{LAUNCHER_EXE}{os.pathsep}payload",
         "--hidden-import", "bundle",
+        "--hidden-import", "window_chrome",
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.messagebox",
     ]

@@ -50,7 +50,7 @@ ALWAYS_INCLUDE = (
     "ttkbootstrap.localization", "ttkbootstrap.widgets", "ttkbootstrap.dialogs",
     "ttkbootstrap.scrolled", "ttkbootstrap.tableview", "ttkbootstrap.toast",
     "ttkbootstrap.tooltip", "ttkbootstrap.utility", "ttkbootstrap.validation",
-    "ttkbootstrap.window",
+    "ttkbootstrap.window", "window_chrome",
     # Стандартная библиотека, которую легко потерять при анализе одного
     # лаунчера: дальше список дополняется автоматически.
     "webbrowser", "ctypes", "ctypes.wintypes", "csv", "sqlite3", "queue",

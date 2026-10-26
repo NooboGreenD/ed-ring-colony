@@ -22,6 +22,7 @@ import requests
 import bundle
 import bundle_updater
 from site_config import DEFAULT_SITE_URL
+from window_chrome import add_custom_titlebar
 
 _launcher_module = sys.modules.get("launcher")
 if _launcher_module is None:
@@ -157,6 +158,10 @@ class LauncherDashboard:
         root.minsize(900, 610)
         root.configure(bg=BG)
         root.protocol("WM_DELETE_WINDOW", self.close)
+        add_custom_titlebar(
+            root, tk, "COLONIAL HELPER  /  СТАРТОВЫЙ ЭКРАН",
+            close_command=self.close, allow_maximize=True,
+        )
         self._center_window()
         self._build()
         self._render_feed("news")

@@ -124,7 +124,7 @@ maybe('комплект первой сборки встраивает серв�
   assert.match(res.headers.get('content-disposition'), /ColonialHelper-build-8\.5\.0\.zip/);
 
   const files = readZip(body);
-  for (const name of ['bundle.py', 'launcher.py', 'build_exe.py', 'build_installer.py', 'installer.py', 'BUILD-WINDOWS.bat', 'КАК-СОБРАТЬ.md']) {
+  for (const name of ['bundle.py', 'launcher.py', 'build_exe.py', 'build_installer.py', 'installer.py', 'window_chrome.py', 'BUILD-WINDOWS.bat', 'КАК-СОБРАТЬ.md']) {
     assert.ok(files.has(`ColonialHelper-build/${name}`), `в комплекте есть ${name}`);
   }
   assert.ok([...files.keys()].every((name) => !name.includes('/tests/')), 'тесты в комплект не попадают');
