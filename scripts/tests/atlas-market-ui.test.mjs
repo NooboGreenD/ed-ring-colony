@@ -4,7 +4,7 @@ import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { bundleFile } from './helpers/bundle.mjs';
 
-test('Atlas build mode lists every site, renders its materials and quantities, and sends the selected recipe', async () => {
+test('Atlas single search offers all goods; build mode keeps its site lists and submits the selected recipe', async () => {
   const bundle = await bundleFile({
     entry: 'src/components/Atlas/AtlasMarketSearch.tsx',
     external: ['react', 'react-dom', 'react-dom/client'],
@@ -69,6 +69,19 @@ test('Atlas build mode lists every site, renders its materials and quantities, a
     );
   try {
     await act(async () => root.render(React.createElement(Market)));
+    const commodityInput = document.getElementById('atlas-commodity');
+    const suggestedGoods = [...document.querySelectorAll('#atlas-commodities option')].map((option) => option.value);
+    assert.ok(suggestedGoods.includes('Gold'), 'single-item search includes ordinary market goods');
+    assert.ok(suggestedGoods.includes('Lavian Brandy'), 'single-item search includes rare goods');
+    assert.ok(suggestedGoods.length > 100, 'the list is broader than the construction catalog');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(commodityInput, 'Gold');
+      commodityInput.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    await click(document.querySelector('.atlas-scan-btn'));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    assert.equal(requests[0].body.mode, 'single');
+    assert.equal(requests[0].body.commodity, 'Gold');
     await click(
       Array.from(document.querySelectorAll('button')).find(
         (button) => button.textContent === 'Всё для стройки'
@@ -101,8 +114,8 @@ test('Atlas build mode lists every site, renders its materials and quantities, a
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    assert.equal(requests[0].body.build_type, 'no_truss');
-    assert.equal(requests[0].body.mode, 'build');
+    assert.equal(requests[2].body.build_type, 'no_truss');
+    assert.equal(requests[2].body.mode, 'build');
     assert.match(document.body.textContent, /Результаты могут быть неполными/);
     assert.doesNotMatch(document.body.textContent, /fetch failed/);
   } finally {

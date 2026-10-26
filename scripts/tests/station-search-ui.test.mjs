@@ -40,7 +40,7 @@ const station = (name, overrides = {}) => ({
   item_count: 1, best_price: 1234, ...overrides,
 });
 
-async function renderPage({ search } = {}) {
+async function renderPage({ search, searchResponse } = {}) {
   const bundle = await bundleFile({
     entry: 'src/app/station-search/page.tsx',
     stubs: { 'next/link': NEXT_LINK_STUB, '@/components/Atlas/SystemSearchInput': SYSTEM_INPUT_STUB },
@@ -64,6 +64,7 @@ async function renderPage({ search } = {}) {
       const response = await optionsApi.GET(new Request(target));
       return { ok: response.status === 200, status: response.status, json: async () => response.body };
     }
+    if (searchResponse) return searchResponse(target);
     const body = search ? search(target) : { kind: 'market', query: target.searchParams.get('q'), page: 0, has_more: false, total: 0, stations: [], pick: null, grouping: 'station' };
     return { ok: true, status: 200, json: async () => body };
   };
@@ -162,6 +163,28 @@ test('typing a material shows a quick-pick list; the keyboard picks it and the s
     await ui.focus(ui.document.querySelector('[data-testid="reference"]'));
     await ui.focus(input);
     assert.match(ui.document.querySelector('.station-pick-group').textContent, /Недавний выбор/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('a gateway HTML response for a 50 ly station search is reported as an HTTP error, not a JSON parse error', async () => {
+  let searchUrl;
+  const ui = await renderPage({
+    searchResponse: (url) => {
+      searchUrl = url;
+      return { ok: false, status: 504, json: async () => { throw new SyntaxError('Unexpected token \'<\', \'<html>\' is not valid JSON'); } };
+    },
+  });
+  try {
+    await ui.type(ui.query(), 'Gold');
+    await ui.type(ui.document.querySelector('[data-testid="reference"]'), 'Sol');
+    assert.equal(ui.document.getElementById('station-radius').disabled, false);
+    await ui.click(ui.button('50'));
+    await ui.submit();
+    assert.equal(searchUrl.searchParams.get('radius'), '50');
+    assert.match(ui.document.querySelector('[role="alert"]').textContent, /HTTP 504/);
+    assert.doesNotMatch(ui.document.body.textContent, /Unexpected token|<html>|not valid JSON/);
   } finally {
     await ui.cleanup();
   }

@@ -26,7 +26,7 @@ import {
 import { downloadCsv } from '@/lib/atlas';
 import { CONSTRUCTION_BLUEPRINTS, constructionBlueprint, constructionCommodities } from '@/lib/constructionBlueprints';
 import { marketError } from '@/lib/marketUpstream';
-import { BUILD_COMMODITIES as COMMODITIES, resolveCommodity } from '@/lib/commodities';
+import { BUILD_COMMODITIES, MARKET_COMMODITIES, resolveCommodity } from '@/lib/commodities';
 
 const MAX_RADIUS = 500;
 
@@ -573,7 +573,7 @@ export default function AtlasMarketSearch({ initialSystem = '', initialCommodity
             placeholder="Начните вводить название"
           />
           <datalist id="atlas-commodities">
-            {COMMODITIES.map((item) => <option key={item} value={item} />)}
+            {MARKET_COMMODITIES.map((item) => <option key={item} value={item} />)}
           </datalist>
         </div>
       )}
@@ -588,7 +588,7 @@ export default function AtlasMarketSearch({ initialSystem = '', initialCommodity
             onChange={(event) => setBuildType(event.target.value)}
           >
             <option value="all">
-              Все строительные материалы ({COMMODITIES.length})
+              Все строительные материалы ({BUILD_COMMODITIES.length})
             </option>
             {['orbital', 'surface'].map((location) => (
               <optgroup

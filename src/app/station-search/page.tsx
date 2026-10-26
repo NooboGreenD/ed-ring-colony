@@ -93,7 +93,15 @@ export default function StationSearchPage() {
     setLoading(true); setError('');
     try {
       const response = await fetch(`/api/stations/search?${params}`, { signal: request.signal });
-      const result = await response.json();
+      let result: any;
+      try {
+        result = await response.json();
+      } catch {
+        if ([502, 503, 504].includes(response.status)) {
+          throw new Error(`Сервер поиска временно не ответил (HTTP ${response.status}). Повторите поиск.`);
+        }
+        throw new Error(`Сервер поиска вернул некорректный ответ (HTTP ${response.status}). Повторите поиск.`);
+      }
       if (current !== generation.current) return;
       if (!response.ok) throw new Error(result.error || 'Не удалось выполнить поиск');
       setData({ ...result, stations: Array.isArray(result.stations) ? result.stations : [] });
