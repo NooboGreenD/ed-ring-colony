@@ -93,13 +93,15 @@ export type AtlasSystemTab = 'search' | 'market' | 'nearby' | 'powerplay' | 'fac
  */
 export function atlasSystemHref(
   name: unknown,
-  options: { tab?: AtlasSystemTab; point?: Partial<SystemPoint> | null; id64?: unknown; from?: 'system' | 'stations' } = {},
+  options: { tab?: AtlasSystemTab; point?: Partial<SystemPoint> | null; id64?: unknown; from?: 'system' | 'stations'; commodity?: string } = {},
 ): string {
   const params = new URLSearchParams();
   if (options.tab && options.tab !== 'search') params.set('tab', options.tab);
   const clean = cleanSystemName(name);
   // «Рынок» и «Поблизости» берут опорную систему из `system`.
   if ((options.tab === 'market' || options.tab === 'nearby') && clean) params.set('system', clean);
+  const commodity = options.commodity?.trim();
+  if (options.tab === 'market' && commodity) params.set('commodity', commodity);
   const point = finitePoint(options.point);
   if (clean && point) {
     params.set('focus_system', clean);

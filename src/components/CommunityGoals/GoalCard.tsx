@@ -1,6 +1,8 @@
 'use client';
 
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { splitCommunityGoalObjective } from '@/lib/communityGoalCommodityLinks';
+import { atlasSystemHref } from '@/lib/systemIdentity';
 import styles from './GoalCard.module.css';
 
 export interface CommunityGoal {
@@ -194,6 +196,7 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
   const journalWidth = journalTotal === null ? 0 : Math.min(100, (journalTotal / compareBase) * 100);
   const sourceWidth = total === null ? 0 : Math.min(100, (total / compareBase) * 100);
   const objectiveText = goal.objective?.trim() || null;
+  const objectiveParts = objectiveText ? splitCommunityGoalObjective(objectiveText) : [];
   const descriptionText = goal.description?.trim() || null;
   // Keep the narrative description on the left and the actionable objective
   // on the right. If both upstream fields contain the same text, show it once.
@@ -238,7 +241,19 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
             {objectiveText && (
               <div className={`${styles.infoBlock} ${styles.taskBlock}`}>
                 <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">◈</span>{t('cg.objective')}</div>
-                <p>{objectiveText}</p>
+                <p>
+                  {objectiveParts.map((part, index) => part.commodity && goal.system_name ? (
+                    <a
+                      key={`${index}-${part.text}`}
+                      className={styles.commodityLink}
+                      href={atlasSystemHref(goal.system_name, { tab: 'market', commodity: part.commodity })}
+                    >
+                      {part.text}
+                    </a>
+                  ) : (
+                    <span key={`${index}-${part.text}`}>{part.text}</span>
+                  ))}
+                </p>
               </div>
             )}
             {goal.reward && (
