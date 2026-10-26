@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
-import { requireUser, errorResponse } from '@/lib/billing/auth';
+import { errorResponse } from '@/lib/billing/auth';
+import { requirePremiumShopAccess } from '@/lib/billing/shopAccess';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -8,9 +9,9 @@ export const revalidate = 0;
 /** Purchase with credits. Card/other real-money purchases go through /api/billing/checkout. */
 export async function POST(req: Request) {
   try {
-    const auth = await requireUser(req);
-    if ('response' in auth) return auth.response;
-    const { actor } = auth;
+    const access = await requirePremiumShopAccess(req);
+    if ('response' in access) return access.response;
+    const { actor } = access;
     const body = await req.json().catch(() => ({}));
     const { itemId, autoEquip = true } = body;
     if (!itemId) return NextResponse.json({ error: 'Item ID required' }, { status: 400 });

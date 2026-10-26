@@ -122,7 +122,7 @@ export default function AccountPremiumPanel() {
               <div style={{ fontSize: 11, color: "var(--muted)" }}>Подписка даёт скидки до {Math.max(0, ...plans.map((p) => p.discount_pct || 0))}% и доступ к эксклюзивам.</div>
             </>
           )}
-          <Link href="/premium-shop?tab=plans" className="btn btn-cyan" style={{ marginTop: 10, fontSize: 11, padding: "5px 12px", display: "inline-block" }}>{subscription ? "Продлить / сменить" : "Оформить"}</Link>
+          <Link href="/subscriptions" className="btn btn-cyan" style={{ marginTop: 10, fontSize: 11, padding: "5px 12px", display: "inline-block" }}>{subscription ? "Продлить / сменить" : "Оформить"}</Link>
         </div>
 
         <div className="card" style={{ margin: 0, padding: "14px 18px" }}>

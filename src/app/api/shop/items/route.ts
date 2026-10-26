@@ -1,13 +1,17 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
-import { billingActor, errorResponse } from '@/lib/billing/auth';
+import { errorResponse } from '@/lib/billing/auth';
+import { requirePremiumShopAccess } from '@/lib/billing/shopAccess';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: Request) {
   try {
-    const actor = await billingActor(req);
+    // Staff use this read endpoint in billing analytics even without a storefront subscription.
+    const access = await requirePremiumShopAccess(req, { allowStaff: true });
+    if ('response' in access) return access.response;
+    const actor = access.actor;
     const { searchParams } = new URL(req.url);
     const category = searchParams.get('category') || undefined;
     const rarity = searchParams.get('rarity') || undefined;
