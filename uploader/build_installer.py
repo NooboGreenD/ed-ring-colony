@@ -6,6 +6,7 @@ Run after ``python uploader/build_exe.py`` on Windows:
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -18,6 +19,19 @@ def main() -> int:
         raise SystemExit("Сборку Windows-установщика запускайте в Windows.")
     if not LAUNCHER_EXE.is_file():
         raise SystemExit(f"Сначала соберите лаунчер: не найден {LAUNCHER_EXE}")
+
+    # Validate real GUI imports with the exact interpreter used for freezing.
+    # Hidden-import warnings alone do not make PyInstaller fail the build.
+    check = subprocess.run(
+        [sys.executable, "-c", "import qt_compat"],
+        cwd=str(HERE), capture_output=True, text=True,
+    )
+    if check.returncode:
+        raise SystemExit(
+            f"Qt runtime check failed in {sys.executable}:\n"
+            f"{check.stderr}\n"
+            f'Install dependencies: "{sys.executable}" -m pip install -r "{HERE / "requirements.txt"}"'
+        )
 
     import PyInstaller.__main__
 

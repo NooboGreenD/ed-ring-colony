@@ -19,6 +19,20 @@ Standalone desktop uploader for **ED Ring Colony** — https://edringcolony.ru.
 лаунчер. Не переименовывайте Setup в `ColonialHelper.exe` и не подменяйте им
 базовую сборку на сервере.
 
+### Проверка Qt в build-kit
+
+`PySide6-Essentials` в `requirements.txt` предоставляет `PySide6.QtCore`,
+`QtGui` и `QtWidgets`; отдельный PyQt не нужен. `BUILD-WINDOWS.bat` устанавливает
+зависимости в `.venv`, а не в системный Python. Проверяйте именно это окружение
+из корня распакованного build-kit:
+
+```bat
+.venv\Scripts\python.exe -c "import qt_compat; print('Qt import OK')"
+```
+
+Оба сборщика проверяют импорт Qt до запуска PyInstaller и останавливаются с
+сообщением об ошибке, если runtime отсутствует или импорт интерфейса сломан.
+
 ## Подготовка версии 2.18.12
 
 - `VERSION` повышен до 2.18.12. Сборщик подписанных обновлений читает версию

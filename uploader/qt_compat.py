@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSlider,
     QProgressBar, QScrollArea, QScrollBar, QTreeWidget, QTreeWidgetItem,
     QTabWidget, QMenu, QFileDialog, QMessageBox, QInputDialog,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QBoxLayout, QSizePolicy, QGroupBox, QTextCursor,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QBoxLayout, QSizePolicy, QGroupBox,
 )
 
 END = "end"; INSERT = "insert"; NORMAL = "normal"; DISABLED = "disabled"

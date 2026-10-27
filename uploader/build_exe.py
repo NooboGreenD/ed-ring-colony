@@ -93,6 +93,19 @@ def collect_package_args() -> list[str]:
 
 
 def main() -> int:
+    # Validate real GUI imports with the exact interpreter used for freezing.
+    # Hidden-import warnings alone do not make PyInstaller fail the build.
+    check = subprocess.run(
+        [sys.executable, "-c", "import qt_compat"],
+        cwd=str(HERE), capture_output=True, text=True,
+    )
+    if check.returncode:
+        raise SystemExit(
+            f"Qt runtime check failed in {sys.executable}:\n"
+            f"{check.stderr}\n"
+            f'Install dependencies: "{sys.executable}" -m pip install -r "{HERE / "requirements.txt"}"'
+        )
+
     import PyInstaller.__main__
 
     own = {path.stem for path in HERE.glob("*.py")}

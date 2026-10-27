@@ -31,5 +31,35 @@ class BuildExeTests(unittest.TestCase):
         self.assertEqual(build_exe.COLLECT_PACKAGES, ())
 
 
+class BuildPreflightTests(unittest.TestCase):
+    def test_missing_qt_stops_launcher_before_freezing(self):
+        from unittest.mock import patch
+        import subprocess
+        failed = subprocess.CompletedProcess([], 1, '', "No module named 'PySide6'")
+        with patch.object(build_exe.subprocess, 'run', return_value=failed) as run:
+            with self.assertRaisesRegex(SystemExit, 'Qt runtime check failed'):
+                build_exe.main()
+        self.assertEqual(run.call_args.args[0],
+                         [sys.executable, '-c', 'import qt_compat'])
+
+    def test_missing_qt_stops_installer_before_freezing(self):
+        from unittest.mock import patch
+        import subprocess
+        import build_installer
+        failed = subprocess.CompletedProcess([], 1, '', "No module named 'PySide6'")
+        with patch.object(build_installer.sys, 'platform', 'win32'), \
+             patch.object(Path, 'is_file', return_value=True), \
+             patch.object(build_installer.subprocess, 'run', return_value=failed):
+            with self.assertRaisesRegex(SystemExit, 'Qt runtime check failed'):
+                build_installer.main()
+
+    def test_qtextcursor_is_not_imported_from_widgets(self):
+        import ast
+        tree = ast.parse((HERE.parent / 'qt_compat.py').read_text(encoding='utf-8'))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == 'PySide6.QtWidgets':
+                self.assertNotIn('QTextCursor', [alias.name for alias in node.names])
+
+
 if __name__ == "__main__":
     unittest.main()
