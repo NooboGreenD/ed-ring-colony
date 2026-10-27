@@ -5263,176 +5263,51 @@ class ColonialHelperApp:
     #  Вкладка: Экзобиология (тела, биосигналы, фильтры оверлея EXOBIO)
     # ============================================================
     def _build_tab_exobio(self):
-        """Вкладка «Экзобиология»: текущая система, тела, биосигналы и фильтры оверлея."""
-        frame = self._scrollable_frame(self.tab_exobio)
+        """Вкладка «Экзобиология» на чистом Qt: тела системы и фильтры оверлея."""
+        from helper_pages import ExobioPage, ExobioPageActions, ExobioPageState
+
         settings = self.overlay_manager.settings
-
-        tb.Label(frame, text="Экзобиология — поиск органики и фильтры оверлея",
-                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 4))
-        tb.Label(
-            frame,
-            text="Тела текущей системы, биосигналы, образцы и фильтры для оверлея EXOBIO. "
-                 "Если система уже была отсканирована ранее, сканы подтягиваются автоматически "
-                 "из истории журналов и кэша. Все изменения фильтров применяются сразу.",
-            foreground=COLOR_MUTED, wraplength=780,
-        ).pack(anchor=W, pady=(0, 10))
-
-        # ---- Панель текущей системы и управление ----
-        sys_box = tb.Frame(frame, padding=8, relief="solid", borderwidth=1)
-        sys_box.pack(fill=X, pady=(0, 10))
-
-        top_row = tb.Frame(sys_box)
-        top_row.pack(fill=X)
-
-        self.exobio_system_label = tb.Label(
-            top_row, text="Текущая система: —", font=("Segoe UI", 11, "bold"), foreground=COLOR_CYAN
+        selected_genera = {str(genus) for genus in (settings.get("exobio_genera") or [])}
+        selected_ids = {str(item) for item in (settings.get("exobio_planet_search") or [])}
+        state = ExobioPageState(
+            genus_choices=tuple(sorted(GENUS_VALUE_CR)),
+            selected_genera=tuple(sorted(selected_genera)),
+            show_planets=bool(settings.get("exobio_show_planet_search", True)),
+            planet_choices=tuple(
+                (str(preset.get("id")), str(preset.get("label") or preset.get("id")))
+                for preset in PLANET_SEARCH_PRESETS),
+            selected_planets=tuple(sorted(selected_ids)),
         )
-        self.exobio_system_label.pack(side=LEFT)
-
-        tb.Button(
-            top_row, text="Сверить с журналами", command=lambda: self._scan_journals_for_current_system(force=True),
-            bootstyle="info-outline", width=22
-        ).pack(side=RIGHT, padx=(6, 0))
-        tb.Button(
-            top_row, text="Сканировать все журналы", command=self._scan_all_journals_for_exobio,
-            bootstyle="secondary-outline", width=24
-        ).pack(side=RIGHT)
-
-        self.exobio_summary_label = tb.Label(
-            sys_box, text="Тел отсканировано: 0 · С биосигналами: 0 · Всего биосигналов: 0",
-            font=("Segoe UI", 9), foreground=COLOR_MUTED
+        actions = ExobioPageActions(
+            rescan=lambda: self._scan_journals_for_current_system(force=True),
+            scan_all=self._scan_all_journals_for_exobio,
+            filters_changed=self._on_exobio_filters_changed,
         )
-        self.exobio_summary_label.pack(anchor=W, pady=(4, 0))
-
-        self.exobio_status_label = tb.Label(
-            sys_box, text="", font=("Segoe UI", 9), foreground=COLOR_ORANGE
-        )
-        self.exobio_status_label.pack(anchor=W)
-
-        # ---- Таблица тел текущей системы ----
-        tb.Label(frame, text="Тела текущей системы", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(4, 2))
-        tb.Label(
-            frame,
-            text="Отсканированные тела текущей системы: тип, атмосфера, посадка, число биосигналов "
-                 "и совпадение с выбранными фильтрами поиска.",
-            foreground=COLOR_MUTED, wraplength=780,
-        ).pack(anchor=W, pady=(0, 4))
-
-        tree_frame = tb.Frame(frame, relief="solid", borderwidth=1)
-        tree_frame.pack(fill=X, expand=False, pady=(0, 10))
-
-        columns = ("body", "class", "atmosphere", "landable", "signals", "mapped", "matched")
-        self.exobio_tree = tb.Treeview(
-            tree_frame, columns=columns, show="headings", bootstyle="dark", height=6,
-        )
-        for col, title, width, anchor in [
-            ("body", "Тело", 160, W),
-            ("class", "Класс", 130, W),
-            ("atmosphere", "Атмосфера", 160, W),
-            ("landable", "Посадка", 75, CENTER),
-            ("signals", "Биосигналы", 90, CENTER),
-            ("mapped", "Карта DSS", 85, CENTER),
-            ("matched", "Подходит под фильтр", 200, W),
-        ]:
-            self.exobio_tree.heading(col, text=title)
-            self.exobio_tree.column(col, width=width, anchor=anchor)
-
-        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.exobio_tree.yview)
-        self.exobio_tree.configure(yscrollcommand=vsb.set)
-        self.exobio_tree.pack(side=LEFT, fill=BOTH, expand=True)
-        vsb.pack(side=RIGHT, fill=Y)
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=10)
-
-        # ---- Фильтр по родам ----
-        tb.Label(frame, text="Роды в прогнозе", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
-        tb.Label(
-            frame,
-            text="Отмеченные роды остаются в списке «Вероятные роды», остальные скрываются. "
-                 "Если не отмечено ничего — фильтр выключен и показываются все роды.",
-            foreground=COLOR_MUTED, wraplength=700,
-        ).pack(anchor=W, pady=(0, 6))
-
-        selected_genera = {str(g) for g in (settings.get("exobio_genera") or [])}
-        self._exobio_genus_vars = {}
-        genera_grid = tb.Frame(frame)
-        genera_grid.pack(anchor=W, fill=X, pady=(0, 6))
-        for index, genus in enumerate(sorted(GENUS_VALUE_CR)):
-            var = tk.BooleanVar(value=genus in selected_genera)
-            self._exobio_genus_vars[genus] = var
-            tb.Checkbutton(
-                genera_grid, text=genus, variable=var, width=22,
-                command=self._on_exobio_filters_changed,
-            ).grid(row=index // 3, column=index % 3, sticky=W, padx=(0, 12), pady=1)
-
-        genera_btns = tb.Frame(frame)
-        genera_btns.pack(anchor=W, pady=(0, 4))
-        tb.Button(genera_btns, text="Отметить все", width=16, bootstyle="secondary-outline",
-                  command=lambda: self._set_all_genera(True)).pack(side=LEFT, padx=(0, 8))
-        tb.Button(genera_btns, text="Снять все", width=16, bootstyle="secondary-outline",
-                  command=lambda: self._set_all_genera(False)).pack(side=LEFT)
-        tb.Label(genera_btns, text="«Снять все» = показать все роды",
-                 foreground=COLOR_MUTED).pack(side=LEFT, padx=(12, 0))
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
-
-        # ---- Поиск планет ----
-        tb.Label(frame, text="Поиск планет в системе",
-                 font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
-        tb.Label(
-            frame,
-            text="Отмеченные наборы критериев применяются к отсканированным телам текущей "
-                 "системы. Подходящие планеты попадают в раздел «Поиск планет» оверлея — "
-                 "с типом, атмосферой, возможностью посадки и причиной, по которой планета "
-                 "нашлась. Данные берутся из вашего журнала и кэша.",
-            foreground=COLOR_MUTED, wraplength=700,
-        ).pack(anchor=W, pady=(0, 6))
-
-        self.exobio_show_planets_var = tk.BooleanVar(
-            value=bool(settings.get("exobio_show_planet_search", True)))
-        tb.Checkbutton(
-            frame, text="Показывать раздел «Поиск планет» в оверлее",
-            variable=self.exobio_show_planets_var,
-            command=self._on_exobio_filters_changed,
-        ).pack(anchor=W, pady=(0, 6))
-
-        selected_ids = {str(i) for i in (settings.get("exobio_planet_search") or [])}
-        self._exobio_planet_vars = {}
-        for preset in PLANET_SEARCH_PRESETS:
-            preset_id = str(preset.get("id"))
-            var = tk.BooleanVar(value=preset_id in selected_ids)
-            self._exobio_planet_vars[preset_id] = var
-            tb.Checkbutton(
-                frame, text=str(preset.get("label") or preset_id), variable=var,
-                command=self._on_exobio_filters_changed,
-            ).pack(anchor=W, pady=1)
-
-        planet_btns = tb.Frame(frame)
-        planet_btns.pack(anchor=W, pady=(8, 0))
-        tb.Button(planet_btns, text="Снять все", width=16, bootstyle="secondary-outline",
-                  command=self._clear_planet_filters).pack(side=LEFT)
-        tb.Label(planet_btns, text="без отмеченных наборов раздел пишет, что критерии не выбраны",
-                 foreground=COLOR_MUTED).pack(side=LEFT, padx=(12, 0))
-
+        self.exobio_page = ExobioPage(state, actions)
+        self.tab_exobio._get_tk_layout("pack").addWidget(self.exobio_page)
+        self._show_page(self.exobio_page)
         self._update_tab_exobio()
 
     def _set_all_genera(self, value: bool):
-        for var in getattr(self, "_exobio_genus_vars", {}).values():
-            var.set(bool(value))
-        self._on_exobio_filters_changed()
+        page = getattr(self, "exobio_page", None)
+        if page is None:
+            return
+        page.set_all_genera(bool(value))
 
     def _clear_planet_filters(self):
-        for var in getattr(self, "_exobio_planet_vars", {}).values():
-            var.set(False)
-        self._on_exobio_filters_changed()
+        page = getattr(self, "exobio_page", None)
+        if page is None:
+            return
+        page.clear_planets()
 
     def _on_exobio_filters_changed(self):
         """Сохранить фильтры и сразу перерисовать блок EXOBIO."""
-        genera = [genus for genus, var in getattr(self, "_exobio_genus_vars", {}).items()
-                  if var.get()]
-        planet_ids = [preset_id for preset_id, var
-                      in getattr(self, "_exobio_planet_vars", {}).items() if var.get()]
-        show_planets = bool(getattr(self, "exobio_show_planets_var", tk.BooleanVar(value=True)).get())
+        page = getattr(self, "exobio_page", None)
+        if page is None:
+            return
+        genera = page.genera()
+        planet_ids = page.planet_ids()
+        show_planets = bool(page.show_planets())
         try:
             self.overlay_manager.set_exobio_filters(
                 genera=genera, planet_search=planet_ids, show_planets=show_planets)
@@ -5443,37 +5318,26 @@ class ColonialHelperApp:
 
     def _update_tab_exobio(self):
         """Обновить сводку и таблицу тел на вкладке «Экзобиология»."""
-        if not hasattr(self, "exobio_tree") or not hasattr(self, "exobiology"):
+        page = getattr(self, "exobio_page", None)
+        if page is None or not hasattr(self, "exobiology"):
             return
         tracker = self.exobiology
         system = str(tracker.current_system or "").strip() or "не определена"
-        if hasattr(self, "exobio_system_label"):
-            try:
-                self.exobio_system_label.config(text=f"Текущая система: {system}")
-            except Exception:
-                pass
+        page.set_system_text(system)
 
         scanned = tracker.system_scanned_count()
         known = tracker.system_known_body_count()
         bio_bodies = tracker.system_bio_bodies_count()
         bio_total = tracker.system_bio_signals_total()
 
-        body_text = f"Тел отсканировано: {scanned}" + (f" из {known}" if known and known > scanned else "")
-        if hasattr(self, "exobio_summary_label"):
-            try:
-                self.exobio_summary_label.config(
-                    text=f"{body_text}  ·  Тел с биосигналами: {bio_bodies}  ·  Всего биосигналов: {bio_total}"
-                )
-            except Exception:
-                pass
-
-        try:
-            for item in self.exobio_tree.get_children():
-                self.exobio_tree.delete(item)
-        except Exception:
-            return
+        body_text = f"Тел отсканировано: {scanned}" + (
+            f" из {known}" if known and known > scanned else "")
+        page.set_summary_text(
+            f"{body_text}  ·  Тел с биосигналами: {bio_bodies}  ·  "
+            f"Всего биосигналов: {bio_total}")
 
         if not tracker.current_system:
+            page.set_rows([])
             return
 
         criteria, _ = self._exobiology_filters()
@@ -5487,34 +5351,54 @@ class ColonialHelperApp:
         ))
 
         from exobiology import body_matches
-        for b in system_bodies:
-            name = str(b.get("name") or "")
+        rows = []
+        for body in system_bodies:
+            name = str(body.get("name") or "")
             disp_name = name
             if system and name.startswith(system):
                 disp_name = name[len(system):].strip() or name
 
-            p_class = str(b.get("planet_class") or "—")
-            atmo = str(b.get("atmosphere") or b.get("atmosphere_type") or "нет")
-            landable_str = "Да" if b.get("landable") else "Нет"
-            signals = int(b.get("bio_signals") or 0)
-            sig_str = str(signals) if signals else "—"
-            mapped_str = "Да" if b.get("mapped") else "—"
-
+            signals = int(body.get("bio_signals") or 0)
             matched_rules = []
             for rule in criteria:
-                if body_matches(b, rule):
+                if body_matches(body, rule):
                     matched_rules.append(str(rule.get("label") or rule.get("id") or ""))
 
             matched_str = ", ".join(matched_rules[:2]) if matched_rules else "—"
             if len(matched_rules) > 2:
-                matched_str += f" (+{len(matched_rules)-2})"
+                matched_str += f" (+{len(matched_rules) - 2})"
 
+            rows.append({
+                "body": disp_name,
+                "class": str(body.get("planet_class") or "—"),
+                "atmosphere": str(body.get("atmosphere") or body.get("atmosphere_type") or "нет"),
+                "landable": "Да" if body.get("landable") else "Нет",
+                "signals": str(signals) if signals else "—",
+                "mapped": "Да" if body.get("mapped") else "—",
+                "matched": matched_str,
+            })
+        page.set_rows(rows)
+
+    def _set_exobio_status(self, text: str, color: str = ""):
+        """Строка состояния вкладки «Экзобиология».
+
+        Обновление приходит и из фоновых потоков сканирования, поэтому вне
+        главного потока запись откладывается в очередь Qt через `root.after`.
+        """
+        page = getattr(self, "exobio_page", None)
+        if page is None:
+            return
+        if (threading.current_thread() is not threading.main_thread()
+                and getattr(self, "root", None) is not None):
             try:
-                self.exobio_tree.insert(
-                    "", END, values=(disp_name, p_class, atmo, landable_str, sig_str, mapped_str, matched_str)
-                )
+                self.root.after(0, lambda: self._set_exobio_status(text, color))
+                return
             except Exception:
                 pass
+        try:
+            page.set_status_text(str(text), color)
+        except Exception:
+            pass
 
     def _start_exobio_history_indexer(self):
         """Фоновая постепенная индексация всех файлов журналов в дисковый кэш экзобиологии."""
@@ -5640,11 +5524,7 @@ class ColonialHelperApp:
         if getattr(self, "_exobio_full_scanning", False):
             return
         self._exobio_full_scanning = True
-        if hasattr(self, "exobio_status_label"):
-            try:
-                self.exobio_status_label.config(text="Сканирование журналов...", foreground=COLOR_ORANGE)
-            except Exception:
-                pass
+        self._set_exobio_status("Сканирование журналов...", COLOR_ORANGE)
 
         def worker():
             from exobiology import scan_all_journals_for_exobio
@@ -5652,8 +5532,8 @@ class ColonialHelperApp:
             def on_progress(cur, total):
                 if hasattr(self, "root") and self.root:
                     try:
-                        self.root.after(0, lambda c=cur, t=total: getattr(self, "exobio_status_label", None) and
-                                        self.exobio_status_label.config(text=f"Сканирование: файл {c} из {t}..."))
+                        self.root.after(0, lambda c=cur, t=total: self._set_exobio_status(
+                            f"Сканирование: файл {c} из {t}...", COLOR_ORANGE))
                     except Exception:
                         pass
 
@@ -5669,14 +5549,8 @@ class ColonialHelperApp:
                 self._exobio_full_scanning = False
                 if cache:
                     tracker.save_to_cache(cache)
-                if hasattr(self, "exobio_status_label"):
-                    try:
-                        self.exobio_status_label.config(
-                            text=f"Сканирование завершено: учтено {count} новых событий",
-                            foreground=COLOR_GREEN
-                        )
-                    except Exception:
-                        pass
+                self._set_exobio_status(
+                    f"Сканирование завершено: учтено {count} новых событий", COLOR_GREEN)
                 self.log(f"Полное сканирование экзобиологии: {count} событий обработано", "info")
                 if hasattr(self, "overlay_manager") and self.overlay_manager:
                     self.overlay_manager.refresh_exobio()

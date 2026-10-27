@@ -620,8 +620,8 @@ class ColonialHelperMultiSessionIntegrationTests(unittest.TestCase):
         })
 
         # Фильтр на скалистые планеты
-        self.app._exobio_planet_vars["rocky_atmo_land"].set(True)
-        self.app.exobio_show_planets_var.set(True)
+        self.app.exobio_page.set_planet_ids(["rocky_atmo_land"])
+        self.app.exobio_page.set_show_planets(True)
         self.app._on_exobio_filters_changed()
 
         # Запрашиваем состояние оверлея

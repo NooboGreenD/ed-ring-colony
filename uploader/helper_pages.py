@@ -7,7 +7,7 @@ so both kinds coexist in one window during the migration.
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QTextCharFormat, QTextCursor
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from ui_qt import (
     CYAN,
     GREEN,
+    LINE,
     MUTED,
     ORANGE,
     PANEL,
@@ -2544,3 +2545,321 @@ class PilotPage(QWidget):
             self._rebuild_tiles(self.columns())
             if callable(self._on_columns_changed):
                 self._on_columns_changed()
+
+
+# ===========================================================================
+#  Страница «Экзобиология»
+# ===========================================================================
+EXOBIO_COLUMNS = (
+    ("body", "Тело", 130),
+    ("class", "Класс", 120),
+    ("atmosphere", "Атмосфера", 150),
+    ("landable", "Посадка", 70),
+    ("signals", "Биосигналы", 85),
+    ("mapped", "Карта DSS", 80),
+    ("matched", "Подходит под фильтр", 170),
+)
+
+
+@dataclass
+class ExobioPageState:
+    """Everything the Exobiology page needs for its first paint."""
+
+    system: str = "не определена"
+    summary: str = ""
+    status: str = ""
+    genus_choices: Sequence[str] = ()
+    selected_genera: Sequence[str] = ()
+    show_planets: bool = True
+    planet_choices: Sequence[Tuple[str, str]] = ()
+    selected_planets: Sequence[str] = ()
+    rows: Sequence[Any] = ()
+    status_color: str = ""
+
+
+@dataclass
+class ExobioPageActions:
+    """Callbacks the Exobiology page triggers; every one is optional."""
+
+    rescan: _Optional[Callable] = None
+    scan_all: _Optional[Callable] = None
+    filters_changed: _Optional[Callable] = None
+
+
+class ExobioPage(QWidget):
+    """Bodies of the current system, genus and planet-search filters.
+
+    The page owns the controls; the application reads the filter state through
+    ``genera()``/``planet_ids()``/``show_planets()`` and writes the table with
+    one call to ``set_rows()``.
+    """
+
+    def __init__(self, state: ExobioPageState,
+                 actions: _Optional[ExobioPageActions] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.state = state
+        self.actions = actions or ExobioPageActions()
+        self.genus_widgets: Dict[str, QCheckBox] = {}
+        self.planet_widgets: Dict[str, QCheckBox] = {}
+        self._updating = False
+        self.setObjectName("exobioPage")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.content = QWidget()
+        self.layout_ = QVBoxLayout(self.content)
+        self.layout_.setContentsMargins(18, 16, 18, 16)
+        self.layout_.setSpacing(6)
+        self.scroll.setWidget(self.content)
+        outer.addWidget(self.scroll)
+
+        self._build_header()
+        self._build_bodies()
+        self._build_genera()
+        self._build_planets()
+        self.layout_.addStretch(1)
+        if state.rows:
+            self.set_rows(state.rows)
+
+    # ------------------------------------------------------------------ build
+    def _divider(self, top: int = 12, bottom: int = 12) -> None:
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet(f"color: {LINE};")
+        self.layout_.addSpacing(top)
+        self.layout_.addWidget(line)
+        self.layout_.addSpacing(bottom)
+
+    def _section(self, text: str) -> None:
+        self.layout_.addWidget(heading(text, size=12))
+
+    def _hint(self, text: str) -> None:
+        hint = label(text, role="muted", size=9, wrap=True)
+        hint.setMaximumWidth(820)
+        self.layout_.addWidget(hint)
+
+    def _call(self, name: str, *args) -> None:
+        callback = getattr(self.actions, name, None)
+        if callable(callback):
+            callback(*args)
+
+    def _build_header(self) -> None:
+        self.layout_.addWidget(heading("Поиск органики и фильтры оверлея", size=14))
+        self._hint(
+            "Тела текущей системы, биосигналы, образцы и фильтры для оверлея EXOBIO. "
+            "Если система уже была отсканирована ранее, сканы подтягиваются автоматически "
+            "из истории журналов и кэша. Все изменения фильтров применяются сразу.")
+
+        box = panel(QFrame(), "panel")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(12, 10, 12, 10)
+        box_layout.setSpacing(4)
+
+        self.system_label = label(f"Текущая система: {self.state.system}",
+                                  size=11, bold=True, color=CYAN)
+        self.rescan_btn = action_button("Сверить с журналами",
+                                        lambda: self._call("rescan"), height=30)
+        self.scan_all_btn = action_button("Сканировать все журналы",
+                                          lambda: self._call("scan_all"), height=30)
+        box_layout.addWidget(row(self.system_label, None, self.scan_all_btn,
+                                 self.rescan_btn, None))
+
+        self.summary_label = label(
+            self.state.summary or
+            "Тел отсканировано: 0 · С биосигналами: 0 · Всего биосигналов: 0",
+            role="muted", size=9)
+        box_layout.addWidget(self.summary_label)
+
+        self.status_label = label(self.state.status, size=9,
+                                  color=self.state.status_color or ORANGE, wrap=True)
+        box_layout.addWidget(self.status_label)
+        self.layout_.addWidget(box)
+
+    def _build_bodies(self) -> None:
+        self._section("Тела текущей системы")
+        self._hint(
+            "Отсканированные тела текущей системы: тип, атмосфера, посадка, число "
+            "биосигналов и совпадение с выбранными фильтрами поиска.")
+
+        self.table = QTableWidget(0, len(EXOBIO_COLUMNS))
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(False)
+        self.table.setMinimumHeight(170)
+        for column, (_key, title, width) in enumerate(EXOBIO_COLUMNS):
+            item = QTableWidgetItem(title)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setHorizontalHeaderItem(column, item)
+            self.table.setColumnWidth(column, width)
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(len(EXOBIO_COLUMNS) - 1, QHeaderView.ResizeMode.Stretch)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.layout_.addWidget(self.table)
+
+    def _build_genera(self) -> None:
+        self._divider()
+        self._section("Роды в прогнозе")
+        self._hint(
+            "Отмеченные роды остаются в списке «Вероятные роды», остальные скрываются. "
+            "Если не отмечено ничего — фильтр выключен и показываются все роды.")
+
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(2)
+        selected = {str(name) for name in self.state.selected_genera}
+        for index, genus in enumerate(self.state.genus_choices):
+            check = QCheckBox(str(genus))
+            check.setChecked(str(genus) in selected)
+            check.setMinimumWidth(180)
+            check.toggled.connect(lambda _state: self._on_filters_changed())
+            grid.addWidget(check, index // 3, index % 3)
+            self.genus_widgets[str(genus)] = check
+        grid.setColumnStretch(2, 1)
+        self.layout_.addWidget(holder)
+
+        self.all_genera_btn = action_button("Отметить все",
+                                           lambda: self.set_all_genera(True), height=30)
+        self.none_genera_btn = action_button("Снять все",
+                                            lambda: self.set_all_genera(False), height=30)
+        self.layout_.addWidget(row(self.all_genera_btn, self.none_genera_btn,
+                                   label("«Снять все» = показать все роды",
+                                         role="muted", size=9), None))
+
+    def _build_planets(self) -> None:
+        self._divider()
+        self._section("Поиск планет в системе")
+        self._hint(
+            "Отмеченные наборы критериев применяются к отсканированным телам текущей "
+            "системы. Подходящие планеты попадают в раздел «Поиск планет» оверлея — "
+            "с типом, атмосферой, возможностью посадки и причиной, по которой планета "
+            "нашлась. Данные берутся из вашего журнала и кэша.")
+
+        self.show_planets_check = QCheckBox("Показывать раздел «Поиск планет» в оверлее")
+        self.show_planets_check.setChecked(bool(self.state.show_planets))
+        self.show_planets_check.toggled.connect(lambda _state: self._on_filters_changed())
+        self.layout_.addWidget(self.show_planets_check)
+
+        selected = {str(item) for item in self.state.selected_planets}
+        for preset_id, preset_label in self.state.planet_choices:
+            check = QCheckBox(str(preset_label))
+            check.setChecked(str(preset_id) in selected)
+            check.toggled.connect(lambda _state: self._on_filters_changed())
+            self.layout_.addWidget(check)
+            self.planet_widgets[str(preset_id)] = check
+
+        self.clear_planets_btn = action_button("Снять все", self.clear_planets, height=30)
+        self.layout_.addWidget(row(
+            self.clear_planets_btn,
+            label("без отмеченных наборов раздел пишет, что критерии не выбраны",
+                  role="muted", size=9), None))
+
+    # ----------------------------------------------------------------- events
+    def _on_filters_changed(self) -> None:
+        if self._updating:
+            return
+        self._call("filters_changed")
+
+    # --------------------------------------------------------------- accessors
+    def set_system_text(self, system: str) -> None:
+        self.system_label.setText(f"Текущая система: {system or 'не определена'}")
+
+    def set_summary_text(self, text: str) -> None:
+        self.summary_label.setText(str(text))
+
+    def set_status_text(self, text: str, color: str = "") -> None:
+        self.status_label.setText(str(text))
+        self.status_label.setStyleSheet(
+            f"color: {color or ORANGE}; background: transparent;")
+
+    def set_rows(self, rows: Sequence[Any]) -> None:
+        """Replace the body table; a row is a mapping or a 7-tuple in column order."""
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(rows))
+        for index, row_data in enumerate(rows):
+            values = [row_data.get(key, "") for key, _title, _width in EXOBIO_COLUMNS] \
+                if isinstance(row_data, dict) else list(row_data)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                if column == len(EXOBIO_COLUMNS) - 1 and str(value) not in ("", "—"):
+                    item.setForeground(QBrush(QColor(ORANGE)))
+                elif column == 4 and str(value) not in ("", "—"):
+                    item.setForeground(QBrush(QColor(CYAN)))
+                self.table.setItem(index, column, item)
+
+    def row_values(self) -> List[Tuple[str, ...]]:
+        rows = []
+        for index in range(self.table.rowCount()):
+            rows.append(tuple(self.table.item(index, column).text()
+                              if self.table.item(index, column) else ""
+                              for column in range(self.table.columnCount())))
+        return rows
+
+    def genera(self) -> List[str]:
+        return [name for name, check in self.genus_widgets.items() if check.isChecked()]
+
+    def genus_checked(self, name: str) -> bool:
+        check = self.genus_widgets.get(str(name))
+        return bool(check and check.isChecked())
+
+    def set_genera(self, names: Iterable[str]) -> None:
+        selected = {str(name) for name in names}
+        self._updating = True
+        try:
+            for name, check in self.genus_widgets.items():
+                check.setChecked(name in selected)
+        finally:
+            self._updating = False
+
+    def set_all_genera(self, value: bool) -> None:
+        self._updating = True
+        try:
+            for check in self.genus_widgets.values():
+                check.setChecked(bool(value))
+        finally:
+            self._updating = False
+        self._call("filters_changed")
+
+    def planet_ids(self) -> List[str]:
+        return [key for key, check in self.planet_widgets.items() if check.isChecked()]
+
+    def planet_checked(self, preset_id: str) -> bool:
+        check = self.planet_widgets.get(str(preset_id))
+        return bool(check and check.isChecked())
+
+    def set_planet_ids(self, ids: Iterable[str]) -> None:
+        selected = {str(item) for item in ids}
+        self._updating = True
+        try:
+            for key, check in self.planet_widgets.items():
+                check.setChecked(key in selected)
+        finally:
+            self._updating = False
+
+    def clear_planets(self) -> None:
+        self._updating = True
+        try:
+            for check in self.planet_widgets.values():
+                check.setChecked(False)
+        finally:
+            self._updating = False
+        self._call("filters_changed")
+
+    def show_planets(self) -> bool:
+        return self.show_planets_check.isChecked()
+
+    def set_show_planets(self, value: bool) -> None:
+        self._updating = True
+        try:
+            self.show_planets_check.setChecked(bool(value))
+        finally:
+            self._updating = False

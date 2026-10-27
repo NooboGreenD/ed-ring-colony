@@ -55,7 +55,7 @@ QPushButton#titleButton {{
 }}
 QPushButton#titleButton:hover {{ background: {LINE}; color: {TEXT}; }}
 QPushButton#titleButtonClose:hover {{ background: #c0392b; color: #ffffff; }}
-QLabel {{ color: {TEXT}; }}
+QLabel {{ color: {TEXT}; background: transparent; }}
 QLabel[role="muted"] {{ color: {MUTED}; }}
 QLabel[role="accent"] {{ color: {CYAN}; font-weight: 600; }}
 QLabel[role="mono"] {{ font-family: Consolas, "DejaVu Sans Mono", monospace; }}
@@ -206,7 +206,9 @@ def label(text: str = "", *, role: Optional[str] = None, size: Optional[int] = N
     if size or bold:
         widget.setFont(font)
     if color:
-        widget.setStyleSheet(f"color:{color};")
+        # Без явного `background: transparent` Qt рисует под такой подписью
+        # фон из палитры окна, и на панели страницы появляется светлая плашка.
+        widget.setStyleSheet(f"color:{color}; background: transparent;")
     return widget
 
 
