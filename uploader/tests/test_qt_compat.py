@@ -59,10 +59,20 @@ class QtCompatSmokeTests(unittest.TestCase):
         window.destroy()
 
     def test_faction_widget_is_clickable_qt_ui(self):
-        from qt_factions import FactionInfographic
-        widget=FactionInfographic(locale="ja")
-        self.assertGreater(widget.layout().count(),0)
-        self.assertIn("FactionInfographic",widget.objectName())
-        widget.deleteLater()
+        # Отдельный процесс: другие тесты подменяют qt_lazy заглушками, и в
+        # общем процессе фабрика вернула бы mock вместо настоящего виджета.
+        import subprocess
+        script=(
+            "from qt_factions import FactionInfographic\n"
+            "from ui_qt import ensure_app\n"
+            "app=ensure_app()\n"
+            "widget=FactionInfographic(locale='ja')\n"
+            "assert widget.layout().count()>0, 'no layout items'\n"
+            "assert widget.objectName()=='FactionInfographic', widget.objectName()\n"
+            "print('ok')\n")
+        completed=subprocess.run([sys.executable,"-c",script],cwd=str(HERE.parent),
+                                 capture_output=True,text=True,timeout=120)
+        self.assertEqual(completed.returncode,0,completed.stderr[-1500:])
+        self.assertIn("ok",completed.stdout)
 
 if __name__=="__main__":unittest.main()

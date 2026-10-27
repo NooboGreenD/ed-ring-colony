@@ -46,6 +46,48 @@ class _FakeModule(types.ModuleType):
         return value
 
 
+#: Оригинальное состояние `qt_lazy` до подмены: без восстановления заглушки
+#: утекали в следующие тесты и ломали настоящие Qt-виджеты.
+_LAZY_SNAPSHOT = None
+_LAZY_NAMESPACES = ("tk", "ttk", "tb", "messagebox", "filedialog", "simpledialog")
+
+
+def _lazy_state():
+    import qt_lazy
+
+    return {
+        "module": dict(vars(qt_lazy)),
+        "namespaces": {name: dict(vars(getattr(qt_lazy, name)))
+                       for name in _LAZY_NAMESPACES},
+    }
+
+
+def _restore_object(obj, snapshot):
+    for key in [key for key in vars(obj) if key not in snapshot]:
+        try:
+            delattr(obj, key)
+        except AttributeError:
+            pass
+    for key, value in snapshot.items():
+        if vars(obj).get(key) is not value:
+            setattr(obj, key, value)
+
+
+def restore_gui_stubs():
+    """Вернуть `qt_lazy` и `sys.modules` в состояние до подмены."""
+    global _LAZY_SNAPSHOT
+    if _LAZY_SNAPSHOT is not None:
+        import qt_lazy
+
+        _restore_object(qt_lazy, _LAZY_SNAPSHOT["module"])
+        for name in _LAZY_NAMESPACES:
+            _restore_object(getattr(qt_lazy, name), _LAZY_SNAPSHOT["namespaces"][name])
+        _LAZY_SNAPSHOT = None
+    for name in ("tkinter", "ttkbootstrap", "ttkbootstrap.constants",
+                 "ttkbootstrap.scrolled", "pyperclip"):
+        sys.modules.pop(name, None)
+
+
 def install_gui_stubs():
     for name in ("tkinter", "ttkbootstrap", "ttkbootstrap.constants",
                  "ttkbootstrap.scrolled", "pyperclip"):
@@ -122,6 +164,10 @@ def install_gui_stubs():
     # Keep controller tests independent of the host's Qt/OpenGL runtime while
     # the shipped application uses the real PySide-backed factories.
     import qt_lazy
+
+    global _LAZY_SNAPSHOT
+    if _LAZY_SNAPSHOT is None:
+        _LAZY_SNAPSHOT = _lazy_state()
     for name in ("Label","Frame","Canvas","Toplevel","Text","Menu","Scrollbar","StringVar","IntVar","DoubleVar","BooleanVar","TclError"):
         setattr(qt_lazy.tk,name,getattr(tkinter_stub,name))
     for name in ("Frame","Label","Button","Checkbutton","Radiobutton","Entry","Combobox",
@@ -188,6 +234,7 @@ class UploadFlowTests(unittest.TestCase):
         self.files = make_history(self.journal_dir, files=5, events_per_file=300)
 
     def tearDown(self):
+        restore_gui_stubs()
         try:
             self.tmp.cleanup()
         except OSError:

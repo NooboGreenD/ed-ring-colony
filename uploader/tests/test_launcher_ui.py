@@ -56,13 +56,12 @@ class LauncherUiTests(unittest.TestCase):
         self.assertEqual(session.call[1]["params"],{"locale":"de"})
 
     def test_language_persistence_preserves_helper_settings(self):
+        import launcher_settings
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/".colonial_helper.json"
             path.write_text(json.dumps({"token":"secret","update_channel":"beta"}),encoding="utf-8")
-            dashboard=launcher_ui.LauncherDashboard.__new__(launcher_ui.LauncherDashboard)
-            dashboard.settings_path=path
-            self.assertEqual(dashboard._read_locale(),"ru")
-            dashboard._save_locale("ja")
+            self.assertEqual(launcher_settings.read_site_locale(path),"ru")
+            launcher_settings.save_site_locale("ja",path)
             saved=json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(saved["site_locale"],"ja")
             self.assertEqual(saved["token"],"secret")
@@ -70,6 +69,7 @@ class LauncherUiTests(unittest.TestCase):
             if hasattr(path.stat(),"st_mode"):
                 import stat
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o600)
+            self.assertEqual(launcher_settings.update_channel(path),"beta")
 
     def test_cms_html_is_rendered_as_readable_plain_text(self):
         self.assertEqual(launcher_ui.plain_text("<p>Hello &amp; <b>galaxy</b></p><br>again"),
@@ -94,6 +94,53 @@ class LauncherUiTests(unittest.TestCase):
         self.assertEqual("".join(text for text, _tags in blocks[0][1]),
                          "Read the update and journal.log.")
         self.assertIn(("the update", ("link",)), blocks[0][1])
+
+    def test_article_html_escapes_markup_and_keeps_structure(self):
+        markup = launcher_ui.article_html(
+            "<p>Hello &amp; <b>galaxy</b></p><script>alert(1)</script>"
+            "<ul><li>one</li></ul>")
+        self.assertIn("<b>galaxy</b>", markup)
+        self.assertIn("&amp;", markup)
+        self.assertIn("•", markup)
+        self.assertNotIn("<script", markup)
+        self.assertNotIn("alert(1)", markup)
+
+    def test_long_article_bodies_are_truncated_for_the_card(self):
+        markup = launcher_ui.article_html("word " * 400)
+        self.assertIn("…", markup)
+        self.assertLess(len(markup), 1400)
+
+    def test_show_launcher_runs_the_qt_window_and_returns_its_choice(self):
+        import launcher_ui
+        import launcher_window
+        import ui_qt
+
+        instances = []
+
+        class FakeWindow:
+            launch_requested = True
+
+            def __init__(self, install_root, version, channel):
+                self.args = (install_root, version, channel)
+                instances.append(self)
+
+            def show(self):
+                self.shown = True
+
+        class FakeApp:
+            def exec(self):
+                return 0
+
+        fake_launcher = mock.Mock()
+        fake_launcher.choose_version.return_value = "9.9.9"
+        with mock.patch.object(launcher_ui, "_launcher_runtime", return_value=fake_launcher), \
+             mock.patch.object(launcher_window, "LauncherWindow", FakeWindow), \
+             mock.patch.object(ui_qt, "ensure_app", return_value=FakeApp()):
+            self.assertTrue(launcher_ui.show_launcher(Path("/tmp/root"), None, None))
+
+        self.assertEqual(len(instances), 1)
+        self.assertEqual(instances[0].args[1], "9.9.9")
+        self.assertTrue(getattr(instances[0], "shown", False))
 
     def test_article_links_use_existing_site_routes(self):
         self.assertEqual(launcher_ui._article_url("news", {"id": "42"}),

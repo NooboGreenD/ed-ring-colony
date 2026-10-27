@@ -27,11 +27,43 @@ Standalone desktop uploader for **ED Ring Colony** — https://edringcolony.ru.
 из корня распакованного build-kit:
 
 ```bat
-.venv\Scripts\python.exe -c "import qt_compat; print('Qt import OK')"
+.venv\Scripts\python.exe -c "import ui_qt, launcher_window, installer_window; print('Qt import OK')"
 ```
 
 Оба сборщика проверяют импорт Qt до запуска PyInstaller и останавливаются с
 сообщением об ошибке, если runtime отсутствует или импорт интерфейса сломан.
+
+### Устройство интерфейсов лаунчера и установщика
+
+Лаунчер и Setup написаны напрямую на PySide6: между кодом и Qt нет слоя,
+эмулирующего Tk. Слой `qt_compat.py`/`qt_lazy.py` остаётся только для Helper и
+Overlay и в базовую сборку лаунчера больше не замораживается.
+
+- `ui_qt.py` — общая кастомная frameless-рамка (перетаскивание через
+  `startSystemMove`, изменение размера через `startSystemResize`), тема,
+  кнопки и фоновые задачи (`Task`/`run_async`).
+- `launcher_window.py` — окно лаунчера: боковая панель, выбор языка, проверка
+  и установка обновлений, лента «Новости проекта»/«Galnet».
+- `installer_window.py` — окно установщика: установка, восстановление,
+  переустановка и ярлык на рабочем столе.
+- `launcher_content.py` — разбор и форматирование новостей без Qt.
+- `launcher_settings.py` — чтение и запись `~/.colonial_helper.json`.
+- `launcher_ui.py` — сборка: подготовка версии и запуск окна.
+
+Сетевые запросы, проверка обновлений и копирование файлов выполняются в
+отдельных потоках, а результат возвращается в GUI через сигналы Qt.
+
+### Тесты интерфейсов без рабочего стола
+
+Окна проверяются на настоящих виджетах в offscreen-режиме:
+
+```bat
+set QT_QPA_PLATFORM=offscreen
+.venv\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+На Linux-машинах с Qt без системных библиотек (`libGL`, `libxkbcommon`) тесты
+пропускаются автоматически, поэтому отсутствие GUI в CI не ломает сборку.
 
 ## Подготовка версии 2.18.12
 

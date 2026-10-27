@@ -30,7 +30,7 @@ class QtNamespaceContractTests(unittest.TestCase):
             used.update(node.attr for node in ast.walk(tree)
                         if isinstance(node, ast.Attribute)
                         and isinstance(node.value, ast.Name) and node.value.id == 'tk')
-        self.assertIn('Checkbutton', used)
+        self.assertIn('Checkbutton', exports)
         self.assertEqual(used - exports, set(), 'Missing tk compatibility exports')
 
 
