@@ -145,10 +145,10 @@ class WindowChromeTests(unittest.TestCase):
             window_chrome.HTCAPTION, 0,
         )
 
-    def test_drag_uses_native_window_manager_instead_of_geometry_updates(self):
+    def test_maximized_drag_is_delegated_as_one_native_move(self):
         tk = mock.Mock()
         window = mock.Mock()
-        window.state.return_value = "normal"
+        window.state.return_value = "zoomed"
         window.after.return_value = "after#1"
         with mock.patch.object(window_chrome.sys, "platform", "win32"), \
              mock.patch.object(window_chrome, "remove_native_caption", return_value=True), \
@@ -159,6 +159,8 @@ class WindowChromeTests(unittest.TestCase):
             self.assertTrue(bindings)
             self.assertEqual(bindings[0].args[1](mock.Mock()), "break")
             drag.assert_called_once_with(window)
+            window.state.assert_not_called()
+            window.update_idletasks.assert_not_called()
             window.geometry.assert_not_called()
 
     def test_non_windows_keeps_native_decorations(self):

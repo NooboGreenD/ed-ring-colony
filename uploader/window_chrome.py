@@ -235,9 +235,9 @@ def add_custom_titlebar(window, tk, title: str, *, close_command=None,
 
     def start_drag(_event):
         try:
-            if allow_maximize and window.state() in ("zoomed", "maximized"):
-                window.state("normal")
-                window.update_idletasks()
+            # Let Windows own the complete move/restore gesture. Do not split
+            # a drag from maximized state into Tk state("normal") followed by a
+            # second native move command.
             _begin_native_drag(window)
         except Exception:
             pass
