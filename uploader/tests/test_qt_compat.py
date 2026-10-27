@@ -47,6 +47,17 @@ class QtCompatSmokeTests(unittest.TestCase):
         self.assertIsNotNone(frame.layout())
         window.destroy()
 
+    def test_root_window_is_visible_and_can_be_withdrawn(self):
+        window=qt.tk.Tk()
+        self.app.processEvents()
+        self.assertTrue(window.isVisible())
+        window.withdraw()
+        self.assertFalse(window.isVisible())
+        self.assertEqual(window.state(),"withdrawn")
+        window.deiconify()
+        self.assertTrue(window.isVisible())
+        window.destroy()
+
     def test_faction_widget_is_clickable_qt_ui(self):
         from qt_factions import FactionInfographic
         widget=FactionInfographic(locale="ja")

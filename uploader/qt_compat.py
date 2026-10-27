@@ -722,6 +722,10 @@ class _FramelessResizeFilter(QObject):
 class Window(QMainWindow,TkWidgetMixin):
     def __init__(self,themename=None,**kw):
         ensure_app();super().__init__();self._tk_init(None);self._central=QWidget();self.setCentralWidget(self._central);self._tk_children=[];self._tk_window_title="";self._closed=False
+        # Настоящий tk.Tk показывает корневое окно сразу после создания.
+        # Без этого mainloop() крутил цикл событий с невидимым окном, и запуск
+        # установщика/программы выглядел как зависание без окна и без ошибки.
+        self._tk_withdrawn=False;QTimer.singleShot(0,self._tk_autoshow)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint|Qt.WindowType.Window)
         self._outer=QVBoxLayout(self._central);self._outer.setContentsMargins(0,0,0,0);self._outer.setSpacing(0)
         self._title=QWidget();self._title.setFixedHeight(34);self._title.setStyleSheet("background:#17191b;")
@@ -763,12 +767,31 @@ class Window(QMainWindow,TkWidgetMixin):
             self._max_btn.setVisible(bool(width or height))
     def protocol(self,name,callback):
         if name=="WM_DELETE_WINDOW":self._close_callback=callback
+    def _tk_autoshow(self):
+        if not self._tk_withdrawn and _is_qt_valid(self):self.show()
+    def withdraw(self):
+        self._tk_withdrawn=True;self.hide()
+    def deiconify(self):
+        self._tk_withdrawn=False;self.show()
+    def state(self,value=None):
+        if value is None:return "withdrawn" if self._tk_withdrawn else ("zoomed" if self.isMaximized() else "normal")
+        value=str(value).lower()
+        if value in ("withdrawn","iconic"):self.withdraw()
+        elif value=="zoomed":self._tk_withdrawn=False;self.showMaximized()
+        else:self.deiconify()
     def closeEvent(self,event):
         cb=getattr(self,"_close_callback",None)
         if cb:
             event.ignore();cb()
         else:event.accept()
-    def mainloop(self):ensure_app().exec()
+    def mainloop(self):
+        app=ensure_app()
+        # Страховка: окна, созданные до mainloop(), должны быть видимы, если их
+        # не скрыли явно через withdraw().
+        for widget in app.topLevelWidgets():
+            if isinstance(widget,Window) and not widget._tk_withdrawn and not widget.isVisible():
+                widget.show()
+        app.exec()
     def quit(self):ensure_app().quit()
     def configure(self,cnf=None,**kw):return TkWidgetMixin.configure(self,cnf,**kw)
     config=configure

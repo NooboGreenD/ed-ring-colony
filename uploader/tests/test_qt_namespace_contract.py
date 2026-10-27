@@ -7,6 +7,15 @@ SOURCE = Path(__file__).resolve().parents[1]
 
 
 class QtNamespaceContractTests(unittest.TestCase):
+    def test_root_window_behaves_like_visible_tk_root(self):
+        facade = ast.parse((SOURCE / 'qt_compat.py').read_text(encoding='utf-8'))
+        window = next(node for node in facade.body
+                      if isinstance(node, ast.ClassDef) and node.name == 'Window')
+        methods = {node.name for node in window.body if isinstance(node, ast.FunctionDef)}
+        self.assertTrue({'withdraw', 'deiconify', 'state', 'mainloop'} <= methods)
+        source = (SOURCE / 'qt_compat.py').read_text(encoding='utf-8')
+        self.assertIn('QTimer.singleShot(0,self._tk_autoshow)', source)
+
     def test_tk_namespace_exports_every_attribute_used_by_application(self):
         facade = ast.parse((SOURCE / 'qt_compat.py').read_text(encoding='utf-8'))
         namespace = next(node for node in facade.body
