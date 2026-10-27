@@ -185,24 +185,24 @@ class PilotInfographicTests(unittest.TestCase):
             app._pilot_tick()
         refresh.assert_not_called()
 
-        app.root.after.reset_mock()
-        app._refresh_pilot_infographic()
+        with mock.patch.object(app.root, "after", wraps=app.root.after) as after:
+            app._refresh_pilot_infographic()
         self.assertFalse(any(
             call.args and call.args[0] == app.PILOT_REFRESH_INTERVAL_MS
-            for call in app.root.after.call_args_list
+            for call in after.call_args_list
         ))
 
     def test_refresh_uses_single_timer(self):
         """Повторные вызовы не должны плодить цепочки root.after()."""
         app = self.app
-        app.root.after.reset_mock()
         app._pilot_refresh_job = None
-        with mock.patch.object(app, "_pilot_is_visible", return_value=True):
+        with mock.patch.object(app, "_pilot_is_visible", return_value=True), \
+             mock.patch.object(app.root, "after", wraps=app.root.after) as after:
             app._refresh_pilot_infographic()
             app._refresh_pilot_infographic()
             app._refresh_pilot_infographic()
 
-        timers = [call for call in app.root.after.call_args_list
+        timers = [call for call in after.call_args_list
                   if call.args and call.args[0] == app.PILOT_REFRESH_INTERVAL_MS]
         self.assertEqual(len(timers), 1)
 

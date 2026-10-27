@@ -1082,7 +1082,7 @@ class SiteReconcileTests(AppTestCase):
             "build_id": "b-site", "tons": 250, "at": time.time()}
 
         with self._inline_threads(), \
-             mock.patch.object(self.module.messagebox, "askyesno", return_value=True) as ask:
+             mock.patch.object(self.module, "ask_yes_no", return_value=True) as ask:
             self.app._on_colony_reconcile()
 
         ask.assert_not_called()
@@ -1090,14 +1090,14 @@ class SiteReconcileTests(AppTestCase):
 
     def test_unsent_deliveries_are_sent_after_confirmation(self):
         with self._inline_threads(), \
-             mock.patch.object(self.module.messagebox, "askyesno", return_value=True):
+             mock.patch.object(self.module, "ask_yes_no", return_value=True):
             self.app._on_colony_reconcile()
 
         self.assertEqual(self.contributed, [("b-site", "Test CMDR", {"steel": 250})])
 
     def test_declined_confirmation_sends_nothing(self):
         with self._inline_threads(), \
-             mock.patch.object(self.module.messagebox, "askyesno", return_value=False):
+             mock.patch.object(self.module, "ask_yes_no", return_value=False):
             self.app._on_colony_reconcile()
         self.assertEqual(self.contributed, [])
 

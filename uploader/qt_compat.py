@@ -34,15 +34,17 @@ _STYLE_RULES = {}
 _STYLE_MAPS = {}
 
 
-def ensure_app():
-    global _APP
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv[:1])
-    _APP = app
-    app.setStyle("Fusion")
-    t=theme_tokens()
-    app.setStyleSheet(f"""
+def _compat_qss() -> str:
+    """QSS of the transitional widgets (applied to compat windows only).
+
+    The stylesheet used to be installed on the whole QApplication. With the
+    native Helper window on screen that meant every restyle walked the entire
+    widget tree of the program — and in the headless test suite, of every tree
+    built by earlier tests. Applying it to the windows the facade creates keeps
+    the same look without touching the rest of the UI.
+    """
+    t = theme_tokens()
+    return f"""
       QWidget {{ background-color:{t.background}; color:{t.text}; font-family:'Segoe UI',sans-serif; }}
       QFrame[panel='true'] {{ background:{t.surface}; border:1px solid {t.line}; border-radius:6px; }}
       QPushButton {{ background:#303438; border:1px solid #454b50; border-radius:5px; padding:7px 11px; }}
@@ -63,7 +65,23 @@ def ensure_app():
       QToolTip {{ background:#202326; color:{t.text}; border:1px solid {t.accent}; padding:5px; }}
       QMenu {{ background:{t.surface_alt}; border:1px solid #454b50; }}
       QMenu::item:selected {{ background:#454b50; }}
-    """)
+    """
+
+
+def ensure_app():
+    """Return the QApplication, without restyling an application we did not create.
+
+    `Fusion` is set only for the instance created here (standalone HUD runs).
+    When the native Helper window owns the application, changing its style or
+    its stylesheet would walk and repaint every widget on screen, so the facade
+    keeps its look by styling the windows it creates (`_compat_qss()`).
+    """
+    global _APP
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv[:1])
+        app.setStyle("Fusion")
+    _APP = app
     return app
 
 
@@ -735,7 +753,7 @@ class Window(QMainWindow,TkWidgetMixin):
         self._min_btn.clicked.connect(self.showMinimized);self._max_btn.clicked.connect(self._toggle_max);self._close_btn.clicked.connect(self.close)
         self._outer.addWidget(self._title);self._central_layout=QVBoxLayout();self._central_layout.setContentsMargins(10,8,10,10);self._central_layout.setSpacing(7);self._outer.addLayout(self._central_layout)
         self._drag=None;self._title.mousePressEvent=self._title_press;self._title.mouseMoveEvent=self._title_move;self._title.mouseDoubleClickEvent=lambda e:self._toggle_max()
-        self.setStyleSheet("background:#1e2022;color:#f2f3f4;")
+        self.setStyleSheet("background:#1e2022;color:#f2f3f4;" + _compat_qss())
         app=ensure_app()
         if not hasattr(app,"_qt_resize_filter"):
             app._qt_resize_filter=_FramelessResizeFilter(app);app.installEventFilter(app._qt_resize_filter)
@@ -814,6 +832,7 @@ class Window(QMainWindow,TkWidgetMixin):
 class Toplevel(QWidget,TkWidgetMixin):
     def __init__(self,master=None,**kw):
         ensure_app();super().__init__(master if isinstance(master,QWidget) else None);self._tk_init(master);self.setWindowFlags(Qt.WindowType.FramelessWindowHint|Qt.WindowType.Window);self._tk_outer=QVBoxLayout(self);self._tk_outer.setContentsMargins(0,0,0,0);self._tk_layout=QVBoxLayout();self._tk_outer.addLayout(self._tk_layout)
+        self.setStyleSheet(_compat_qss())
         if kw:self.configure(**kw)
     def _get_tk_layout(self,kind="pack",side=TOP):return self._tk_layout
     def title(self,value):self.setWindowTitle(str(value))

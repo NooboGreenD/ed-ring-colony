@@ -260,22 +260,20 @@ class OverlayPageHostTests(unittest.TestCase):
         cls.app = ensure_app()
 
     def test_page_can_be_added_to_a_tab(self):
-        import helper_shell
-        import qt_compat as qt
+        from PySide6.QtWidgets import QWidget
 
-        root = qt.tk.Tk()
-        try:
-            shell = helper_shell.build_shell(root, version="test")
-            page = helper_pages.OverlayPage(_state(), None)
-            tab = qt.tk.Frame(shell.content_area)
-            tab._get_tk_layout().addWidget(page)
-            page.show()
-            shell.add(tab, "Оверлей")
-            shell.select(tab)
-            self.assertEqual(shell.pages, [tab])
-            self.assertEqual(shell.pages[0], tab)
-        finally:
-            root.destroy()
+        import helper_shell
+
+        root = QWidget()
+        shell = helper_shell.build_shell(root, version="test")
+        page = helper_pages.OverlayPage(
+            _state(), helper_pages.OverlayPageActions())
+        tab = helper_shell.PageHost(shell.content_area)
+        tab._get_tk_layout("pack").addWidget(page)
+        shell.add(tab, "Оверлей")
+        shell.select(tab)
+        self.assertEqual(shell.pages, [tab])
+        self.assertIs(page.parent(), tab)
 
 
 if __name__ == "__main__":

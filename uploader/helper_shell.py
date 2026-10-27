@@ -1,9 +1,8 @@
 """Native Qt shell for the Colonial Helper main window.
 
 This replaces the Tk-facade chrome (header, sidebar navigator, status bar) with
-real PySide6 widgets. Pages are hosted in a ``QStackedWidget``; while a page is
-still being migrated it may remain a compatibility widget, because the host
-accepts any ``QWidget``.
+real PySide6 widgets. Pages are hosted in a ``QStackedWidget``; a page is any
+``QWidget``, so the shell does not care how a page is built.
 
 Why the shell exists: the old navigator mixed a Tk-style layout API with Qt
 widgets, so every new control could behave differently on Windows. The shell
@@ -12,7 +11,6 @@ the status line.
 """
 from __future__ import annotations
 
-import sys
 from typing import Callable, Dict, List, Optional
 
 from PySide6.QtCore import Qt
@@ -26,7 +24,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui_navigation import SidebarNavigator
 from ui_qt import (
     panel,
     CYAN,
@@ -51,6 +48,10 @@ class PageHost(QWidget):
     """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
+        # Тесты собирают окно с заглушкой вместо Qt-родителя: контейнер тогда
+        # живёт без родителя, а страницы всё равно получают свой layout.
+        if parent is not None and not isinstance(parent, QWidget):
+            parent = None
         super().__init__(parent)
         self._tk_children: List[QWidget] = []
         self._host_layout = QVBoxLayout(self)
@@ -59,6 +60,14 @@ class PageHost(QWidget):
 
     def _get_tk_layout(self, kind: str = "pack", side=None):
         return self._host_layout
+
+    def pack(self, *args, **kwargs) -> None:
+        """No-op for the transitional navigator.
+
+        The old sidebar calls ``pack()`` on the page it registers. A page host is
+        already placed by its own layout, and showing a parentless widget would
+        create a stray window, so the call is swallowed here.
+        """
 
 
 class HelperShell(QWidget):
@@ -216,12 +225,13 @@ class HelperShell(QWidget):
 
     def _pack_into_root(self) -> None:
         """Attach the shell to the window created by the bootstrapper."""
-        layout = None
-        getter = getattr(self.root, "_get_tk_layout", None)
-        if callable(getter):
-            layout = getter("pack")
-        else:
-            layout = self.root.layout()
+        layout = getattr(self.root, "body_layout", None)  # ui_qt.FramelessWindow
+        if layout is None:
+            getter = getattr(self.root, "_get_tk_layout", None)
+            if callable(getter):
+                layout = getter("pack")
+            else:
+                layout = self.root.layout()
         if layout is not None and hasattr(layout, "addWidget"):
             # The shell brings its own padding; keep the host from adding more.
             if hasattr(layout, "setContentsMargins"):
@@ -318,69 +328,14 @@ class HelperShell(QWidget):
         return self.title_label.text()
 
 
-class LegacyShell:
-    """Fallback chrome used only when the Qt runtime is unavailable.
-
-    Keeps the program usable (and the headless test suite running) with the
-    previous sidebar navigator; the normal path is :class:`HelperShell`.
-    """
-
-    def __init__(self, root, *, on_change=None, version: str = "") -> None:
-        import qt_lazy
-
-        self.root = root
-        self.version = str(version)
-        self._navigator = SidebarNavigator(root, qt_lazy.tb, on_change=on_change)
-        self.content_area = self._navigator.content_area
-        self._pages = self._navigator._pages
-        self._titles = self._navigator._titles
-        self._status = None
-
-    def add(self, page, text: str) -> None:
-        self._navigator.add(page, text)
-
-    def select(self, page=None):
-        return self._navigator.select(page)
-
-    def set_status(self, text: str) -> None:
-        import qt_lazy
-
-        if self._status is None:
-            self._status = qt_lazy.tb.Label(self.root, text=str(text))
-            try:
-                self._status.pack(fill="x")
-            except Exception:
-                pass
-        else:
-            try:
-                self._status.configure(text=str(text))
-            except Exception:
-                pass
-
-    def status(self) -> str:
-        getter = getattr(self._status, "cget", None)
-        if callable(getter):
-            try:
-                return str(getter("text"))
-            except Exception:
-                return ""
-        return ""
-
-
 def build_shell(root, *, on_change=None, version: str = ""):
-    """Native Qt shell, or the legacy fallback when Qt cannot start.
+    """Build the native Qt shell for ``root``.
 
-    A missing GUI runtime must not prevent the program from opening its
-    windows, so the failure is reported and the previous chrome is used.
+    Qt is a hard requirement of the Helper now: the window, navigation, status
+    line and every tab are native widgets, so there is no second chrome to
+    fall back to. A missing platform plugin surfaces as its own exception.
     """
-    try:
-        from ui_qt import ensure_app
+    from ui_qt import ensure_app
 
-        ensure_app()
-        return HelperShell(root, on_change=on_change, version=version)
-    except BaseException as exc:
-        detail = str(exc).splitlines()[0] if str(exc) else ""
-        print(f"Qt-оболочка недоступна ({type(exc).__name__}"
-              f"{': ' + detail[:160] if detail else ''}); "
-              "используется прежняя навигация", file=sys.stderr)
-        return LegacyShell(root, on_change=on_change, version=version)
+    ensure_app()
+    return HelperShell(root, on_change=on_change, version=version)

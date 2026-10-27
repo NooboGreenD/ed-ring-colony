@@ -10,7 +10,6 @@ import errno
 import os
 import sys
 import json
-import math
 import tempfile
 import time
 import threading
@@ -22,14 +21,20 @@ from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import webbrowser
 
-# All widgets below are backed by PySide6. The small compatibility API keeps
-# the mature event-processing/UI controller code intact while the presentation
-# layer moves off Tk.
-from qt_lazy import (
-    tk, ttk, tb, filedialog, messagebox, simpledialog,
-    END, NORMAL, DISABLED, SOLID, X, Y, BOTH, LEFT, RIGHT,
-    TOP, BOTTOM, CENTER, N, S, E, W, NW, VERTICAL, HORIZONTAL, QVBoxLayout,
+# Интерфейс — нативный Qt: окно, оболочка и страницы собраны из виджетов
+# PySide6, а диалоги вызываются через `ui_qt`.
+from ui_qt import (
+    ask_directory,
+    ask_open_file,
+    ask_open_files,
+    ask_save_file,
+    ask_string,
+    ask_yes_no,
+    show_error,
+    show_info,
+    show_warning,
 )
+from helper_window import HelperWindow
 
 # -- pyperclip --
 try:
@@ -42,26 +47,21 @@ from community_goals import CommunityGoalReportCollector, community_goal_reports
 from site_config import normalize_site_url, saved_connection
 from locale_config import normalize_locale, localized_url
 from journal_parser import (
-    parse_file,          # noqa: F401 — оставлен как публичный API парсера
-    parse_journal,       # noqa: F401
     parse_events,
     iter_journal_events,
-    extract_construction_events,  # noqa: F401
     site_deliveries_from_text,
     ConstructionSnapshotCollector,
     PARSER_VERSION,
 )
 from route_tracker import RouteTracker
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
-from ui_scroll import SmoothScrollController
-from helper_shell import build_shell
+from helper_shell import PageHost, build_shell
 from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
 )
 from exobiology import (
     ExobiologyTracker, ExobiologyCache, PLANET_SEARCH_PRESETS, GENUS_VALUE_CR,
-    scan_journals_for_system, scan_all_journals_for_exobio, body_matches,
 )
 from carrier import CarrierTracker
 from colonisation import (
@@ -69,29 +69,7 @@ from colonisation import (
     build_project_draft,
     format_commodities,
 )
-from map_export import save_map_png
-import orrery
-import tk_orrery
-from system_map import (
-    ZONE_COLOR,
-    due_note,
-    due_timestamp,
-    BODY_LABELS,
-    KIND_MOON,
-    KIND_STAR,
-    STATION_CARRIER,
-    STATION_LABELS,
-    STATION_SITE,
-    MapRavenCache,
-    MapSnapshot,
-    MapStation,
-    PlacedItem,
-    SystemMapBuilder,
-    commodity_label,
-    layout as map_layout,
-    map_report,
-    map_summary,
-)
+from system_map import MapRavenCache, SystemMapBuilder
 from edsm_api import EDSMAPI
 from eddn_api import EddnClient
 from inara_api import InaraAPI
@@ -186,7 +164,7 @@ COLOR_YELLOW = "#f1c40f"            # дедлайн стройки на исх�
 
 
 class ColonialHelperApp:
-    def __init__(self, root: tb.Window):
+    def __init__(self, root: HelperWindow):
         self.root = root
         self.root.title(f"{APP_NAME} v{VERSION}")
         self.root.geometry("1180x790")
@@ -418,20 +396,9 @@ class ColonialHelperApp:
         # сразу, а не ждать следующего события журнала.
         self._wire_exobio_state_provider()
 
-        # Стили
-        self.style = None
-        try:
-            self.style = tb.Style(theme="darkly")
-        except Exception:
-            try:
-                self.style = tb.Style()
-            except Exception:
-                pass
-        self._setup_styles()
-        # Один координатор вместо конкурирующих bind_all/unbind_all на каждой
-        # вкладке: он маршрутизирует колесо по области курсора и двигает Canvas
-        # короткой неблокирующей анимацией.
-        self._smooth_scroll = SmoothScrollController(self.root)
+        # Координатор колеса нужен только прежней карте системы; нативные
+        # Qt-страницы прокручиваются сами, поэтому он больше не создаётся.
+        self._smooth_scroll = None
 
         # UI
         self._build_header()
@@ -475,38 +442,6 @@ class ColonialHelperApp:
     # ============================================================
     #  Стили
     # ============================================================
-    def _setup_styles(self):
-        s = self.style
-        surface = "#252a2e"
-        s.configure("App.TFrame", background=COLOR_BG)
-        s.configure("Sidebar.TFrame", background=surface, bordercolor=COLOR_LINE)
-        s.configure("Workspace.TFrame", background=surface, bordercolor=COLOR_LINE,
-                    relief="solid", borderwidth=1)
-        s.configure("WorkspaceHeader.TFrame", background=surface)
-        s.configure("WorkspaceContent.TFrame", background=surface)
-        s.configure("Accent.TFrame", background=COLOR_ORANGE)
-        s.configure("NavMarker.TFrame", background=COLOR_LINE)
-        s.configure("Brand.TLabel", background=surface, foreground=COLOR_CYAN)
-        s.configure("SidebarMeta.TLabel", background=surface, foreground=COLOR_MUTED)
-        s.configure("WorkspaceTitle.TLabel", background=surface, foreground=COLOR_TEXT)
-        s.configure("WorkspaceMeta.TLabel", background=surface, foreground=COLOR_CYAN)
-        s.configure("Navigation.TButton", font=("Segoe UI", 9, "bold"),
-                    padding=(9, 7), anchor="w")
-        s.configure("TButton", font=("Segoe UI", 9), padding=(9, 6))
-        s.configure("TEntry", fieldbackground="#202428", foreground=COLOR_TEXT,
-                    bordercolor=COLOR_LINE, padding=(8, 6))
-        s.configure("TCombobox", fieldbackground="#202428", foreground=COLOR_TEXT,
-                    bordercolor=COLOR_LINE, padding=(7, 5))
-        s.configure("TLabelframe", background=surface, bordercolor=COLOR_LINE)
-        s.configure("TLabelframe.Label", background=surface, foreground=COLOR_CYAN,
-                    font=("Segoe UI", 9, "bold"))
-        s.configure("Orange.TButton", foreground=COLOR_ORANGE, bordercolor=COLOR_ORANGE)
-        s.configure("Cyan.TButton", foreground=COLOR_CYAN, bordercolor=COLOR_CYAN)
-        s.configure("Green.TButton", foreground=COLOR_GREEN, bordercolor=COLOR_GREEN)
-        s.configure("Red.TButton", foreground=COLOR_RED, bordercolor=COLOR_RED)
-        s.configure("Orange.TEntry", fieldbackground=COLOR_PANEL)
-        s.configure("Muted.TLabel", background=COLOR_BG, foreground=COLOR_MUTED)
-
     # ============================================================
     #  Шапка
     # ============================================================
@@ -531,42 +466,42 @@ class ColonialHelperApp:
         self.notebook = self.shell
         page_host = self.notebook.content_area
 
-        self.tab_auth = tb.Frame(page_host)
+        self.tab_auth = PageHost(page_host)
         self.notebook.add(self.tab_auth, text="Подключение")
         self._build_tab_auth()
 
-        self.tab_pilot = tb.Frame(page_host)
+        self.tab_pilot = PageHost(page_host)
         self.notebook.add(self.tab_pilot, text="Пилот")
         self._build_tab_pilot()
 
-        self.tab_upload = tb.Frame(page_host)
+        self.tab_upload = PageHost(page_host)
         self.notebook.add(self.tab_upload, text="Загрузка логов")
         self._build_tab_upload()
 
-        self.tab_route = tb.Frame(page_host)
+        self.tab_route = PageHost(page_host)
         self.notebook.add(self.tab_route, text="Маршрут")
         self._build_tab_route()
 
-        self.tab_colony = tb.Frame(page_host)
+        self.tab_colony = PageHost(page_host)
         self.notebook.add(self.tab_colony, text="Колонизатор")
         self._build_tab_colony()
 
-        self.tab_factions = tb.Frame(page_host)
+        self.tab_factions = PageHost(page_host)
         self.notebook.add(self.tab_factions, text="Фракции")
         self._build_tab_factions()
         # Backward-compatible field for old internal map callbacks; no map page
         # is registered in navigation or rendered in the Qt interface.
         self.tab_map = None
 
-        self.tab_overlay = tb.Frame(page_host)
+        self.tab_overlay = PageHost(page_host)
         self.notebook.add(self.tab_overlay, text="Оверлей")
         self._build_tab_overlay()
 
-        self.tab_exobio = tb.Frame(page_host)
+        self.tab_exobio = PageHost(page_host)
         self.notebook.add(self.tab_exobio, text="Экзобиология")
         self._build_tab_exobio()
 
-        self.tab_log = tb.Frame(page_host)
+        self.tab_log = PageHost(page_host)
         self.notebook.add(self.tab_log, text="Лог")
         self._build_tab_log()
 
@@ -1052,29 +987,6 @@ class ColonialHelperApp:
     # ============================================================
     #  Вкладка: Колонизатор
     # ============================================================
-    def _scrollable_frame(self, parent, padding: int = 15):
-        """Scrollable, width-fitting content area for long settings pages.
-
-        Wheel routing is centralized in ``SmoothScrollController``. A page no
-        longer installs/removes process-wide bindings when the pointer enters or
-        leaves its canvas, so notebook changes cannot cancel another page's
-        handler. Scroll-region updates remain tied to content-size changes only.
-        """
-        viewport = tb.Frame(parent)
-        viewport.pack(fill=BOTH, expand=True)
-        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0,
-                           background=COLOR_BG)
-        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=RIGHT, fill=Y)
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        frame = tb.Frame(canvas, padding=padding)
-        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
-        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
-        self._smooth_scroll.register(canvas, viewport, frame, scrollbar)
-        return frame
-
     def _build_tab_colony(self):
         """Вкладка «Колонизатор» на чистом Qt (helper_pages.ColonyPage)."""
         from helper_pages import ColonyPage, ColonyPageActions
@@ -1506,7 +1418,7 @@ class ColonialHelperApp:
         project = self._selected_colony_project()
         if not project:
             return
-        if not messagebox.askyesno(
+        if not ask_yes_no(
             "Завершить проект",
             f"Отметить «{project['buildName']}» ({project['systemName']}) завершённым?\n"
             "Это действие необратимо.",
@@ -2078,1803 +1990,11 @@ class ColonialHelperApp:
         widget.set_snapshot(system,control,factions)
 
     # Legacy renderer remains unreferenced; the system-map tab is removed.
-    def _build_tab_map(self):
-        outer = tb.Frame(self.tab_map, padding=10)
-        outer.pack(fill=BOTH, expand=True)
-
-        tb.Label(outer, text="Карта системы — где вы и что строится",
-                 font=("Segoe UI", 12, "bold")).pack(anchor=W)
-        tb.Label(
-            outer,
-            text="Звезда, планеты и луны, станции, поселения и стройплощадки системы, в "
-                 "которой находится пилот. У строящихся объектов — сколько процентов груза "
-                 "завезено: журнал плюс Raven Colonial, включая доставки других командиров.",
-            foreground=COLOR_MUTED, wraplength=820, justify=LEFT,
-        ).pack(anchor=W, pady=(0, 8))
-
-        # ---- Панель управления ----
-        bar = tb.Frame(outer)
-        bar.pack(fill=X, pady=(0, 6))
-        tb.Button(bar, text="Обновить", command=self._on_map_refresh,
-                  bootstyle="info-outline", width=11).pack(side=LEFT)
-        tb.Button(bar, text="−", command=lambda: self._on_map_zoom(-1),
-                  bootstyle="secondary-outline", width=3).pack(side=LEFT, padx=(8, 0))
-        tb.Button(bar, text="+", command=lambda: self._on_map_zoom(1),
-                  bootstyle="secondary-outline", width=3).pack(side=LEFT, padx=(4, 0))
-        self.map_zoom_label = tb.Label(bar, text="100%", foreground=COLOR_MUTED, width=6)
-        self.map_zoom_label.pack(side=LEFT, padx=(4, 12))
-        self.map_moons_var = tk.BooleanVar(
-            value=bool(self.config.get("map_show_moons", True)))
-        tb.Checkbutton(bar, text="Луны", variable=self.map_moons_var,
-                       command=self._on_map_toggle,
-                       bootstyle="info-round-toggle").pack(side=LEFT, padx=(0, 8))
-        self.map_labels_var = tk.BooleanVar(
-            value=bool(self.config.get("map_show_labels", True)))
-        tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
-                       command=self._on_map_toggle,
-                       bootstyle="info-round-toggle").pack(side=LEFT, padx=(0, 8))
-        # Обжитую систему без фильтра читать трудно: три десятка безымянных
-        # планет прячут пару нужных площадок.
-        self.map_only_sites_var = tk.BooleanVar(
-            value=bool(self.config.get("map_only_sites", False)))
-        tb.Checkbutton(bar, text="Только стройки", variable=self.map_only_sites_var,
-                       command=self._on_map_toggle,
-                       bootstyle="warning-round-toggle").pack(side=LEFT)
-        # Вид переключает саму карту, а не «наклон схемы»: «Схема» — плоская
-        # раскладка вкладки, «3D» — та же сцена, что на сайте, но нарисованная
-        # холстом Tk. Кнопка «3D-карта» открывает её здесь же: раньше она
-        # уводила в браузер и отдельный HTML.
-        tb.Label(bar, text="Карта:", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
-        self.map_view_mode = tk.StringVar(value=str(self.config.get("map_view_mode", "2d")))
-        tb.Radiobutton(bar, text="Схема", variable=self.map_view_mode, value="2d",
-                       command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT)
-        tb.Radiobutton(bar, text="3D", variable=self.map_view_mode, value="3d",
-                       command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT, padx=(2, 6))
-        tb.Button(bar, text="3D-карта ⛶", command=self._on_map_open_3d,
-                  bootstyle="warning-outline", width=12).pack(side=LEFT, padx=(2, 6))
-        self.map_system_label = tb.Label(bar, text="", font=("Consolas", 10),
-                                         foreground=COLOR_ORANGE)
-        self.map_system_label.pack(side=RIGHT)
-
-        # Вторая строка — управление сценой: камера, уровень приближения,
-        # полоса обитаемой зоны и движение тел по настоящим периодам.
-        scene = tb.Frame(outer)
-        scene.pack(fill=X, pady=(0, 6))
-        tb.Label(scene, text="Камера:", foreground=COLOR_MUTED).pack(side=LEFT)
-        # Начальный вид сцены: свои ключи, а если их ещё нет — прежние
-        # `map_viewer_*` от прежней карты в браузере, чтобы настройки не терялись.
-        legacy_view = self._map_viewer_options()
-        self.map_view3d = tk.StringVar(value=str(self.config.get(
-            "map_view3d", "top" if legacy_view["view_mode"] == "2d" else "iso")))
-        for view_name, view_label in tk_orrery.VIEW_PRESETS:
-            tb.Radiobutton(scene, text=view_label, variable=self.map_view3d, value=view_name,
-                           command=self._on_map_view_preset,
-                           bootstyle="secondary-toolbutton").pack(side=LEFT, padx=(4, 0))
-        tb.Label(scene, text="Уровень:", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
-        self.map_level_var = tk.StringVar(value=self._map_level_label(int(
-            self.config.get("map_level", legacy_view["zoom"]) or 0)))
-        self.map_level_combo = tb.Combobox(
-            scene, textvariable=self.map_level_var, width=12, state="readonly",
-            values=[label for _level, label, _hint in tk_orrery.ZOOM_LEVELS])
-        self.map_level_combo.pack(side=LEFT)
-        self.map_level_combo.bind("<<ComboboxSelected>>",
-                                  lambda _event: self._on_map_level_change())
-        tb.Button(scene, text="Сброс", command=self._on_map_reset_3d,
-                  bootstyle="secondary-outline", width=7).pack(side=LEFT, padx=(6, 10))
-        self.map_zones_var = tk.BooleanVar(value=bool(self.config.get("map_zones", True)))
-        tb.Checkbutton(scene, text="Зона", variable=self.map_zones_var,
-                       command=self._on_map_toggle,
-                       bootstyle="info-round-toggle").pack(side=LEFT, padx=(0, 10))
-        self.map_motion_button = tb.Button(scene, text="▶ Движение", width=13,
-                                           command=self._on_map_motion_toggle,
-                                           bootstyle="success-outline")
-        self.map_motion_button.pack(side=LEFT, padx=(0, 6))
-        self.map_motion_speed_var = tk.StringVar(
-            value=tk_orrery.MOTION_SPEED_LABELS[self._map_motion_speed_index()])
-        self.map_motion_speed_combo = tb.Combobox(
-            scene, textvariable=self.map_motion_speed_var, width=6, state="readonly",
-            values=list(tk_orrery.MOTION_SPEED_LABELS))
-        self.map_motion_speed_combo.pack(side=LEFT)
-        self.map_motion_speed_combo.bind("<<ComboboxSelected>>",
-                                         lambda _event: self._on_map_motion_speed())
-        tb.Button(scene, text="К сканам", command=self._on_map_reset_time,
-                  bootstyle="secondary-outline", width=9).pack(side=LEFT, padx=(6, 0))
-
-        # ---- Холст слева, список объектов справа ----
-        body = tb.Frame(outer)
-        body.pack(fill=BOTH, expand=True)
-
-        canvas_frame = tb.Frame(body, relief="solid", borderwidth=1)
-        canvas_frame.pack(side=LEFT, fill=BOTH, expand=True)
-        self.map_canvas = tk.Canvas(canvas_frame, bg=COLOR_BG, highlightthickness=0,
-                                    borderwidth=0)
-        self.map_canvas.pack(fill=BOTH, expand=True)
-        self.map_canvas.bind("<Configure>", self._on_map_resize)
-        self.map_canvas.bind("<ButtonPress-1>", self._on_map_press)
-        self.map_canvas.bind("<B1-Motion>", self._on_map_drag)
-        self.map_canvas.bind("<ButtonRelease-1>", self._on_map_release)
-        self.map_canvas.bind("<ButtonPress-3>", self._on_map_press_3)
-        self.map_canvas.bind("<B3-Motion>", self._on_map_drag)
-        self.map_canvas.bind("<ButtonRelease-3>", self._on_map_release)
-        # Двойной клик: отцентровать на объекте, по пустому месту — сброс.
-        self.map_canvas.bind("<Double-Button-1>", self._on_map_double_click)
-        # Esc ловим и на дереве: в Windows событие уходит виджету с фокусом,
-        # а фокус после клика по строке — у списка, не у холста.
-        self.map_canvas.bind("<Escape>", self._on_map_escape)
-        self.map_canvas.bind("<Motion>", self._on_map_hover)
-        self.map_canvas.bind("<Leave>", lambda _event: self._map_restore_hint())
-        # Колесо мыши: в Windows/macOS это <MouseWheel>, в Linux — кнопки 4/5.
-        for binding in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            self.map_canvas.bind(binding, self._on_map_wheel)
-        # Горячие клавиши для интерактивной карты Plotly
-        self.map_canvas.bind("<Control-p>", lambda _event: self._on_map_open_3d())
-        self.map_canvas.bind("<Control-P>", lambda _event: self._on_map_open_3d())
-        self.map_canvas.bind("<F4>", lambda _event: self._on_map_open_3d())
-        # Клавиши сцены: виды камеры, тумблеры слоёв и движение тел.
-        self.map_canvas.bind("<KeyPress>", self._on_map_key)
-
-        side = tb.Frame(body)
-        side.pack(side=RIGHT, fill=Y, padx=(8, 0))
-        side_top = tb.Frame(side)
-        side_top.pack(fill=X, pady=(0, 4))
-        tb.Label(side_top, text="Объекты системы",
-                 font=("Segoe UI", 10, "bold")).pack(side=LEFT)
-        # Режим боковой панели: таблицей или карточками — как на сайте проекта.
-        self.map_side_mode = tk.StringVar(value=str(self.config.get("map_side_mode", "list")))
-        tb.Radiobutton(side_top, text="лента", variable=self.map_side_mode, value="list",
-                       command=self._on_map_side_mode,
-                       bootstyle="secondary-toolbutton").pack(side=RIGHT, padx=(0, 2))
-        tb.Radiobutton(side_top, text="карточки", variable=self.map_side_mode, value="cards",
-                       command=self._on_map_side_mode,
-                       bootstyle="warning-toolbutton").pack(side=RIGHT)
-        tb.Button(side_top, text="Сводка", command=self._on_map_copy_summary,
-                  bootstyle="secondary-outline", width=8).pack(side=RIGHT)
-        tb.Button(side_top, text="PNG", command=self._on_map_save_png,
-                  bootstyle="secondary-outline", width=6).pack(side=RIGHT,
-                                                               padx=(0, 4))
-        filter_row = tb.Frame(side)
-        filter_row.pack(fill=X, pady=(0, 4))
-        tb.Label(filter_row, text="Фильтр:", foreground=COLOR_MUTED).pack(side=LEFT)
-        self.map_filter_var = tk.StringVar(value="")
-        filter_entry = tb.Entry(filter_row, textvariable=self.map_filter_var, width=22)
-        filter_entry.pack(side=LEFT, padx=(6, 0), fill=X, expand=True)
-        # Быстрый отбор «что ещё сканировать»: тела со сканом прячем из списка.
-        self.map_unscanned_var = tk.BooleanVar(
-            value=bool(self.config.get("map_unscanned", False)))
-        tb.Checkbutton(filter_row, text="неотск.", variable=self.map_unscanned_var,
-                       command=self._on_map_unscanned_toggle,
-                       bootstyle="secondary-round-toggle").pack(side=LEFT, padx=(6, 0))
-        self.map_filter_var.trace_add("write", lambda *_args: self._on_map_filter_changed())
-        tree_frame = tb.Frame(side)
-        tree_frame.pack(fill=BOTH, expand=True)
-        columns = ("object", "type", "progress", "rest", "carry")
-        self.map_tree = tb.Treeview(tree_frame, columns=columns, show="headings",
-                                    bootstyle="dark", height=16)
-        for col, title, width, anchor in (
-            ("object", "Объект", 138, W),
-            ("type", "Тип", 88, W),
-            ("progress", "Завезено", 62, CENTER),
-            ("rest", "Осталось", 66, "e"),
-            ("carry", "Везти", 96, W),
-        ):
-            self.map_tree.heading(col, text=title)
-            self.map_tree.column(col, width=width, anchor=anchor)
-        # Двойной клик по строке — отцентровать карту на выбранном объекте.
-        self.map_tree.bind("<Double-1>", self._on_map_tree_double)
-        self.map_tree.bind("<Escape>", self._on_map_escape)
-        # Стройки — самое важное на карте, поэтому они оранжевые и сверху списка.
-        self.map_tree.tag_configure("site", foreground=COLOR_ORANGE)
-        self.map_tree.tag_configure("planned", foreground=COLOR_MUTED)
-        self.map_tree.tag_configure("built", foreground=COLOR_TEXT)
-        self.map_tree.tag_configure("body", foreground=COLOR_MUTED)
-        # Тревога по сроку стройки заметнее цвета её типа.
-        self.map_tree.tag_configure("due_soon", foreground=COLOR_YELLOW)
-        self.map_tree.tag_configure("overdue", foreground=COLOR_RED)
-        tree_vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.map_tree.yview)
-        self.map_tree.configure(yscrollcommand=tree_vsb.set)
-        self.map_tree.pack(side=LEFT, fill=BOTH, expand=True)
-        tree_vsb.pack(side=RIGHT, fill=Y)
-        self.map_tree.bind("<<TreeviewSelect>>", self._on_map_tree_select)
-        self.map_tree.bind("<Button-3>", self._on_map_tree_context)
-
-        # ---- Карточки системы (тот же формат, что и на сайте) ----
-        #
-        # Дерево удобно для «что ещё сканировать», но карточка показывает тело
-        # целиком: класс, дистанцию, гравитацию, биосигналы и все его постройки
-        # с прогрессом. Канвас с рамкой — единственный способ скроллить набор
-        # фреймов без внешних зависимостей.
-        self.map_cards_frame = tb.Frame(side)
-        self.map_cards_canvas = tk.Canvas(self.map_cards_frame, bg=COLOR_BG,
-                                          highlightthickness=0, borderwidth=0)
-        cards_vsb = tb.Scrollbar(self.map_cards_frame, orient=VERTICAL,
-                                 command=self.map_cards_canvas.yview)
-        self.map_cards_inner = tb.Frame(self.map_cards_canvas)
-        self._map_cards_window = self.map_cards_canvas.create_window(
-            (0, 0), window=self.map_cards_inner, anchor="nw")
-        self.map_cards_inner.bind(
-            "<Configure>",
-            lambda _event: self.map_cards_canvas.configure(
-                scrollregion=self.map_cards_canvas.bbox("all") or (0, 0, 0, 0)))
-        self.map_cards_canvas.bind(
-            "<Configure>",
-            lambda event: self.map_cards_canvas.itemconfigure(self._map_cards_window,
-                                                              width=event.width))
-        self.map_cards_canvas.configure(yscrollcommand=cards_vsb.set)
-        for binding in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            self.map_cards_canvas.bind(binding, self._on_map_cards_wheel)
-        self.map_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        cards_vsb.pack(side=RIGHT, fill=Y)
-        if str(self.config.get("map_side_mode", "list")) == "cards":
-            tree_frame.pack_forget()
-            self.map_cards_frame.pack(fill=BOTH, expand=True)
-
-        # ---- Состояние ----
-        footer = tb.Frame(outer)
-        footer.pack(fill=X, pady=(6, 0))
-        self.map_status = tb.Label(footer, text="Система неизвестна", foreground=COLOR_MUTED,
-                                   wraplength=620, justify=LEFT)
-        self.map_status.pack(side=LEFT, fill=X, expand=True)
-        self.map_hint = tb.Label(footer, text="", foreground=COLOR_CYAN, font=("Consolas", 9),
-                                 wraplength=280, justify=RIGHT)
-        self.map_hint.pack(side=RIGHT)
-
-        try:
-            zoom_index = int(self.config.get("map_zoom_index", 2))
-        except (TypeError, ValueError):
-            zoom_index = 2
-        self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, zoom_index))
-        self._map_drag_start = None
-        self._map_drag_button = 1
-        self._map_dragged = False
-        self._scans_to_upload = []
-        self._last_scan_upload_time = 0.0
-        self._pilot_stats = dict(self.config.get("pilot_stats", {}))
-        self._map_external_scans_fetched = {}
-        self._map_update_zoom_label()
-        self._map_redraw_now()
-
-    # ---------- карта: перерисовка ----------
-    def _map_visible(self) -> bool:
-        """Вкладка «Карта системы» сейчас открыта?"""
-        notebook = getattr(self, "notebook", None)
-        tab = getattr(self, "tab_map", None)
-        if notebook is None or tab is None:
-            return False
-        try:
-            return str(notebook.select()) == str(tab)
-        except Exception:
-            return False
-
-    def _map_canvas_size(self):
-        """Размер холста или (0, 0), если вкладка ещё не показана."""
-        canvas = getattr(self, "map_canvas", None)
-        if canvas is None:
-            return 0, 0
-        try:
-            width = int(canvas.winfo_width())
-            height = int(canvas.winfo_height())
-        except Exception:
-            return 0, 0
-        if width <= 1 or height <= 1:
-            return 0, 0
-        return width, height
-
-    def _map_zoom(self) -> float:
-        try:
-            return float(self.MAP_ZOOM_STEPS[self._map_zoom_index])
-        except Exception:
-            return 1.0
-
-    def _map_update_zoom_label(self, view=None):
-        """Проценты приближения: у схемы — её ступени, у сцены — «долли»."""
-        label = getattr(self, "map_zoom_label", None)
-        if label is None:
-            return
-        scene = view if view is not None else getattr(self, "_map3d_view", None)
-        if self._map_mode() == "3d" and scene is not None:
-            percent = int(round(float(scene.zoom_scale) * 100))
-        else:
-            percent = int(round(self._map_zoom() * 100))
-        try:
-            label.config(text=f"{percent}%")
-        except Exception:
-            pass
-
-    # ---------- карта: сцена 3D (движок сайта на холсте Tk) ----------
-    #: Как часто обновляется кадр анимации движения тел (мс).
-    MAP_MOTION_MS = 80
-
-    def _map_mode(self) -> str:
-        """Режим карты: «2d» — плоская схема вкладки, «3d» — сцена как на сайте."""
-        mode = getattr(self, "map_view_mode", None)
-        return str(mode.get()) if mode is not None else "2d"
-
-    @staticmethod
-    def _map_level_label(level) -> str:
-        try:
-            value = int(level or 0)
-        except (TypeError, ValueError):
-            value = 0
-        for number, label, _hint in tk_orrery.ZOOM_LEVELS:
-            if number == value:
-                return label
-        return tk_orrery.ZOOM_LEVELS[0][1]
-
-    @staticmethod
-    def _map_level_index(label) -> int:
-        text = str(label or "").strip().lower()
-        for number, level_label, hint in tk_orrery.ZOOM_LEVELS:
-            if text in (level_label.lower(), hint.lower()):
-                return number
-        return 0
-
-    def _map_level(self) -> int:
-        return self._map_level_index(getattr(self, "map_level_var", None)
-                                     and self.map_level_var.get() or "")
-
-    def _map_motion_speed_index(self) -> int:
-        """Номер скорости движения тел из конфига (с проверкой границ)."""
-        try:
-            index = int(self.config.get("map_motion_speed", 1))
-        except (TypeError, ValueError):
-            index = 1
-        return index if 0 <= index < len(tk_orrery.MOTION_SPEEDS) else 1
-
-    def _map3d_scene(self):
-        """Сцена вкладки: создаётся один раз, дальше только получает пакет."""
-        view = getattr(self, "_map3d_view", None)
-        if view is None:
-            view = tk_orrery.TkOrreryView(self.map_canvas,
-                                          on_select=self._select_map_object,
-                                          on_hint=self._map_set_hint)
-            stored_view = str(self.config.get("map_view3d", "iso"))
-            view.set_view(stored_view)
-            if stored_view == "free":
-                # Свободный вид (после поворотов мышью) переживает перезапуск.
-                try:
-                    view.rotate(float(self.config.get("map_view3d_yaw", -33.0)),
-                                float(self.config.get("map_view3d_pitch", 40.0)))
-                except (TypeError, ValueError):
-                    pass
-            try:
-                view.zoom_scale = tk_orrery.clamp(
-                    float(self.config.get("map_view3d_dolly", 1.0)),
-                    tk_orrery.TkOrreryView.DOLLY_MIN, tk_orrery.TkOrreryView.DOLLY_MAX)
-            except (TypeError, ValueError):
-                view.zoom_scale = 1.0
-            view.set_zoom(self._map_level())
-            view.motion_speed = tk_orrery.MOTION_SPEEDS[self._map_motion_speed_index()]
-            self._map3d_view = view
-        return view
-
-    @staticmethod
-    def _map3d_data_key(snapshot, scale_mode: str, show_moons: bool):
-        """Ключ пакета: снимок каждый раз новый объект, сравнивать нужно данные.
-
-        Поворот камеры, зум и фильтры перерисовывают уже собранную сцену —
-        пересборка пакета на каждый кадр анимации была бы в разы дороже.
-        """
-        bodies = tuple((str(body.name), round(float(body.distance_ls or 0.0), 1),
-                        str(body.body_class or body.star_type or ""))
-                       for body in (snapshot.bodies or ()))
-        stations = tuple((str(getattr(station, "name", "") or getattr(station, "title", "")),
-                          round(float(getattr(station, "percent_delivered", 0) or 0.0), 1),
-                          round(float(getattr(station, "provided_tons", 0) or 0.0), 1),
-                          bool(getattr(station, "complete", False)))
-                         for station in (snapshot.stations or ()))
-        player = snapshot.player
-        return (str(snapshot.system or ""), bodies, stations, int(snapshot.known_body_count or 0),
-                str(scale_mode), bool(show_moons),
-                str(getattr(player, "body_name", "") or ""),
-                str(getattr(player, "station_name", "") or ""))
-
-    def _draw_system_map_3d(self, snapshot, show_labels: bool, show_moons: bool):
-        """Кадр 3D-карты: та же сцена, что на сайте, но холстом Tk.
-
-        Пакет собирает `system_view.build_view_payload` — тот же контракт, что и
-        у сайта. Пересобираем его только когда сменились данные, луны или
-        масштаб: поворот камеры и приближение рисуют уже готовую сцену.
-        """
-        view = self._map3d_scene()
-        scale_mode = str(self._map_viewer_options().get("scale_mode") or "orrery")
-        key = self._map3d_data_key(snapshot, scale_mode, show_moons)
-        if key != self._map3d_key:
-            try:
-                import system_view
-
-                payload = system_view.build_view_payload(
-                    snapshot, scale_mode=scale_mode, show_moons=bool(show_moons),
-                    selected=str(self._map_selected or ""), zoom=int(view.zoom),
-                    player=getattr(snapshot, "player", None))
-                stations = {str(getattr(station, "build_id", "")
-                                or getattr(station, "name", "")): station
-                            for station in (snapshot.stations or ())}
-            except Exception as err:
-                # Ошибку данных показываем подсказкой на панели: падать в
-                # обработчике Tk нельзя — окно просто перестанет отвечать.
-                self._map_set_hint(f"3D-карта недоступна: {err}")
-                self.log(f"Не удалось собрать пакет 3D-карты: {err}", "warning")
-                return
-            view.set_payload(payload)
-            view.set_stations(stations)
-            self._map3d_key = key
-        # Флаги, фокус и уровень — после пакета: индекс тел появляется только
-        # в `set_payload`, а до него фокус на тело было просто не на что вешать.
-        view.labels = bool(show_labels)
-        view.moons = bool(show_moons)
-        view.zones = bool(getattr(self, "map_zones_var", None) and self.map_zones_var.get())
-        view.only_sites = bool(getattr(self, "map_only_sites_var", None)
-                               and self.map_only_sites_var.get())
-        view.selected = str(self._map_selected or "")
-        view.set_focus(str(self._map_center or ""))
-        view.set_zoom(self._map_level())
-        if not view.draw():
-            self._map_schedule_redraw(delay_ms=250)
-            return
-        self._map_items = list(view.markers)
-
-    # ---------- карта: движение тел по орбитам ----------
-    def _map_motion_button_label(self, running: bool):
-        button = getattr(self, "map_motion_button", None)
-        if button is None:
-            return
-        try:
-            button.config(text="⏸ Пауза" if running else "▶ Движение")
-        except Exception:
-            pass
-
-    def _map_motion_start(self, delay_ms: int = None):
-        if self._map3d_job is not None:
-            return
-        try:
-            self._map3d_job = self.root.after(
-                int(delay_ms or self.MAP_MOTION_MS), self._map_motion_tick)
-        except Exception:
-            self._map3d_job = None
-
-    def _map_motion_stop(self):
-        if self._map3d_job is None:
-            return
-        try:
-            self.root.after_cancel(self._map3d_job)
-        except Exception:
-            pass
-        self._map3d_job = None
-
-    def _map_motion_tick(self):
-        """Кадр анимации: тела идут по орбитам по настоящим периодам."""
-        self._map3d_job = None
-        view = getattr(self, "_map3d_view", None)
-        if view is None or not view.motion:
-            return
-        if self._map_mode() != "3d" or not self._map_visible():
-            return                                            # вкладку закрыли — пауза
-        started = time.perf_counter()
-        view.tick(self.MAP_MOTION_MS / 1000.0)
-        self._draw_system_map(self._map_last_snapshot)
-        # В обжитой системе кадр стоит десятки миллисекунд: если рисование
-        # заметно дороже паузы, кадры реже — отзывчивость важнее плавности.
-        spent_ms = (time.perf_counter() - started) * 1000.0
-        delay = self.MAP_MOTION_MS if spent_ms < 40.0 else min(400, int(spent_ms * 4))
-        self._map_motion_start(delay)
-
-    def _on_map_view_preset(self):
-        """Вид камеры: 3D, сверху, сбоку."""
-        view = self._map3d_scene()
-        view.set_view(str(self.map_view3d.get()))
-        self._map_remember_view()
-        self._map_schedule_redraw(0)
-
-    def _on_map_level_change(self):
-        """Уровень приближения: система → кластер → окрестность → поверхность."""
-        level = self._map_level()
-        self._map3d_scene().set_zoom(level)
-        self._map_remember_view()
-        self._map_schedule_redraw(0)
-        hint = next((hint for number, _label, hint in tk_orrery.ZOOM_LEVELS
-                     if number == level), "")
-        self._map_set_hint(f"Уровень «{self._map_level_label(level)}»: {hint}" if hint else "")
-
-    def _on_map_motion_toggle(self):
-        """Пуск/пауза движения тел по орбитам."""
-        view = self._map3d_scene()
-        if self._map_mode() != "3d":
-            self.map_view_mode.set("3d")
-            self.config["map_view_mode"] = "3d"
-        running = view.toggle_motion()
-        self._map_motion_button_label(running)
-        self._map_remember_view()
-        if running:
-            self._map_set_hint("Движение включено: тела идут по настоящим периодам "
-                               "обращения. «К сканам» вернёт их на места из журнала.")
-            self._map_motion_start()
-        else:
-            self._map_motion_stop()
-            view.reset_time()
-            self._map_set_hint("Движение остановлено, тела вернулись к точкам сканов")
-        self._map_schedule_redraw(0)
-
-    def _on_map_motion_speed(self):
-        """Скорость проигрывания: суток за секунду реального времени."""
-        label = str(getattr(self, "map_motion_speed_var", None)
-                    and self.map_motion_speed_var.get() or "")
-        index = next((number for number, text in enumerate(tk_orrery.MOTION_SPEED_LABELS)
-                      if text == label), 1)
-        view = self._map3d_scene()
-        view.motion_speed = tk_orrery.MOTION_SPEEDS[index]
-        self.config["map_motion_speed"] = index
-        self._map_remember_view()
-        self._map_set_hint(f"Скорость движения {tk_orrery.MOTION_SPEED_LABELS[index]}: "
-                           f"{view.motion_speed:g} сут/с")
-
-    def _on_map_reset_time(self):
-        """«К сканам»: вернуть тела в точки, где их застал журнал."""
-        view = self._map3d_scene()
-        view.reset_time()
-        self._map_set_hint("Тела вернулись в точки последних сканов")
-        self._map_schedule_redraw(0)
-
-    def _on_map_dolly(self, step: int):
-        """Приближение колесом и кнопками «−»/«+» в режиме 3D."""
-        if self._map_mode() != "3d":
-            return
-        view = self._map3d_scene()
-        view.dolly(1.15 ** int(step or 0))
-        self._map_update_zoom_label(view)
-        self._map_schedule_redraw(15)
-
-    def _on_map_key(self, event):
-        """Клавиши сцены: виды, слои, уровни и движение тел."""
-        keysym = str(getattr(event, "keysym", "") or "")
-        char = str(getattr(event, "char", "") or "").lower()
-        if self._map_mode() != "3d":
-            if keysym == "Escape":
-                self._on_map_escape()
-            return
-        view = self._map3d_scene()
-        if char in ("1", "2", "3"):
-            self.map_view3d.set({"1": "iso", "2": "top", "3": "side"}[char])
-            self._on_map_view_preset()
-        elif char in ("+", "="):
-            self._on_map_dolly(1)
-        elif char == "-":
-            self._on_map_dolly(-1)
-        elif char in ("l", "д"):
-            self.map_labels_var.set(not self.map_labels_var.get())
-            self._on_map_toggle()
-        elif char in ("m", "ь"):
-            self.map_moons_var.set(not self.map_moons_var.get())
-            self._on_map_toggle()
-        elif char in ("z", "я"):
-            self.map_zones_var.set(not self.map_zones_var.get())
-            self._on_map_toggle()
-        elif char in ("s", "ы"):
-            self.map_only_sites_var.set(not self.map_only_sites_var.get())
-            self._on_map_toggle()
-        elif char in ("p", "з"):
-            self._on_map_motion_toggle()
-        elif char in ("r", "к"):
-            self._on_map_reset_time()
-        elif keysym == "Escape":
-            self._on_map_escape()
-        elif keysym in ("Left", "Right", "Up", "Down"):
-            yaw_step = {"Left": -12.0, "Right": 12.0}.get(keysym, 0.0)
-            pitch_step = {"Up": 8.0, "Down": -8.0}.get(keysym, 0.0)
-            view.rotate(view.yaw_deg + yaw_step, view.pitch_deg + pitch_step)
-            self.map_view3d.set(view.view)
-            self._map_schedule_redraw(15)
-
-    def _map_schedule_redraw(self, delay_ms: int = None):
-        """Отложить перерисовку: десятки событий журнала дают один кадр."""
-        if delay_ms is None:
-            delay_ms = self.MAP_REDRAW_MS if self._map_visible() else 1000
-        if self._map_redraw_job is not None:
-            try:
-                self.root.after_cancel(self._map_redraw_job)
-            except Exception:
-                pass
-            self._map_redraw_job = None
-        try:
-            self._map_redraw_job = self.root.after(int(delay_ms), self._map_redraw_now)
-        except Exception:
-            self._map_redraw_job = None
-
-    def _map_redraw_now(self):
-        """Кадр карты: холст, список объектов справа и строка состояния."""
-        self._map_redraw_job = None
-        snapshot = self.system_map.snapshot()
-        self._map_last_snapshot = snapshot
-        self._draw_system_map(snapshot)
-        self._fill_map_tree(snapshot)
-        if str(getattr(self, "map_side_mode", None) and self.map_side_mode.get() or "list") == "cards":
-            self._fill_map_cards(snapshot)
-        self._map_update_status(snapshot)
-
-    def _on_map_mode_change(self):
-        """Схема ↔ 3D-сцена: у каждого режима свои настройки и свой рендерер."""
-        mode = self._map_mode()
-        self.config["map_view_mode"] = mode
-        self.save_config()
-        if mode != "3d":
-            # Анимацию останавливаем: во вкладке теперь схема, а не сцена.
-            self._map_motion_stop()
-            view = getattr(self, "_map3d_view", None)
-            if view is not None:
-                view.motion = False
-            self._map_motion_button_label(False)
-        self._map_update_zoom_label()
-        self._map_schedule_redraw(0)
-
-    def _on_map_reset_3d(self):
-        """Сброс сцены: вид, уровень, приближение, панорама и время анимации."""
-        view = self._map3d_scene()
-        view.reset_view()
-        view.motion = False
-        self._map_motion_stop()
-        self._map_motion_button_label(False)
-        self._map_center = ""
-        self._map_hover_key = ""
-        self._map_zoom_index = 2
-        if hasattr(self, "map_view3d"):
-            self.map_view3d.set("iso")
-        if hasattr(self, "map_level_var"):
-            self.map_level_var.set(self._map_level_label(0))
-        self._map_update_zoom_label(view)
-        self._map_remember_view()
-        self._map_schedule_redraw(0)
-        self._map_set_hint("Вид сброшен: вся система, камера 3D")
-
-    def _on_map_press(self, event):
-        self._map_drag_start = (getattr(event, "x", 0), getattr(event, "y", 0))
-        self._map_drag_button = 1
-        self._map_dragged = False
-
-    def _on_map_press_3(self, event):
-        self._map_drag_start = (getattr(event, "x", 0), getattr(event, "y", 0))
-        self._map_drag_button = 3
-        self._map_dragged = False
-
-    def _on_map_drag(self, event):
-        """Перетаскивание в 3D: левая кнопка вращает камеру, правая двигает карту."""
-        if not getattr(self, "_map_drag_start", None):
-            return
-        dx = getattr(event, "x", 0) - self._map_drag_start[0]
-        dy = getattr(event, "y", 0) - self._map_drag_start[1]
-        if abs(dx) <= 3 and abs(dy) <= 3:
-            return
-        self._map_dragged = True
-        self._map_drag_start = (getattr(event, "x", 0), getattr(event, "y", 0))
-        if self._map_mode() != "3d":
-            return
-        view = self._map3d_scene()
-        if int(getattr(self, "_map_drag_button", 1) or 1) >= 2:
-            view.pan_by(dx, dy)
-        else:
-            view.rotate(view.yaw_deg + dx * 0.4, view.pitch_deg - dy * 0.3)
-            self.map_view3d.set(view.view)
-        self._map_schedule_redraw(15)
-
-    def _on_map_release(self, event):
-        if not getattr(self, "_map_dragged", False):
-            self._on_map_click(event)
-        self._map_drag_start = None
-        self._map_dragged = False
-
-    def _map_draw_target_lock(self, canvas, item):
-        """Прицел захвата цели (Target Lock brackets) в стиле Elite Dangerous HUD."""
-        d = max(float(item.radius) + 7.0, 15.0)
-        bracket_len = 5.0
-        x, y = item.x, item.y
-        color = COLOR_ORANGE
-        canvas.create_line(x - d, y - d + bracket_len, x - d, y - d, x - d + bracket_len, y - d, fill=color, width=2)
-        canvas.create_line(x + d - bracket_len, y - d, x + d, y - d, x + d, y - d + bracket_len, fill=color, width=2)
-        canvas.create_line(x - d, y + d - bracket_len, x - d, y + d, x - d + bracket_len, y + d, fill=color, width=2)
-        canvas.create_line(x + d - bracket_len, y + d, x + d, y + d, x + d, y + d - bracket_len, fill=color, width=2)
-        dist = getattr(item, "distance_ls", 0.0)
-        if dist > 0:
-            dist_text = f"{dist:,.1f} Ls".replace(",", " ")
-            canvas.create_text(x, y + d + 8.0, text=dist_text, fill=COLOR_ORANGE,
-                               font=("Consolas", 8, "bold"), anchor="n")
-
-    def _map_draw_hud_panels(self, canvas, snapshot: MapSnapshot, items: List[PlacedItem]):
-        """Отрисовать информационные HUD-панели (сводка системы слева, описание цели справа)."""
-        if not snapshot or not snapshot.system:
-            return
-
-        # Левая панель: Сводка системы
-        lx, ly = 12.0, 12.0
-        lw, lh = 205.0, 105.0
-        canvas.create_rectangle(lx, ly, lx + lw, ly + lh, fill="#0a121c", outline="#183654", width=1)
-        canvas.create_line(lx, ly + 22.0, lx + lw, ly + 22.0, fill="#214b74", width=1)
-        canvas.create_text(lx + 8.0, ly + 11.0, text=self._map_short_label(snapshot.system),
-                           fill=COLOR_ORANGE, font=("Consolas", 9, "bold"), anchor="w")
-
-        star = snapshot.star
-        star_info = (star.star_type or star.body_class or "Главная звезда") if star else "Неизвестно"
-        scanned_count = len(snapshot.bodies)
-        total_count = snapshot.known_body_count or scanned_count
-        sites_count = len(snapshot.sites)
-
-        view_mode_name = "3D Оррери" if getattr(self, "map_view_mode", None) and self.map_view_mode.get() == "3d" else "2D Схема"
-        lines = [
-            f"Звезда: {self._map_short_label(star_info)}",
-            f"Тела: {scanned_count} / {total_count} отскан.",
-            f"Стройки: {sites_count} активн.",
-            f"Вид: {view_mode_name}",
-        ]
-        for idx, line in enumerate(lines):
-            canvas.create_text(lx + 8.0, ly + 32.0 + idx * 16.0, text=line,
-                               fill=COLOR_TEXT if idx < 2 else COLOR_MUTED,
-                               font=("Consolas", 8), anchor="w")
-
-        # Правая панель: Описание выбранного объекта
-        selected_item = next((it for it in items if it.selected), None)
-        if selected_item is None and self._map_selected:
-            selected_item = next((it for it in items if it.label == self._map_selected or (it.ref and getattr(it.ref, 'name', '') == self._map_selected)), None)
-
-        if selected_item is not None:
-            rw = 225.0
-            rh = 135.0
-            canvas_w = float(getattr(canvas, "winfo_width", lambda: 800)() or 800)
-            rx = max(lx + lw + 16.0, canvas_w - rw - 12.0)
-            ry = 12.0
-
-            canvas.create_rectangle(rx, ry, rx + rw, ry + rh, fill="#0a121c",
-                                    outline="#e67e22" if selected_item.kind == "station" else "#1b4870", width=1)
-            canvas.create_line(rx, ry + 22.0, rx + rw, ry + 22.0, fill="#214b74", width=1)
-            canvas.create_text(rx + 8.0, ry + 11.0, text=self._map_short_label(selected_item.label or "Объект"),
-                               fill=COLOR_ORANGE, font=("Consolas", 9, "bold"), anchor="w")
-
-            ref = selected_item.ref
-            target_lines = []
-            if selected_item.kind in ("star", "body"):
-                b_class = getattr(ref, "body_class", "") or getattr(ref, "star_type", "") or selected_item.caption
-                target_lines.append(f"Класс: {self._map_short_label(b_class)}")
-                dist = getattr(ref, "distance_ls", 0.0) or selected_item.distance_ls
-                if dist > 0:
-                    target_lines.append(f"Дистанция: {dist:,.1f} Ls".replace(",", " "))
-                if getattr(ref, "gravity", 0.0) > 0:
-                    target_lines.append(f"Гравитация: {ref.gravity:.2f} G")
-                if getattr(ref, "atmosphere", ""):
-                    target_lines.append(f"Атмосфера: {self._map_short_label(ref.atmosphere)}")
-                if getattr(ref, "bio_signals", 0) > 0:
-                    target_lines.append(f"Биосигналы: {ref.bio_signals} шт.")
-                if getattr(ref, "first_discovered_by", ""):
-                    target_lines.append(f"Открыл: {self._map_short_label(ref.first_discovered_by)}")
-            elif selected_item.kind == "station":
-                s_kind = getattr(ref, "caption", "") or selected_item.caption
-                target_lines.append(f"Тип: {s_kind}")
-                if getattr(ref, "is_site", False):
-                    pct = ref.percent_delivered
-                    target_lines.append(f"Прогресс: {pct if pct is not None else 0}%")
-                    rest = ref.remaining_tons
-                    if rest:
-                        target_lines.append(f"Осталось: {rest:,} t".replace(",", " "))
-            else:
-                target_lines.append(f"Статус: {selected_item.caption}")
-
-            for idx, line in enumerate(target_lines[:6]):
-                canvas.create_text(rx + 8.0, ry + 32.0 + idx * 16.0, text=line,
-                                   fill=COLOR_TEXT, font=("Consolas", 8), anchor="w")
-
-    def _draw_system_map(self, snapshot=None):
-        canvas = getattr(self, "map_canvas", None)
-        if canvas is None:
-            return
-        width, height = self._map_canvas_size()
-        if not width or not height:
-            # Холст ещё не получил размеры (вкладка не показана) — повторим.
-            self._map_schedule_redraw(delay_ms=250)
-            return
-        if snapshot is None:
-            snapshot = self._map_last_snapshot or self.system_map.snapshot()
-        show_labels = bool(getattr(self, "map_labels_var", None)
-                           and self.map_labels_var.get())
-        show_moons = not getattr(self, "map_moons_var", None) or bool(
-            self.map_moons_var.get())
-        # «3D» — это не наклон той же схемы, а сцена сайта: у неё свой рендерер.
-        if self._map_mode() == "3d":
-            self._draw_system_map_3d(snapshot, show_labels, show_moons)
-            return
-        items = map_layout(snapshot, width, height, zoom=self._map_zoom(),
-                           show_moons=show_moons, selected=self._map_selected,
-                           center_on=self._map_center)
-        # Фильтр «только со стройками»: тела без строек и их орбиты не рисуем,
-        # иначе в обжитой системе нужную площадку приходится искать глазами.
-        only_sites = bool(getattr(self, "map_only_sites_var", None)
-                          and self.map_only_sites_var.get())
-        site_bodies = {station.body_name for station in snapshot.stations
-                       if station.body_name and (station.is_site or station.required_tons
-                                                 or station.remaining_by_commodity)}
-        if only_sites and site_bodies:
-            items = [item for item in items
-                     if item.kind in ("zone", "player")
-                     or (item.kind == "star" and item.label in site_bodies)
-                     or (item.kind == "body" and item.label in site_bodies)
-                     or (item.kind == "station" and (
-                         getattr(item.ref, "body_name", "") in site_bodies
-                         or getattr(item.ref, "is_site", False)))]
-        self._map_items = items
-        try:
-            canvas.delete("all")
-        except Exception:
-            return
-        center_x, center_y = width / 2.0, height / 2.0
-        # Центр карты после двойного клика: кольца едут вместе со всей картой.
-        pan_x, pan_y = next(((item.pan_x, item.pan_y) for item in items
-                             if getattr(item, "pan_x", 0.0) or getattr(item, "pan_y", 0.0)),
-                            (0.0, 0.0))
-        ring_x, ring_y = center_x + pan_x, center_y + pan_y
-
-        # Обитаемые зоны — под всем остальным: это фон, а не объект.
-        self._map_draw_zones(canvas, items, width, height)
-
-        # Плоская схема: сначала кольца орбит, затем объекты по типам.
-        for item in items:
-            # Орбиты не только планет, но и вторых звёзд: раньше кольцо
-            # второй звезды в 2D просто не рисовалось.
-            if item.kind in ("body", "star") and item.orbit_radius > 0:
-                cx = ring_x if item.orbit_cx is None else item.orbit_cx
-                cy = ring_y if item.orbit_cy is None else item.orbit_cy
-                canvas.create_oval(
-                    cx - item.orbit_radius, cy - item.orbit_radius,
-                    cx + item.orbit_radius, cy + item.orbit_radius,
-                    outline=item.orbit_color or COLOR_LINE, dash=(2, 4))
-        for wanted, painter in (
-            ("star", self._map_draw_star), ("body", self._map_draw_body),
-            ("station", self._map_draw_station), ("player", self._map_draw_player),
-        ):
-            for item in items:
-                if item.kind == wanted:
-                    painter(canvas, item, show_labels)
-
-        if show_labels:
-            self._map_draw_hud_panels(canvas, snapshot, items)
-        self._map_draw_legend(canvas)
-
-    def _map_draw_zones(self, canvas, items, width, height):
-        """Полосы обитаемых зон звёзд.
-
-        Сайт показывает зону прозрачным кольцом; на холсте Tk прозрачности нет,
-        поэтому полоса собирается из двух овалов: внешний — крапчатой заливкой
-        (stipple), внутренний — цветом фона.
-        """
-        for item in items:
-            if item.kind != "zone" or item.zone_outer <= 0:
-                continue
-            cx, cy = item.orbit_cx or item.x, item.orbit_cy or item.y
-            inner_a = inner_b = item.zone_inner
-            outer_a = outer_b = item.zone_outer
-            canvas.create_oval(cx - outer_a, cy - outer_b, cx + outer_a, cy + outer_b,
-                               fill=ZONE_COLOR, stipple="gray12", outline="")
-            canvas.create_oval(cx - inner_a, cy - inner_b, cx + inner_a, cy + inner_b,
-                               fill=COLOR_BG, outline="")
-            canvas.create_oval(cx - outer_a, cy - outer_b, cx + outer_a, cy + outer_b,
-                               outline=ZONE_COLOR, dash=(3, 5))
-            canvas.create_oval(cx - inner_a, cy - inner_b, cx + inner_a, cy + inner_b,
-                               outline=ZONE_COLOR, dash=(3, 5))
-            if item.zone_ls[0] > 0:
-                canvas.create_text(cx, cy - outer_b - 4,
-                                   text=f"обитаемая зона {item.zone_ls[0]:,.0f}–{item.zone_ls[1]:,.0f} св. с".replace(",", " "),
-                                   fill=ZONE_COLOR, font=("Consolas", 7), anchor="s")
-
-    @classmethod
-    def _map_short_label(cls, text) -> str:
-        text = str(text or "").strip()
-        if len(text) <= cls.MAP_LABEL_LIMIT:
-            return text
-        return text[: cls.MAP_LABEL_LIMIT - 1].rstrip() + "…"
-
-    def _map_draw_star(self, canvas, item, show_labels):
-        radius = max(6.0, float(item.radius))
-        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
-        # Свечение: звезда — центр карты, её видно сразу.
-        canvas.create_oval(item.x - radius * 1.9, item.y - radius * 1.9,
-                           item.x + radius * 1.9, item.y + radius * 1.9,
-                           fill="#2b2410", outline="")
-        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius, item.y + radius,
-                           fill=item.color,
-                           outline=COLOR_ORANGE if item.selected else "#111315",
-                           width=2 if item.selected else 1)
-        if item.selected:
-            self._map_draw_target_lock(canvas, item)
-        if not show_labels:
-            return
-        if item.label:
-            canvas.create_text(item.x, item.y - radius * 1.9 - 6 + dy,
-                               text=self._map_short_label(item.label), fill=COLOR_TEXT,
-                               font=("Consolas", 9, "bold"), anchor="s")
-        if item.caption:
-            canvas.create_text(item.x, item.y + radius * 1.9 + 6 + dy, text=item.caption,
-                               fill=COLOR_MUTED, font=("Consolas", 8), anchor="n")
-
-    def _map_draw_body(self, canvas, item, show_labels):
-        radius = max(3.0, float(item.radius))
-        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
-        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius, item.y + radius,
-                           fill=item.color,
-                           outline=COLOR_ORANGE if item.selected else "#111315",
-                           width=2 if item.selected else 1)
-        if getattr(item.ref, "landable", False):
-            canvas.create_text(item.x, item.y, text="L", fill="#111315",
-                               font=("Consolas", 7, "bold"))
-        if item.selected:
-            self._map_draw_target_lock(canvas, item)
-        if not show_labels or not item.label:
-            return
-        is_moon = getattr(item.ref, "kind", "") == KIND_MOON
-        canvas.create_text(item.x, item.y + radius + 7 + dy,
-                           text=self._map_short_label(item.label),
-                           fill=COLOR_MUTED if is_moon else COLOR_TEXT,
-                           font=("Consolas", 7 if is_moon else 8), anchor="n")
-        if item.caption and not is_moon:
-            canvas.create_text(item.x, item.y + radius + 18 + dy, text=item.caption,
-                               fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
-
-    def _map_draw_station(self, canvas, item, show_labels):
-        station = item.ref
-        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
-        radius = max(5.0, float(item.radius))
-        is_site = isinstance(station, MapStation) and station.is_site
-        planned = bool(getattr(station, "planned", False))
-        outline = COLOR_ORANGE if item.selected else item.color
-        line_width = 2 if item.selected else 1
-        if is_site:
-            # Ромб: стройплощадку должно быть видно среди обычных станций.
-            spread = radius + 2.0
-            points = [item.x, item.y - spread, item.x + spread, item.y,
-                      item.x, item.y + spread, item.x - spread, item.y]
-            options = {"outline": outline, "width": line_width}
-            if planned:
-                # План площадки: контур пунктиром, завозить туда ещё нечего.
-                options["dash"] = (3, 2)
-                options["fill"] = COLOR_PANEL
-            else:
-                options["fill"] = item.color
-            canvas.create_polygon(points, **options)
-        elif getattr(station, "kind", "") == STATION_CARRIER:
-            canvas.create_rectangle(item.x - radius, item.y - radius,
-                                    item.x + radius, item.y + radius,
-                                    fill=item.color, outline=outline, width=line_width)
-        else:
-            canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
-                               item.y + radius, fill=item.color, outline=outline,
-                               width=line_width)
-        if item.progress is not None and is_site:
-            # Дуговая шкала вокруг ромба: доля завезённого груза видна и когда
-            # подписи выключены, и в плотной системе, где полоса не влезает.
-            progress = max(0, min(100, int(item.progress or 0)))
-            arc_radius = radius + 5.0
-            canvas.create_arc(item.x - arc_radius, item.y - arc_radius,
-                              item.x + arc_radius, item.y + arc_radius,
-                              start=90, extent=-359.9, style="arc",
-                              outline="#2a2d30", width=3)
-            if progress > 0:
-                canvas.create_arc(item.x - arc_radius, item.y - arc_radius,
-                                  item.x + arc_radius, item.y + arc_radius,
-                                  start=90, extent=-3.6 * progress, style="arc",
-                                  outline=COLOR_GREEN if progress >= 100 else item.color,
-                                  width=3)
-        if item.selected:
-            self._map_draw_target_lock(canvas, item)
-        used = radius + 8.0
-        if item.progress is not None:
-            used += self._map_draw_progress(canvas, item, radius, dy)
-        if not show_labels or not item.label:
-            return
-        canvas.create_text(item.x, item.y + used + 4 + dy,
-                           text=self._map_short_label(item.label),
-                           fill=COLOR_ORANGE if is_site else COLOR_TEXT,
-                           font=("Consolas", 8, "bold") if is_site else ("Consolas", 8),
-                           anchor="n")
-
-    def _map_draw_progress(self, canvas, item, radius, dy: float = 0.0) -> float:
-        """Прогресс-бар под стройплощадкой: сколько процентов груза завезено.
-
-        Возвращает, на сколько пикселей ниже значка занято место, — подпись
-        объекта рисуется уже под полосой.
-        """
-        progress = max(0, min(100, int(item.progress or 0)))
-        bar_width = max(20, int(item.bar_width))
-        left = item.x - bar_width / 2.0
-        top = item.y + radius + 6.0 + dy
-        bottom = top + 9.0
-        canvas.create_rectangle(left, top, left + bar_width, bottom,
-                                fill="#111315", outline=COLOR_LINE)
-        color = (COLOR_GREEN if progress >= 100
-                 else (COLOR_ORANGE if progress >= 40 else COLOR_RED))
-        fill_width = int(round((bar_width - 2) * progress / 100.0))
-        if fill_width > 0:
-            canvas.create_rectangle(left + 1, top + 1, left + 1 + fill_width, bottom - 1,
-                                    fill=color, outline="")
-        canvas.create_text(left + bar_width + 5, (top + bottom) / 2.0, text=f"{progress}%",
-                           fill=color, font=("Consolas", 8, "bold"), anchor=W)
-        return (bottom + 3.0) - (item.y + radius)
-
-    def _map_draw_player(self, canvas, item, show_labels):
-        radius = max(10.0, float(item.radius))
-        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
-        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
-                           item.y + radius, outline=COLOR_GREEN, width=2)
-        canvas.create_oval(item.x - 3, item.y - 3, item.x + 3, item.y + 3,
-                           fill=COLOR_GREEN, outline="")
-        if not show_labels:
-            return
-        canvas.create_text(item.x, item.y - radius - 6 + dy, text="Вы здесь",
-                           fill=COLOR_GREEN, font=("Consolas", 8, "bold"), anchor="s")
-        if item.caption:
-            canvas.create_text(item.x, item.y + radius + 6 + dy,
-                               text=self._map_short_label(item.caption),
-                               fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
-
-    def _map_draw_legend(self, canvas):
-        """Подсказка значков в углу холста."""
-        entries = (
-            (STATION_LABELS.get(STATION_SITE, "стройка"), COLOR_ORANGE),
-            ("тело", "#9fd8ef"),
-            ("станция", "#eeeeee"),
-            ("авианосец", COLOR_CYAN),
-            ("вы", COLOR_GREEN),
-            ("обитаемая зона", ZONE_COLOR),
-        )
-        x = 12.0
-        for text, color in entries:
-            canvas.create_rectangle(x, 9, x + 8, 17, fill=color, outline="")
-            canvas.create_text(x + 12, 13, text=text, fill=COLOR_MUTED,
-                               font=("Consolas", 8), anchor=W)
-            x += 22 + 6.6 * len(text)
-
-    # ---------- карта: список объектов и состояние ----------
-    def _fill_map_tree(self, snapshot):
-        tree = getattr(self, "map_tree", None)
-        if tree is None:
-            return
-        try:
-            tree.delete(*tree.get_children())
-        except Exception:
-            return
-        rows = []
-        now = time.time()
-        for station in sorted(snapshot.stations, key=self._map_station_sort_key):
-            percent = station.percent_delivered
-            if station.planned and percent is None:
-                progress = "план"
-            elif percent is not None:
-                progress = f"{percent}%"
-            else:
-                progress = "—"
-            rest = (f"{station.remaining_tons:,}".replace(",", " ")
-                    if station.remaining_tons else "")
-            tag = ("planned" if station.planned
-                   else ("site" if station.is_site else "built"))
-            due = due_timestamp(station.due_at)
-            if not station.complete and due != math.inf:
-                # Просроченный и горящий срок важнее цвета типа стройки.
-                tag = "overdue" if due < now else (
-                    "due_soon" if due - now <= self.MAP_DUE_SOON_DAYS * 86400 else tag)
-            rows.append((f"s:{station.build_id or station.name}",
-                         (self._map_short_label(station.title),
-                          STATION_LABELS.get(station.kind, "объект"), progress, rest,
-                          self._map_carry_note(station)), tag))
-        unscanned_only = bool(getattr(self, "map_unscanned_var", None)
-                              and self.map_unscanned_var.get())
-        for body in snapshot.bodies:
-            if unscanned_only and body.scanned:
-                continue
-            kind = BODY_LABELS.get(body.kind, "тело")
-            if body.kind == KIND_STAR and body.star_type:
-                kind = f"звезда {body.star_type}"
-            flags = [flag for flag, enabled in (
-                ("скан", body.scanned), ("карта", body.mapped),
-                ("посадка", body.landable), ("терраформ", body.terraformable),
-                ("raven", bool(getattr(body, "from_raven", False)) and not body.scanned),
-            ) if enabled]
-            rows.append((f"b:{body.name}",
-                         (self._map_short_label(body.name), kind, " · ".join(flags),
-                          f"{body.distance_ls:.1f} ls", ""), "body"))
-        for iid, values, tag in rows:
-            if not self._map_filter_matches(values):
-                continue
-            try:
-                tree.insert("", "end", iid=iid, values=values, tags=(tag,))
-            except Exception:
-                continue
-        self._map_sync_tree_selection()
-
-    def _map_sync_tree_selection(self):
-        tree = getattr(self, "map_tree", None)
-        if tree is None or not self._map_selected:
-            return
-        try:
-            match = [iid for iid in tree.get_children()
-                     if str(iid).split(":", 1)[-1] == self._map_selected]
-            if match:
-                tree.selection_set(match[0])
-                tree.see(match[0])
-        except Exception:
-            pass
-
-    def _map_set_status(self, text: str):
-        label = getattr(self, "map_status", None)
-        if label is None:
-            return
-        try:
-            label.config(text=str(text or ""))
-        except Exception:
-            pass
-
-    def _map_set_hint(self, text: str):
-        label = getattr(self, "map_hint", None)
-        if label is None:
-            return
-        try:
-            label.config(text=str(text or ""))
-        except Exception:
-            pass
-
-    def _map_update_status(self, snapshot, note: str = ""):
-        text = map_summary(snapshot)
-        if note:
-            text = f"{text}\n{note}"
-        self._map_set_status(text)
-        label = getattr(self, "map_system_label", None)
-        if label is None:
-            return
-        player = snapshot.player
-        ship = " ".join(part for part in (player.ship_name, player.ship_type) if part)
-        header = snapshot.system or "система неизвестна"
-        try:
-            label.config(text=f"{header} · {ship}" if ship else header)
-        except Exception:
-            pass
-
-    def _map_restore_hint(self):
-        """Курсор ушёл с объекта: показываем детали выбранного (если есть)."""
-        if self._map_selected:
-            self._map_show_details(self._map_selected)
-        else:
-            self._map_set_hint("")
-
-    def _map_show_details(self, key: str):
-        snapshot = self._map_last_snapshot
-        if snapshot is None or not key:
-            self._map_set_hint("")
-            return
-        for station in snapshot.stations:
-            if key in (station.build_id, station.name):
-                parts = [station.caption]
-                if station.required_tons:
-                    parts.append("нужно "
-                                 + f"{station.required_tons:,}".replace(",", " ") + " t")
-                if station.remaining_by_commodity:
-                    top = sorted(station.remaining_by_commodity.items(),
-                                 key=lambda pair: pair[1], reverse=True)[:3]
-                    parts.append("осталось: " + ", ".join(
-                        f"{name} {amount:,}".replace(",", " ") for name, amount in top))
-                if station.body_name:
-                    parts.append(f"тело: {station.body_name}")
-                if station.build_id:
-                    parts.append(f"buildId: {station.build_id}")
-                self._map_set_hint(" · ".join(parts))
-                return
-        for body in snapshot.bodies:
-            if body.name == key:
-                parts = [body.label, f"{body.distance_ls:.1f} ls"]
-                if body.stations:
-                    parts.append(f"объектов: {len(body.stations)}")
-                self._map_set_hint(" · ".join(parts))
-                return
-        self._map_set_hint("")
-
-    # ---------- карта: мышь и выбор ----------
-    def _map_item_at(self, x, y):
-        """Объект под курсором.
-
-        Раньше выбор решал только тип объекта («станция важнее тела»), и это
-        работало, пока станции висели на отдельном кольце. Теперь наземные
-        постройки стоят на краю тела — то есть буквально в паре пикселей от
-        его центра, — и клик по планете «принадлежать» стройке. Поэтому
-        сначала берём расстояние (округлённое до 2 px, чтобы мелкие наложения
-        решались в пользу станции — она нарисована поверх и в неё труднее
-        попасть), и только затем тип.
-        """
-        priority = {"station": 0, "player": 1, "body": 2, "star": 3}
-        best = None
-        best_key = None
-        for item in getattr(self, "_map_items", []) or []:
-            reach = max(9.0, float(item.radius) + 5.0)
-            distance = ((float(item.x) - float(x)) ** 2
-                        + (float(item.y) - float(y)) ** 2) ** 0.5
-            if distance > reach:
-                continue
-            key = (round(distance / 2.0), priority.get(item.kind, 9), distance)
-            if best_key is None or key < best_key:
-                best_key = key
-                best = item
-        return best
-
-    def _map_item_key(self, item) -> str:
-        ref = getattr(item, "ref", None)
-        if isinstance(ref, MapStation):
-            return str(ref.build_id or ref.name or "")
-        return str(getattr(item, "label", "") or "")
-
-    def _on_map_resize(self, _event=None):
-        self._map_schedule_redraw()
-
-    def _on_map_zoom(self, step: int):
-        if self._map_mode() == "3d":
-            # В сцене «−/+» и колесо — это приближение камеры, а не масштаб схемы.
-            self._on_map_dolly(step)
-            return
-        index = int(self._map_zoom_index) + int(step or 0)
-        self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, index))
-        self._map_update_zoom_label()
-        self._map_remember_view()
-        self._draw_system_map(self._map_last_snapshot)
-
-    def _on_map_unscanned_toggle(self):
-        """Тумблер «неотск.»: перезаполнить список и запомнить до рестарта."""
-        self._map_remember_view()
-        self._on_map_filter_changed()
-
-    def _on_map_toggle(self):
-        """Переключили «Луны»/«Подписи»: перерисовать и запомнить вид."""
-        self._map_remember_view()
-        self._map_redraw_now()
-
-    def _map_remember_view(self):
-        """Вид вкладки (зум, луны, подписи) переживает перезапуск приложения."""
-        self.config["map_zoom_index"] = int(self._map_zoom_index)
-        self.config["map_show_moons"] = bool(self.map_moons_var.get())
-        self.config["map_show_labels"] = bool(self.map_labels_var.get())
-        self.config["map_unscanned"] = bool(getattr(self, "map_unscanned_var", None)
-                                            and self.map_unscanned_var.get())
-        self.config["map_only_sites"] = bool(getattr(self, "map_only_sites_var", None)
-                                             and self.map_only_sites_var.get())
-        self.config["map_zones"] = bool(getattr(self, "map_zones_var", None)
-                                        and self.map_zones_var.get())
-        # Вид сцены: пресет камеры, уровень и «долли» с панорамой — чтобы после
-        # перезапуска карта открывалась там же, где её оставили.
-        self.config["map_level"] = self._map_level()
-        if hasattr(self, "map_view3d"):
-            self.config["map_view3d"] = str(self.map_view3d.get())
-        view = getattr(self, "_map3d_view", None)
-        if view is not None:
-            self.config["map_view3d_yaw"] = round(float(view.yaw_deg), 2)
-            self.config["map_view3d_pitch"] = round(float(view.pitch_deg), 2)
-            self.config["map_view3d_dolly"] = round(float(view.zoom_scale), 3)
-        # Запись файла откладываем: колесо мыши даёт несколько шагов зума подряд.
-        if self._map_save_job is not None:
-            try:
-                self.root.after_cancel(self._map_save_job)
-            except Exception:
-                pass
-            self._map_save_job = None
-        try:
-            self._map_save_job = self.root.after(1200, self._map_flush_view)
-        except Exception:
-            self._map_save_job = None
-
-    def _map_flush_view(self):
-        self._map_save_job = None
-        try:
-            self.save_config()
-        except Exception:
-            pass
-
-    def _on_map_wheel(self, event):
-        delta = 0
-        try:
-            delta = int(getattr(event, "delta", 0) or 0)
-        except Exception:
-            delta = 0
-        if delta:
-            self._on_map_zoom(1 if delta > 0 else -1)
-            return
-        # Linux: колесо приходит кнопками 4 (вверх) и 5 (вниз).
-        try:
-            number = int(getattr(event, "num", 0) or 0)
-        except Exception:
-            number = 0
-        self._on_map_zoom(1 if number == 4 else -1)
-
-    def _on_map_click(self, event):
-        try:
-            self.map_canvas.focus_set()   # иначе Esc и клавиши сцены не долетят
-        except Exception:
-            pass
-        x, y = getattr(event, "x", 0), getattr(event, "y", 0)
-        if self._map_mode() == "3d":
-            view = self._map3d_scene()
-            marker = view.on_click(x, y)
-            if marker is not None and marker.kind != "player":
-                return            # выбор уже применён: _select_map_object перерисовал
-            view.selected = ""
-            self._map_schedule_redraw(0)
-            return
-        item = self._map_item_at(x, y)
-        if item is None or item.kind == "player":
-            return
-        self._select_map_object(self._map_item_key(item))
-
-    def _on_map_escape(self, _event=None):
-        """Esc: в 3D — обзор системы, в схеме — звезду в центр."""
-        if self._map_mode() == "3d":
-            view = self._map3d_scene()
-            self._map_center = ""
-            view.clear_focus()
-            self.map_view3d.set("iso")
-            self._map_set_hint("Обзор системы: клик — выбор, колесо — приближение")
-            self._map_schedule_redraw(0)
-            return
-        if not self._map_center:
-            return
-        self._map_center = ""
-        self._map_set_hint("Центр — звезда системы")
-        self._map_redraw_now()
-
-    def _on_map_double_click(self, event):
-        """Двойной клик по объекту — центр карты на нём; по пустому месту — сброс.
-
-        Дальние луны и внешние стройки уезжают за край холста на любом зуме;
-        панорама дешевле, чем ещё три ступени зума.
-        """
-        x, y = getattr(event, "x", 0), getattr(event, "y", 0)
-        if self._map_mode() == "3d":
-            view = self._map3d_scene()
-            marker = view.marker_at(x, y)
-            if marker is None or marker.kind == "player":
-                self._map_center = ""
-                view.clear_focus()
-                self._map_set_hint("Обзор всей системы: клик — выбор объекта, "
-                                   "колесо — приближение")
-            else:
-                # Стройка стоит на теле: камера едет к телу, а не к площадке.
-                focus_name = marker.key
-                if marker.kind == "station":
-                    focus_name = str(getattr(marker.ref, "body_name", "")
-                                     or (marker.data or {}).get("body", "") or marker.key)
-                self._map_center = focus_name
-                view.set_focus(focus_name)
-                if view.zoom < 2:
-                    view.set_zoom(2)
-                    self.map_level_var.set(self._map_level_label(2))
-                self._map_set_hint(f"Камера на {marker.label}: перетаскивание — поворот, "
-                                   f"правая кнопка — сдвиг, колесо — приближение")
-            self._map_schedule_redraw(0)
-            return
-        item = self._map_item_at(x, y)
-        if item is None or item.kind == "player":
-            self._map_center = ""
-            self._map_set_hint("Центр — звезда системы; двойной клик по объекту "
-                               "отцентрует на нём, Esc сбросит")
-        else:
-            self._map_center = self._map_item_key(item)
-            self._map_set_hint(f"Центр: {item.label} — двойной клик по пустому месту "
-                               f"или Esc вернёт звезду в центр")
-        self._map_redraw_now()
-
-    def _on_map_tree_double(self, event=None):
-        """Двойной клик по строке — центр карты на объекте.
-
-        Ctrl+двойной клик — прежний жест: открыть проект стройки в Raven
-        Colonial. Два отдельных bind на `<Double-1>` — ловушка: второй
-        молча перезаписывает первый, поэтому модификатор разведён внутри.
-        """
-        if event is not None and int(getattr(event, "state", 0) or 0) & 0x4:
-            self._on_map_open_project()
-            return
-        if self._map_selected:
-            self._map_center = self._map_selected
-            self._map_redraw_now()
-
-    def _on_map_hover(self, event):
-        x, y = getattr(event, "x", 0), getattr(event, "y", 0)
-        if self._map_mode() == "3d":
-            # Карточка объекта живёт на холсте: перерисовываемся только когда
-            # курсор вошёл на объект или ушёл с него, а не на каждое движение.
-            view = self._map3d_scene()
-            marker = view.on_motion(x, y)
-            key = marker.key if marker is not None else ""
-            if key != self._map_hover_key:
-                self._map_hover_key = key
-                self._map_schedule_redraw(20)
-            return
-        item = self._map_item_at(x, y)
-        if item is None:
-            self._map_restore_hint()
-            return
-        if item.kind == "player":
-            self._map_set_hint(f"Вы здесь · {item.caption}")
-            return
-        if item.progress is not None:
-            self._map_set_hint(f"{item.label} · завезено {item.progress}%")
-            return
-        self._map_set_hint(" · ".join(part for part in (item.label, item.caption) if part))
-
-    # ---------- карта: боковая панель карточками ----------
-    def _on_map_side_mode(self):
-        """Переключить боковую панель: лента (дерево) ↔ карточки."""
-        mode = "cards" if str(self.map_side_mode.get()) == "cards" else "list"
-        self.map_side_mode.set(mode)
-        self.config["map_side_mode"] = mode
-        self.save_config()
-        tree_pack = getattr(self.map_tree, "master", None)
-        try:
-            if mode == "cards":
-                if tree_pack is not None:
-                    tree_pack.pack_forget()
-                self.map_cards_frame.pack(fill=BOTH, expand=True)
-                self._fill_map_cards(self._map_last_snapshot or self.system_map.snapshot())
-            else:
-                self.map_cards_frame.pack_forget()
-                if tree_pack is not None:
-                    tree_pack.pack(fill=BOTH, expand=True)
-        except Exception:
-            pass
-
-    def _on_map_cards_wheel(self, event):
-        """Колесо мыши над карточками — прокрутка, а не зум карты."""
-        delta = getattr(event, "delta", 0) or 0
-        if sys.platform == "darwin":
-            step = -int(delta)
-        elif delta:
-            step = -120 if delta > 0 else 120
-        else:                                   # Linux: кнопки 4/5
-            step = -120 if getattr(event, "num", 4) == 5 else 120
-        try:
-            self.map_cards_canvas.yview_scroll(int(step / 60.0) or (1 if step > 0 else -1), "units")
-        except Exception:
-            pass
-        return "break"
-
-    def _map_card_row(self, parent, text, *, color=None, bold=False, size=9):
-        label = tb.Label(parent, text=text, foreground=color or COLOR_TEXT,
-                         font=("Segoe UI", size, "bold" if bold else "normal"),
-                         anchor=W, justify=LEFT, wraplength=250)
-        label.pack(fill=X)
-        return label
-
-    def _map_site_card(self, parent, station) -> None:
-        """Мини-карточка стройки/станции внутри карточки тела."""
-        card = tb.Frame(parent)
-        card.pack(fill=X, pady=(3, 0))
-        percent = station.percent_delivered
-        state = ""
-        if station.planned and percent is None:
-            state = "план"
-        elif percent is not None:
-            filled = int(round(percent / 100.0 * 10))
-            state = f"{'▰' * filled}{'▱' * (10 - filled)} {percent}%"
-        elif station.progress is not None:
-            state = f"{float(station.progress) * 100:.0f}%"
-        head = tb.Frame(card)
-        head.pack(fill=X)
-        tb.Label(head, text=self._map_short_label(station.title or station.name),
-                 font=("Segoe UI", 9, "bold"),
-                 foreground=COLOR_ORANGE if station.is_site else COLOR_TEXT,
-                 anchor=W).pack(side=LEFT, fill=X, expand=True)
-        if station.is_site:
-            tb.Label(head, text=state, font=("Consolas", 8),
-                     foreground=COLOR_GREEN if percent == 100 else COLOR_ORANGE).pack(side=RIGHT)
-        details = []
-        if station.required_tons > 0:
-            details.append(f"{station.provided_tons:,} / {station.required_tons:,} т".replace(",", " "))
-        elif station.remaining_tons:
-            details.append(f"осталось {station.remaining_tons:,} т".replace(",", " "))
-        note = self._map_carry_note(station)
-        if note:
-            details.append(f"везти: {note}")
-        due = due_note(station.due_at) if station.is_site and not station.complete else ""
-        if due:
-            details.append(f"срок: {due}")
-        if details:
-            self._map_card_row(card, " · ".join(details), color=COLOR_MUTED, size=8)
-        card.bind("<Button-1>", lambda _e, key=str(station.build_id or station.name): self._select_map_object(key))
-        card.bind("<Double-Button-1>", lambda _e, key=str(station.build_id or station.name): self._map_center_on_key(key))
-        for child in card.winfo_children():
-            try:
-                child.bind("<Button-1>", lambda _e, key=str(station.build_id or station.name): self._select_map_object(key))
-            except Exception:
-                pass
-
-    def _map_center_on_key(self, key: str):
-        """Двойной клик по карточке — отцентровать холст на объекте."""
-        if not key:
-            return
-        self._map_center = key
-        self._map_redraw_now()
-
-    def _fill_map_cards(self, snapshot):
-        """Собрать карточки: тело, его параметры и все его постройки."""
-        inner = getattr(self, "map_cards_inner", None)
-        if inner is None:
-            return
-        # Очистка previous-содержимого. Список детей мог не отдаться (заглушки
-        # Tk в тестах) — это не повод ничего не рисовать.
-        try:
-            children = list(inner.winfo_children())
-        except Exception:
-            children = []
-        for child in children:
-            try:
-                child.destroy()
-            except Exception:
-                pass
-        if snapshot is None or not getattr(snapshot, "bodies", None):
-            try:
-                self._map_card_row(inner, "Нет данных о телах системы: отсканируйте "
-                                           "систему (FSS/DSS) — карточки появятся.",
-                                   color=COLOR_MUTED, size=9)
-            except Exception:
-                pass
-            return
-        try:
-            plan = orrery.plan_system(snapshot.bodies, snapshot.system or "",
-                                      show_moons=True, extra_marks=len(snapshot.stations or []))
-        except Exception:
-            plan = {"clusters": [{"star": (snapshot.star.name if snapshot.star else ""),
-                                  "bodies": [body.name for body in snapshot.bodies
-                                             if body.kind != KIND_STAR]}],
-                    "positions": {}}
-        by_name = {body.name: body for body in snapshot.bodies}
-        stations_by_body = {}
-        for station in snapshot.stations:
-            stations_by_body.setdefault(str(station.body_name or ""), []).append(station)
-        needle = str(getattr(self, "map_filter_var", None) and self.map_filter_var.get() or "").strip().lower()
-        unscanned_only = bool(getattr(self, "map_unscanned_var", None) and self.map_unscanned_var.get())
-        shown = 0
-        for cluster in plan.get("clusters", []):
-            names = list(cluster.get("bodies", []))
-            star_name = str(cluster.get("star") or "")
-            if len(plan.get("clusters", [])) > 1 and star_name:
-                try:
-                    self._map_card_row(inner, f"★ {self._map_short_label(star_name)} · тел: {len(names)}",
-                                       color=COLOR_YELLOW, bold=True, size=9)
-                except Exception:
-                    pass
-            if star_name and not needle:
-                self._map_body_card(inner, by_name.get(star_name), stations_by_body.get(star_name, []))
-            for name in names:
-                body = by_name.get(name)
-                if body is None:
-                    continue
-                if unscanned_only and body.scanned:
-                    continue
-                stations = stations_by_body.get(name, [])
-                if needle and needle not in f"{name} {body.body_class} {body.star_type}".lower():
-                    if not any(needle in f"{station.title} {station.name}".lower() for station in stations):
-                        continue
-                self._map_body_card(inner, body, stations)
-                shown += 1
-        for station in [item for item in snapshot.stations if not item.body_name or item.body_name not in by_name]:
-            if needle and needle not in f"{station.title} {station.name}".lower():
-                continue
-            self._map_site_card(inner, station)
-            shown += 1
-        if not shown:
-            try:
-                self._map_card_row(inner, "Ничего не найдено по фильтру.", color=COLOR_MUTED, size=9)
-            except Exception:
-                pass
-
-    def _map_body_card(self, parent, body, stations) -> None:
-        """Карточка тела: имя, класс, параметры, флаги и постройки на нём."""
-        if body is None:
-            return
-        card = tb.Frame(parent, padding=4)
-        card.pack(fill=X, pady=(4, 0))
-        head = tb.Frame(card)
-        head.pack(fill=X)
-        kind_label = BODY_LABELS.get(body.kind, "тело")
-        if body.kind == KIND_STAR and body.star_type:
-            kind_label = f"звезда {body.star_type}"
-        tb.Label(head, text=self._map_short_label(body.name), font=("Segoe UI", 10, "bold"),
-                 foreground=COLOR_TEXT, anchor=W).pack(side=LEFT, fill=X, expand=True)
-        tb.Label(head, text=kind_label, font=("Segoe UI", 8), foreground=COLOR_MUTED).pack(side=RIGHT)
-        details = []
-        if body.body_class:
-            details.append(body.body_class)
-        if body.distance_ls:
-            details.append(f"{body.distance_ls:,.1f} ls".replace(",", " "))
-        if body.gravity:
-            details.append(f"{body.gravity / 9.80665:.2f} g")
-        if body.surface_temp_k:
-            details.append(f"{body.surface_temp_k:.0f} K")
-        if body.atmosphere:
-            details.append(self._map_short_label(body.atmosphere))
-        if details:
-            self._map_card_row(card, " · ".join(details), color=COLOR_MUTED, size=8)
-        flags = []
-        if body.landable:
-            flags.append("🛬 посадка")
-        if body.bio_signals:
-            flags.append(f"🌿 {body.bio_signals}")
-        if getattr(body, "rings", None):
-            flags.append(f"💍 {len(body.rings)}")
-        if body.scanned:
-            flags.append("скан")
-        if body.mapped:
-            flags.append("карта")
-        if flags:
-            self._map_card_row(card, " · ".join(flags),
-                               color=COLOR_CYAN if body.landable else COLOR_GREEN if body.bio_signals else COLOR_MUTED,
-                               size=8)
-        key = str(body.name or "")
-        card.bind("<Button-1>", lambda _e, value=key: self._select_map_object(value))
-        card.bind("<Double-Button-1>", lambda _e, value=key: self._map_center_on_key(value))
-        for station in sorted(stations, key=self._map_station_sort_key):
-            self._map_site_card(card, station)
-
-    def _on_map_tree_select(self, _event=None):
-        tree = getattr(self, "map_tree", None)
-        if tree is None:
-            return
-        try:
-            selection = tree.selection()
-        except Exception:
-            return
-        if not selection:
-            return
-        key = str(selection[0]).split(":", 1)[-1]
-        if not key or key == self._map_selected:
-            return
-        self._map_selected = key
-        self._draw_system_map(self._map_last_snapshot)
-        self._map_show_details(key)
-
     def _select_map_object(self, key: str):
         self._map_selected = str(key or "")
         self._draw_system_map(self._map_last_snapshot)
         self._map_sync_tree_selection()
         self._map_show_details(self._map_selected)
-
-    def _on_map_filter_changed(self):
-        """Фильтр списка объектов: перерисовывать холст не нужно."""
-        self._fill_map_tree(self._map_last_snapshot or self.system_map.snapshot())
-
-    #: Сколько дней до дедлайна стройки считать «горит».
-    MAP_DUE_SOON_DAYS = 3
-
-    @staticmethod
-    def _map_station_sort_key(station):
-        """Стройки с ближайшим дедлайном — сверху: это и есть план маршрута."""
-        group = 0 if (station.is_site and not station.complete
-                      and not station.planned) else (1 if station.planned else 2)
-        return (group, due_timestamp(station.due_at), station.title or "")
-
-    @staticmethod
-    def _map_carry_note(station) -> str:
-        """Что везти на стройку: главный товар остатка по-русски."""
-        if not station.remaining_by_commodity:
-            return ""
-        name, amount = max(station.remaining_by_commodity.items(),
-                           key=lambda pair: pair[1])
-        return f"{commodity_label(name)} {amount:,}".replace(",", " ")
-
-    def _map_filter_matches(self, values) -> bool:
-        needle = str(self.map_filter_var.get() or "").strip().lower()
-        if not needle:
-            return True
-        return any(needle in str(value).lower() for value in values)
-
-    def _on_map_save_png(self):
-        """Схему системы — в PNG: крылу картинка, а не простыня текста.
-
-        Рендерим сами (`map_export`), без Pillow и скриншотов окна: файл
-        открывается везде и не тащит в EXE ещё десяток мегабайт.
-        """
-        snapshot = self._map_last_snapshot or self.system_map.snapshot()
-        try:
-            path = filedialog.asksaveasfilename(
-                title="Сохранить карту системы",
-                defaultextension=".png",
-                filetypes=(("PNG-изображение", "*.png"), ("Все файлы", "*.*")))
-        except Exception:
-            path = ""
-        if not path:
-            return
-        show_moons = not getattr(self, "map_moons_var", None) or bool(
-            self.map_moons_var.get())
-        show_labels = not getattr(self, "map_labels_var", None) or bool(
-            self.map_labels_var.get())
-        if save_map_png(snapshot, str(path), zoom=self._map_zoom(),
-                        show_moons=show_moons, show_labels=show_labels,
-                        center_on=self._map_center):
-            self._map_update_status(snapshot, f"Карта сохранена: {path}")
-        else:
-            self._map_update_status(snapshot,
-                                    f"Не удалось сохранить карту: {path}")
-
-    def _map_viewer_options(self):
-        """Стартовые параметры карты: приближение, подписи, вид, масштаб.
-
-        Ключи `map_plotly_*` и `map_viewer_*` остались от прежних карт (Plotly,
-        карта в браузере): читаем их как запасные, чтобы настройки старых
-        установок не потерялись — из них поднимается начальный вид сцены.
-        """
-        config = getattr(self, "config", None)
-        config = config if isinstance(config, dict) else {}
-        try:
-            zoom = max(0, min(3, int(config.get("map_viewer_zoom",
-                                                config.get("map_plotly_zoom", 0)) or 0)))
-        except (TypeError, ValueError):
-            zoom = 0
-        labels = bool(config.get("map_viewer_labels", config.get("map_plotly_labels", False)))
-        view_mode = str(config.get("map_viewer_view", config.get("map_plotly_view", "3d")) or "3d")
-        scale_mode = str(config.get("map_viewer_scale", "orrery") or "orrery")
-        show_moons = not getattr(self, "map_moons_var", None) or bool(self.map_moons_var.get())
-        selected = str(getattr(self, "_map_selected", "") or "")
-        return {
-            "zoom": zoom,
-            "labels": labels,
-            "view_mode": "2d" if view_mode.strip().lower() in ("2d", "top", "сверху") else "3d",
-            "scale_mode": "linear" if scale_mode.strip().lower() in ("linear", "линейный") else "orrery",
-            "show_moons": show_moons,
-            "selected": selected,
-        }
-
-    def _on_map_open_3d(self, key: str = ""):
-        """Открыть 3D-карту системы — здесь же, во вкладке приложения.
-
-        Раньше кнопка уводила в браузер: рядом с приложением открывался
-        автономный HTML с three.js. Теперь сцену рисует холст вкладки
-        (`tk_orrery`), поэтому карта не зависит ни от браузера, ни от файлов.
-        """
-        snapshot = self._map_last_snapshot or self.system_map.snapshot()
-        if not snapshot.system:
-            self._map_set_hint("Нет данных о текущей системе для карты")
-            return
-        target = str(key or self._map_selected or "")
-        self.map_view_mode.set("3d")
-        self.config["map_view_mode"] = "3d"
-        if target:
-            self._map_selected = target
-            self._map_center = target
-        try:
-            self.notebook.select(self.tab_factions)
-        except Exception:
-            pass
-        note = f" (объект: {target})" if target else ""
-        self.log(f"Инфографика фракций открыта для системы {snapshot.system}{note}", "info")
-
-    #: Прежнее имя обработчика: его зовут привязки клавиш и тесты.
-    _on_map_open_plotly = _on_map_open_3d
-
-    def _on_map_tree_context(self, event):
-        """Контекстное меню по правой кнопке мыши в списке объектов карты."""
-        tree = getattr(self, "map_tree", None)
-        if tree is None:
-            return
-        iid = tree.identify_row(event.y)
-        if not iid:
-            return
-        tree.selection_set(iid)
-        key = str(iid).split(":", 1)[-1]
-        self._select_map_object(key)
-        menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(
-            label=f"🎯 Показать на 3D-карте (фокус: {key[:18]})",
-            command=lambda value=key: self._on_map_open_3d(value),
-        )
-        menu.add_command(
-            label="📋 Скопировать название",
-            command=lambda: self._copy_map_text(key, f"Название '{key}' скопировано"),
-        )
-        snapshot = self._map_last_snapshot
-        if snapshot:
-            for station in snapshot.stations:
-                if key in (station.build_id, station.name) and station.build_id:
-                    menu.add_command(
-                        label="🏗️ Открыть проект в Raven Colonial",
-                        command=self._on_map_open_project,
-                    )
-                    break
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
 
     def _copy_map_text(self, text: str, hint: str = "Скопировано"):
         try:
@@ -3889,70 +2009,6 @@ class ColonialHelperApp:
                 pass
         if hint:
             self._map_set_hint(hint)
-
-    def _on_map_copy_summary(self):
-        """Сводку системы — в буфер обмена: удобно кинуть в чат крыла."""
-        snapshot = self._map_last_snapshot or self.system_map.snapshot()
-        report = map_report(snapshot, VERSION)
-        try:
-            import pyperclip
-
-            pyperclip.copy(report)
-        except Exception:
-            try:
-                self.root.clipboard_clear()
-                self.root.clipboard_append(report)
-            except Exception:
-                self._map_set_hint("Буфер обмена недоступен")
-                return
-        sites = len([station for station in snapshot.sites if not station.complete])
-        self.log(f"Сводка системы {snapshot.system or '—'} скопирована "
-                 f"(строек: {sites})", "info")
-        self._map_set_hint("Сводка скопирована в буфер обмена")
-
-    def _on_map_open_project(self):
-        """Двойной клик по стройке — открыть её проект в Raven Colonial."""
-        snapshot = self._map_last_snapshot
-        key = self._map_selected
-        if snapshot is None or not key:
-            return
-        build_id = ""
-        for station in snapshot.stations:
-            if key in (station.build_id, station.name):
-                build_id = station.build_id
-                break
-        if not build_id:
-            self._map_set_hint("У объекта нет buildId — проект в Raven не открываем")
-            return
-        name = ""
-        for station in snapshot.stations:
-            if station.build_id == build_id:
-                name = station.title
-                break
-        try:
-            url = project_url(build_id)
-        except Exception:
-            url = ""
-        if not url:
-            return
-        self._colony_open_url(url, f"Проект {name}" if name else "Проект")
-
-    # ---------- карта: данные Raven Colonial ----------
-    def _on_map_refresh(self):
-        self._map_redraw_now()
-        if not self.system_map.current_system:
-            self._map_set_status(
-                "Система неизвестна — включите Watcher или загрузите журналы")
-            return
-        snapshot = self._map_last_snapshot or self.system_map.snapshot()
-        self._fetch_external_scans_if_needed(self.system_map.current_system, force=True)
-        if not getattr(self.raven_api, "is_connected", False):
-            if not self._map_apply_raven_cache(self.system_map.current_system):
-                self._map_update_status(
-                    snapshot, "Raven Colonial не подключён: показаны только данные журнала")
-            return
-        self._map_update_status(snapshot, "Запрашиваю проекты и планы в Raven Colonial…")
-        self._map_refresh_from_raven(force=True)
 
     def _fetch_external_scans_if_needed(self, system_name: str, force: bool = False):
         """Запросить сканы тел системы из БД проекта или EDSM в фоновом потоке."""
@@ -4305,173 +2361,6 @@ class ColonialHelperApp:
         self.config["pilot_stats"] = self._pilot_stats
         self._maybe_sync_pilot_stats()
 
-    def _map_refresh_from_raven(self, force: bool = False):
-        """Фоновый запрос проектов и планов системы (не чаще MAP_RAVEN_TTL)."""
-        system = self.system_map.current_system
-        if not system:
-            return
-        key = f"{system}:{self.system_map.current_system_address}"
-        if not self._map_raven_fetched.get(key):
-            # Сеть ещё не ответила ни разу за этот запуск: показываем прошлый визит.
-            self._map_apply_raven_cache(system)
-        if not getattr(self.raven_api, "is_connected", False):
-            return
-        if self._map_raven_inflight:
-            return
-        address = self.system_map.current_system_address
-        key = f"{system}:{address}"
-        now = time.time()
-        try:
-            previous = float(self._map_raven_fetched.get(key) or 0.0)
-        except (TypeError, ValueError):
-            previous = 0.0
-        if not force and now - previous < self.MAP_RAVEN_TTL:
-            return
-        self._map_raven_fetched[key] = now
-        self._map_raven_inflight = True
-        api = self.raven_api
-
-        def worker():
-            try:
-                projects = api.get_system_projects(address or system)
-                sites = api.get_system_sites(system)
-                whole = api.get_system_v2(system)
-            except Exception:
-                projects = sites = whole = None
-            self.after(0, lambda: self._map_raven_done(system, projects, sites, whole))
-
-        threading.Thread(target=worker, daemon=True, name="map-raven").start()
-
-    def _map_apply_raven_cache(self, system: str) -> bool:
-        """Подставить прошлый ответ Raven, пока сеть молчит (или недоступна)."""
-        cache = getattr(self, "map_cache", None)
-        if cache is None or not system:
-            return False
-        entry = cache.load(system)
-        bodies = entry.get("bodies") or []
-        projects = entry.get("projects") or []
-        plans = entry.get("plans") or []
-        if not (bodies or projects or plans):
-            return False
-        changed = False
-        if bodies:
-            changed = bool(self.system_map.merge_bodies(system, bodies)) or changed
-        if projects:
-            changed = bool(self.system_map.merge_projects(system, projects)) or changed
-        if plans:
-            changed = bool(self.system_map.merge_site_plans(system, plans)) or changed
-        if not changed:
-            return False
-        self._map_redraw_now()
-        snapshot = self._map_last_snapshot or self.system_map.snapshot()
-        self._map_update_status(snapshot,
-                                f"Raven Colonial: кэш{self._map_cache_age(entry.get('ts'))}")
-        return True
-
-    @staticmethod
-    def _map_cache_age(ts) -> str:
-        """Возраст кэша человечески: «, данные от 12.09 21:40»."""
-        try:
-            stamp = datetime.fromtimestamp(float(ts))
-        except (TypeError, ValueError, OSError, OverflowError):
-            return ""
-        return f", данные от {stamp:%d.%m %H:%M}"
-
-    def _map_raven_done(self, system: str, projects_result, sites_result,
-                        whole_result=None):
-        self._map_raven_inflight = False
-        if self.system_map.current_system != system:
-            return   # пилот уже улетел: эти данные другой системы
-        projects = []
-        plans = []
-        note = ""
-        bodies = []
-        if isinstance(whole_result, dict) and whole_result.get("ok"):
-            bodies = self._map_extract_bodies(whole_result.get("data"))
-        if isinstance(projects_result, dict) and projects_result.get("ok"):
-            projects = self._map_extract_projects(projects_result.get("data"))
-        elif isinstance(projects_result, dict) and projects_result.get("error"):
-            note = f"Raven Colonial (проекты): {projects_result.get('error')}"
-        if isinstance(sites_result, dict) and sites_result.get("ok"):
-            plans = self._map_extract_plans(sites_result.get("data"))
-        elif isinstance(sites_result, dict) and sites_result.get("error") and not note:
-            note = f"Raven Colonial (планы): {sites_result.get('error')}"
-        changed = False
-        if bodies:
-            # Тела — первыми: стройплощадки и планы привязываются к телам.
-            changed = bool(self.system_map.merge_bodies(system, bodies)) or changed
-        if projects:
-            changed = bool(self.system_map.merge_projects(system, projects)) or changed
-        if plans:
-            changed = bool(self.system_map.merge_site_plans(system, plans)) or changed
-        if projects or plans or bodies:
-            note = (f"Raven Colonial: проектов — {len(projects)}, планов — {len(plans)}, "
-                    f"тел — {len(bodies)}")
-            cache = getattr(self, "map_cache", None)
-            if cache is not None:
-                # В следующий раз карта соберётся из этого кэша без ожидания сети.
-                cache.store(system, bodies, projects, plans)
-        if changed:
-            self._map_redraw_now()
-        if note:
-            snapshot = self._map_last_snapshot or self.system_map.snapshot()
-            self._map_update_status(snapshot, note)
-
-    @staticmethod
-    def _map_extract_projects(data) -> list:
-        """Ответ /api/system/{addr}: список проектов или {'projects': [...]}.
-
-        В отличие от вкладки «Колонизатор» здесь нужны и проекты без buildId:
-        по ним карта показывает потребность и остаток, даже если проект ещё не
-        привязан к командиру.
-        """
-        if isinstance(data, dict):
-            for key in ("projects", "Projects", "builds", "data"):
-                if isinstance(data.get(key), list):
-                    return [item for item in data[key] if isinstance(item, dict)]
-            if any(key in data for key in ("buildId", "buildName", "marketId", "sumTotal")):
-                return [data]
-            return []
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        return []
-
-    @staticmethod
-    def _map_extract_bodies(data) -> list:
-        """Ответ /v2/system/{system}: тела могут лежать в 'bodies' или списком."""
-        if isinstance(data, dict):
-            for key in ("bodies", "Bodies", "stars", "planets"):
-                if isinstance(data.get(key), list):
-                    found = [item for item in data[key] if isinstance(item, dict)]
-                    if found:
-                        return found
-            nested = data.get("body") or data.get("Body")
-            if isinstance(nested, list):
-                return [item for item in nested if isinstance(item, dict)]
-            return [data] if any(key in data for key in ("bodyName", "BodyName")) else []
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        return []
-
-    @staticmethod
-    def _map_extract_plans(data) -> list:
-        """Ответ /api/v2/system/{system}/sites: все площадки вместе со статусом.
-
-        Статус важен: `demolish` карта не показывает, `complete` — показывает
-        построенный объект. Фильтрует статусы уже `merge_site_plans`.
-        """
-        if isinstance(data, dict):
-            for key in ("sites", "Sites"):
-                if isinstance(data.get(key), list):
-                    data = data[key]
-                    break
-            else:
-                data = [data] if data else []
-        if not isinstance(data, list):
-            return []
-        return [item for item in data if isinstance(item, dict)]
-
-    # ---------- карта: события журнала ----------
     def _feed_system_map(self, event: dict, live: bool = False):
         """Событие журнала — в карту системы.
 
@@ -4545,32 +2434,6 @@ class ColonialHelperApp:
             except Exception:
                 pass
 
-    def _map_arm_autorefresh(self):
-        """Пока вкладка открыта, Raven опрашивается сам раз в MAP_RAVEN_TTL.
-
-        Процент завезённого меняется не только когда пилот что-то привёз:
-        другие командиры довозят груз, и карта открытой вкладки должна это
-        показать без нажатия «Обновить». Цепочка сама обрывается, стоит
-        переключить вкладку.
-        """
-        if self._map_autorefresh_job is not None:
-            return
-        try:
-            self._map_autorefresh_job = self.root.after(
-                self.MAP_RAVEN_TTL * 1000, self._map_autorefresh_tick)
-        except Exception:
-            self._map_autorefresh_job = None
-
-    def _map_autorefresh_tick(self):
-        self._map_autorefresh_job = None
-        if not self._map_visible():
-            return
-        self._map_refresh_from_raven()
-        self._map_arm_autorefresh()
-
-    # ============================================================
-    #  Вкладка: Оверлей
-    # ============================================================
     def _build_tab_overlay(self):
         """Вкладка «Оверлей» на чистом Qt (helper_pages.OverlayPage)."""
         from helper_pages import (OverlayBlockRow, OverlayPage, OverlayPageActions,
@@ -5055,7 +2918,7 @@ class ColonialHelperApp:
     def _on_profile_save(self):
         name = (self.overlay_page.profile_text() or "").strip()
         if not name:
-            name = simpledialog.askstring(
+            name = ask_string(
                 "Профиль раскладки",
                 "Имя профиля (например: Хаул, Эксобиология, Бой):",
                 parent=self.root,
@@ -5089,7 +2952,7 @@ class ColonialHelperApp:
         name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             return
-        if not messagebox.askyesno("Удалить профиль", f"Удалить профиль «{name}»?", parent=self.root):
+        if not ask_yes_no("Удалить профиль", f"Удалить профиль «{name}»?", parent=self.root):
             return
         if self.overlay_manager.delete_profile(name):
             self._refresh_profile_combo("")
@@ -5566,6 +3429,153 @@ class ColonialHelperApp:
 
         threading.Thread(target=worker, daemon=True, name="exobio-all-scan").start()
 
+    # ============================================================
+    #  Прежняя карта системы: только совместимость
+    # ============================================================
+    #: Вкладка «Карта системы» из навигации убрана — её место занимает
+    #: инфографика фракций, а карта больше ничего не рисует. Прежние имена
+    #: обработчиков остаются вызовами-пустышками: их зовут разбор журнала,
+    #: переключение вкладок и тесты, и удаление меняло бы контракт поведения.
+    #: Данные системы по-прежнему собирает `system_map` — они нужны фракциям.
+
+    def _map_visible(self) -> bool:
+        """Карты в интерфейсе нет, поэтому вкладка никогда не открыта."""
+        return False
+
+    def _map_schedule_redraw(self, delay_ms=None) -> None:
+        self._map_redraw_job = None
+
+    def _map_redraw_now(self) -> None:
+        self._map_redraw_job = None
+
+    def _map_motion_start(self, delay_ms=None) -> None:
+        return None
+
+    def _map_motion_stop(self) -> None:
+        return None
+
+    def _map_arm_autorefresh(self) -> None:
+        self._map_autorefresh_job = None
+
+    def _map_refresh_from_raven(self, force: bool = False) -> None:
+        """Данные Raven для карты больше не нужны: их берут фракции."""
+        self._map_raven_inflight = False
+
+    def _map_set_hint(self, text: str) -> None:
+        label = getattr(self, "map_hint", None)
+        if label is None:
+            return
+        try:
+            label.setText(str(text or ""))
+        except Exception:
+            pass
+
+    def _map3d_scene(self):
+        return None
+
+    def _draw_system_map(self, snapshot=None) -> None:
+        return None
+
+    def _draw_system_map_3d(self) -> None:
+        return None
+
+    def _on_map_tree_context(self, _event=None) -> None:
+        return None
+
+    def _on_map_motion_toggle(self, _event=None) -> None:
+        return None
+
+    def _on_map_motion_speed(self, _event=None) -> None:
+        return None
+
+    def _on_map_level_change(self, _event=None) -> None:
+        return None
+
+    def _on_map_view_preset(self, _event=None) -> None:
+        return None
+
+    def _on_map_reset_3d(self, _event=None) -> None:
+        return None
+
+    def _on_map_reset_time(self, _event=None) -> None:
+        return None
+
+    def _on_map_key(self, _event=None) -> None:
+        return None
+
+    def _on_map_dolly(self, _event=None) -> None:
+        return None
+
+    def _on_map_open_3d(self, key: str = ""):
+        """Прежний переход «открыть карту системы» теперь ведёт к фракциям."""
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        if not snapshot.system:
+            self._map_set_hint("Нет данных о текущей системе для карты")
+            return
+        target = str(key or getattr(self, "_map_selected", "") or "")
+        view_mode = getattr(self, "map_view_mode", None)
+        if view_mode is not None:
+            try:
+                view_mode.set("3d")
+            except Exception:
+                pass
+        self.config["map_view_mode"] = "3d"
+        if target:
+            self._map_selected = target
+            self._map_center = target
+        try:
+            self.notebook.select(self.tab_factions)
+        except Exception:
+            pass
+        note = f" (объект: {target})" if target else ""
+        self.log(f"Инфографика фракций открыта для системы {snapshot.system}{note}", "info")
+
+    #: Прежнее имя обработчика: его зовут привязки клавиш и тесты.
+    _on_map_open_plotly = _on_map_open_3d
+
+    def _map_viewer_options(self):
+        """Стартовые параметры прежней карты из конфига.
+
+        Ключи `map_plotly_*` и `map_viewer_*` остались от прежних карт (Plotly,
+        карта в браузере) и читаются как запасные, чтобы настройки старых
+        установок не потерялись.
+        """
+        config = getattr(self, "config", None)
+        config = config if isinstance(config, dict) else {}
+        try:
+            zoom = max(0, min(3, int(config.get("map_viewer_zoom",
+                                                config.get("map_plotly_zoom", 0)) or 0)))
+        except (TypeError, ValueError):
+            zoom = 0
+        labels = bool(config.get("map_viewer_labels", config.get("map_plotly_labels", False)))
+        view_mode = str(config.get("map_viewer_view", config.get("map_plotly_view", "3d")) or "3d")
+        scale_mode = str(config.get("map_viewer_scale", "orrery") or "orrery")
+        moons_var = getattr(self, "map_moons_var", None)
+        show_moons = True if moons_var is None else bool(moons_var.get())
+        selected = str(getattr(self, "_map_selected", "") or "")
+        return {
+            "zoom": zoom,
+            "labels": labels,
+            "view_mode": "2d" if view_mode.strip().lower() in ("2d", "top", "сверху") else "3d",
+            "scale_mode": "linear" if scale_mode.strip().lower() in ("linear", "линейный") else "orrery",
+            "show_moons": show_moons,
+            "selected": selected,
+        }
+
+    def _copy_map_text(self, text: str, hint: str = "Скопировано"):
+        try:
+            import pyperclip
+
+            pyperclip.copy(text)
+        except Exception:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+            except Exception:
+                pass
+        if hint:
+            self._map_set_hint(hint)
+
     def _build_tab_log(self):
         """Лог на чистом Qt: цветные уровни и кнопка очистки без Tk-виджетов."""
         self.log_page = None
@@ -5596,23 +3606,10 @@ class ColonialHelperApp:
     # ============================================================
     #  Обновление программы
     # ============================================================
-    def _update_channel_label(self) -> str:
-        channel = str(self.config.get("update_channel", "stable"))
-        return self.UPDATE_CHANNEL_LABELS.get(
-            channel, self.UPDATE_CHANNEL_LABELS["stable"])
-
     def _update_channel_value(self) -> str:
-        label = str(self.update_channel_var.get())
-        for value, text in self.UPDATE_CHANNEL_LABELS.items():
-            if text == label:
-                return value
-        return "stable"
-
-    def _on_update_settings_changed(self):
-        """Канал и автопроверку сохраняем сразу: это настройки, не состояние."""
-        self.config["update_channel"] = self._update_channel_value()
-        self.config["update_check_enabled"] = bool(self.update_auto_var.get())
-        self.save_config()
+        """Канал обновлений выбирается в лаунчере; Helper его только читает."""
+        channel = str(self.config.get("update_channel", "stable") or "stable")
+        return channel if channel in self.UPDATE_CHANNEL_LABELS else "stable"
 
     def _auto_check_update(self):
         if not bool(self.config.get("update_check_enabled", True)):
@@ -5621,41 +3618,20 @@ class ColonialHelperApp:
 
     def _set_update_ui(self, busy: bool, hint: str = "", button_text: str = "",
                        progress=None):
-        """Кнопка, подпись и progressbar одной операции обновления.
+        """Состояние операции обновления в статусной строке оболочки.
 
-        ``progress=None`` означает неопределённую по длительности стадию
-        (проверка/проверка хешей), число 0..100 — известный прогресс скачивания.
+        ``progress=None`` — стадия без известной длительности (проверка,
+        сверка хешей), число 0..100 — скачивание.
         """
-        try:
-            self.update_button.config(
-                state="disabled" if busy else "normal",
-                text=button_text or "⟳  Обновить программу",
-            )
-        except Exception:
-            pass
-        if hint and hasattr(self, "update_hint"):
-            try:
-                self.update_hint.config(text=hint)
-            except Exception:
-                pass
-        if not hasattr(self, "update_progress"):
+        if not hint:
             return
-        try:
-            bar = self.update_progress
-            bar.stop()
-            if not busy:
-                bar.pack_forget()
-                bar.configure(mode="determinate", value=0)
-                return
-            if not bar.winfo_manager():
-                bar.pack(fill=X, pady=(5, 0), before=self.status_frame)
-            if progress is None:
-                bar.configure(mode="indeterminate", value=0)
-                bar.start(12)
-            else:
-                bar.configure(mode="determinate", value=max(0, min(100, float(progress))))
-        except Exception:
-            pass
+        suffix = ""
+        if progress is not None:
+            try:
+                suffix = f" · {int(max(0, min(100, float(progress))))}%"
+            except (TypeError, ValueError):
+                suffix = ""
+        self.set_status(f"{hint}{suffix}")
 
     # ------------------------------------------------------------------
     #  Обновление кода пакетом (структурой), а не перекачиванием exe
@@ -5767,7 +3743,7 @@ class ColonialHelperApp:
             self.log("Нажмите «Обновить программу», чтобы установить.", "info")
             return
 
-        if not messagebox.askyesno(
+        if not ask_yes_no(
             "Обновление Colonial Helper",
             f"{'Администратор вернул канал на' if rollback else 'Доступна версия'} "
             f"{latest} (у вас {VERSION}).\n\n"
@@ -5810,7 +3786,7 @@ class ColonialHelperApp:
             message = str(result.get("error") or "неизвестная ошибка")
             self._set_update_ui(False, hint="обновление не установлено")
             self.log(f"Обновление не установлено: {message}", "error")
-            if messagebox.askyesno(
+            if ask_yes_no(
                 "Обновление Colonial Helper",
                 f"Не удалось установить обновление:\n{message}\n\n"
                 "Скачать пакет целиком и восстановить установку?",
@@ -5824,7 +3800,7 @@ class ColonialHelperApp:
         self._set_update_ui(False, hint=f"установлена v{version} — нужен перезапуск")
         self.log(f"Версия {version} установлена ({downloaded_kb:.0f} КБ скачано, "
                  f"{result.get('reused')} файлов взято из текущей версии).", "success")
-        if messagebox.askyesno(
+        if ask_yes_no(
             "Обновление установлено",
             f"Версия {version} установлена.\n\n"
             "Перезапустить программу сейчас?",
@@ -5837,7 +3813,7 @@ class ColonialHelperApp:
     def _restart_after_update(self):
         """Запустить новый процесс и аккуратно закрыть текущий."""
         if not bundle_updater.restart_program():
-            messagebox.showinfo(
+            show_info(
                 "Перезапуск",
                 "Не удалось перезапустить автоматически — закройте и откройте "
                 "программу вручную.",
@@ -5851,7 +3827,7 @@ class ColonialHelperApp:
     def _on_repair_install(self):
         """«Восстановить установку»: скачать пакет целиком и переложить файлы."""
         if not bundle_mode():
-            messagebox.showinfo(
+            show_info(
                 "Восстановление",
                 "Программа запущена из исходников — восстанавливать нечего.",
                 parent=self.root)
@@ -5886,7 +3862,7 @@ class ColonialHelperApp:
         version = str(result.get("version") or "")
         self._set_update_ui(False, hint=f"восстановлена v{version}")
         self.log(f"Установка восстановлена: версия {version}.", "success")
-        if messagebox.askyesno("Восстановление", "Перезапустить программу сейчас?",
+        if ask_yes_no("Восстановление", "Перезапустить программу сейчас?",
                                parent=self.root):
             self._restart_after_update()
 
@@ -5905,7 +3881,7 @@ class ColonialHelperApp:
                      "Обратитесь к администратору.", "warn")
             return
         size_mb = int(info.get("size") or 0) / (1024 * 1024)
-        if not messagebox.askyesno(
+        if not ask_yes_no(
             "Нужна новая базовая сборка",
             f"Версия {latest} требует обновлённой программы "
             f"({info.get('version')}).\n\n"
@@ -6028,13 +4004,6 @@ class ColonialHelperApp:
     #  Логирование
     # ============================================================
     def log(self, message: str, level: str = "info"):
-        colors = {
-            "info": COLOR_CYAN,
-            "success": COLOR_GREEN,
-            "error": COLOR_RED,
-            "warn": COLOR_ORANGE,
-        }
-        color = colors.get(level, COLOR_TEXT)
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"[{timestamp}] {message}\n"
 
@@ -6046,15 +4015,7 @@ class ColonialHelperApp:
             except Exception:
                 pass
         else:
-            self.log_text.text.config(state=NORMAL)
-            self.log_text.text.insert(END, line)
-            end_idx = self.log_text.text.index(END)
-            start_idx = f"{end_idx} linestart -1 lines"
-            tag_name = f"log_{level}_{timestamp.replace(':','')}"
-            self.log_text.text.tag_add(tag_name, start_idx, f"{start_idx} lineend")
-            self.log_text.text.tag_config(tag_name, foreground=color)
-            self.log_text.text.see(END)
-            self.log_text.text.config(state=DISABLED)
+            print(line.rstrip("\n"), file=sys.stderr)
 
         # Также в оверлей
         self.overlay_manager.log(message, level)
@@ -6296,13 +4257,13 @@ class ColonialHelperApp:
         решит, что всё уже отправлено, и не пошлёт ничего заново.
         """
         if not self.api.is_connected:
-            messagebox.showwarning(
+            show_warning(
                 "Нет подключения",
                 "Подключитесь к серверу (введите API-токен на вкладке «Подключение»)",
                 parent=self.root,
             )
             return
-        if not messagebox.askyesno(
+        if not ask_yes_no(
             "Очистка журналов на сервере",
             "Будут удалены ВСЕ ранее загруженные журналные данные этого профиля:\n"
             "  • поставки (тоннаж в досье)\n"
@@ -6327,7 +4288,7 @@ class ColonialHelperApp:
     def _on_server_journals_reset(self, result: dict):
         if not result.get("ok"):
             self.log(f"Очистка не удалась: {result.get('error', 'неизвестная ошибка')}", "error")
-            messagebox.showerror(
+            show_error(
                 "Ошибка очистки",
                 result.get("error", "Не удалось очистить журнальные данные"),
                 parent=self.root,
@@ -6347,7 +4308,7 @@ class ColonialHelperApp:
             "Теперь можно загрузить логи заново.",
             "info",
         )
-        messagebox.showinfo(
+        show_info(
             "Очистка завершена",
             "Сервер очистил журнальные данные профиля. Локальный кэш тоже сброшен. "
             "Нажмите «Загрузить журналы из папки», чтобы пересчитать логи с нуля.",
@@ -6382,18 +4343,18 @@ class ColonialHelperApp:
         webbrowser.open(localized_url(f"{self.api.site_url}/account?tab=tokens", self.config.get("site_locale")), new=2)
 
     def _change_site_url(self):
-        value = simpledialog.askstring("Сервер ED Ring Colony", "HTTPS-адрес сайта (не Supabase):",
+        value = ask_string("Сервер ED Ring Colony", "HTTPS-адрес сайта (не Supabase):",
                                        initialvalue=self.api.site_url, parent=self.root)
         if value is None:
             return
         try:
             site = normalize_site_url(value)
         except ValueError as exc:
-            messagebox.showerror("Адрес сервера", str(exc), parent=self.root)
+            show_error("Адрес сервера", str(exc), parent=self.root)
             return
         if site == self.api.site_url:
             return
-        if not messagebox.askyesno("Смена сервера",
+        if not ask_yes_no("Смена сервера",
                 f"Новый сервер: {site}\n\nТокен сайта будет удалён из настроек. "
                 "Приложение закроется: запустите его снова и введите токен нового сервера. "
                 "Ключи Raven/EDSM/Inara сохранятся. Продолжить?", parent=self.root):
@@ -6558,7 +4519,7 @@ class ColonialHelperApp:
         # «Обновить список» сам, а лишний запрос на каждое сохранение не нужен.
 
     def _on_browse_journal_path(self):
-        path = filedialog.askdirectory(initialdir=str(self.journal_path))
+        path = ask_directory(initialdir=str(self.journal_path))
         if path:
             self.journal_path = Path(path)
             self.path_entry.setText(str(self.journal_path))
@@ -6654,7 +4615,7 @@ class ColonialHelperApp:
     #  Обработчики: Загрузка
     # ============================================================
     def _on_select_files(self):
-        files = filedialog.askopenfilenames(
+        files = ask_open_files(
             initialdir=str(self.journal_path),
             filetypes=[("Journal logs", "*.log"), ("All files", "*.*")],
         )
@@ -6806,13 +4767,6 @@ class ColonialHelperApp:
         временной метки на каждой строке (в отличие от log()) — используется
         для итоговой таблицы импорта."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        colors = {
-            "info": COLOR_CYAN,
-            "success": COLOR_GREEN,
-            "error": COLOR_RED,
-            "warn": COLOR_ORANGE,
-        }
-        color = colors.get(level, COLOR_TEXT)
         block = f"[{timestamp}]\n{text}\n"
 
         page = getattr(self, "log_page", None)
@@ -6823,16 +4777,7 @@ class ColonialHelperApp:
             except Exception:
                 pass
         else:
-            self.log_text.text.config(state=NORMAL)
-            self.log_text.text.insert(END, block)
-            end_idx = self.log_text.text.index(END)
-            line_count = block.count("\n")
-            start_idx = f"{end_idx} linestart -{line_count} lines"
-            tag_name = f"log_{level}_{timestamp.replace(':', '')}_block"
-            self.log_text.text.tag_add(tag_name, start_idx, f"{start_idx} lineend +{line_count - 1} lines")
-            self.log_text.text.tag_config(tag_name, foreground=color)
-            self.log_text.text.see(END)
-            self.log_text.text.config(state=DISABLED)
+            print(block.rstrip("\n"), file=sys.stderr)
 
     # Сколько файлов держим в памяти одновременно (текст файла + пул чтения).
     # При выборе всей истории журналов (сотни файлов) чтение и хранение ВСЕХ
@@ -9635,7 +7580,7 @@ class ColonialHelperApp:
         if not unsent:
             return
         tons = sum(int(d.get("amount", 0) or 0) for d in unsent)
-        if not messagebox.askyesno(
+        if not ask_yes_no(
             "Дослать доставки в Raven Colonial",
             f"По журналу на эту площадку завезено {fmt(tons)} t ({len(unsent)} доставок), "
             "которые это приложение в Raven Colonial не отправляло.\n\n"
@@ -9908,7 +7853,7 @@ class ColonialHelperApp:
         threading.Thread(target=worker, daemon=True, name="PullAtlasRoute").start()
 
     def _on_import_route(self):
-        filepath = filedialog.askopenfilename(
+        filepath = ask_open_file(
             filetypes=[
                 ("NavRoute JSON", "NavRoute.json"),
                 ("JSON", "*.json"),
@@ -9946,7 +7891,7 @@ class ColonialHelperApp:
         if not self.route.systems:
             self.log("Нет данных для экспорта", "warn")
             return
-        filepath = filedialog.asksaveasfilename(
+        filepath = ask_save_file(
             defaultextension=".csv",
             filetypes=[("CSV", "*.csv")],
             initialfile="route_export.csv",
@@ -10009,9 +7954,7 @@ class ColonialHelperApp:
         if page is not None:
             page.clear()
         else:
-            self.log_text.text.config(state=NORMAL)
-            self.log_text.text.delete("1.0", END)
-            self.log_text.text.config(state=DISABLED)
+            print("Лог очищен", file=sys.stderr)
         self.log("Лог очищен", "info")
 
     # ============================================================
@@ -10032,19 +7975,9 @@ def main():
             print("=" * 60)
             sys.exit(1)
 
-        root = None
-        try:
-            root = tb.Window(themename="darkly")
-        except Exception:
-            try:
-                root = tb.Window()
-            except Exception:
-                root = tk.Tk()
-                root.configure(bg=COLOR_BG)
-
-        root.title(f"{APP_NAME} v{VERSION}")
+        root = HelperWindow(f"{APP_NAME} v{VERSION}")
         app = ColonialHelperApp(root)
-        root.mainloop()
+        root.run()
     except Exception as e:
         error_file = Path.home() / "colonial_helper_error.log"
         with open(error_file, "w", encoding="utf-8") as f:
@@ -10055,10 +7988,12 @@ def main():
             traceback.print_exc(file=f)
             f.write("=" * 60 + "\n")
         try:
-            messagebox.showerror(
+            from ui_qt import show_error_dialog
+
+            show_error_dialog(
                 "Colonial Helper — Ошибка запуска",
                 f"{type(e).__name__}: {e}\n\n"
-                f"Подробности сохранены в:\n{error_file}"
+                f"Подробности сохранены в:\n{error_file}",
             )
         except Exception:
             pass

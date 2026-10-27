@@ -86,6 +86,9 @@ def restore_gui_stubs():
     for name in ("tkinter", "ttkbootstrap", "ttkbootstrap.constants",
                  "ttkbootstrap.scrolled", "pyperclip"):
         sys.modules.pop(name, None)
+    import ui_qt
+
+    ui_qt.DIALOGS_ENABLED = True
 
 
 def install_gui_stubs():
@@ -179,31 +182,121 @@ def install_gui_stubs():
     qt_lazy.ScrolledText=ScrolledText
     qt_lazy.QVBoxLayout=mock.MagicMock(name="QVBoxLayout")
     qt_lazy.tk.TclError=RuntimeError
-    for name in ("showinfo","showwarning","showerror","askyesno","askokcancel"):
-        setattr(qt_lazy.messagebox,name,mock.MagicMock(name=f"messagebox.{name}",return_value=True))
-    for name in ("askopenfilename","askdirectory","asksaveasfilename"):
-        setattr(qt_lazy.filedialog,name,mock.MagicMock(name=f"filedialog.{name}",return_value=""))
-    qt_lazy.simpledialog.askstring=mock.MagicMock(name="simpledialog.askstring",return_value=None)
+    # Диалоги Helper теперь нативные (ui_qt). В прогоне они выключены: модальное
+    # окно ждало бы клика, которого нет. Тесты, которым важен ответ, подменяют
+    # `colonial_helper.ask_yes_no` и соседей сами.
+    import ui_qt
+
+    ui_qt.DIALOGS_ENABLED = False
     qt_lazy.ensure_app=mock.MagicMock(name="ensure_app")
     return ttkbootstrap_stub
 
 
+#: Живые корни, созданные `make_root()` (см. ограничение в конструкторе).
+_ROOTS = []
+
+
 def make_root():
-    """Корневое окно: after(0, cb) выполняется сразу, остальные — в никуда.
+    """Лёгкий корень Helper для тестов: виджет без окна и без рамки.
 
-    Отложенные вызовы (например, автообновление инфографики раз в секунду)
-    не выполняются, иначе заглушка ушла бы в бесконечную рекурсию.
+    Приложению нужен объект с `body_layout` и небольшим набором методов
+    (таймеры, буфер обмена, заголовок). Настоящее окно здесь не нужно: оно
+    тянет за собой фильтры событий и оформление, а тесты проверяют логику.
+    `after(0, …)` выполняется сразу — иначе тестам пришлось бы крутить цикл
+    событий Qt.
     """
-    root = mock.MagicMock(name="root")
-    root.winfo_exists.return_value = True
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-    def after(ms, callback=None, *args):
-        if ms == 0 and callable(callback):
-            callback(*args)
-        return "after#1"
+    from ui_qt import ensure_app
 
-    root.after.side_effect = after
-    return root
+    app = ensure_app()
+
+    class _TestRoot(QWidget):
+        def __init__(self):
+            super().__init__()
+            # Держим живыми не больше двух корней: каждый следующий тест
+            # строит своё приложение, а накопленные деревья виджетов потом
+            # приходится перекрашивать/пересчитывать целиком.
+            while len(_ROOTS) >= 2:
+                old = _ROOTS.pop(0)
+                try:
+                    old.setParent(None)
+                    old.deleteLater()
+                except RuntimeError:
+                    pass
+            _ROOTS.append(self)
+            self.body_layout = QVBoxLayout(self)
+            self.body_layout.setContentsMargins(0, 0, 0, 0)
+            self._title = "Colonial Helper"
+            self._timers = {}
+            self._seq = 0
+
+        # --- окно -------------------------------------------------------
+        def title(self, text=None):
+            if text is not None:
+                self._title = str(text)
+            return self._title
+
+        def geometry(self, spec=None):
+            if spec is None:
+                return "1180x790"
+            return str(spec)
+
+        def minsize(self, width, height):
+            return None
+
+        def iconbitmap(self, path):
+            return None
+
+        def winfo_width(self):
+            return 1180
+
+        def winfo_exists(self):
+            return True
+
+        def update_idletasks(self):
+            return None
+
+        def destroy(self):
+            self._timers.clear()
+
+        def protocol(self, name, handler):
+            self._close_handler = handler
+
+        def bind(self, sequence, handler, add=None):
+            return None
+
+        # --- буфер обмена ----------------------------------------------
+        @property
+        def _clipboard(self):
+            from PySide6.QtGui import QGuiApplication
+
+            return QGuiApplication.clipboard()
+
+        def clipboard_clear(self):
+            clipboard = self._clipboard
+            if clipboard is not None:
+                clipboard.clear()
+
+        def clipboard_append(self, text):
+            clipboard = self._clipboard
+            if clipboard is not None:
+                clipboard.setText(str(text))
+
+        # --- таймеры ----------------------------------------------------
+        def after(self, delay_ms, callback):
+            if int(delay_ms) == 0 and callable(callback):
+                callback()
+                return "after#1"
+            self._seq += 1
+            token = self._seq
+            self._timers[token] = callback
+            return token
+
+        def after_cancel(self, token):
+            self._timers.pop(token, None)
+
+    return _TestRoot()
 
 
 # ---------------------------------------------------------------------------

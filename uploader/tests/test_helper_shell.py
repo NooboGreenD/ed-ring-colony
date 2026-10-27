@@ -16,7 +16,6 @@ try:
     from PySide6.QtWidgets import QLabel, QWidget
 
     import helper_shell
-    import qt_compat as qt
     from ui_qt import ensure_app
 
     QT_ERROR = None
@@ -32,17 +31,17 @@ class HelperShellTests(unittest.TestCase):
 
     def setUp(self):
         self.changes = []
-        self.root = qt.tk.Tk()
-        self.root.geometry("1180x790")
+        self.root = QWidget()
         self.shell = helper_shell.build_shell(
             self.root, on_change=lambda: self.changes.append(1), version="2.18.12")
 
     def tearDown(self):
-        self.root.destroy()
+        self.root.deleteLater()
 
     def _page(self, text="page"):
-        page = qt.tk.Frame(self.shell.content_area)
-        qt.tk.Label(page, text=text).pack()
+        page = helper_shell.PageHost(self.shell.content_area)
+        label = QLabel(str(text), page)
+        page._get_tk_layout("pack").addWidget(label)
         return page
 
     def test_shell_is_native_qt_chrome_not_a_tk_facade(self):
@@ -98,21 +97,9 @@ class HelperShellTests(unittest.TestCase):
         self.shell.set_status("Watcher: активен")
         self.assertEqual(self.shell.bottom_status.text(), "Watcher: активен")
 
-    def test_shell_falls_back_to_legacy_chrome_when_qt_cannot_start(self):
-        # A headless build without a GUI runtime must still open a window.
-        original = helper_shell.HelperShell
-
-        class Broken(original):
-            def __init__(self, *_args, **_kwargs):
-                raise RuntimeError("no Qt platform plugin")
-
-        helper_shell.HelperShell = Broken
-        try:
-            fallback = helper_shell.build_shell(self.root, version="1")
-        finally:
-            helper_shell.HelperShell = original
-        self.assertIsInstance(fallback, helper_shell.LegacyShell)
-        self.assertTrue(hasattr(fallback, "content_area"))
+    def test_build_shell_returns_the_native_shell(self):
+        self.assertIsInstance(self.shell, helper_shell.HelperShell)
+        self.assertFalse(hasattr(helper_shell, "LegacyShell"))
 
 
 if __name__ == "__main__":

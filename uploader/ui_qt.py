@@ -120,6 +120,35 @@ QScrollBar:vertical {{ background: {PANEL}; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: {LINE}; min-height: 30px; border-radius: 5px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QFrame#separator {{ background: {LINE}; max-height: 1px; border: none; }}
+QTableWidget {{
+    background: {PANEL}; alternate-background-color: {PANEL_ALT};
+    color: {TEXT}; gridline-color: {LINE}; border: 1px solid {LINE};
+    border-radius: 6px; selection-background-color: {PANEL_ALT};
+    selection-color: {TEXT};
+}}
+QTableWidget::item {{ padding: 4px 6px; }}
+QHeaderView::section {{
+    background: {PANEL_ALT}; color: {MUTED}; border: none;
+    border-bottom: 1px solid {LINE}; padding: 6px; font-weight: 600;
+}}
+QTableCornerButton::section {{ background: {PANEL_ALT}; border: none; }}
+QLineEdit, QPlainTextEdit, QTextEdit {{
+    background: {PANEL_ALT}; color: {TEXT}; border: 1px solid {LINE};
+    border-radius: 6px; padding: 6px 8px;
+    selection-background-color: {ORANGE}; selection-color: #ffffff;
+}}
+QMenu {{ background: {PANEL_ALT}; color: {TEXT}; border: 1px solid {LINE}; }}
+QMenu::item:selected {{ background: {LINE}; }}
+QSlider::groove:horizontal {{ background: {LINE}; height: 4px; border-radius: 2px; }}
+QSlider::handle:horizontal {{
+    background: {ORANGE}; width: 14px; margin: -6px 0; border-radius: 7px;
+}}
+QProgressBar {{
+    background: {PANEL_ALT}; border: 1px solid {LINE}; border-radius: 6px;
+    text-align: center; color: {TEXT}; min-height: 14px;
+}}
+QProgressBar::chunk {{ background: {ORANGE}; border-radius: 5px; }}
+QToolTip {{ background: {PANEL_ALT}; color: {TEXT}; border: 1px solid {LINE}; }}
 QFrame#card {{ background: {PANEL_ALT}; border: 1px solid {LINE}; border-radius: 8px; }}
 QFrame#cardAccent {{ border: none; border-radius: 2px; }}
 """
@@ -470,6 +499,152 @@ def report_startup_error(exc: BaseException, *, title: str) -> None:
     detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
     print(f"{title}: {detail}", file=sys.stderr)
     show_error_dialog(title, detail)
+
+
+# ---------------------------------------------------------------------------
+#  Диалоги
+# ---------------------------------------------------------------------------
+#: Qt-обёртки для вопросов, сообщений и выбора файлов. Они повторяют прежние
+#: сигнатуры (`parent=`, `initialdir=`, `filetypes=`), поэтому вызывающий код
+#: Helper не зависит от того, каким было окно раньше.
+#:
+#: `DIALOGS_ENABLED = False` переводит их в headless-режим: модальное окно
+#: вернуло бы управление только после клика, которого в прогоне тестов нет.
+
+DIALOGS_ENABLED = True
+
+
+def _dialog_parent(parent) -> "Optional[QWidget]":
+    return parent if isinstance(parent, QWidget) else None
+
+
+def _qt_filter(filetypes) -> str:
+    parts = []
+    for entry in filetypes or ():
+        try:
+            title, pattern = entry
+        except (TypeError, ValueError):
+            continue
+        parts.append(f"{title} ({pattern})")
+    return ";;".join(parts)
+
+
+def ask_yes_no(title: str, message: str, *, parent=None) -> bool:
+    """Модальный вопрос «да/нет»; по умолчанию выбран отказ."""
+    if not DIALOGS_ENABLED:
+        return False
+    from PySide6.QtWidgets import QMessageBox
+
+    ensure_app()
+    box = QMessageBox(_dialog_parent(parent))
+    box.setWindowTitle(str(title))
+    box.setText(str(message))
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    box.setDefaultButton(QMessageBox.StandardButton.No)
+    return box.exec() == int(QMessageBox.StandardButton.Yes)
+
+
+def _show_box(icon, title: str, message: str, parent=None) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    ensure_app()
+    box = QMessageBox(_dialog_parent(parent))
+    box.setWindowTitle(str(title))
+    box.setText(str(message))
+    box.setIcon(icon)
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.exec()
+
+
+def show_info(title: str, message: str, *, parent=None) -> None:
+    if not DIALOGS_ENABLED:
+        return None
+    from PySide6.QtWidgets import QMessageBox
+
+    _show_box(QMessageBox.Icon.Information, title, message, parent)
+
+
+def show_warning(title: str, message: str, *, parent=None) -> None:
+    if not DIALOGS_ENABLED:
+        return None
+    from PySide6.QtWidgets import QMessageBox
+
+    _show_box(QMessageBox.Icon.Warning, title, message, parent)
+
+
+def show_error(title: str, message: str, *, parent=None) -> None:
+    if not DIALOGS_ENABLED:
+        return None
+    from PySide6.QtWidgets import QMessageBox
+
+    _show_box(QMessageBox.Icon.Critical, title, message, parent)
+
+
+def ask_string(title: str, prompt: str, *, initialvalue: str = "", parent=None) -> "Optional[str]":
+    """Строка ввода; ``None`` — пользователь отказался."""
+    if not DIALOGS_ENABLED:
+        return None
+    from PySide6.QtWidgets import QInputDialog
+
+    ensure_app()
+    value, accepted = QInputDialog.getText(_dialog_parent(parent), str(title),
+                                           str(prompt), text=str(initialvalue or ""))
+    return str(value) if accepted else None
+
+
+def ask_directory(*, initialdir: str = "", title: str = "Выбор папки", parent=None) -> str:
+    if not DIALOGS_ENABLED:
+        return ""
+    from PySide6.QtWidgets import QFileDialog
+
+    ensure_app()
+    return QFileDialog.getExistingDirectory(_dialog_parent(parent), str(title),
+                                            str(initialdir or ""))
+
+
+def ask_open_files(*, initialdir: str = "", filetypes=(), title: str = "Выбор файлов",
+                   parent=None) -> list:
+    if not DIALOGS_ENABLED:
+        return []
+    from PySide6.QtWidgets import QFileDialog
+
+    ensure_app()
+    files, _selected = QFileDialog.getOpenFileNames(_dialog_parent(parent), str(title),
+                                                    str(initialdir or ""), _qt_filter(filetypes))
+    return list(files)
+
+
+def ask_open_file(*, initialdir: str = "", filetypes=(), title: str = "Выбор файла",
+                  parent=None) -> str:
+    if not DIALOGS_ENABLED:
+        return ""
+    from PySide6.QtWidgets import QFileDialog
+
+    ensure_app()
+    path, _selected = QFileDialog.getOpenFileName(_dialog_parent(parent), str(title),
+                                                  str(initialdir or ""), _qt_filter(filetypes))
+    return str(path)
+
+
+def ask_save_file(*, initialfile: str = "", defaultextension: str = "", filetypes=(),
+                  title: str = "Сохранение файла", parent=None) -> str:
+    if not DIALOGS_ENABLED:
+        return ""
+    from PySide6.QtWidgets import QFileDialog
+
+    ensure_app()
+    dialog = QFileDialog(_dialog_parent(parent), str(title))
+    dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+    dialog.setNameFilter(_qt_filter(filetypes) or "All files (*.*)")
+    if initialfile:
+        dialog.selectFile(str(initialfile))
+    if defaultextension:
+        dialog.setDefaultSuffix(str(defaultextension).lstrip("."))
+    if dialog.exec() != int(QFileDialog.DialogCode.Accepted):
+        return ""
+    chosen = dialog.selectedFiles()
+    return str(chosen[0]) if chosen else ""
 
 
 def schedule(delay_ms: int, callback: Callable) -> None:
