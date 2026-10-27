@@ -91,6 +91,21 @@ QCheckBox::indicator {{
 QCheckBox::indicator:hover {{ border-color: {CYAN}; }}
 QCheckBox::indicator:checked {{ background: {ORANGE}; border-color: {ORANGE}; }}
 QCheckBox::indicator:disabled {{ background: {PANEL}; border-color: {LINE}; }}
+QRadioButton {{ color: {TEXT}; spacing: 8px; }}
+QRadioButton::indicator {{
+    width: 14px; height: 14px; border: 1px solid {LINE};
+    border-radius: 7px; background: {PANEL_ALT};
+}}
+QRadioButton::indicator:hover {{ border-color: {CYAN}; }}
+QRadioButton::indicator:checked {{ background: {ORANGE}; border-color: {ORANGE}; }}
+QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 6px; background: {PANEL}; }}
+QTabBar::tab {{
+    background: {PANEL_ALT}; color: {MUTED}; border: 1px solid {LINE};
+    border-bottom: none; padding: 6px 14px; margin-right: 2px;
+    border-top-left-radius: 6px; border-top-right-radius: 6px;
+}}
+QTabBar::tab:selected {{ background: {PANEL}; color: {TEXT}; border-bottom-color: {PANEL}; }}
+QTabBar::tab:hover {{ color: {TEXT}; }}
 QComboBox {{
     background: {PANEL_ALT}; color: {TEXT}; border: 1px solid {LINE};
     border-radius: 6px; padding: 6px 10px;

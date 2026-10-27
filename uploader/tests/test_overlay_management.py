@@ -860,7 +860,7 @@ class OverlayTabTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_rows_are_built_for_every_block(self):
-        rows = self.app._overlay_block_vars
+        rows = self.app.overlay_page.block_widgets
         self.assertEqual(tuple(sorted(rows)), tuple(sorted(self.app.overlay_manager.BLOCKS)))
         for key, widgets in rows.items():
             for name in ("visible", "locked", "screen", "alpha",
@@ -868,30 +868,30 @@ class OverlayTabTests(unittest.TestCase):
                 self.assertIn(name, widgets, f"{key}: нет настройки {name}")
 
     def test_alpha_choice_is_applied(self):
-        widgets = self.app._overlay_block_vars["ship"]
-        widgets["alpha"].set("55%")
+        row = "ship"
+        self.app.overlay_page.set_block_value(row, "alpha", "55%")
         self.app._on_block_alpha_changed("ship")
         self.assertEqual(self.app.overlay_manager.settings["ship_alpha"], 0.55)
 
-        widgets["alpha"].set("общая")
+        self.app.overlay_page.set_block_value(row, "alpha", "общая")
         self.app._on_block_alpha_changed("ship")
         self.assertNotIn("ship_alpha", self.app.overlay_manager.settings)
 
     def test_font_choice_is_applied(self):
-        widgets = self.app._overlay_block_vars["session"]
-        widgets["font_size"].set("16")
+        row = "session"
+        self.app.overlay_page.set_block_value(row, "font_size", "16")
         self.app._on_block_font_changed("session")
         self.assertEqual(self.app.overlay_manager.settings["session_font_size"], 16)
 
-        widgets["font_size"].set("общий")
+        self.app.overlay_page.set_block_value(row, "font_size", "общий")
         self.app._on_block_font_changed("session")
         self.assertNotIn("session_font_size", self.app.overlay_manager.settings)
 
     def test_size_preset_is_applied(self):
         from overlay import preset_size
 
-        widgets = self.app._overlay_block_vars["cargo"]
-        widgets["size"].set("L — 125%")
+        row = "cargo"
+        self.app.overlay_page.set_block_value(row, "size", "L — 125%")
         self.app._on_block_size_changed("cargo")
         self.assertEqual((self.app.overlay_manager.settings["cargo_width"],
                           self.app.overlay_manager.settings["cargo_height"]),
@@ -900,7 +900,7 @@ class OverlayTabTests(unittest.TestCase):
     def test_all_size_preset_applies_to_every_block(self):
         from overlay import preset_size
 
-        self.app.all_size_var.set("S — 85%")
+        self.app.overlay_page.set_all_size_text("S — 85%")
         self.app._on_all_size_preset_changed()
         for key in self.app.overlay_manager.BLOCKS:
             self.assertEqual((self.app.overlay_manager.settings[f"{key}_width"],
@@ -908,20 +908,20 @@ class OverlayTabTests(unittest.TestCase):
                              preset_size(key, "S"), key)
 
     def test_rule_choice_enables_auto_rules(self):
-        widgets = self.app._overlay_block_vars["exobio"]
-        widgets["auto_rule"].set("когда есть биосигналы")
+        row = "exobio"
+        self.app.overlay_page.set_block_value(row, "auto_rule", "когда есть биосигналы")
         self.app._on_block_rule_changed("exobio")
         self.assertEqual(self.app.overlay_manager.settings["exobio_auto_rule"], "has_bio")
         self.assertTrue(self.app.overlay_manager.settings["auto_rules_enabled"])
-        self.assertTrue(self.app.auto_rules_var.get())
+        self.assertTrue(self.app.overlay_page.auto_rules())
 
     def test_hotkey_choice_is_saved(self):
-        widgets = self.app._overlay_block_vars["route"]
-        widgets["hotkey"].set("F5")
+        row = "route"
+        self.app.overlay_page.set_block_value(row, "hotkey", "F5")
         self.app._on_block_hotkey_changed("route")
         self.assertEqual(self.app.overlay_manager.settings["route_hotkey"], "F5")
 
-        widgets["hotkey"].set("—")
+        self.app.overlay_page.set_block_value(row, "hotkey", "—")
         self.app._on_block_hotkey_changed("route")
         self.assertNotIn("route_hotkey", self.app.overlay_manager.settings)
 
@@ -935,47 +935,47 @@ class OverlayTabTests(unittest.TestCase):
         self.assertNotIn("cargo_alpha", manager.settings)
         self.assertNotIn("cargo_font_size", manager.settings)
         self.assertFalse(manager.settings["cargo_locked"])
-        widgets = self.app._overlay_block_vars["cargo"]
-        self.assertEqual(widgets["alpha"].get(), "общая")
-        self.assertEqual(widgets["font_size"].get(), "общий")
-        self.assertFalse(widgets["locked"].get())
+        row = "cargo"
+        self.assertEqual(self.app.overlay_page.block_value(row, "alpha"), "общая")
+        self.assertEqual(self.app.overlay_page.block_value(row, "font_size"), "общий")
+        self.assertFalse(self.app.overlay_page.block_value(row, "locked"))
 
     def test_lock_all_buttons_sync_rows(self):
         manager = self.app.overlay_manager
         self.app._on_lock_all(True)
         self.assertTrue(manager.all_locked())
-        self.assertTrue(all(widgets["locked"].get()
-                            for widgets in self.app._overlay_block_vars.values()))
+        self.assertTrue(all(self.app.overlay_page.block_value(key, "locked")
+                            for key in self.app.overlay_manager.BLOCKS))
         self.app._on_lock_all(False)
         self.assertFalse(any(manager.settings[f"{key}_locked"] for key in manager.BLOCKS))
-        self.assertFalse(any(widgets["locked"].get()
-                             for widgets in self.app._overlay_block_vars.values()))
+        self.assertFalse(any(self.app.overlay_page.block_value(key, "locked")
+                             for key in self.app.overlay_manager.BLOCKS))
 
     def test_lock_hotkey_updates_rows_from_overlay(self):
         """Ctrl+F12 из игры — галочки «Закреп.» во вкладке догоняют."""
         manager = self.app.overlay_manager
         manager.toggle_all_locked()
-        self.assertTrue(self.app._overlay_block_vars["route"]["locked"].get())
+        self.assertTrue(self.app.overlay_page.block_value("route", "locked"))
 
     def test_lock_hotkey_choice_is_saved(self):
-        self.app.lock_hotkey_var.set("Ctrl+F11")
+        self.app.overlay_page.set_lock_hotkey_text("Ctrl+F11")
         self.app._on_lock_hotkey_changed()
         self.assertEqual(self.app.overlay_manager.settings["lock_toggle_hotkey"], "Ctrl+F11")
-        self.app.lock_hotkey_var.set("—")
+        self.app.overlay_page.set_lock_hotkey_text("—")
         self.app._on_lock_hotkey_changed()
         self.assertEqual(self.app.overlay_manager.settings["lock_toggle_hotkey"], "")
 
     def test_screen_choice_detaches_and_returns_block(self):
         manager = self.app.overlay_manager
-        self.assertEqual(self.app._overlay_block_vars["carrier"]["screen"].get(), "с игрой")
+        self.assertEqual(self.app.overlay_page.block_value("carrier", "screen"), "с игрой")
         self.assertIn("экран 1", self.app._overlay_screen_choices())
 
-        self.app._overlay_block_vars["carrier"]["screen"].set("экран 1")
+        self.app.overlay_page.set_block_value("carrier", "screen", "экран 1")
         self.app._on_block_screen_changed("carrier")
         self.assertTrue(manager.settings["carrier_detached"])
-        self.assertEqual(self.app._overlay_block_vars["carrier"]["screen"].get(), "экран 1")
+        self.assertEqual(self.app.overlay_page.block_value("carrier", "screen"), "экран 1")
 
-        self.app._overlay_block_vars["carrier"]["screen"].set("с игрой")
+        self.app.overlay_page.set_block_value("carrier", "screen", "с игрой")
         self.app._on_block_screen_changed("carrier")
         self.assertFalse(manager.settings["carrier_detached"])
 
@@ -994,7 +994,7 @@ class OverlayTabTests(unittest.TestCase):
         self.assertEqual(self.app._idle_seconds("45 с"), 45)
         self.assertEqual(self.app._idle_seconds("2 мин"), 120)
 
-        self.app.idle_var.set("2 мин")
+        self.app.overlay_page.set_idle_text("2 мин")
         self.app._on_idle_changed()
         self.assertEqual(self.app.overlay_manager.settings["idle_timeout"], 120)
 
@@ -1004,16 +1004,14 @@ class OverlayTabTests(unittest.TestCase):
         manager.settings["show_ship"] = True
         manager.toggle_block("ship")
         self.assertFalse(manager.settings["show_ship"])
-        self.assertFalse(self.app._overlay_block_vars["ship"]["visible"].get())
+        self.assertFalse(self.app.overlay_page.block_value("ship", "visible"))
 
     def test_hotkey_hint_is_filled(self):
-        self.app._overlay_block_vars["route"]["hotkey"].set("F5")
+        self.app.overlay_page.set_block_value("route", "hotkey", "F5")
         self.app._on_block_hotkey_changed("route")
-        calls = list(self.app.hotkey_hint_label.configure.call_args_list)
-        calls += list(self.app.hotkey_hint_label.config.call_args_list)
-        texts = [call.kwargs.get("text") for call in calls if call.kwargs.get("text")]
-        self.assertTrue(texts, "подсказка должна обновляться")
-        self.assertIn("F5", texts[-1])
+        hint = self.app.overlay_page.hotkey_hint_label.text()
+        self.assertTrue(hint, "подсказка должна обновляться")
+        self.assertIn("F5", hint)
 
 
 class HotkeyTests(unittest.TestCase):

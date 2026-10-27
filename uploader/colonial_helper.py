@@ -4572,390 +4572,118 @@ class ColonialHelperApp:
     #  Вкладка: Оверлей
     # ============================================================
     def _build_tab_overlay(self):
-        # Настроек оверлея больше, чем помещается в небольшое окно, поэтому
-        # вся панель прокручивается (общий помощник `_scrollable_frame`).
-        frame = self._scrollable_frame(self.tab_overlay)
+        """Вкладка «Оверлей» на чистом Qt (helper_pages.OverlayPage)."""
+        from helper_pages import (OverlayBlockRow, OverlayPage, OverlayPageActions,
+                                  OverlayPageState)
 
-        tb.Label(frame, text="Настройки оверлея HUD", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-        tb.Label(
-            frame,
-            text="Оверлей работает поверх Elite Dangerous в режиме Borderless Windowed.\n"
-                 "Закреплённый блок не мешает мыши — клики уходят в игру. Чтобы подвинуть "
-                 "блоки или поменять размер, открепите их (Ctrl+F12 или галочки «Закреп.» ниже). "
-                 "F12 — показать/скрыть.",
-            foreground=COLOR_MUTED,
-            wraplength=700,
-        ).pack(anchor=W, pady=(0, 10))
-
-        # Кнопки вкл/выкл
-        btn_frame = tb.Frame(frame)
-        btn_frame.pack(anchor=W, pady=(0, 15))
-
-        self.overlay_toggle_btn = tb.Button(
-            btn_frame,
-            text="▶ Включить оверлей",
-            command=self._on_toggle_overlay,
-            bootstyle="success-outline",
-            width=22,
-        )
-        self.overlay_toggle_btn.pack(side=LEFT, padx=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Сбросить позиции",
-            command=self._on_reset_overlay_positions,
-            bootstyle="secondary-outline",
-            width=18,
-        ).pack(side=LEFT)
-
-        # Прозрачность
-        alpha_frame = tb.Frame(frame)
-        alpha_frame.pack(fill=X, pady=5)
-        tb.Label(alpha_frame, text="Прозрачность:", width=18, anchor=W).pack(side=LEFT)
-        self.alpha_var = tk.DoubleVar(value=self.overlay_manager.settings.get("alpha", 0.90))
-        alpha_scale = tb.Scale(
-            alpha_frame, from_=0.1, to=1.0, orient=HORIZONTAL,
-            variable=self.alpha_var, length=250,
-            command=lambda v: self._on_alpha_changed(float(v)),
-        )
-        alpha_scale.pack(side=LEFT, padx=(10, 0))
-        self.alpha_label = tb.Label(alpha_frame, text=f"{self.alpha_var.get():.0%}")
-        self.alpha_label.pack(side=LEFT, padx=(10, 0))
-
-        # Шрифт
-        font_frame = tb.Frame(frame)
-        font_frame.pack(fill=X, pady=5)
-        tb.Label(font_frame, text="Шрифт:", width=18, anchor=W).pack(side=LEFT)
-        self.font_var = tk.StringVar(value=self.overlay_manager.settings.get("font_family", "Consolas"))
-        font_combo = tb.Combobox(
-            font_frame, textvariable=self.font_var,
-            values=["Consolas", "Courier New", "Segoe UI", "Arial", "Lucida Console"],
-            width=20, state="readonly",
-        )
-        font_combo.pack(side=LEFT, padx=(10, 0))
-        font_combo.bind("<<ComboboxSelected>>", lambda e: self._on_font_changed())
-
-        # Размер шрифта
-        size_frame = tb.Frame(frame)
-        size_frame.pack(fill=X, pady=5)
-        tb.Label(size_frame, text="Размер шрифта:", width=18, anchor=W).pack(side=LEFT)
-        self.font_size_var = tk.IntVar(value=self.overlay_manager.settings.get("font_size", 10))
-        size_scale = tb.Scale(
-            size_frame, from_=8, to=18, orient=HORIZONTAL,
-            variable=self.font_size_var, length=250,
-            command=lambda v: self._on_font_size_changed(int(float(v))),
-        )
-        size_scale.pack(side=LEFT, padx=(10, 0))
-        self.size_label = tb.Label(size_frame, text=str(self.font_size_var.get()))
-        self.size_label.pack(side=LEFT, padx=(10, 0))
-
-        # ---- Блоки HUD: вид и поведение ----
-        tb.Label(frame, text="Блоки HUD: вид и поведение", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
-        tb.Label(
-            frame,
-            text="Каждый блок настраивается отдельно: показывать ли его, закреплён ли он, на каком "
-                 "экране живёт, своя прозрачность и свой размер шрифта, размер окна и правило "
-                 "«показывать по ситуации». Закреплённый блок не двигается и пропускает клики мыши "
-                 "в игру; откреплённый можно тянуть и настраивать. «Экран»: «с игрой» — блок виден "
-                 "только поверх игры; «экран N» — блок отвязан от игры, виден всегда и стоит на "
-                 "выбранном мониторе. Всё применяется сразу — оверлей перезапускать не нужно.",
-            foreground=COLOR_MUTED,
-            wraplength=700,
-        ).pack(anchor=W, pady=(0, 8))
-
-        head = tb.Frame(frame)
-        head.pack(fill=X, pady=(0, 2))
-        for column_text, column_width in (
-            ("Блок", 20), ("Показ", 6), ("Закреп.", 8), ("Экран", 10),
-            ("Прозр.", 8), ("Шрифт", 7), ("Размер", 10), ("Показывать", 24), ("Клавиша", 8),
-        ):
-            tb.Label(head, text=column_text, width=column_width, anchor=W,
-                     font=("Consolas", 8), foreground=COLOR_MUTED).pack(side=LEFT, padx=(0, 4))
-
-        self._overlay_block_vars = {}
+        settings = self.overlay_manager.settings
+        screen_choices = self._overlay_screen_choices()
+        rows = []
         for block_key in self.overlay_manager.BLOCKS:
-            self._build_overlay_block_row(frame, block_key)
+            rule = str(settings.get(f"{block_key}_auto_rule", "always") or "always")
+            rows.append(OverlayBlockRow(
+                key=block_key,
+                label=BLOCK_LABELS.get(block_key, block_key),
+                visible=bool(settings.get(f"show_{block_key}", True)),
+                locked=bool(settings.get(f"{block_key}_locked", False)),
+                screen=self._block_screen_label(block_key),
+                alpha=self._block_alpha_label(block_key),
+                font_size=self._block_font_label(block_key),
+                size=SIZE_PRESET_LABELS.get(self._block_size_preset(block_key), "M — 100%"),
+                auto_rule=AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]),
+                hotkey=str(settings.get(f"{block_key}_hotkey", "") or "—") or "—",
+            ))
 
-        # Какие экраны есть: в колонке «Экран» только номера, чтобы таблица
-        # влезала в окно, а разрешение и «основной» — здесь.
-        self.overlay_screens_label = tb.Label(
-            frame, text=self._overlay_screens_text(), foreground=COLOR_MUTED,
-            font=("Consolas", 8), wraplength=700, justify=LEFT,
-        )
-        self.overlay_screens_label.pack(anchor=W, pady=(4, 0))
+        content = []
+        for block_key, sections in CONTENT_OPTIONS.items():
+            items = []
+            for section_key, (text, _attributes) in sections.items():
+                setting = option_key(block_key, section_key)
+                items.append((setting, text, bool(settings.get(setting, True))))
+            content.append((block_key, block_key, items))
 
-        # Общий размер всех блоков
-        all_size_frame = tb.Frame(frame)
-        all_size_frame.pack(fill=X, pady=(8, 0))
-        tb.Label(all_size_frame, text="Размер всех блоков:", width=20, anchor=W).pack(side=LEFT)
-        self.all_size_var = tk.StringVar(value="M — 100%")
-        all_size_combo = tb.Combobox(
-            all_size_frame, textvariable=self.all_size_var, width=10, state="readonly",
-            values=[SIZE_PRESET_LABELS[name] for name, _factor in SIZE_PRESETS],
-        )
-        all_size_combo.pack(side=LEFT, padx=(0, 4))
-        all_size_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_all_size_preset_changed())
-        tb.Button(all_size_frame, text="Применить", command=self._on_all_size_preset_changed,
-                  bootstyle="info-outline", width=12).pack(side=LEFT, padx=(6, 0))
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
-
-        # ---- Поведение оверлея ----
-        tb.Label(frame, text="Поведение оверлея", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
-
-        tb.Label(
-            frame,
-            text="Закреплённый блок — только для глаз: мышь проходит сквозь него в игру, "
-                 "сразу после запуска и всегда. Откреплённый блок ловит мышь: его можно "
-                 "тянуть за шапку, менять размер за угол и открывать меню «···».",
-            foreground=COLOR_MUTED,
-            wraplength=700,
-        ).pack(anchor=W, pady=(0, 4))
-        lock_frame = tb.Frame(frame)
-        lock_frame.pack(fill=X, pady=(0, 4))
-        tb.Button(lock_frame, text="Закрепить все", command=lambda: self._on_lock_all(True),
-                  bootstyle="success-outline", width=16).pack(side=LEFT, padx=(0, 6))
-        tb.Button(lock_frame, text="Открепить все", command=lambda: self._on_lock_all(False),
-                  bootstyle="warning-outline", width=16).pack(side=LEFT, padx=(0, 12))
-        tb.Label(lock_frame, text="Клавиша:").pack(side=LEFT, padx=(0, 4))
-        current_lock_key = str(self.overlay_manager.settings.get("lock_toggle_hotkey", "Ctrl+F12") or "")
-        self.lock_hotkey_var = tk.StringVar(value=current_lock_key or "—")
-        lock_combo = tb.Combobox(
-            lock_frame, textvariable=self.lock_hotkey_var, width=14, state="readonly",
-            values=list(self.OVERLAY_LOCK_HOTKEY_CHOICES),
-        )
-        lock_combo.pack(side=LEFT)
-        lock_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_lock_hotkey_changed())
-        tb.Label(
-            lock_frame, text="закрепить/открепить все, даже из игры",
-            foreground=COLOR_MUTED,
-        ).pack(side=LEFT, padx=(10, 0))
-
-        self.auto_rules_var = tk.BooleanVar(
-            value=bool(self.overlay_manager.settings.get("auto_rules_enabled", False))
-        )
-        tb.Checkbutton(
-            frame,
-            text="Показывать блоки по ситуации (правила заданы в таблице выше)",
-            variable=self.auto_rules_var,
-            command=self._on_auto_rules_changed,
-        ).pack(anchor=W, pady=2)
-
-        self.attach_game_var = tk.BooleanVar(
-            value=self.overlay_manager.settings.get("attach_to_game", True)
-        )
-        tb.Checkbutton(
-            frame,
-            text="Привязать оверлей к окну Elite Dangerous (только поверх игры; "
-                 "блоки с экраном «экран N» видны всегда)",
-            variable=self.attach_game_var,
-            command=self._on_attach_game_changed,
-        ).pack(anchor=W, pady=2)
-
-        idle_frame = tb.Frame(frame)
-        idle_frame.pack(fill=X, pady=(6, 0))
-        tb.Label(idle_frame, text="Скрывать при простое:", width=20, anchor=W).pack(side=LEFT)
-        current_idle = int(self.overlay_manager.settings.get("idle_timeout", 0) or 0)
-        self.idle_var = tk.StringVar(value=self._idle_label(current_idle))
-        idle_combo = tb.Combobox(
-            idle_frame, textvariable=self.idle_var, width=14, state="readonly",
-            values=[self._idle_label(seconds) for seconds in IDLE_TIMEOUTS],
-        )
-        idle_combo.pack(side=LEFT, padx=(0, 4))
-        idle_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_idle_changed())
-        tb.Label(
-            idle_frame,
-            text="простой = нет новых событий в журнале",
-            foreground=COLOR_MUTED,
-        ).pack(side=LEFT, padx=(10, 0))
-
-        # Чекбоксы блоков ShipOverlay
-        tb.Label(frame, text="Блоки корабля (SHIP):", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
-        ship_chk = tb.Frame(frame)
-        ship_chk.pack(fill=X, pady=5)
-
-        self._ship_blocks = {}
-        for block_key, block_label in [
-            ("flags", "Флаги состояния"),
-            ("pips", "Pips (SYS/ENG/WEP)"),
-            ("hull", "Корпус"),
-            ("shield", "Щиты"),
-            ("fuel", "Топливо"),
-            ("power", "Энергия"),
-            ("cargo_info", "Груз"),
-            ("balance", "Баланс"),
-            ("legal", "Юридический статус"),
-            ("destination", "Назначение"),
-            ("modules", "Модули"),
-        ]:
-            var = tk.BooleanVar(value=self.overlay_manager.settings.get(f"show_{block_key}", True))
-            self._ship_blocks[block_key] = var
-            tb.Checkbutton(ship_chk, text=block_label, variable=var,
-                           command=lambda k=block_key, v=var: self._on_ship_block_changed(k, v.get())).pack(anchor=W, pady=1)
-
-        # Список модулей: компактный HUD показывает только то, что реально
-        # требует внимания; «все модули» остаётся доступным переключателем.
-        tb.Label(frame, text="Список модулей в SHIP:", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(6, 2))
-        self._ship_modules_var = tk.StringVar(
-            value=str(self.overlay_manager.settings.get("ship_modules_view", "important")))
-        for mode, label in (("important", "только важные (повреждённые, выключенные, ключевые)"),
-                            ("all", "все модули"),
-                            ("off", "только итог — без списка")):
-            tb.Radiobutton(frame, text=label, value=mode, variable=self._ship_modules_var,
-                           command=self._on_ship_modules_view_changed).pack(anchor=W, pady=1)
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=12)
-        tb.Label(frame, text="Отображаемые данные по оверлеям", font=("Segoe UI", 11, "bold")).pack(anchor=W)
-        content_tabs = tb.Notebook(frame)
-        content_tabs.pack(fill=X, pady=(6, 12))
-        self._overlay_content_vars = {}
-        for block, sections in CONTENT_OPTIONS.items():
-            tab = tb.Frame(content_tabs, padding=10)
-            content_tabs.add(tab, text=block.upper())
-            for section, (label, _attributes) in sections.items():
-                setting = option_key(block, section)
-                var = tk.BooleanVar(value=bool(self.overlay_manager.settings.get(setting, True)))
-                self._overlay_content_vars[setting] = var
-                tb.Checkbutton(tab, text=label, variable=var,
-                               command=lambda b=block, k=section, v=var: self.overlay_manager.set_content_option(b, k, v.get())).pack(anchor=W, pady=2)
-            if block == 'ship':
-                tb.Label(tab, text="Показатели и режим списка модулей настраиваются выше.", wraplength=650).pack(anchor=W, pady=6)
-            if block == 'carrier':
-                labels = list(CARRIER_FILTERS.values())
-                mode = self.overlay_manager.settings.get('carrier_filter', 'all')
-                self._carrier_filter_var = tk.StringVar(value=CARRIER_FILTERS.get(mode, labels[0]))
-                combo = tb.Combobox(tab, textvariable=self._carrier_filter_var, values=labels, state='readonly', width=28)
-                combo.pack(anchor=W, pady=(8, 4))
-                combo.bind('<<ComboboxSelected>>', lambda _e: self.overlay_manager.set_carrier_filter(
-                    mode=next(k for k, label in CARRIER_FILTERS.items() if label == self._carrier_filter_var.get())))
-                tb.Label(tab, text="Название товара (применить Enter или кнопкой):").pack(anchor=W)
-                self._carrier_search_var = tk.StringVar(value=self.overlay_manager.settings.get('carrier_search', ''))
-                entry = tb.Entry(tab, textvariable=self._carrier_search_var, width=32)
-                entry.pack(anchor=W, pady=4)
-                entry.bind('<Return>', lambda _e: self.overlay_manager.set_carrier_filter(query=self._carrier_search_var.get()))
-                tb.Button(tab, text="Применить поиск", command=lambda: self.overlay_manager.set_carrier_filter(
-                    query=self._carrier_search_var.get())).pack(anchor=W)
-                tb.Label(tab, text="Фильтр меняет список, но не общие итоги. Без потребности стройки режимы материалов и недостачи пусты.", wraplength=650).pack(anchor=W, pady=6)
-
-        # ---------- Раскладка: якоря, отступы, профили ----------
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
-        tb.Label(frame, text="Раскладка и привязка", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
-        tb.Label(
-            frame,
-            text="Блоки прилипают к краям и углам области. Область — весь экран, либо экран с "
-                 "окном игры, если включена привязка к игре; у блока, отвязанного от игры, — его "
-                 "собственный экран. Профиль сохраняет всю раскладку (позиции, размеры, видимость, "
-                 "прозрачность, закрепление, экран) — например «Хаул», «Эксобиология», «Бой».",
-            foreground=COLOR_MUTED,
-            wraplength=700,
-        ).pack(anchor=W, pady=(0, 8))
-
-        # Профили раскладки
-        prof_frame = tb.Frame(frame)
-        prof_frame.pack(fill=X, pady=(0, 6))
-        tb.Label(prof_frame, text="Профиль:", width=18, anchor=W).pack(side=LEFT)
-        self.profile_var = tk.StringVar(value=self.overlay_manager.active_profile)
-        self.profile_combo = tb.Combobox(
-            prof_frame, textvariable=self.profile_var,
-            values=self.overlay_manager.list_profiles(), width=22,
-        )
-        self.profile_combo.pack(side=LEFT, padx=(10, 6))
-        tb.Button(prof_frame, text="Применить", command=self._on_profile_apply,
-                  bootstyle="success-outline", width=12).pack(side=LEFT, padx=(0, 6))
-        tb.Button(prof_frame, text="Сохранить", command=self._on_profile_save,
-                  bootstyle="info-outline", width=12).pack(side=LEFT, padx=(0, 6))
-        tb.Button(prof_frame, text="Удалить", command=self._on_profile_delete,
-                  bootstyle="danger-outline", width=10).pack(side=LEFT)
-
-        # Отступ от края
-        margin_frame = tb.Frame(frame)
-        margin_frame.pack(fill=X, pady=5)
-        tb.Label(margin_frame, text="Отступ от края:", width=18, anchor=W).pack(side=LEFT)
-        self.margin_var = tk.IntVar(value=int(self.overlay_manager.settings.get("layout_margin", 24)))
-        margin_scale = tb.Scale(
-            margin_frame, from_=0, to=120, orient=HORIZONTAL,
-            variable=self.margin_var, length=250,
-            command=lambda v: self._on_margin_changed(int(float(v))),
-        )
-        margin_scale.pack(side=LEFT, padx=(10, 0))
-        self.margin_label = tb.Label(margin_frame, text=f"{self.margin_var.get()} px")
-        self.margin_label.pack(side=LEFT, padx=(10, 0))
-
-        # Якоря для каждого блока
-        tb.Label(frame, text="Привязка блоков:", font=("Segoe UI", 10)).pack(anchor=W, pady=(8, 2))
         anchor_values = [ANCHOR_LABELS[key] for key in ANCHOR_KEYS]
-        self._anchor_vars = {}
+        anchors = []
         for block_key in self.overlay_manager.BLOCKS:
-            block_label = BLOCK_LABELS.get(block_key, block_key)
-            row = tb.Frame(frame)
-            row.pack(fill=X, pady=1)
-            tb.Label(row, text=block_label, width=24, anchor=W).pack(side=LEFT)
-            current = self.overlay_manager.settings.get(f"{block_key}_anchor", "custom")
-            var = tk.StringVar(value=ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"]))
-            self._anchor_vars[block_key] = var
-            combo = tb.Combobox(row, textvariable=var, values=anchor_values,
-                                width=18, state="readonly")
-            combo.pack(side=LEFT, padx=(6, 0))
-            combo.bind("<<ComboboxSelected>>",
-                       lambda _e, k=block_key, v=var: self._on_anchor_changed(k, v.get()))
+            current = settings.get(f"{block_key}_anchor", "custom")
+            anchors.append((block_key, BLOCK_LABELS.get(block_key, block_key),
+                            ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"]),
+                            anchor_values))
 
-        # Кнопки раскладки
-        layout_btn_frame = tb.Frame(frame)
-        layout_btn_frame.pack(anchor=W, pady=(8, 0))
-        tb.Button(layout_btn_frame, text="Пересчитать по якорям",
-                  command=self._on_apply_anchors, bootstyle="info-outline", width=24).pack(side=LEFT, padx=(0, 8))
-        tb.Button(layout_btn_frame, text="Сбросить позиции",
-                  command=self._on_reset_overlay_positions, bootstyle="secondary-outline", width=18).pack(side=LEFT)
-
-        self.hide_without_game_var = tk.BooleanVar(
-            value=self.overlay_manager.settings.get("hide_when_game_off", True)
+        carrier_labels = list(CARRIER_FILTERS.items())
+        state = OverlayPageState(
+            alpha=float(settings.get("alpha", 0.90)),
+            font_family=str(settings.get("font_family", "Consolas")),
+            font_size=int(settings.get("font_size", 10) or 10),
+            font_choices=("Consolas", "Courier New", "Segoe UI", "Arial", "Lucida Console"),
+            alpha_choices=tuple(self.OVERLAY_ALPHA_CHOICES),
+            hotkey_choices=tuple(self.OVERLAY_HOTKEY_CHOICES),
+            lock_hotkey_choices=tuple(self.OVERLAY_LOCK_HOTKEY_CHOICES),
+            size_labels=[SIZE_PRESET_LABELS[name] for name, _factor in SIZE_PRESETS],
+            rule_labels=[AUTO_RULE_LABELS[name] for name in AUTO_RULES],
+            rows=rows,
+            anchors=anchors,
+            screen_choices=screen_choices,
+            screens_text=self._overlay_screens_text(),
+            all_size="M — 100%",
+            lock_hotkey=str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—",
+            auto_rules=bool(settings.get("auto_rules_enabled", False)),
+            attach_game=bool(settings.get("attach_to_game", True)),
+            idle_choices=[self._idle_label(seconds) for seconds in IDLE_TIMEOUTS],
+            idle=self._idle_label(int(settings.get("idle_timeout", 0) or 0)),
+            ship_blocks=[(key, text,
+                          bool(settings.get(f"show_{key}", True)))
+                         for key, text in self.OVERLAY_SHIP_BLOCKS],
+            ship_modules=str(settings.get("ship_modules_view", "important")),
+            content=content,
+            carrier_filters=[(mode, text) for mode, text in carrier_labels],
+            carrier_filter=CARRIER_FILTERS.get(
+                settings.get("carrier_filter", "all"), list(CARRIER_FILTERS.values())[0]),
+            carrier_search=str(settings.get("carrier_search", "") or ""),
+            profiles=self.overlay_manager.list_profiles(),
+            profile=self.overlay_manager.active_profile,
+            margin=int(settings.get("layout_margin", 24) or 24),
+            hide_without_game=bool(settings.get("hide_when_game_off", True)),
         )
-        tb.Checkbutton(
-            frame,
-            text="Скрывать оверлей, когда игра не запущена",
-            variable=self.hide_without_game_var,
-            command=self._on_hide_without_game_changed,
-        ).pack(anchor=W, pady=(6, 0))
-
-        self.layout_info_label = tb.Label(
-            frame,
-            text="",
-            font=("Consolas", 9),
-            foreground=COLOR_MUTED,
-            wraplength=700,
+        actions = OverlayPageActions(
+            toggle=self._on_toggle_overlay,
+            reset_positions=self._on_reset_overlay_positions,
+            alpha_changed=self._on_alpha_changed,
+            font_changed=self._on_font_changed,
+            font_size_changed=self._on_font_size_changed,
+            all_size_changed=self._on_all_size_preset_changed,
+            block_visible=self._on_block_visible_changed,
+            block_lock=self._on_block_lock_changed,
+            block_screen=self._on_block_screen_changed,
+            block_alpha=self._on_block_alpha_changed,
+            block_font=self._on_block_font_changed,
+            block_size=self._on_block_size_changed,
+            block_rule=self._on_block_rule_changed,
+            block_hotkey=self._on_block_hotkey_changed,
+            block_reset=self._on_block_reset,
+            screens_provider=self._overlay_screen_choices,
+            lock_all=self._on_lock_all,
+            lock_hotkey_changed=self._on_lock_hotkey_changed,
+            auto_rules_changed=self._on_auto_rules_changed,
+            attach_game_changed=self._on_attach_game_changed,
+            idle_changed=self._on_idle_changed,
+            ship_block_changed=self._on_ship_block_changed,
+            ship_modules_changed=self._on_ship_modules_view_changed,
+            content_changed=self._on_overlay_content_changed,
+            carrier_filter_changed=self._on_carrier_filter_changed,
+            carrier_search_changed=self._on_carrier_search_changed,
+            profile_apply=self._on_profile_apply,
+            profile_save=self._on_profile_save,
+            profile_delete=self._on_profile_delete,
+            anchor_changed=self._on_anchor_changed,
+            apply_anchors=self._on_apply_anchors,
+            hide_without_game_changed=self._on_hide_without_game_changed,
+            margin_changed=self._on_margin_changed,
         )
-        self.layout_info_label.pack(anchor=W, pady=(6, 0))
+        self.overlay_page = OverlayPage(state, actions)
+        self.tab_overlay._get_tk_layout("pack").addWidget(self.overlay_page)
+        self._show_page(self.overlay_page)
 
-        # Горячие клавиши подсказка
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
-        tb.Label(frame, text="Горячие клавиши", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
-        self.hotkey_hint_label = tb.Label(
-            frame,
-            text="",
-            foreground=COLOR_MUTED,
-            font=("Consolas", 9),
-            wraplength=700,
-            justify=LEFT,
-        )
-        self.hotkey_hint_label.pack(anchor=W, pady=(0, 6))
-        tb.Label(
-            frame,
-            text="Управление оверлеями:\n"
-                 "  • UL в шапке — блок откреплён: тяните за заголовок или «::», размер — за угол\n"
-                 "  • LK в шапке — блок закреплён: не двигается, клики мыши уходят в игру\n"
-                 "  • Закрепить/открепить все — клавиша из «Поведения оверлея» (Ctrl+F12)\n"
-                 "  • ··· в шапке — меню: закрепить, отвязать от игры, экран, якорь, размер,\n"
-                 "    прозрачность, шрифт\n"
-                 "  • Голубая полоса сверху — блок отвязан от игры и виден всегда\n"
-                 "  • Клавиши из таблицы выше — показать/скрыть конкретный блок\n"
-                 "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей",
-            foreground=COLOR_MUTED,
-            font=("Consolas", 10),
-            justify=LEFT,
-        ).pack(anchor=W)
-
-        # Изменения из оверлея (горячие клавиши, профиль) должны догонять
-        # виджеты вкладки, иначе галочки врут.
         self.overlay_manager.on_settings_changed = self._on_overlay_settings_changed
         self._update_overlay_hotkey_hint()
 
@@ -4968,6 +4696,20 @@ class ColonialHelperApp:
                                    "Alt+F12", "Ctrl+Shift+F12", "Ctrl+Shift+L")
     #: Колонка «Экран»: блок с игрой или отвязан и стоит на экране N.
     OVERLAY_SCREEN_WITH_GAME = "с игрой"
+    #: Блоки корабля (SHIP) с подписями: галочки «показывать» на вкладке оверлея.
+    OVERLAY_SHIP_BLOCKS = (
+        ("flags", "Флаги состояния"),
+        ("pips", "Pips (SYS/ENG/WEP)"),
+        ("hull", "Корпус"),
+        ("shield", "Щиты"),
+        ("fuel", "Топливо"),
+        ("power", "Энергия"),
+        ("cargo_info", "Груз"),
+        ("balance", "Баланс"),
+        ("legal", "Юридический статус"),
+        ("destination", "Назначение"),
+        ("modules", "Модули"),
+    )
 
     def _idle_label(self, seconds: int) -> str:
         """Подпись для выбора таймера простоя."""
@@ -5002,85 +4744,6 @@ class ColonialHelperApp:
         except (TypeError, ValueError, ZeroDivisionError):
             return "M"
         return min(SIZE_PRESETS, key=lambda item: abs(item[1] - ratio))[0]
-
-    def _build_overlay_block_row(self, parent, key: str):
-        """Строка настроек одного блока HUD."""
-        settings = self.overlay_manager.settings
-        row = tb.Frame(parent)
-        row.pack(fill=X, pady=1)
-        widgets = {}
-
-        tb.Label(row, text=BLOCK_LABELS.get(key, key), width=20, anchor=W).pack(side=LEFT, padx=(0, 4))
-
-        # Показ
-        visible_var = tk.BooleanVar(value=bool(settings.get(f"show_{key}", True)))
-        setattr(self, f"show_{key}_var", visible_var)   # совместимость со старыми обработчиками
-        widgets["visible"] = visible_var
-        tb.Checkbutton(row, variable=visible_var, width=3,
-                       command=lambda: self._on_block_visible_changed(key)).pack(side=LEFT, padx=(0, 4))
-
-        # Закрепление: не двигается и пропускает мышь в игру
-        lock_var = tk.BooleanVar(value=bool(settings.get(f"{key}_locked", False)))
-        widgets["locked"] = lock_var
-        tb.Checkbutton(row, variable=lock_var, width=3,
-                       command=lambda: self._on_block_lock_changed(key)).pack(side=LEFT, padx=(0, 4))
-
-        # Экран: с игрой или отвязан и стоит на выбранном мониторе
-        screen_var = tk.StringVar(value=self._block_screen_label(key))
-        widgets["screen"] = screen_var
-        screen_combo = tb.Combobox(row, textvariable=screen_var, width=10, state="readonly",
-                                   values=self._overlay_screen_choices())
-        # Мониторы могут подключить и отключить — список собираем при открытии.
-        screen_combo.configure(
-            postcommand=lambda c=screen_combo: c.configure(values=self._overlay_screen_choices()))
-        screen_combo.pack(side=LEFT, padx=(0, 4))
-        screen_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_screen_changed(key))
-
-        # Прозрачность
-        alpha_var = tk.StringVar(value=self._block_alpha_label(key))
-        widgets["alpha"] = alpha_var
-        alpha_combo = tb.Combobox(row, textvariable=alpha_var, width=8, state="readonly",
-                                  values=list(self.OVERLAY_ALPHA_CHOICES))
-        alpha_combo.pack(side=LEFT, padx=(0, 4))
-        alpha_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_alpha_changed(key))
-
-        # Шрифт
-        font_var = tk.StringVar(value=self._block_font_label(key))
-        widgets["font_size"] = font_var
-        font_combo = tb.Combobox(row, textvariable=font_var, width=7, state="readonly",
-                                 values=list(self.OVERLAY_FONT_CHOICES))
-        font_combo.pack(side=LEFT, padx=(0, 4))
-        font_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_font_changed(key))
-
-        # Размер
-        size_var = tk.StringVar(value=SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
-        widgets["size"] = size_var
-        size_combo = tb.Combobox(row, textvariable=size_var, width=10, state="readonly",
-                                 values=[SIZE_PRESET_LABELS[name] for name, _f in SIZE_PRESETS])
-        size_combo.pack(side=LEFT, padx=(0, 4))
-        size_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_size_changed(key))
-
-        # Правило показа
-        rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
-        rule_var = tk.StringVar(value=AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
-        widgets["auto_rule"] = rule_var
-        rule_combo = tb.Combobox(row, textvariable=rule_var, width=24, state="readonly",
-                                 values=[AUTO_RULE_LABELS[name] for name in AUTO_RULES])
-        rule_combo.pack(side=LEFT, padx=(0, 4))
-        rule_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_rule_changed(key))
-
-        # Горячая клавиша
-        hotkey_var = tk.StringVar(value=str(settings.get(f"{key}_hotkey", "") or "—") or "—")
-        widgets["hotkey"] = hotkey_var
-        hotkey_combo = tb.Combobox(row, textvariable=hotkey_var, width=8, state="readonly",
-                                   values=list(self.OVERLAY_HOTKEY_CHOICES))
-        hotkey_combo.pack(side=LEFT, padx=(0, 4))
-        hotkey_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_hotkey_changed(key))
-
-        tb.Button(row, text="сброс", width=7, bootstyle="secondary-outline",
-                  command=lambda: self._on_block_reset(key)).pack(side=LEFT)
-
-        self._overlay_block_vars[key] = widgets
 
     # -- подписи и разбор значений --
     def _overlay_screen_choices(self) -> list:
@@ -5142,13 +4805,15 @@ class ColonialHelperApp:
         return "M"
 
     # -- обработчики строки блока --
-    def _on_block_visible_changed(self, key: str):
-        show = bool(self._overlay_block_vars[key]["visible"].get())
-        self.overlay_manager.set_block_visible(key, show)
+    def _on_block_visible_changed(self, key: str, show=None):
+        if show is None:
+            show = self.overlay_page.block_value(key, "visible")
+        self.overlay_manager.set_block_visible(key, bool(show))
 
-    def _on_block_lock_changed(self, key: str):
-        locked = bool(self._overlay_block_vars[key]["locked"].get())
-        self.overlay_manager.set_block_locked(key, locked)
+    def _on_block_lock_changed(self, key: str, locked=None):
+        if locked is None:
+            locked = self.overlay_page.block_value(key, "locked")
+        self.overlay_manager.set_block_locked(key, bool(locked))
         self.log(
             f"{BLOCK_LABELS.get(key, key)}: "
             + ("закреплён — клики уходят в игру" if locked
@@ -5156,9 +4821,11 @@ class ColonialHelperApp:
             "info",
         )
 
-    def _on_block_screen_changed(self, key: str):
+    def _on_block_screen_changed(self, key: str, value=None):
         """Колонка «Экран»: вернуть блок к игре или отвязать и вынести на экран."""
-        value = str(self._overlay_block_vars[key]["screen"].get() or "").strip()
+        if value is None:
+            value = self.overlay_page.block_value(key, "screen")
+        value = str(value or "").strip()
         label = BLOCK_LABELS.get(key, key)
         if value == self.OVERLAY_SCREEN_WITH_GAME or not value:
             self.overlay_manager.set_block_detached(key, False, move_to_game=True)
@@ -5178,7 +4845,7 @@ class ColonialHelperApp:
                  else "Все блоки откреплены: их можно двигать и настраивать", "info")
 
     def _on_lock_hotkey_changed(self):
-        value = str(self.lock_hotkey_var.get() or "").strip()
+        value = str(self.overlay_page.lock_hotkey_text() or "").strip()
         combo = "" if value in ("", "—") else value
         self.overlay_manager.set_lock_hotkey(combo)
         self._update_overlay_hotkey_hint()
@@ -5204,36 +4871,44 @@ class ColonialHelperApp:
         self.log("Все блоки закреплены: клики уходят в игру" if locked
                  else "Все блоки откреплены: их можно двигать и настраивать", "info")
 
-    def _on_block_alpha_changed(self, key: str):
-        label = self._overlay_block_vars[key]["alpha"].get()
+    def _on_block_alpha_changed(self, key: str, label=None):
+        if label is None:
+            label = self.overlay_page.block_value(key, "alpha")
         if label == "общая":
             self.overlay_manager.set_block_alpha(key, None)
         else:
-            digits = "".join(ch for ch in label if ch.isdigit())
+            digits = "".join(ch for ch in str(label) if ch.isdigit())
             self.overlay_manager.set_block_alpha(key, int(digits or 100) / 100.0)
 
-    def _on_block_font_changed(self, key: str):
-        label = self._overlay_block_vars[key]["font_size"].get()
+    def _on_block_font_changed(self, key: str, label=None):
+        if label is None:
+            label = self.overlay_page.block_value(key, "font_size")
         if label == "общий":
             self.overlay_manager.set_block_font_size(key, None)
         else:
-            digits = "".join(ch for ch in label if ch.isdigit())
+            digits = "".join(ch for ch in str(label) if ch.isdigit())
             if digits:
                 self.overlay_manager.set_block_font_size(key, int(digits))
 
-    def _on_block_size_changed(self, key: str):
-        preset = self._preset_key_by_label(self._overlay_block_vars[key]["size"].get())
+    def _on_block_size_changed(self, key: str, label=None):
+        if label is None:
+            label = self.overlay_page.block_value(key, "size")
+        preset = self._preset_key_by_label(label)
         self.overlay_manager.apply_size_preset(preset, key)
 
-    def _on_block_rule_changed(self, key: str):
-        rule = self._rule_key_by_label(self._overlay_block_vars[key]["auto_rule"].get())
+    def _on_block_rule_changed(self, key: str, label=None):
+        if label is None:
+            label = self.overlay_page.block_value(key, "auto_rule")
+        rule = self._rule_key_by_label(label)
         self.overlay_manager.set_auto_rule(key, rule)
         if not self.overlay_manager.settings.get("auto_rules_enabled", False):
-            self.auto_rules_var.set(True)
+            self.overlay_page.set_auto_rules(True)
             self.overlay_manager.set_auto_rules_enabled(True)
 
-    def _on_block_hotkey_changed(self, key: str):
-        value = self._overlay_block_vars[key]["hotkey"].get().strip()
+    def _on_block_hotkey_changed(self, key: str, value=None):
+        if value is None:
+            value = self.overlay_page.block_value(key, "hotkey")
+        value = str(value or "").strip()
         combo = "" if value in ("", "—") else value
         self.overlay_manager.set_block_hotkey(key, combo)
         self._update_overlay_hotkey_hint()
@@ -5252,44 +4927,60 @@ class ColonialHelperApp:
         self.log(f"{BLOCK_LABELS.get(key, key)}: настройки сброшены", "info")
 
     def _on_all_size_preset_changed(self):
-        preset = self._preset_key_by_label(self.all_size_var.get())
+        preset = self._preset_key_by_label(self.overlay_page.all_size_text())
         if self.overlay_manager.apply_size_preset(preset):
             self._sync_overlay_block_rows()
             self.log(f"Размер всех блоков: {SIZE_PRESET_LABELS.get(preset, preset)}", "info")
 
     def _on_auto_rules_changed(self):
-        self.overlay_manager.set_auto_rules_enabled(bool(self.auto_rules_var.get()))
+        self.overlay_manager.set_auto_rules_enabled(bool(self.overlay_page.auto_rules()))
 
     def _on_idle_changed(self):
-        seconds = self._idle_seconds(self.idle_var.get())
+        seconds = self._idle_seconds(self.overlay_page.idle_text())
         self.overlay_manager.set_idle_timeout(seconds)
+
+    def _on_overlay_content_changed(self, setting: str, enabled: bool):
+        """Галочка «отображаемые данные»: ключ — overlay_<блок>_<раздел>."""
+        for block, sections in CONTENT_OPTIONS.items():
+            for section in sections:
+                if option_key(block, section) == setting:
+                    self.overlay_manager.set_content_option(block, section, bool(enabled))
+                    return
+
+    def _on_carrier_filter_changed(self):
+        label = self.overlay_page.carrier_filter_text()
+        mode = next((key for key, text in CARRIER_FILTERS.items() if text == label), "all")
+        self.overlay_manager.set_carrier_filter(mode=mode)
+
+    def _on_carrier_search_changed(self):
+        self.overlay_manager.set_carrier_filter(
+            query=self.overlay_page.carrier_search_text())
 
     def _sync_overlay_block_rows(self):
         """Перечитать настройки в виджеты (после сброса, профиля, горячей клавиши)."""
+        page = getattr(self, "overlay_page", None)
+        if page is None:
+            return
         settings = self.overlay_manager.settings
-        for key, widgets in getattr(self, "_overlay_block_vars", {}).items():
-            widgets["visible"].set(bool(settings.get(f"show_{key}", True)))
-            widgets["locked"].set(bool(settings.get(f"{key}_locked", False)))
-            widgets["screen"].set(self._block_screen_label(key))
-            widgets["alpha"].set(self._block_alpha_label(key))
-            widgets["font_size"].set(self._block_font_label(key))
-            widgets["size"].set(SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
+        for key in self.overlay_manager.BLOCKS:
+            page.set_block_value(key, "visible", bool(settings.get(f"show_{key}", True)))
+            page.set_block_value(key, "locked", bool(settings.get(f"{key}_locked", False)))
+            page.set_block_value(key, "screen", self._block_screen_label(key))
+            page.set_block_value(key, "alpha", self._block_alpha_label(key))
+            page.set_block_value(key, "font_size", self._block_font_label(key))
+            page.set_block_value(key, "size",
+                                 SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
             rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
-            widgets["auto_rule"].set(AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
-            widgets["hotkey"].set(str(settings.get(f"{key}_hotkey", "") or "—") or "—")
-        if hasattr(self, "idle_var"):
-            self.idle_var.set(self._idle_label(int(settings.get("idle_timeout", 0) or 0)))
-        if hasattr(self, "lock_hotkey_var"):
-            self.lock_hotkey_var.set(str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—")
-        if hasattr(self, "overlay_screens_label"):
-            try:
-                self.overlay_screens_label.config(text=self._overlay_screens_text())
-            except Exception:
-                pass
-        if hasattr(self, "auto_rules_var"):
-            self.auto_rules_var.set(bool(settings.get("auto_rules_enabled", False)))
-        if hasattr(self, "all_size_var"):
-            self.all_size_var.set("M — 100%")
+            page.set_block_value(key, "auto_rule",
+                                 AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
+            page.set_block_value(key, "hotkey",
+                                 str(settings.get(f"{key}_hotkey", "") or "—") or "—")
+        page.set_idle_text(self._idle_label(int(settings.get("idle_timeout", 0) or 0)))
+        page.set_lock_hotkey_text(
+            str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—")
+        page.set_screens_text(self._overlay_screens_text())
+        page.set_auto_rules(bool(settings.get("auto_rules_enabled", False)))
+        page.set_all_size_text("M — 100%")
 
     def _on_overlay_settings_changed(self, key: str, name: str, _value):
         """Настройка изменилась из оверлея (например, по горячей клавише)."""
@@ -5297,7 +4988,7 @@ class ColonialHelperApp:
 
     def _update_overlay_hotkey_hint(self):
         """Строка подсказки: какие клавиши за чем закреплены."""
-        if not hasattr(self, "hotkey_hint_label"):
+        if getattr(self, "overlay_page", None) is None:
             return
         lines = []
         for key in self.overlay_manager.BLOCKS:
@@ -5313,10 +5004,7 @@ class ColonialHelperApp:
         hint = "Назначено: " + "; ".join(lines) if lines else "Клавиши не назначены."
         if not self.overlay_manager.hotkeys.available:
             hint += "  (системные горячие клавиши работают только в Windows)"
-        try:
-            self.hotkey_hint_label.config(text=hint)
-        except Exception:
-            pass
+        self.overlay_page.set_hotkey_hint_text(hint)
 
     def _on_toggle_overlay(self):
         # NavRoute.json is produced by the game independently of Watcher.
@@ -5325,7 +5013,7 @@ class ColonialHelperApp:
             self._auto_load_navroute()
         self.overlay_manager.toggle(self._get_overlay_data)
         if self.overlay_manager.enabled:
-            self.overlay_toggle_btn.config(text="⏹ Выключить оверлей", bootstyle="danger-outline")
+            self.overlay_page.set_toggle_running(True)
             self.log("Оверлей включён. Используйте F12 для показа/скрытия.", "success")
             # Загружаем текущее состояние корабля для оверлея
             if not self.ship.state.current_system:
@@ -5337,7 +5025,7 @@ class ColonialHelperApp:
             self._load_latest_loadout()
             self._load_current_state_files()
         else:
-            self.overlay_toggle_btn.config(text="▶ Включить оверлей", bootstyle="success-outline")
+            self.overlay_page.set_toggle_running(False)
             self.log("Оверлей выключён", "info")
 
     def _on_toggle_overlay_visibility(self):
@@ -5359,14 +5047,13 @@ class ColonialHelperApp:
     # ---------- Раскладка: профили, отступы, якоря ----------
     def _refresh_profile_combo(self, selected: str = ""):
         names = self.overlay_manager.list_profiles()
-        self.profile_combo.config(values=names)
-        if selected:
-            self.profile_var.set(selected)
-        elif self.profile_var.get() not in names:
-            self.profile_var.set(self.overlay_manager.active_profile)
+        current = self.overlay_page.profile_text()
+        if not selected and current not in names:
+            selected = self.overlay_manager.active_profile
+        self.overlay_page.set_profiles(names, selected or current)
 
     def _on_profile_save(self):
-        name = (self.profile_var.get() or "").strip()
+        name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             name = simpledialog.askstring(
                 "Профиль раскладки",
@@ -5382,7 +5069,7 @@ class ColonialHelperApp:
             self.log("Не удалось сохранить профиль раскладки.", "error")
 
     def _on_profile_apply(self):
-        name = (self.profile_var.get() or "").strip()
+        name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             self.log("Выберите профиль раскладки.", "warn")
             return
@@ -5390,18 +5077,16 @@ class ColonialHelperApp:
             self.log(f"Профиль «{name}» не найден.", "error")
             return
         # Прозрачность/шрифт из профиля подтягиваем и в элементы вкладки.
-        self.alpha_var.set(float(self.overlay_manager.settings.get("alpha", 0.9)))
-        self.alpha_label.config(text=f"{self.alpha_var.get():.0%}")
-        self.font_var.set(self.overlay_manager.settings.get("font_family", "Consolas"))
-        self.font_size_var.set(int(self.overlay_manager.settings.get("font_size", 10)))
-        self.size_label.config(text=str(self.font_size_var.get()))
+        self.overlay_page.set_alpha(float(self.overlay_manager.settings.get("alpha", 0.9)))
+        self.overlay_page.set_font_family(self.overlay_manager.settings.get("font_family", "Consolas"))
+        self.overlay_page.set_font_size(int(self.overlay_manager.settings.get("font_size", 10)))
         self._refresh_profile_combo(name)
         self._sync_overlay_block_rows()
         self._update_overlay_hotkey_hint()
         self.log(f"Профиль раскладки «{name}» применён.", "success")
 
     def _on_profile_delete(self):
-        name = (self.profile_var.get() or "").strip()
+        name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             return
         if not messagebox.askyesno("Удалить профиль", f"Удалить профиль «{name}»?", parent=self.root):
@@ -5413,8 +5098,7 @@ class ColonialHelperApp:
             self.log(f"Профиль «{name}» не найден.", "warn")
 
     def _on_margin_changed(self, value: int):
-        self.margin_label.config(text=f"{value} px")
-        self.overlay_manager.set_layout_margin(value)
+        self.overlay_manager.set_layout_margin(int(value))
         self._update_layout_info()
 
     def _on_anchor_changed(self, block_key: str, label: str):
@@ -5433,7 +5117,7 @@ class ColonialHelperApp:
         self.log("Блоки расставлены по якорям.", "info")
 
     def _on_hide_without_game_changed(self):
-        enabled = bool(self.hide_without_game_var.get())
+        enabled = bool(self.overlay_page.hide_without_game())
         self.overlay_manager.set_hide_when_game_off(enabled)
         self.log(
             "Оверлей прячется, когда игра не запущена" if enabled
@@ -5455,51 +5139,50 @@ class ColonialHelperApp:
             area = self.overlay_manager.overlay_area()
             state = self.overlay_manager.game_state()
             source = "экран с игрой" if (state.running and state.monitor) else "основной экран"
-            self.layout_info_label.config(
-                text=f"Область раскладки: {source} {area[2]}x{area[3]} "
-                     f"(сдвиг {area[0]},{area[1]}), отступ {self.overlay_manager.settings.get('layout_margin', 24)} px"
-            )
+            self.overlay_page.set_info_text(
+                f"Область раскладки: {source} {area[2]}x{area[3]} "
+                f"(сдвиг {area[0]},{area[1]}), отступ "
+                f"{self.overlay_manager.settings.get('layout_margin', 24)} px")
         except Exception:
             pass
 
     def _on_alpha_changed(self, value: float):
-        self.alpha_label.config(text=f"{value:.0%}")
-        self.overlay_manager.set_alpha(value)
+        self.overlay_manager.set_alpha(float(value))
 
     def _on_font_changed(self):
-        self.overlay_manager.set_font(self.font_var.get(), self.font_size_var.get())
+        self.overlay_manager.set_font(self.overlay_page.font_family(), self.overlay_page.font_size())
 
     def _on_font_size_changed(self, value: int):
-        self.size_label.config(text=str(value))
-        self.overlay_manager.set_font(self.font_var.get(), value)
+        self.overlay_manager.set_font(self.overlay_page.font_family(), int(value))
 
     def _on_show_route_changed(self):
-        self.overlay_manager.set_block_visible("route", self.show_route_var.get())
+        self.overlay_manager.set_block_visible("route", self.overlay_page.block_value("route", "visible"))
 
     def _on_show_status_changed(self):
-        self.overlay_manager.set_block_visible("status", self.show_status_var.get())
+        self.overlay_manager.set_block_visible("status", self.overlay_page.block_value("status", "visible"))
 
     def _on_show_ship_changed(self):
-        self.overlay_manager.set_block_visible("ship", self.show_ship_var.get())
+        self.overlay_manager.set_block_visible("ship", self.overlay_page.block_value("ship", "visible"))
 
     def _on_show_cargo_changed(self):
-        self.overlay_manager.set_block_visible("cargo", self.show_cargo_var.get())
+        self.overlay_manager.set_block_visible("cargo", self.overlay_page.block_value("cargo", "visible"))
 
     def _on_show_session_changed(self):
-        self.overlay_manager.set_block_visible("session", self.show_session_var.get())
+        self.overlay_manager.set_block_visible("session", self.overlay_page.block_value("session", "visible"))
 
     def _on_show_events_changed(self):
         """EVENTS создаётся вместе с остальными окнами, поэтому просто
         показываем/прячем существующее окно."""
-        self.overlay_manager.set_block_visible("events", self.show_events_var.get())
+        self.overlay_manager.set_block_visible("events", self.overlay_page.block_value("events", "visible"))
 
     def _on_show_exobio_changed(self):
         """Блок экзобиологии показывает данные по текущему телу из журнала."""
-        self.overlay_manager.set_block_visible("exobio", self.show_exobio_var.get())
+        self.overlay_manager.set_block_visible("exobio", self.overlay_page.block_value("exobio", "visible"))
 
     def _on_attach_game_changed(self):
-        self.overlay_manager.set_attach_to_game(self.attach_game_var.get())
-        state = "включена" if self.attach_game_var.get() else "отключена"
+        enabled = self.overlay_page.attach_game()
+        self.overlay_manager.set_attach_to_game(enabled)
+        state = "включена" if enabled else "отключена"
         self.log(f"Привязка к окну игры {state}", "info")
 
     def _on_ship_block_changed(self, block: str, show: bool):
@@ -5507,7 +5190,7 @@ class ColonialHelperApp:
 
     def _on_ship_modules_view_changed(self):
         """Режим списка модулей меняется на лету: окно не пересоздаём."""
-        mode = str(self._ship_modules_var.get() or "important")
+        mode = str(self.overlay_page.ship_modules_view() or "important")
         self.overlay_manager.set_ship_modules_view(mode)
         self.log(f"SHIP: список модулей — {mode}", "info")
 
@@ -6449,7 +6132,7 @@ class ColonialHelperApp:
                     self.log("Elite Dangerous запущена — оверлей активен", "success")
                 else:
                     self.log("Elite Dangerous не запущена — оверлей скрыт", "info")
-            if hasattr(self, "layout_info_label"):
+            if getattr(self, "overlay_page", None) is not None:
                 self._update_layout_info()
             # Груз авианосца по товарам журнал не отдаёт: снимок из Raven
             # Colonial перечитывается по таймеру, иначе «на борту» устаревает,

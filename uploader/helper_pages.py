@@ -24,8 +24,11 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -1294,6 +1297,745 @@ class ColonyPage(QWidget):
             self.plan_combo.addItem(str(text))
             position = self.plan_combo.count() - 1
         self.plan_combo.setCurrentIndex(position)
+
+
+# ===========================================================================
+#  Страница «Оверлей»
+# ===========================================================================
+#: Колонки таблицы блоков HUD.
+OVERLAY_BLOCK_FIELDS = ("visible", "locked", "screen", "alpha", "font_size",
+                        "size", "auto_rule", "hotkey")
+#: Текст в колонке «Экран», когда блок живёт поверх игры.
+OVERLAY_SCREEN_WITH_GAME = "с игрой"
+
+
+@dataclass
+class OverlayBlockRow:
+    """Одна строка таблицы блоков HUD."""
+
+    key: str
+    label: str = ""
+    visible: bool = True
+    locked: bool = False
+    screen: str = OVERLAY_SCREEN_WITH_GAME
+    alpha: str = "общая"
+    font_size: str = "общий"
+    size: str = ""
+    auto_rule: str = ""
+    hotkey: str = "—"
+
+
+@dataclass
+class OverlayPageState:
+    """Everything the page needs for its first paint."""
+
+    alpha: float = 0.90
+    font_family: str = "Consolas"
+    font_size: int = 10
+    font_choices: Sequence[str] = ()
+    font_size_choices: Sequence[str] = ("общий", "8", "9", "10", "11", "12", "14", "16", "18")
+    alpha_choices: Sequence[str] = ()
+    hotkey_choices: Sequence[str] = ()
+    lock_hotkey_choices: Sequence[str] = ()
+    size_labels: Sequence[str] = ()
+    rule_labels: Sequence[str] = ()
+    rows: Sequence[OverlayBlockRow] = ()
+    anchors: Sequence[Tuple[str, str, str, Sequence[str]]] = ()
+    screen_choices: Sequence[str] = (OVERLAY_SCREEN_WITH_GAME,)
+    screens_text: str = ""
+    all_size: str = ""
+    lock_hotkey: str = "Ctrl+F12"
+    auto_rules: bool = False
+    attach_game: bool = True
+    idle_choices: Sequence[str] = ()
+    idle: str = ""
+    ship_blocks: Sequence[Tuple[str, str, bool]] = ()
+    ship_modules: str = "important"
+    content: Sequence[Tuple[str, str, Sequence[Tuple[str, str, bool]]]] = ()
+    carrier_filters: Sequence[Tuple[str, str]] = ()
+    carrier_filter: str = ""
+    carrier_search: str = ""
+    profiles: Sequence[str] = ()
+    profile: str = ""
+    margin: int = 24
+    hide_without_game: bool = True
+    info_text: str = ""
+    hotkey_hint: str = ""
+
+
+@dataclass
+class OverlayPageActions:
+    """Callbacks the Overlay page triggers; every one is optional."""
+
+    toggle: _Optional[Callable] = None
+    reset_positions: _Optional[Callable] = None
+    alpha_changed: _Optional[Callable] = None
+    font_changed: _Optional[Callable] = None
+    font_size_changed: _Optional[Callable] = None
+    all_size_changed: _Optional[Callable] = None
+    block_visible: _Optional[Callable] = None
+    block_lock: _Optional[Callable] = None
+    block_screen: _Optional[Callable] = None
+    block_alpha: _Optional[Callable] = None
+    block_font: _Optional[Callable] = None
+    block_size: _Optional[Callable] = None
+    block_rule: _Optional[Callable] = None
+    block_hotkey: _Optional[Callable] = None
+    block_reset: _Optional[Callable] = None
+    screens_provider: _Optional[Callable] = None
+    lock_all: _Optional[Callable] = None
+    lock_hotkey_changed: _Optional[Callable] = None
+    auto_rules_changed: _Optional[Callable] = None
+    attach_game_changed: _Optional[Callable] = None
+    idle_changed: _Optional[Callable] = None
+    ship_block_changed: _Optional[Callable] = None
+    ship_modules_changed: _Optional[Callable] = None
+    content_changed: _Optional[Callable] = None
+    carrier_filter_changed: _Optional[Callable] = None
+    carrier_search_changed: _Optional[Callable] = None
+    profile_apply: _Optional[Callable] = None
+    profile_save: _Optional[Callable] = None
+    profile_delete: _Optional[Callable] = None
+    anchor_changed: _Optional[Callable] = None
+    apply_anchors: _Optional[Callable] = None
+    hide_without_game_changed: _Optional[Callable] = None
+    margin_changed: _Optional[Callable] = None
+
+
+class OverlayPage(QWidget):
+    """HUD overlay settings: style, per-block table, behaviour and layout.
+
+    The page owns every control; the application keeps the overlay manager and
+    reads values through small typed accessors (`alpha_value()`, `block_value()`
+    …) instead of Tk variables.
+    """
+
+    TOGGLE_ON_TEXT = "▶ Включить оверлей"
+    TOGGLE_OFF_TEXT = "⏹ Выключить оверлей"
+
+    def __init__(self, state: OverlayPageState,
+                 actions: _Optional[OverlayPageActions] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.state = state
+        self.actions = actions or OverlayPageActions()
+        self.setObjectName("overlayPage")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.content = QWidget()
+        self.layout_ = QVBoxLayout(self.content)
+        self.layout_.setContentsMargins(16, 14, 16, 16)
+        self.layout_.setSpacing(8)
+        self.scroll.setWidget(self.content)
+        outer.addWidget(self.scroll)
+
+        self._build_header()
+        self._build_style()
+        self._build_blocks()
+        self._build_behaviour()
+        self._build_ship()
+        self._build_content()
+        self._build_layout()
+        self._build_hotkeys()
+        self.layout_.addStretch(1)
+
+    # ------------------------------------------------------------------ pieces
+    def _call(self, name: str, *args) -> None:
+        callback = getattr(self.actions, name, None)
+        if callable(callback):
+            callback(*args)
+
+    def _divider(self, top: int = 14, bottom: int = 14) -> None:
+        line = QFrame()
+        line.setObjectName("separator")
+        line.setFixedHeight(1)
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, top, 0, bottom)
+        wrapper_layout.addWidget(line)
+        self.layout_.addWidget(wrapper)
+
+    def _section(self, text: str) -> QLabel:
+        widget = label(text, size=11, bold=True)
+        self.layout_.addWidget(widget)
+        return widget
+
+    def _hint(self, text: str) -> QLabel:
+        widget = label(text, role="muted", size=9, wrap=True)
+        self.layout_.addWidget(widget)
+        return widget
+
+    @staticmethod
+    def _combo(items: Sequence[str], current: str = "",
+               width: _Optional[int] = None) -> QComboBox:
+        combo = QComboBox()
+        # Список не должен задавать ширину колонки по самому длинному пункту:
+        # иначе таблица блоков уезжает за край окна.
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(8)
+        combo.addItems([str(item) for item in items])
+        if width:
+            combo.setMinimumWidth(width)
+        OverlayPage.set_combo_text(combo, current)
+        return combo
+
+    @staticmethod
+    def set_combo_text(combo: QComboBox, text: str) -> None:
+        """Select ``text``; adds it when the list does not contain it yet."""
+        text = "" if text is None else str(text)
+        position = combo.findText(text)
+        blocked = combo.blockSignals(True)
+        if position < 0 and text:
+            combo.addItem(text)
+            position = combo.count() - 1
+        combo.setCurrentIndex(position if position >= 0 else 0)
+        combo.blockSignals(blocked)
+
+    # -------------------------------------------------------------- sections
+    def _build_header(self) -> None:
+        self.layout_.addWidget(heading("Настройки оверлея HUD", size=14))
+        self._hint(
+            "Оверлей работает поверх Elite Dangerous в режиме Borderless Windowed.\n"
+            "Закреплённый блок не мешает мыши — клики уходят в игру. Чтобы подвинуть "
+            "блоки или поменять размер, открепите их (Ctrl+F12 или галочки «Закреп.»). "
+            "F12 — показать/скрыть.")
+        self.toggle_btn = action_button(self.TOGGLE_ON_TEXT, self._toggle, height=34)
+        self.reset_btn = action_button("Сбросить позиции", self._reset_positions,
+                                       variant="danger", height=34)
+        self.layout_.addWidget(row(self.toggle_btn, self.reset_btn, None))
+
+    def _build_style(self) -> None:
+        self.alpha_slider = QSlider(Qt.Orientation.Horizontal)
+        self.alpha_slider.setRange(10, 100)
+        self.alpha_slider.setMinimumWidth(240)
+        self.alpha_slider.setValue(int(round(float(self.state.alpha) * 100)))
+        self.alpha_label = label(f"{self.state.alpha:.0%}", size=9)
+        self.alpha_slider.valueChanged.connect(self._on_alpha_slider)
+        self.layout_.addWidget(row(label("Прозрачность:", size=9),
+                                   self.alpha_slider, self.alpha_label, None))
+
+        self.font_combo = self._combo(self.state.font_choices, self.state.font_family)
+        self.font_combo.currentTextChanged.connect(lambda _text: self._call("font_changed"))
+        self.layout_.addWidget(row(label("Шрифт:", size=9), self.font_combo, None))
+
+        self.font_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.font_size_slider.setRange(8, 18)
+        self.font_size_slider.setMinimumWidth(240)
+        self.font_size_slider.setValue(int(self.state.font_size))
+        self.size_label = label(str(self.state.font_size), size=9)
+        self.font_size_slider.valueChanged.connect(self._on_font_size_slider)
+        self.layout_.addWidget(row(label("Размер шрифта:", size=9),
+                                   self.font_size_slider, self.size_label, None))
+
+    def _on_alpha_slider(self, value: int) -> None:
+        self.set_alpha(value / 100.0)
+        self._call("alpha_changed", float(value) / 100.0)
+
+    def _on_font_size_slider(self, value: int) -> None:
+        self.set_font_size(value)
+        self._call("font_size_changed", int(value))
+
+    def _build_blocks(self) -> None:
+        self._divider(top=12, bottom=8)
+        self._section("Блоки HUD: вид и поведение")
+        self._hint(
+            "Каждый блок настраивается отдельно: показывать ли его, закреплён ли он, "
+            "на каком экране живёт, своя прозрачность и свой размер шрифта, размер окна "
+            "и правило «показывать по ситуации». Закреплённый блок не двигается и "
+            "пропускает клики мыши в игру; откреплённый можно тянуть и настраивать. "
+            "«Экран»: «с игрой» — блок виден только поверх игры; «экран N» — блок "
+            "отвязан от игры, виден всегда и стоит на выбранном мониторе. Всё "
+            "применяется сразу — оверлей перезапускать не нужно.")
+
+        self.block_table = QWidget()
+        grid = QGridLayout(self.block_table)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
+        headers = ("Блок", "Показ", "Закреп.", "Экран", "Прозр.", "Шрифт",
+                   "Размер", "Показывать", "Клавиша", "")
+        for column, text in enumerate(headers):
+            header = label(text, size=8, bold=True, color=MUTED)
+            grid.addWidget(header, 0, column)
+
+        self.block_widgets: Dict[str, Dict[str, QWidget]] = {}
+        for row_index, block in enumerate(self.state.rows, start=1):
+            grid.addWidget(label(block.label or block.key, size=9), row_index, 0)
+            widgets: Dict[str, QWidget] = {}
+
+            check_style = "QCheckBox::indicator { width: 12px; height: 12px; }"
+            widgets["visible"] = QCheckBox()
+            widgets["visible"].setStyleSheet(check_style)
+            widgets["visible"].setChecked(bool(block.visible))
+            widgets["visible"].toggled.connect(
+                lambda checked, key=block.key: self._call("block_visible", key, bool(checked)))
+            grid.addWidget(widgets["visible"], row_index, 1)
+
+            widgets["locked"] = QCheckBox()
+            widgets["locked"].setStyleSheet(check_style)
+            widgets["locked"].setChecked(bool(block.locked))
+            widgets["locked"].toggled.connect(
+                lambda checked, key=block.key: self._call("block_lock", key, bool(checked)))
+            grid.addWidget(widgets["locked"], row_index, 2)
+
+            widgets["screen"] = self._combo(self.state.screen_choices, block.screen, 84)
+            widgets["screen"].currentTextChanged.connect(
+                lambda text, key=block.key: self._call("block_screen", key, text))
+            grid.addWidget(widgets["screen"], row_index, 3)
+
+            widgets["alpha"] = self._combo(self.state.alpha_choices, block.alpha, 74)
+            widgets["alpha"].currentTextChanged.connect(
+                lambda text, key=block.key: self._call("block_alpha", key, text))
+            grid.addWidget(widgets["alpha"], row_index, 4)
+
+            widgets["font_size"] = self._combo(self.state.font_size_choices,
+                                               block.font_size, 66)
+            widgets["font_size"].currentTextChanged.connect(
+                lambda text, key=block.key: self._call("block_font", key, text))
+            grid.addWidget(widgets["font_size"], row_index, 5)
+
+            widgets["size"] = self._combo(self.state.size_labels, block.size, 104)
+            widgets["size"].currentTextChanged.connect(
+                lambda text, key=block.key: self._call("block_size", key, text))
+            grid.addWidget(widgets["size"], row_index, 6)
+
+            widgets["auto_rule"] = self._combo(self.state.rule_labels, block.auto_rule)
+            widgets["auto_rule"].currentTextChanged.connect(
+                lambda text, key=block.key: self._call("block_rule", key, text))
+            grid.addWidget(widgets["auto_rule"], row_index, 7)
+
+            widgets["hotkey"] = self._combo(self.state.hotkey_choices, block.hotkey, 70)
+            widgets["hotkey"].currentTextChanged.connect(
+                lambda text, key=block.key: self._call("block_hotkey", key, text))
+            grid.addWidget(widgets["hotkey"], row_index, 8)
+
+            grid.addWidget(action_button("сброс", self._block_reset_callback(block.key),
+                                         height=26), row_index, 9)
+            self.block_widgets[block.key] = widgets
+        grid.setColumnStretch(7, 1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.block_table)
+        scroll.setMinimumHeight(min(260, 70 + 34 * max(1, len(self.state.rows))))
+        self.layout_.addWidget(scroll)
+
+        self.screens_label = label(self.state.screens_text, role="muted", size=8, wrap=True)
+        self.layout_.addWidget(self.screens_label)
+
+        self.all_size_combo = self._combo(self.state.size_labels, self.state.all_size, 110)
+        self.all_size_combo.currentTextChanged.connect(lambda _t: self._call("all_size_changed"))
+        self.all_size_btn = action_button("Применить", self._all_size_apply, height=30)
+        self.layout_.addWidget(row(label("Размер всех блоков:", size=9),
+                                   self.all_size_combo, self.all_size_btn, None))
+
+    def _block_reset_callback(self, key: str):
+        return lambda: self._call("block_reset", key)
+
+    def _all_size_apply(self) -> None:
+        self._call("all_size_changed")
+
+    def _build_behaviour(self) -> None:
+        self._divider()
+        self._section("Поведение оверлея")
+        self._hint(
+            "Закреплённый блок — только для глаз: мышь проходит сквозь него в игру, "
+            "сразу после запуска и всегда. Откреплённый блок ловит мышь: его можно "
+            "тянуть за шапку, менять размер за угол и открывать меню «···».")
+        self.lock_all_btn = action_button("Закрепить все", lambda: self._call("lock_all", True),
+                                          height=30)
+        self.unlock_all_btn = action_button("Открепить все",
+                                            lambda: self._call("lock_all", False), height=30)
+        self.lock_hotkey_combo = self._combo(self.state.lock_hotkey_choices,
+                                             self.state.lock_hotkey, 110)
+        self.lock_hotkey_combo.currentTextChanged.connect(
+            lambda _text: self._call("lock_hotkey_changed"))
+        self.layout_.addWidget(row(self.lock_all_btn, self.unlock_all_btn,
+                                   label("Клавиша:", size=9), self.lock_hotkey_combo,
+                                   label("закрепить/открепить все, даже из игры",
+                                         role="muted", size=9), None))
+
+        self.auto_rules_check = QCheckBox(
+            "Показывать блоки по ситуации (правила заданы в таблице выше)")
+        self.auto_rules_check.setChecked(bool(self.state.auto_rules))
+        self.auto_rules_check.toggled.connect(lambda _c: self._call("auto_rules_changed"))
+        self.layout_.addWidget(self.auto_rules_check)
+
+        self.attach_game_check = QCheckBox(
+            "Привязать оверлей к окну Elite Dangerous (только поверх игры; "
+            "блоки с экраном «экран N» видны всегда)")
+        self.attach_game_check.setChecked(bool(self.state.attach_game))
+        self.attach_game_check.toggled.connect(lambda _c: self._call("attach_game_changed"))
+        self.layout_.addWidget(self.attach_game_check)
+
+        self.idle_combo = self._combo(self.state.idle_choices, self.state.idle, 110)
+        self.idle_combo.currentTextChanged.connect(lambda _t: self._call("idle_changed"))
+        self.layout_.addWidget(row(label("Скрывать при простое:", size=9),
+                                   self.idle_combo,
+                                   label("простой = нет новых событий в журнале",
+                                         role="muted", size=9), None))
+
+    def _build_ship(self) -> None:
+        self._divider(top=12, bottom=8)
+        self._section("Блоки корабля (SHIP):")
+        self.ship_widgets: Dict[str, QCheckBox] = {}
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(2)
+        for index, (key, text, checked) in enumerate(self.state.ship_blocks):
+            check = QCheckBox(text)
+            check.setChecked(bool(checked))
+            check.toggled.connect(
+                lambda state, block=key: self._call("ship_block_changed", block, bool(state)))
+            grid.addWidget(check, index // 3, index % 3)
+            self.ship_widgets[key] = check
+        self.layout_.addWidget(holder)
+
+        self._section("Список модулей в SHIP:")
+        self.ship_modules_buttons: Dict[str, QRadioButton] = {}
+        modes = (("important", "только важные (повреждённые, выключенные, ключевые)"),
+                 ("all", "все модули"),
+                 ("off", "только итог — без списка"))
+        holder = QWidget()
+        holder_layout = QVBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.setSpacing(2)
+        for mode, text in modes:
+            button = QRadioButton(text)
+            button.setChecked(mode == (self.state.ship_modules or "important"))
+            button.toggled.connect(
+                lambda checked, name=mode: checked and self._call("ship_modules_changed", name))
+            holder_layout.addWidget(button)
+            self.ship_modules_buttons[mode] = button
+        self.layout_.addWidget(holder)
+
+    def _build_content(self) -> None:
+        self._divider()
+        self._section("Отображаемые данные по оверлеям")
+        self.content_tabs = QTabWidget()
+        self.content_widgets: Dict[str, QCheckBox] = {}
+        for block_key, block_title, sections in self.state.content:
+            tab = QWidget()
+            tab_layout = QVBoxLayout(tab)
+            tab_layout.setContentsMargins(10, 10, 10, 10)
+            tab_layout.setSpacing(4)
+            for setting, text, checked in sections:
+                check = QCheckBox(text)
+                check.setChecked(bool(checked))
+                check.toggled.connect(
+                    lambda state, name=setting: self._call("content_changed", name, bool(state)))
+                tab_layout.addWidget(check)
+                self.content_widgets[setting] = check
+            if block_key == "ship":
+                tab_layout.addWidget(label(
+                    "Показатели и режим списка модулей настраиваются выше.",
+                    role="muted", size=9, wrap=True))
+            if block_key == "carrier":
+                labels = [text for _mode, text in self.state.carrier_filters]
+                self.carrier_filter_combo = self._combo(labels, self.state.carrier_filter, 240)
+                self.carrier_filter_combo.currentTextChanged.connect(
+                    lambda _text: self._call("carrier_filter_changed"))
+                tab_layout.addWidget(self.carrier_filter_combo)
+                tab_layout.addWidget(label("Название товара (применить Enter или кнопкой):",
+                                           size=9))
+                self.carrier_search_entry = QLineEdit(self.state.carrier_search)
+                self.carrier_search_entry.setMinimumHeight(28)
+                self.carrier_search_entry.returnPressed.connect(
+                    lambda: self._call("carrier_search_changed"))
+                tab_layout.addWidget(self.carrier_search_entry)
+                self.carrier_search_btn = action_button(
+                    "Применить поиск", lambda: self._call("carrier_search_changed"), height=28)
+                tab_layout.addWidget(self.carrier_search_btn)
+                tab_layout.addWidget(label(
+                    "Фильтр меняет список, но не общие итоги. Без потребности стройки "
+                    "режимы материалов и недостачи пусты.", role="muted", size=9, wrap=True))
+            self.content_tabs.addTab(tab, block_title.upper())
+        self.layout_.addWidget(self.content_tabs)
+
+    def _build_layout(self) -> None:
+        self._divider()
+        self._section("Раскладка и привязка")
+        self._hint(
+            "Блоки прилипают к краям и углам области. Область — весь экран, либо экран с "
+            "окном игры, если включена привязка к игре; у блока, отвязанного от игры, — его "
+            "собственный экран. Профиль сохраняет всю раскладку (позиции, размеры, "
+            "видимость, прозрачность, закрепление, экран) — например «Хаул», "
+            "«Экобиология», «Бой».")
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.setEditable(True)
+        self.profile_combo.setMinimumWidth(200)
+        self.profile_combo.addItems([str(name) for name in self.state.profiles])
+        if self.state.profile:
+            self.set_combo_text(self.profile_combo, self.state.profile)
+        self.profile_apply_btn = action_button("Применить", lambda: self._call("profile_apply"),
+                                               height=30)
+        self.profile_save_btn = action_button("Сохранить", lambda: self._call("profile_save"),
+                                              height=30)
+        self.profile_delete_btn = action_button("Удалить", lambda: self._call("profile_delete"),
+                                                variant="danger", height=30)
+        self.layout_.addWidget(row(label("Профиль:", size=9), self.profile_combo,
+                                   self.profile_apply_btn, self.profile_save_btn,
+                                   self.profile_delete_btn, None))
+
+        self.margin_slider = QSlider(Qt.Orientation.Horizontal)
+        self.margin_slider.setRange(0, 120)
+        self.margin_slider.setMinimumWidth(240)
+        self.margin_slider.setValue(int(self.state.margin))
+        self.margin_label = label(f"{int(self.state.margin)} px", size=9)
+        self.margin_slider.valueChanged.connect(self._on_margin_slider)
+        self.layout_.addWidget(row(label("Отступ от края:", size=9),
+                                   self.margin_slider, self.margin_label, None))
+
+        self._section("Привязка блоков:")
+        self.anchor_widgets: Dict[str, QComboBox] = {}
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(2)
+        for index, (key, block_label, current, choices) in enumerate(self.state.anchors):
+            grid.addWidget(label(block_label, size=9), index, 0)
+            combo = QComboBox()
+            combo.addItems([str(item) for item in choices])
+            self.set_combo_text(combo, current)
+            combo.currentTextChanged.connect(
+                lambda text, block=key: self._call("anchor_changed", block, text))
+            grid.addWidget(combo, index, 1)
+            self.anchor_widgets[key] = combo
+        grid.setColumnStretch(1, 1)
+        self.layout_.addWidget(holder)
+
+        self.apply_anchors_btn = action_button("Пересчитать по якорям",
+                                               lambda: self._call("apply_anchors"), height=30)
+        self.layout_.addWidget(row(self.apply_anchors_btn, self.reset_btn_2(), None))
+
+        self.hide_without_game_check = QCheckBox("Скрывать оверлей, когда игра не запущена")
+        self.hide_without_game_check.setChecked(bool(self.state.hide_without_game))
+        self.hide_without_game_check.toggled.connect(
+            lambda _c: self._call("hide_without_game_changed"))
+        self.layout_.addWidget(self.hide_without_game_check)
+
+        self.info_label = label(self.state.info_text, role="muted", size=9, wrap=True)
+        self.layout_.addWidget(self.info_label)
+
+    def reset_btn_2(self) -> QPushButton:
+        """Second «сбросить позиции» button; the first one is in the header."""
+        return action_button("Сбросить позиции", self._reset_positions, height=30)
+
+    def _build_hotkeys(self) -> None:
+        self._divider()
+        self._section("Горячие клавиши")
+        self.hotkey_hint_label = label(self.state.hotkey_hint, role="muted", size=9, wrap=True)
+        self.layout_.addWidget(self.hotkey_hint_label)
+        self.layout_.addWidget(label(
+            "Управление оверлеями:\n"
+            "  • UL в шапке — блок откреплён: тяните за заголовок или «::», размер — за угол\n"
+            "  • LK в шапке — блок закреплён: не двигается, клики мыши уходят в игру\n"
+            "  • Закрепить/открепить все — клавиша из «Поведения оверлея» (Ctrl+F12)\n"
+            "  • ··· в шапке — меню: закрепить, отвязать от игры, экран, якорь, размер,\n"
+            "    прозрачность, шрифт\n"
+            "  • Голубая полоса сверху — блок отвязан от игры и виден всегда\n"
+            "  • Клавиши из таблицы выше — показать/скрыть конкретный блок\n"
+            "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей",
+            role="muted", size=9, wrap=True))
+
+    # ------------------------------------------------------------------ actions
+    def _toggle(self) -> None:
+        self._call("toggle")
+
+    def _reset_positions(self) -> None:
+        self._call("reset_positions")
+
+    def _on_margin_slider(self, value: int) -> None:
+        self.set_margin(value)
+        self._call("margin_changed", int(value))
+
+    # ------------------------------------------------------------------- public
+    def alpha_value(self) -> float:
+        return self.alpha_slider.value() / 100.0
+
+    def set_alpha(self, value: float) -> None:
+        blocked = self.alpha_slider.blockSignals(True)
+        self.alpha_slider.setValue(int(round(max(0.1, min(1.0, float(value))) * 100)))
+        self.alpha_slider.blockSignals(blocked)
+        self.alpha_label.setText(f"{self.alpha_value():.0%}")
+
+    def font_family(self) -> str:
+        return self.font_combo.currentText()
+
+    def set_font_family(self, name: str) -> None:
+        self.set_combo_text(self.font_combo, name)
+
+    def font_size(self) -> int:
+        return int(self.font_size_slider.value())
+
+    def set_font_size(self, value: int) -> None:
+        blocked = self.font_size_slider.blockSignals(True)
+        self.font_size_slider.setValue(int(value))
+        self.font_size_slider.blockSignals(blocked)
+        self.size_label.setText(str(int(value)))
+
+    def block_value(self, key: str, field: str):
+        """Value of one cell: ``True``/``False`` for checkboxes, text otherwise."""
+        widget = self.block_widgets[key][field]
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        return widget.currentText()
+
+    def set_block_value(self, key: str, field: str, value) -> None:
+        widget = self.block_widgets[key][field]
+        if isinstance(widget, QCheckBox):
+            blocked = widget.blockSignals(True)
+            widget.setChecked(bool(value))
+            widget.blockSignals(blocked)
+        else:
+            self.set_combo_text(widget, value)
+
+    def set_screen_choices(self, choices: Sequence[str]) -> None:
+        for widgets in self.block_widgets.values():
+            combo = widgets["screen"]
+            current = combo.currentText()
+            blocked = combo.blockSignals(True)
+            combo.clear()
+            combo.addItems([str(item) for item in choices])
+            combo.blockSignals(blocked)
+            self.set_combo_text(combo, current)
+
+    def sync_combo_choices(self, field: str, choices: Sequence[str]) -> None:
+        """Refresh the list of a per-block column, keeping the current values."""
+        for widgets in self.block_widgets.values():
+            combo = widgets[field]
+            current = combo.currentText()
+            blocked = combo.blockSignals(True)
+            combo.clear()
+            combo.addItems([str(item) for item in choices])
+            combo.blockSignals(blocked)
+            self.set_combo_text(combo, current)
+
+    def ship_block(self, key: str) -> bool:
+        return self.ship_widgets[key].isChecked()
+
+    def ship_modules_view(self) -> str:
+        for mode, button in self.ship_modules_buttons.items():
+            if button.isChecked():
+                return mode
+        return "important"
+
+    def set_ship_modules_view(self, mode: str) -> None:
+        button = self.ship_modules_buttons.get(str(mode))
+        if button is not None:
+            blocked = button.blockSignals(True)
+            button.setChecked(True)
+            button.blockSignals(blocked)
+
+    def content_value(self, setting: str) -> bool:
+        return self.content_widgets[setting].isChecked()
+
+    def auto_rules(self) -> bool:
+        return self.auto_rules_check.isChecked()
+
+    def set_auto_rules(self, enabled: bool) -> None:
+        blocked = self.auto_rules_check.blockSignals(True)
+        self.auto_rules_check.setChecked(bool(enabled))
+        self.auto_rules_check.blockSignals(blocked)
+
+    def attach_game(self) -> bool:
+        return self.attach_game_check.isChecked()
+
+    def set_attach_game(self, enabled: bool) -> None:
+        blocked = self.attach_game_check.blockSignals(True)
+        self.attach_game_check.setChecked(bool(enabled))
+        self.attach_game_check.blockSignals(blocked)
+
+    def hide_without_game(self) -> bool:
+        return self.hide_without_game_check.isChecked()
+
+    def idle_text(self) -> str:
+        return self.idle_combo.currentText()
+
+    def set_idle_text(self, text: str) -> None:
+        self.set_combo_text(self.idle_combo, text)
+
+    def lock_hotkey_text(self) -> str:
+        return self.lock_hotkey_combo.currentText()
+
+    def set_lock_hotkey_text(self, text: str) -> None:
+        self.set_combo_text(self.lock_hotkey_combo, text)
+
+    def all_size_text(self) -> str:
+        return self.all_size_combo.currentText()
+
+    def set_all_size_text(self, text: str) -> None:
+        self.set_combo_text(self.all_size_combo, text)
+
+    def profile_text(self) -> str:
+        return self.profile_combo.currentText()
+
+    def set_profile_text(self, text: str) -> None:
+        self.set_combo_text(self.profile_combo, text)
+
+    def set_profiles(self, names: Sequence[str], selected: str = "") -> None:
+        blocked = self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItems([str(name) for name in names])
+        self.profile_combo.blockSignals(blocked)
+        self.set_combo_text(self.profile_combo, selected or self.profile_combo.currentText())
+
+    def profiles(self) -> List[str]:
+        return [self.profile_combo.itemText(index)
+                for index in range(self.profile_combo.count())]
+
+    def margin_value(self) -> int:
+        return int(self.margin_slider.value())
+
+    def set_margin(self, value: int) -> None:
+        blocked = self.margin_slider.blockSignals(True)
+        self.margin_slider.setValue(int(value))
+        self.margin_slider.blockSignals(blocked)
+        self.margin_label.setText(f"{int(value)} px")
+
+    def anchor_text(self, key: str) -> str:
+        return self.anchor_widgets[key].currentText()
+
+    def set_anchor_text(self, key: str, text: str) -> None:
+        self.set_combo_text(self.anchor_widgets[key], text)
+
+    def carrier_filter_text(self) -> str:
+        return self.carrier_filter_combo.currentText()
+
+    def set_carrier_filter_text(self, text: str) -> None:
+        self.set_combo_text(self.carrier_filter_combo, text)
+
+    def carrier_search_text(self) -> str:
+        return self.carrier_search_entry.text()
+
+    def set_carrier_search_text(self, text: str) -> None:
+        self.carrier_search_entry.setText(str(text or ""))
+
+    def set_toggle_running(self, running: bool) -> None:
+        self.toggle_btn.setText(self.TOGGLE_OFF_TEXT if running else self.TOGGLE_ON_TEXT)
+        self.toggle_btn.setProperty("variant", "danger" if running else "default")
+        style = self.toggle_btn.style()
+        style.unpolish(self.toggle_btn)
+        style.polish(self.toggle_btn)
+
+    def set_screens_text(self, text: str) -> None:
+        self.screens_label.setText(str(text))
+
+    def set_info_text(self, text: str) -> None:
+        self.info_label.setText(str(text))
+
+    def set_hotkey_hint_text(self, text: str) -> None:
+        self.hotkey_hint_label.setText(str(text))
 
 
 # ===========================================================================
