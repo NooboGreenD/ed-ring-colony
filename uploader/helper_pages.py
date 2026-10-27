@@ -10,11 +10,13 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QBrush, QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
@@ -22,6 +24,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -32,6 +36,7 @@ from ui_qt import (
     MUTED,
     ORANGE,
     PANEL,
+    PANEL_ALT,
     TEXT,
     action_button,
     heading,
@@ -640,11 +645,160 @@ class UploadPage(QWidget):
 
 
 # ===========================================================================
+#  Страница «Маршрут»
+# ===========================================================================
+#: Заголовки колонок и стартовая ширина в пикселях.
+ROUTE_COLUMNS = (("#", 46), ("Система", 300), ("Статус", 130), ("Посещена", 170))
+#: Цвет строки по состоянию системы маршрута.
+ROUTE_STATUS_COLORS = {"visited": GREEN, "current": ORANGE, "pending": MUTED}
+
+
+@dataclass
+class RoutePageActions:
+    """Callbacks the Route page triggers; every one is optional."""
+
+    import_route: _Optional[Callable] = None
+    export_csv: _Optional[Callable] = None
+    import_atlas: _Optional[Callable] = None
+    clear: _Optional[Callable] = None
+
+
+class RoutePage(QWidget):
+    """Route tracking: import buttons, a read-only table and a counter.
+
+    The table replaces the Tk ``Treeview``: rows are written whole with
+    :meth:`set_rows`, so the caller no longer deletes items one by one and no
+    longer configures tags for colours.
+    """
+
+    def __init__(self, actions: _Optional[RoutePageActions] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.actions = actions or RoutePageActions()
+        self.setObjectName("routePage")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(8)
+
+        layout.addWidget(heading("Отслеживание маршрута", size=14))
+        layout.addWidget(label(
+            "Импортируйте маршрут из NavRoute.json или CSV. Системы отмечаются "
+            "автоматически при разборе журналов.", role="muted", size=9, wrap=True))
+
+        self.import_btn = action_button("Импорт маршрута", self._import_route, height=34)
+        self.export_btn = action_button("Экспорт CSV", self._export_csv, height=34)
+        self.atlas_btn = action_button("Забрать из Atlas", self._import_atlas,
+                                       variant="primary", height=34)
+        self.clear_btn = action_button("Очистить", self._clear, height=34)
+        layout.addWidget(row(self.import_btn, self.export_btn, self.atlas_btn,
+                             self.clear_btn, None))
+
+        self.table = QTableWidget(0, len(ROUTE_COLUMNS))
+        self.table.setObjectName("routeTable")
+        for index, (title, _width) in enumerate(ROUTE_COLUMNS):
+            header_item = QTableWidgetItem(title)
+            header_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter |
+                (Qt.AlignmentFlag.AlignLeft if index == 1
+                 else Qt.AlignmentFlag.AlignHCenter))
+            self.table.setHorizontalHeaderItem(index, header_item)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(False)
+        self.table.setWordWrap(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        for index, (_title, width) in enumerate(ROUTE_COLUMNS):
+            self.table.setColumnWidth(index, width)
+        # Список систем растягивается на всю свободную ширину: иначе на широком
+        # окне справа остаётся пустое поле, а имена систем обрезаны.
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setStyleSheet(
+            f"QTableWidget {{ background: {PANEL}; color: {TEXT};"
+            f" border: 1px solid #3b4044; border-radius: 6px;"
+            f" gridline-color: #3b4044; }}"
+            f"QTableWidget::item {{ padding: 4px 6px; }}"
+            f"QTableWidget::item:selected {{ background: #33414a; color: {TEXT}; }}"
+            f"QHeaderView::section {{ background: {PANEL_ALT}; color: {MUTED};"
+            f" border: none; border-bottom: 1px solid #3b4044; padding: 6px;"
+            f" font-weight: 600; }}")
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.table, 1)
+
+        self.counter = label("Маршрут не загружен", role="muted", size=9, wrap=True)
+        layout.addWidget(self.counter)
+
+    # ------------------------------------------------------------------ pieces
+    def _call(self, name: str) -> None:
+        callback = getattr(self.actions, name, None)
+        if callable(callback):
+            callback()
+
+    def _import_route(self) -> None:
+        self._call("import_route")
+
+    def _export_csv(self) -> None:
+        self._call("export_csv")
+
+    def _import_atlas(self) -> None:
+        self._call("import_atlas")
+
+    def _clear(self) -> None:
+        self._call("clear")
+
+    # ------------------------------------------------------------------ public
+    def set_rows(self, rows: Sequence[Sequence]) -> None:
+        """Replace the table contents.
+
+        Each row is ``(index, system, status_text, visited_text, status_key)``;
+        the last element picks the text colour (see ``ROUTE_STATUS_COLORS``).
+        """
+        rows = list(rows or ())
+        self.table.setRowCount(len(rows))
+        for row_index, values in enumerate(rows):
+            index, system, status_text, visited_text = list(values)[:4]
+            status_key = values[4] if len(values) > 4 else ""
+            cells = (str(index), str(system), str(status_text), str(visited_text))
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if column == 0:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                elif column in (2, 3):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                color = ROUTE_STATUS_COLORS.get(str(status_key))
+                if color:
+                    item.setForeground(QBrush(QColor(color)))
+                self.table.setItem(row_index, column, item)
+
+    def row_values(self, row: int) -> Tuple[str, ...]:
+        """Texts of one row, as the Tk tests used to read them."""
+        values = []
+        for column in range(self.table.columnCount()):
+            item = self.table.item(row, column)
+            values.append(item.text() if item is not None else "")
+        return tuple(values)
+
+    def row_count(self) -> int:
+        return self.table.rowCount()
+
+    def set_counter(self, text: str) -> None:
+        self.counter.setText(str(text))
+
+    def counter_text(self) -> str:
+        return self.counter.text()
+
+
+# ===========================================================================
 #  Страница «Инфографика пилота»
 # ===========================================================================
 from typing import Dict, Iterable, List, Sequence, Tuple
 
-from PySide6.QtGui import QBrush, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGridLayout
 
 PILOT_KPI_KEYS = ("kpi_tons", "kpi_deliveries", "kpi_cargo", "kpi_systems")

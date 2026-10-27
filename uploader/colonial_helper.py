@@ -1017,81 +1017,22 @@ class ColonialHelperApp:
     #  Вкладка: Маршрут
     # ============================================================
     def _build_tab_route(self):
-        frame = tb.Frame(self.tab_route, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        """Вкладка «Маршрут» на чистом Qt (helper_pages.RoutePage)."""
+        from helper_pages import RoutePage, RoutePageActions
 
-        tb.Label(frame, text="Отслеживание маршрута", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-
-        btn_frame = tb.Frame(frame)
-        btn_frame.pack(anchor=W, pady=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Импорт маршрута",
-            command=self._on_import_route,
-            bootstyle="info-outline",
-            width=18,
-        ).pack(side=LEFT, padx=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Экспорт CSV",
-            command=self._on_export_route,
-            bootstyle="warning-outline",
-            width=15,
-        ).pack(side=LEFT, padx=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Забрать из Atlas",
-            command=self._on_import_atlas_route,
-            bootstyle="primary-outline",
-            width=18,
-        ).pack(side=LEFT, padx=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Очистить",
-            command=self._on_clear_route,
-            bootstyle="success-outline",
-            width=12,
-        ).pack(side=LEFT)
-
-        tb.Label(
-            frame,
-            text="Импортируйте маршрут из NavRoute.json или CSV. Системы отмечаются автоматически при разборе журналов.",
-            foreground=COLOR_MUTED,
-            wraplength=700,
-        ).pack(anchor=W, pady=(5, 10))
-
-        tree_frame = tb.Frame(frame, relief="solid", borderwidth=1)
-        tree_frame.pack(fill=BOTH, expand=True)
-
-        columns = ("index", "system", "status", "visited")
-        self.route_tree = tb.Treeview(
-            tree_frame,
-            columns=columns,
-            show="headings",
-            bootstyle="dark",
-            height=15,
+        actions = RoutePageActions(
+            import_route=self._on_import_route,
+            export_csv=self._on_export_route,
+            import_atlas=self._on_import_atlas_route,
+            clear=self._on_clear_route,
         )
-        self.route_tree.heading("index", text="#")
-        self.route_tree.heading("system", text="Система")
-        self.route_tree.heading("status", text="Статус")
-        self.route_tree.heading("visited", text="Посещена")
-        self.route_tree.column("index", width=40, anchor=CENTER)
-        self.route_tree.column("system", width=300, anchor=W)
-        self.route_tree.column("status", width=120, anchor=CENTER)
-        self.route_tree.column("visited", width=180, anchor=CENTER)
+        self.route_page = RoutePage(actions)
+        self.tab_route._get_tk_layout("pack").addWidget(self.route_page)
+        self.route_page.show()
 
-        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.route_tree.yview)
-        self.route_tree.configure(yscrollcommand=vsb.set)
-
-        self.route_tree.pack(side=LEFT, fill=BOTH, expand=True)
-        vsb.pack(side=RIGHT, fill=Y)
-
-        self.route_counter = tb.Label(frame, text="Маршрут не загружен", foreground=COLOR_MUTED)
-        self.route_counter.pack(anchor=W, pady=(8, 0))
+        # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
+        self.route_tree = self.route_page.table
+        self.route_counter = self.route_page.counter
 
     # ============================================================
     #  Вкладка: Колонизатор (Raven Colonial)
@@ -10618,13 +10559,16 @@ class ColonialHelperApp:
         self.log("Маршрут очищен", "info")
 
     def _refresh_route_tree(self):
-        for item in self.route_tree.get_children():
-            self.route_tree.delete(item)
-
-        if not self.route.systems:
-            self.route_counter.config(text="Маршрут не загружен")
+        page = getattr(self, "route_page", None)
+        if page is None:
             return
 
+        if not self.route.systems:
+            page.set_rows([])
+            page.set_counter("Маршрут не загружен")
+            return
+
+        rows = []
         for s in self.route.systems:
             status_label = {
                 "visited": "✓ Посещена",
@@ -10640,21 +10584,14 @@ class ColonialHelperApp:
                 except Exception:
                     visited_str = str(s["visited_at"])
 
-            self.route_tree.insert(
-                "",
-                END,
-                values=(s["index"], s["name"], status_label, visited_str),
-                tags=(s["status"],),
-            )
+            rows.append((s["index"], s["name"], status_label, visited_str,
+                         s["status"]))
 
-        self.route_tree.tag_configure("visited", foreground=COLOR_GREEN)
-        self.route_tree.tag_configure("current", foreground=COLOR_ORANGE)
-        self.route_tree.tag_configure("pending", foreground=COLOR_MUTED)
-
+        page.set_rows(rows)
         visited = self.route.visited_count
         total = len(self.route.systems)
-        self.route_counter.config(
-            text=f"Всего: {total} | Посещено: {visited} | Осталось: {total - visited}"
+        page.set_counter(
+            f"Всего: {total} | Посещено: {visited} | Осталось: {total - visited}"
         )
 
     # ============================================================
