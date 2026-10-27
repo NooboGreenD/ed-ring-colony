@@ -74,12 +74,23 @@ QPushButton[variant="flat"] {{
 QPushButton[variant="flat"]:hover {{ color: {TEXT}; }}
 QPushButton:disabled {{ color: {DISABLED_TEXT}; background: {PANEL_ALT}; border-color: {LINE}; }}
 QPushButton[variant="primary"]:disabled {{ background: #4a3a2a; color: #a89a8c; }}
+QPushButton[variant="danger"] {{
+    color: {RED}; border-color: {RED};
+}}
+QPushButton[variant="danger"]:hover {{ background: #4a2b2b; }}
 QPushButton[variant="tab"] {{
     background: transparent; border: none; border-bottom: 2px solid transparent;
     border-radius: 0; color: {MUTED}; padding: 9px 14px;
 }}
 QPushButton[variant="tab"]:checked {{ color: {TEXT}; border-bottom-color: {ORANGE}; }}
 QCheckBox {{ color: {TEXT}; spacing: 8px; }}
+QCheckBox::indicator {{
+    width: 14px; height: 14px; border: 1px solid {LINE};
+    border-radius: 3px; background: {PANEL_ALT};
+}}
+QCheckBox::indicator:hover {{ border-color: {CYAN}; }}
+QCheckBox::indicator:checked {{ background: {ORANGE}; border-color: {ORANGE}; }}
+QCheckBox::indicator:disabled {{ background: {PANEL}; border-color: {LINE}; }}
 QComboBox {{
     background: {PANEL_ALT}; color: {TEXT}; border: 1px solid {LINE};
     border-radius: 6px; padding: 6px 10px;

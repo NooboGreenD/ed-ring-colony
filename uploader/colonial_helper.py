@@ -958,113 +958,51 @@ class ColonialHelperApp:
     #  Вкладка: Загрузка логов
     # ============================================================
     def _build_tab_upload(self):
-        frame = tb.Frame(self.tab_upload, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        """Вкладка «Загрузка логов» на чистом Qt (helper_pages.UploadPage)."""
+        from helper_pages import UploadPage, UploadPageActions
 
-        tb.Label(frame, text="Загрузка журналов", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-
-        btn_frame = tb.Frame(frame)
-        btn_frame.pack(anchor=W, pady=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Выбрать файлы .log",
-            command=self._on_select_files,
-            bootstyle="info-outline",
-            width=22,
-        ).pack(side=LEFT, padx=(0, 10))
-
-        self.upload_btn = tb.Button(
-            btn_frame,
-            text="Загрузить",
-            command=self._on_upload,
-            bootstyle="warning-outline",
-            width=15,
-            state=DISABLED,
+        actions = UploadPageActions(
+            select_files=self._on_select_files,
+            upload=self._on_upload,
+            toggle_watcher=self._on_toggle_watcher,
+            reset_import_cache=self._reset_import_cache,
+            reset_server_journals=self._reset_server_journals,
+            skip_imported=self._on_skip_imported_changed,
+            backfill_third_party=self._on_backfill_third_party_changed,
         )
-        self.upload_btn.pack(side=LEFT, padx=(0, 10))
-
-        self.watcher_btn = tb.Button(
-            btn_frame,
-            text="▶ Следить за игрой",
-            command=self._on_toggle_watcher,
-            bootstyle="success-outline",
-            width=22,
+        self.upload_page = UploadPage(
+            skip_imported=bool(self.skip_imported_files),
+            backfill_enabled=bool(self.dispatcher.backfill_enabled),
+            actions=actions,
         )
-        self.watcher_btn.pack(side=LEFT)
+        self.tab_upload._get_tk_layout("pack").addWidget(self.upload_page)
+        self.upload_page.show()
 
-        self.files_label = tb.Label(frame, text="Файлы не выбраны", foreground=COLOR_MUTED)
-        self.files_label.pack(anchor=W, pady=(5, 0))
-
-        self.progress = tb.Progressbar(frame, mode="determinate", bootstyle="warning")
-        self.progress.pack(fill=X, pady=(15, 5))
-        self.progress["value"] = 0
-
-        self.progress_label = tb.Label(frame, text="", foreground=COLOR_MUTED)
-        self.progress_label.pack(anchor=W)
-
-        # -- Настройки первичной загрузки --
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=(15, 10))
-        tb.Label(
-            frame,
-            text="Первичная загрузка (вся история журналов)",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor=W, pady=(0, 6))
-
-        self.skip_imported_var = tb.BooleanVar(value=self.skip_imported_files)
-        tb.Checkbutton(
-            frame,
-            text="Пропускать файлы, загруженные ранее (быстрый повторный импорт)",
-            variable=self.skip_imported_var,
-            bootstyle="success-round-toggle",
-            command=self._on_skip_imported_changed,
-        ).pack(anchor=W)
-
-        self.backfill_third_party_var = tb.BooleanVar(value=bool(self.dispatcher.backfill_enabled))
-        tb.Checkbutton(
-            frame,
-            text="Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)",
-            variable=self.backfill_third_party_var,
-            bootstyle="warning-round-toggle",
-            command=self._on_backfill_third_party_changed,
-        ).pack(anchor=W, pady=(2, 0))
-
-        tb.Label(
-            frame,
-            text="По умолчанию история отправляется только на ED Ring Colony: внешние сервисы "
-                 "получают лишь live-события watcher'а. Отправка тысяч исторических событий "
-                 "в EDSM/Inara/Raven — это часы ожидания и риск блокировки по rate limit.",
-            foreground=COLOR_MUTED,
-            wraplength=760,
-            font=("Segoe UI", 9),
-        ).pack(anchor=W, pady=(2, 8))
-
-        cache_frame = tb.Frame(frame)
-        cache_frame.pack(anchor=W)
-        tb.Button(
-            cache_frame,
-            text="Сбросить кэш импорта",
-            command=self._reset_import_cache,
-            bootstyle="secondary-outline",
-            width=22,
-        ).pack(side=LEFT, padx=(0, 6))
-        tb.Button(
-            cache_frame,
-            text="Очистить логи на сервере",
-            command=self._reset_server_journals,
-            bootstyle="danger-outline",
-            width=26,
-        ).pack(side=LEFT)
+        # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
+        self.select_files_btn = self.upload_page.select_btn
+        self.upload_btn = self.upload_page.upload_btn
+        self.watcher_btn = self.upload_page.watcher_btn
+        self.files_label = self.upload_page.files_label
+        self.progress = self.upload_page.progress
+        self.progress_label = self.upload_page.progress_label
+        self.skip_imported_var = self.upload_page.skip_imported_var
+        self.backfill_third_party_var = self.upload_page.backfill_third_party_var
+        self.reset_cache_btn = self.upload_page.reset_cache_btn
+        self.reset_server_btn = self.upload_page.reset_server_btn
 
         self.selected_files: list[Path] = []
 
-    def _on_skip_imported_changed(self):
-        self.skip_imported_files = bool(self.skip_imported_var.get())
+    def _on_skip_imported_changed(self, checked=None):
+        if checked is None:
+            checked = self.skip_imported_var.isChecked()
+        self.skip_imported_files = bool(checked)
         self.config["skip_imported_files"] = self.skip_imported_files
         self.save_config()
 
-    def _on_backfill_third_party_changed(self):
-        enabled = bool(self.backfill_third_party_var.get())
+    def _on_backfill_third_party_changed(self, checked=None):
+        if checked is None:
+            checked = self.backfill_third_party_var.isChecked()
+        enabled = bool(checked)
         self.dispatcher.configure(backfill_enabled=enabled)
         self.config["backfill_send_third_party"] = enabled
         self.save_config()
@@ -5803,7 +5741,7 @@ class ColonialHelperApp:
             "game_focused": bool(game_state.focused),
             "game_detail": game_state.process_name or "",
             "exobiology": self._exobiology_overlay_state(),
-            "progress": self.progress_label.cget("text") or "",
+            "progress": self.upload_page.progress_text() or "",
             "log_lines": [],
             "current": "—",
             "next": "—",
@@ -7381,8 +7319,8 @@ class ColonialHelperApp:
             # журнала ED (Journal.YYYY-MM-DDThhmmss.NN.log) сортируются
             # лексикографически так же, как и хронологически.
             self.selected_files = sorted((Path(f) for f in files), key=lambda p: p.name)
-            self.files_label.config(text=f"Выбрано файлов: {len(self.selected_files)}")
-            self.upload_btn.config(state=NORMAL)
+            self.upload_page.set_files_text(f"Выбрано файлов: {len(self.selected_files)}")
+            self.upload_page.set_upload_enabled(True)
             self.log(f"Выбрано {len(self.selected_files)} файлов", "info")
 
     def _on_upload(self):
@@ -7392,9 +7330,9 @@ class ColonialHelperApp:
             self.log("Сначала введите и проверьте API токен", "error")
             return
 
-        self.upload_btn.config(state=DISABLED)
-        self.progress["value"] = 0
-        self.progress_label.config(text="Обработка...")
+        self.upload_page.set_upload_enabled(False)
+        self.upload_page.set_progress(0)
+        self.upload_page.set_progress_text("Обработка...")
         self.root.update_idletasks()
 
         threading.Thread(target=self._do_upload_thread, daemon=True).start()
@@ -7570,9 +7508,9 @@ class ColonialHelperApp:
         def apply():
             try:
                 if value is not None:
-                    self.progress.configure(value=max(0.0, min(100.0, float(value))))
+                    self.upload_page.set_progress(value)
                 if text is not None:
-                    self.progress_label.configure(text=text)
+                    self.upload_page.set_progress_text(text)
             except Exception:
                 pass
 
@@ -7622,7 +7560,7 @@ class ColonialHelperApp:
         if not total:
             self.root.after(0, lambda: self.log("Нет файлов для загрузки — все выбранные уже импортированы", "warn"))
             self.root.after(0, lambda: self._update_progress(100, "Все выбранные файлы уже загружены", force=True))
-            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+            self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
             return
 
         batch_size = self._UPLOAD_BATCH_SIZE
@@ -7787,7 +7725,7 @@ class ColonialHelperApp:
         if not all_deliveries and not construction_events and not community_goal_reports:
             self.root.after(0, lambda: self.log("Доставки, события строительства и CG не найдены", "warn"))
             self.root.after(0, lambda: self._mark_files_imported(accepted_files))
-            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+            self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
             self.root.after(0, lambda: self._update_progress(0, "", force=True))
             return
 
@@ -7842,7 +7780,7 @@ class ColonialHelperApp:
             if construction_ok and community_goal_reports_ok:
                 self.root.after(0, lambda: self._mark_files_imported(accepted_files))
             self.root.after(0, lambda: self._update_progress(100, "Готово", force=True))
-            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+            self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
             return
 
         self.root.after(
@@ -7873,7 +7811,7 @@ class ColonialHelperApp:
             self.root.after(
                 0, lambda e=str(e): self._update_progress(None, f"Ошибка: {e[:100]}", force=True)
             )
-            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+            self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
             return
 
         self.root.after(0, lambda: self._update_progress(100, None, force=True))
@@ -7908,8 +7846,8 @@ class ColonialHelperApp:
             )
             self.root.after(
                 0,
-                lambda ins=inserted, rt=route_tons: self.progress_label.config(
-                    text=f"Загружено: {ins} записей ({rt:.0f}t на маршрут)"
+                lambda ins=inserted, rt=route_tons: self.upload_page.set_progress_text(
+                    f"Загружено: {ins} записей ({rt:.0f}t на маршрут)"
                 ),
             )
             if construction_ok and community_goal_reports_ok:
@@ -7936,9 +7874,9 @@ class ColonialHelperApp:
             # вкладку "Лог". Показываем хотя бы начало реального текста ошибки.
             self.root.after(
                 0,
-                lambda e=error_text: self.progress_label.config(text=f"Ошибка: {e[:100]}"),
+                lambda e=error_text: self.upload_page.set_progress_text(f"Ошибка: {e[:100]}"),
             )
-        self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+        self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
 
     # ============================================================
     #  Watcher
@@ -7990,7 +7928,7 @@ class ColonialHelperApp:
 
         self.carrier.reset()
 
-        self.watcher_btn.config(text="⏹ Остановить", bootstyle="danger-outline")
+        self.upload_page.set_watcher_running(True)
         self.log("Watcher запущен. Мониторинг журналов...", "success")
         self.set_status("Watcher: активен")
         self.overlay_manager.log("Watcher запущен", "success")
@@ -8521,7 +8459,7 @@ class ColonialHelperApp:
     def _stop_watcher(self):
         self.watcher_active = False
         self.watcher_stop_event.set()
-        self.watcher_btn.config(text="▶ Следить за игрой", bootstyle="success-outline")
+        self.upload_page.set_watcher_running(False)
         self.log("Watcher остановлен", "info")
         self.set_status("Готов")
         self.overlay_manager.log("Watcher остановлен", "info")
@@ -8576,13 +8514,11 @@ class ColonialHelperApp:
         else:
             percent = 100.0
             detail = f"Первичная загрузка: файлов для чтения нет | {done_files}/{total_files}"
-        self.progress.configure(value=percent, maximum=100)
-        self.progress_label.configure(text=detail)
+        self.upload_page.set_progress(percent, detail)
 
     def _finish_journal_reconciliation(self, message: str):
         """Оставить результат первичной сверки в UI, не стирая прогресс."""
-        self.progress.configure(value=100, maximum=100)
-        self.progress_label.configure(text=message)
+        self.upload_page.set_progress(100, message)
         self.log(message, "success")
 
         # Итог по внешним сервисам за время первичной сверки — чтобы было

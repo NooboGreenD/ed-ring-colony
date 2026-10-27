@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -36,6 +37,7 @@ from ui_qt import (
     heading,
     label,
     panel,
+    row,
 )
 
 #: Pastel-on-dark colours for log levels, matching the rest of the program.
@@ -425,15 +427,225 @@ class AuthPage(QWidget):
 
 
 # ===========================================================================
+#  Страница «Загрузка журналов»
+# ===========================================================================
+@dataclass
+class UploadPageActions:
+    """Callbacks the Upload page triggers; every one is optional."""
+
+    select_files: _Optional[Callable] = None
+    upload: _Optional[Callable] = None
+    toggle_watcher: _Optional[Callable] = None
+    reset_import_cache: _Optional[Callable] = None
+    reset_server_journals: _Optional[Callable] = None
+    skip_imported: _Optional[Callable] = None
+    backfill_third_party: _Optional[Callable] = None
+
+
+class UploadPage(QWidget):
+    """Journal upload: file selection, progress, watcher and import options.
+
+    The attribute names match the ones the rest of the program uses
+    (``upload_btn``, ``files_label``, ``progress`` …), but everything is a plain
+    Qt widget: progress is ``set_progress()`` instead of ``configure(value=…)``
+    and buttons are switched with ``set_upload_enabled()``.
+    """
+
+    WATCHER_IDLE_TEXT = "▶ Следить за игрой"
+    WATCHER_RUNNING_TEXT = "⏹ Остановить"
+    #: Подпись под прогрессом, пока файлы не выбраны.
+    FILES_EMPTY_TEXT = "Файлы не выбраны"
+
+    def __init__(self, *, skip_imported: bool = True, backfill_enabled: bool = False,
+                 actions: _Optional[UploadPageActions] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.actions = actions or UploadPageActions()
+        self.setObjectName("uploadPage")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content = QWidget()
+        self.layout_ = QVBoxLayout(self.content)
+        self.layout_.setContentsMargins(16, 14, 16, 16)
+        self.layout_.setSpacing(8)
+        self.scroll.setWidget(self.content)
+        outer.addWidget(self.scroll)
+
+        self.layout_.addWidget(heading("Загрузка журналов", size=14))
+        self.layout_.addWidget(label(
+            "Файлы журнала Elite Dangerous читаются локально и отправляются "
+            "только на ваш сервер проекта.", role="muted", size=9, wrap=True))
+
+        # -- Кнопки действий ------------------------------------------------
+        self.select_btn = action_button("Выбрать файлы .log", self._select_files,
+                                        height=34)
+        self.upload_btn = action_button("Загрузить", self._upload,
+                                        variant="primary", height=34)
+        self.upload_btn.setEnabled(False)
+        self.watcher_btn = action_button(self.WATCHER_IDLE_TEXT, self._toggle_watcher,
+                                         height=34)
+        self.layout_.addWidget(row(self.select_btn, self.upload_btn,
+                                   self.watcher_btn, None))
+
+        self.files_label = label(self.FILES_EMPTY_TEXT, role="muted", size=9, wrap=True)
+        self.layout_.addWidget(self.files_label)
+
+        self.progress = QProgressBar()
+        self.progress.setObjectName("uploadProgress")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        self.progress.setStyleSheet(
+            f"QProgressBar {{ background: #202428; border: none; border-radius: 5px; }}"
+            f"QProgressBar::chunk {{ background: {ORANGE}; border-radius: 5px; }}")
+        progress_holder = QWidget()
+        progress_layout = QVBoxLayout(progress_holder)
+        progress_layout.setContentsMargins(0, 8, 0, 4)
+        progress_layout.addWidget(self.progress)
+        self.layout_.addWidget(progress_holder)
+
+        self.progress_label = label("", role="muted", size=9, wrap=True)
+        self.layout_.addWidget(self.progress_label)
+
+        # -- Первичная загрузка ---------------------------------------------
+        self._divider()
+        self.layout_.addWidget(label("Первичная загрузка (вся история журналов)",
+                                     size=11, bold=True))
+
+        self.skip_imported_var = QCheckBox(
+            "Пропускать файлы, загруженные ранее (быстрый повторный импорт)")
+        self.skip_imported_var.setChecked(bool(skip_imported))
+        self.skip_imported_var.toggled.connect(self._on_skip_imported_toggled)
+        self.layout_.addWidget(self.skip_imported_var)
+
+        self.backfill_third_party_var = QCheckBox(
+            "Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)")
+        self.backfill_third_party_var.setChecked(bool(backfill_enabled))
+        self.backfill_third_party_var.toggled.connect(self._on_backfill_toggled)
+        self.layout_.addWidget(self.backfill_third_party_var)
+
+        self.layout_.addWidget(label(
+            "По умолчанию история отправляется только на ED Ring Colony: внешние "
+            "сервисы получают лишь live-события watcher'а. Отправка тысяч "
+            "исторических событий в EDSM/Inara/Raven — это часы ожидания и риск "
+            "блокировки по rate limit.", role="muted", size=9, wrap=True))
+
+        self.reset_cache_btn = action_button("Сбросить кэш импорта",
+                                             self._reset_import_cache, height=32)
+        self.reset_server_btn = action_button("Очистить логи на сервере",
+                                              self._reset_server_journals,
+                                              variant="danger", height=32)
+        self.layout_.addWidget(row(self.reset_cache_btn, self.reset_server_btn, None))
+        self.layout_.addStretch(1)
+
+    # ------------------------------------------------------------------ pieces
+    def _divider(self) -> None:
+        line = QFrame()
+        line.setObjectName("separator")
+        line.setFixedHeight(1)
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 12, 0, 12)
+        wrapper_layout.addWidget(line)
+        self.layout_.addWidget(wrapper)
+
+    def _call(self, name: str, *args) -> None:
+        callback = getattr(self.actions, name, None)
+        if callable(callback):
+            callback(*args)
+
+    def _select_files(self) -> None:
+        self._call("select_files")
+
+    def _upload(self) -> None:
+        self._call("upload")
+
+    def _toggle_watcher(self) -> None:
+        self._call("toggle_watcher")
+
+    def _reset_import_cache(self) -> None:
+        self._call("reset_import_cache")
+
+    def _reset_server_journals(self) -> None:
+        self._call("reset_server_journals")
+
+    def _on_skip_imported_toggled(self, checked: bool) -> None:
+        self._call("skip_imported", bool(checked))
+
+    def _on_backfill_toggled(self, checked: bool) -> None:
+        self._call("backfill_third_party", bool(checked))
+
+    # ------------------------------------------------------------------ public
+    def set_files_text(self, text: str) -> None:
+        self.files_label.setText(str(text))
+
+    def files_text(self) -> str:
+        return self.files_label.text()
+
+    def set_upload_enabled(self, enabled: bool) -> None:
+        self.upload_btn.setEnabled(bool(enabled))
+
+    def set_progress(self, value: float, text: _Optional[str] = None) -> None:
+        """Set the bar position (clamped to 0…100) and, optionally, its caption."""
+        try:
+            percent = float(value)
+        except (TypeError, ValueError):
+            percent = 0.0
+        percent = max(0.0, min(100.0, percent))
+        self.progress.setMaximum(100)
+        self.progress.setValue(int(round(percent)))
+        if text is not None:
+            self.set_progress_text(text)
+
+    def progress_value(self) -> int:
+        return self.progress.value()
+
+    def set_progress_text(self, text: str) -> None:
+        self.progress_label.setText(str(text))
+
+    def progress_text(self) -> str:
+        return self.progress_label.text()
+
+    def set_watcher_running(self, running: bool) -> None:
+        """Switch the watcher button between «следить» and «остановить»."""
+        if running:
+            self.watcher_btn.setText(self.WATCHER_RUNNING_TEXT)
+            self.watcher_btn.setProperty("variant", "danger")
+        else:
+            self.watcher_btn.setText(self.WATCHER_IDLE_TEXT)
+            self.watcher_btn.setProperty("variant", "default")
+        style = self.watcher_btn.style()
+        style.unpolish(self.watcher_btn)
+        style.polish(self.watcher_btn)
+
+    def watcher_running(self) -> bool:
+        return self.watcher_btn.text() == self.WATCHER_RUNNING_TEXT
+
+    def set_skip_imported(self, enabled: bool) -> None:
+        """Set the checkbox without re-triggering the save callback."""
+        blocked = self.skip_imported_var.blockSignals(True)
+        self.skip_imported_var.setChecked(bool(enabled))
+        self.skip_imported_var.blockSignals(blocked)
+
+    def set_backfill_third_party(self, enabled: bool) -> None:
+        blocked = self.backfill_third_party_var.blockSignals(True)
+        self.backfill_third_party_var.setChecked(bool(enabled))
+        self.backfill_third_party_var.blockSignals(blocked)
+
+
+# ===========================================================================
 #  Страница «Инфографика пилота»
 # ===========================================================================
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 from PySide6.QtGui import QBrush, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (
-    QGridLayout,
-    QProgressBar,
-)
+from PySide6.QtWidgets import QGridLayout
 
 PILOT_KPI_KEYS = ("kpi_tons", "kpi_deliveries", "kpi_cargo", "kpi_systems")
 PILOT_TILES = ("session", "ship", "route", "systems", "status", "journal")
