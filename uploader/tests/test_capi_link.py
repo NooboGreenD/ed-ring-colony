@@ -519,7 +519,7 @@ class AppDossierFlowTests(unittest.TestCase):
     def test_link_button_opens_account_capi_page(self):
         with mock.patch.object(self.module.webbrowser, "open") as open_browser:
             self.app._on_capi_link()
-        open_browser.assert_called_once_with("https://colony.test/account/capi")
+            open_browser.assert_called_once_with("https://colony.test/account/capi?locale=ru")
 
     def test_no_frontier_auth_object_is_created_or_used(self):
         self.assertFalse(hasattr(self.app, "capi_auth"))

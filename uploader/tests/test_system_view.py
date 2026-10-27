@@ -417,18 +417,18 @@ class AppIntegrationTests(unittest.TestCase):
         self.app_cls._on_map_open_3d(app)
         app._map_set_hint.assert_called_with("Нет данных о текущей системе для карты")
 
-    def test_open_shows_the_scene_in_the_tab(self):
-        """«3D-карта» открывает сцену на месте: вкладка, режим, перерисовка."""
+    def test_map_action_routes_to_faction_infographic(self):
+        """Системная карта не отображается; прежний переход ведёт к фракциям."""
         app = self._app()
+        app.tab_factions = "factions"
         self.app_cls._on_map_open_3d(app, "KELT A 1")
         app.map_view_mode.set.assert_called_with("3d")
         self.assertEqual(app.config["map_view_mode"], "3d")
         self.assertEqual(app._map_selected, "KELT A 1")
         self.assertEqual(app._map_center, "KELT A 1")
-        app.notebook.select.assert_called_once_with(app.tab_map)
-        app._map_redraw_now.assert_called_once()
+        app.notebook.select.assert_called_once_with(app.tab_factions)
+        app._map_redraw_now.assert_not_called()
         app.log.assert_called_once()
-        # Никакого браузера: открывать карту больше нечем.
         with mock.patch("webbrowser.open") as mock_browser:
             self.app_cls._on_map_open_plotly(app)
         mock_browser.assert_not_called()
@@ -441,14 +441,12 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(self.app_cls._map_viewer_options(legacy)["view_mode"], "2d")
         self.assertEqual(self.app_cls._map_viewer_options(legacy)["zoom"], 1)
 
-    def test_failure_is_reported_not_raised(self):
-        """Ошибка сцены не роняет вкладку: приложение показывает подсказку."""
+    def test_opening_legacy_map_does_not_render_system_map(self):
         app = self._app()
-        app._map3d_scene.side_effect = OSError("нет места")
-        with mock.patch.object(self.app_cls, "_map_redraw_now",
-                               side_effect=OSError("нет места")):
-            self.app_cls._on_map_open_3d(app)
-        app._map_set_hint.assert_called()
+        app.tab_factions = "factions"
+        self.app_cls._on_map_open_3d(app)
+        app.notebook.select.assert_called_once_with(app.tab_factions)
+        app._map_redraw_now.assert_not_called()
         app.log.assert_called_once()
 
     def test_copy_map_text_hint(self):

@@ -162,9 +162,7 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
 
 class SetupWindow:
     def __init__(self, root, source: Path):
-        import tkinter as tk
-
-        from window_chrome import add_custom_titlebar
+        from qt_lazy import tk
 
         self.tk = tk
         self.root = root
@@ -181,11 +179,6 @@ class SetupWindow:
         self.root.resizable(False, False)
         self.root.configure(bg="#1e2022")
         self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
-        add_custom_titlebar(
-            self.root, tk, "УСТАНОВЩИК COLONIAL HELPER",
-            close_command=self.root.destroy, allow_maximize=False,
-            allow_resize=False,
-        )
         self._center()
 
         panel = tk.Frame(root, bg="#2a2d30")
@@ -306,7 +299,8 @@ def main(argv=None) -> int:
             print(f"Не удалось установить Colonial Helper: {exc}", file=sys.stderr)
             return 1
     try:
-        import tkinter as tk
+        from qt_lazy import ensure_app, tk
+        ensure_app()
         root = tk.Tk()
         SetupWindow(root, source)
         root.mainloop()

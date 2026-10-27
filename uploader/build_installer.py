@@ -32,9 +32,12 @@ def main() -> int:
         "--specpath", str(HERE / "build"),
         "--add-data", f"{LAUNCHER_EXE}{os.pathsep}payload",
         "--hidden-import", "bundle",
-        "--hidden-import", "window_chrome",
-        "--hidden-import", "tkinter",
-        "--hidden-import", "tkinter.messagebox",
+        "--hidden-import", "qt_compat",
+        "--hidden-import", "qt_lazy",
+        "--hidden-import", "PySide6.QtCore",
+        "--hidden-import", "PySide6.QtGui",
+        "--hidden-import", "PySide6.QtWidgets",
+        "--hidden-import", "shiboken6",
     ]
     if icon.is_file():
         args.append(f"--icon={icon}")

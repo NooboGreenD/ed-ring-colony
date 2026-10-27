@@ -1,7 +1,7 @@
 """Загрузчик Colonial Helper: находит свежий пакет кода и запускает его.
 
 Это точка входа `ColonialHelper.exe`. Сам exe больше не содержит программу —
-в нём лежат Python, tkinter, ttkbootstrap, requests и *встроенная копия*
+в нём лежат Python, PySide6, requests и *встроенная копия*
 пакета кода на случай первого запуска. Рабочий код живёт в
 `%LOCALAPPDATA%\\ColonialHelper\\app\\<версия>` и обновляется по сети
 пофайлово (см. `bundle_updater.py`).
@@ -310,10 +310,10 @@ def report_failure(root, message: str, details: str = "") -> None:
     if details:
         log(root, details)
     try:
-        import tkinter
-        from tkinter import messagebox
+        from qt_lazy import ensure_app, tk, messagebox
 
-        window = tkinter.Tk()
+        ensure_app()
+        window = tk.Tk()
         window.withdraw()
         messagebox.showerror(
             "Colonial Helper — не удалось запустить",

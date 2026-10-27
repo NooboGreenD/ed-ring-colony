@@ -65,8 +65,8 @@ def channel_for_branch(branch: str) -> str:
     return "stable" if name in ("", "main", "master") else "beta"
 
 
-#: VERSION в colonial_helper.py читаем литералом, не импортом: модуль тянет
-#: за собой tkinter, а сборщику нужен только номер.
+#: VERSION in colonial_helper.py is parsed as a literal to avoid importing
+#: the full PySide6 desktop runtime just to discover a package version.
 _VERSION_RE = re.compile(r'^VERSION\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
 #: Заголовок свежего раздела ченджлога: «# Раунд 69 — 2.13.2: …».

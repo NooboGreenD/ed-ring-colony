@@ -1,5 +1,7 @@
 """Contracts for the desktop launcher feed and its non-authenticated request."""
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -47,6 +49,27 @@ class LauncherUiTests(unittest.TestCase):
         self.assertNotIn("Authorization", kwargs["headers"])
         self.assertEqual(result["news"][0]["id"], "42")
         self.assertEqual(result["galnet"][0]["nid"], "galnet-1")
+
+    def test_feed_request_uses_selected_language(self):
+        session=FakeSession()
+        launcher_ui.fetch_home_data(session=session,site_url="https://example.test",locale="de-DE")
+        self.assertEqual(session.call[1]["params"],{"locale":"de"})
+
+    def test_language_persistence_preserves_helper_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/".colonial_helper.json"
+            path.write_text(json.dumps({"token":"secret","update_channel":"beta"}),encoding="utf-8")
+            dashboard=launcher_ui.LauncherDashboard.__new__(launcher_ui.LauncherDashboard)
+            dashboard.settings_path=path
+            self.assertEqual(dashboard._read_locale(),"ru")
+            dashboard._save_locale("ja")
+            saved=json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["site_locale"],"ja")
+            self.assertEqual(saved["token"],"secret")
+            self.assertEqual(saved["update_channel"],"beta")
+            if hasattr(path.stat(),"st_mode"):
+                import stat
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o600)
 
     def test_cms_html_is_rendered_as_readable_plain_text(self):
         self.assertEqual(launcher_ui.plain_text("<p>Hello &amp; <b>galaxy</b></p><br>again"),

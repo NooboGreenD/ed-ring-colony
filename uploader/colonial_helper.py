@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Colonial Helper — standalone uploader for ED Ring Colony.
-GUI приложение на ttkbootstrap с live-watcher журналов Elite Dangerous
-и оверлеем HUD для игры (Borderless Windowed).
+Qt desktop app with live journal monitoring and an in-game HUD overlay.
 """
+from __future__ import annotations
 
 import errno
 import os
@@ -14,8 +14,6 @@ import math
 import tempfile
 import time
 import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
 from datetime import datetime
 from pathlib import Path
 import traceback
@@ -24,49 +22,14 @@ from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import webbrowser
 
-# -- Проверка tkinter --
-try:
-    import tkinter
-except ImportError:
-    print("=" * 60)
-    print("ОШИБКА: tkinter не найден!")
-    print("=" * 60)
-    print("Python установлен без поддержки графического интерфейса.")
-    print("Решение: переустановите Python с официального сайта")
-    print("         и убедитесь, что галочка 'tcl/tk and IDLE' включена.")
-    print("=" * 60)
-    input("Нажмите Enter для выхода...")
-    sys.exit(1)
-
-# -- Импорт ttkbootstrap --
-try:
-    import ttkbootstrap as tb
-    from ttkbootstrap.constants import *
-except ImportError as e:
-    print("=" * 60)
-    print("ОШИБКА: не удалось импортировать ttkbootstrap!")
-    print(f"Детали: {e}")
-    print("=" * 60)
-    print("Решение: pip install -r requirements.txt")
-    print("         или: pip install ttkbootstrap requests")
-    print("=" * 60)
-    input("Нажмите Enter для выхода...")
-    sys.exit(1)
-
-# -- ScrolledText fallback --
-try:
-    from ttkbootstrap.scrolled import ScrolledText
-except ImportError:
-    class ScrolledText(tb.Frame):
-        def __init__(self, master=None, **kwargs):
-            self.bootstyle = kwargs.pop("bootstyle", "")
-            self.autohide = kwargs.pop("autohide", False)
-            super().__init__(master)
-            self.text = tk.Text(self, **kwargs)
-            self.scrollbar = tb.Scrollbar(self, command=self.text.yview)
-            self.text.config(yscrollcommand=self.scrollbar.set)
-            self.text.pack(side=LEFT, fill=BOTH, expand=True)
-            self.scrollbar.pack(side=RIGHT, fill=Y)
+# All widgets below are backed by PySide6. The small compatibility API keeps
+# the mature event-processing/UI controller code intact while the presentation
+# layer moves off Tk.
+from qt_lazy import (
+    tk, ttk, tb, filedialog, messagebox, simpledialog, ScrolledText,
+    END, INSERT, NORMAL, DISABLED, WORD, SOLID, X, Y, BOTH, LEFT, RIGHT,
+    TOP, BOTTOM, CENTER, N, S, E, W, NW, VERTICAL, HORIZONTAL, QVBoxLayout,
+)
 
 # -- pyperclip --
 try:
@@ -77,6 +40,7 @@ except ImportError:
 from api_client import ApiClient
 from community_goals import CommunityGoalReportCollector, community_goal_reports_from_event
 from site_config import normalize_site_url, saved_connection
+from locale_config import normalize_locale, localized_url
 from journal_parser import (
     parse_file,          # noqa: F401 — оставлен как публичный API парсера
     parse_journal,       # noqa: F401
@@ -91,7 +55,6 @@ from route_tracker import RouteTracker
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from ui_scroll import SmoothScrollController
 from ui_navigation import SidebarNavigator
-from window_chrome import add_custom_titlebar
 from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
@@ -270,6 +233,11 @@ class ColonialHelperApp:
         # груза. Собирается из тех же событий журнала, что идут в остальные
         # трекеры, плюс данные Raven Colonial (вкладка «Карта системы»).
         self.system_map = SystemMapBuilder()
+        self._faction_state_lock = threading.RLock()
+        self._faction_system = ""
+        self._faction_updated_at = ""
+        self._faction_controlling = ""
+        self._faction_presence: list = []
         self._map_zoom_index = 2              # 1.0 — индекс в MAP_ZOOM_STEPS
         self._map_selected = ""               # выбранный объект (имя тела/buildId)
         self._map_center = ""                 # центр карты: пусто = звезда системы
@@ -280,8 +248,8 @@ class ColonialHelperApp:
         self._map_raven_inflight = False      # запрос к Raven уже летит
         self._map_autorefresh_job = None      # фоновое освежение открытой вкладки
         self._map_save_job = None             # отложенное сохранение вида в конфиг
-        # 3D-карта вкладки: сцена на холсте Tk (движок сайта в окно не влезает —
-        # tkinter не умеет WebGL). Пакет данных у неё общий с сайтом.
+        # Legacy scene state retained for journal/model compatibility only;
+        # no system-map visualization is built or exposed in the Qt UI.
         self._map3d_view = None               # tk_orrery.TkOrreryView
         self._map3d_key = None                # по каким данным собран пакет сцены
         self._map3d_job = None                # таймер движения тел по орбитам
@@ -550,11 +518,8 @@ class ColonialHelperApp:
     }
 
     def _build_header(self):
-        # Match the branded borderless chrome used by the launcher and Setup.
-        add_custom_titlebar(
-            self.root, tk, f"COLONIAL HELPER  /  v{VERSION}",
-            close_command=self._on_close, allow_maximize=True,
-        )
+        # Window uses Qt's custom frameless chrome; title is shown there.
+        self.root.title(f"COLONIAL HELPER  /  v{VERSION}")
 
         frame = tb.Frame(self.root, padding=(14, 12), relief="solid", borderwidth=1)
         frame.pack(fill=X, padx=14, pady=(12, 8))
@@ -694,9 +659,12 @@ class ColonialHelperApp:
         self.notebook.add(self.tab_colony, text="Колонизатор")
         self._build_tab_colony()
 
-        self.tab_map = tb.Frame(page_host)
-        self.notebook.add(self.tab_map, text="Карта системы")
-        self._build_tab_map()
+        self.tab_factions = tb.Frame(page_host)
+        self.notebook.add(self.tab_factions, text="Фракции")
+        self._build_tab_factions()
+        # Backward-compatible field for old internal map callbacks; no map page
+        # is registered in navigation or rendered in the Qt interface.
+        self.tab_map = None
 
         self.tab_overlay = tb.Frame(page_host)
         self.notebook.add(self.tab_overlay, text="Оверлей")
@@ -2789,6 +2757,54 @@ class ColonialHelperApp:
     #: Длинные имена станций урезаем, иначе подписи перекрывают полкарты.
     MAP_LABEL_LIMIT = 26
 
+    def _build_tab_factions(self):
+        from qt_factions import FactionInfographic
+        outer=self._scrollable_frame(self.tab_factions,padding=18)
+        self.faction_infographic=FactionInfographic(
+            outer,locale=self.config.get("site_locale"),site_url=self.api.site_url)
+        self._render_factions_infographic()
+
+    def _update_faction_infographic(self,event:dict):
+        if not isinstance(event,dict) or event.get("event") not in ("FSDJump","Location","CarrierJump"):
+            return
+        system=str(event.get("StarSystem") or "").strip()
+        if not system:return
+        timestamp=str(event.get("timestamp") or "")
+        lock=getattr(self,"_faction_state_lock",None)
+        if lock is None:self._faction_state_lock=lock=threading.RLock()
+        with lock:
+            previous_at=str(getattr(self,"_faction_updated_at",""))
+            if timestamp and previous_at and timestamp < previous_at:return
+            self._faction_system=system
+            self._faction_updated_at=timestamp or previous_at
+            control=event.get("SystemFaction")
+            self._faction_controlling=str(control.get("Name") or "") if isinstance(control,dict) else ""
+            items=[]
+            for faction in event.get("Factions") or []:
+                if not isinstance(faction,dict) or not str(faction.get("Name") or "").strip():continue
+                try:influence=max(0.0,min(1.0,float(faction.get("Influence") or 0.0)))
+                except (TypeError,ValueError):influence=0.0
+                states=[]
+                for state in faction.get("ActiveStates") or []:
+                    if isinstance(state,dict) and state.get("State"):states.append(str(state["State"]))
+                items.append({"name":str(faction["Name"]).strip(),"influence":influence,
+                              "allegiance":str(faction.get("Allegiance") or ""),
+                              "government":str(faction.get("Government") or ""),
+                              "state":str(faction.get("FactionState") or ""),"active_states":states})
+            self._faction_presence=sorted(items,key=lambda item:(-item["influence"],item["name"].casefold()))
+        if hasattr(self,"faction_cards_frame"):
+            self.after(0,self._render_factions_infographic)
+
+    def _render_factions_infographic(self):
+        widget=getattr(self,"faction_infographic",None)
+        if widget is None:return
+        with self._faction_state_lock:
+            system=self._faction_system
+            control=self._faction_controlling
+            factions=list(self._faction_presence)
+        widget.set_snapshot(system,control,factions)
+
+    # Legacy renderer remains unreferenced; the system-map tab is removed.
     def _build_tab_map(self):
         outer = tb.Frame(self.tab_map, padding=10)
         outer.pack(fill=BOTH, expand=True)
@@ -4544,14 +4560,11 @@ class ColonialHelperApp:
             self._map_selected = target
             self._map_center = target
         try:
-            self.notebook.select(self.tab_map)
+            self.notebook.select(self.tab_factions)
         except Exception:
             pass
-        self._map_redraw_now()
-        note = f" (фокус: {target})" if target else ""
-        self._map_set_hint(f"3D-карта открыта во вкладке{note}: перетаскивание — поворот "
-                           f"камеры, колесо — приближение, P — движение тел")
-        self.log(f"3D-карта {snapshot.system}{note} открыта во вкладке «Карта системы»", "info")
+        note = f" (объект: {target})" if target else ""
+        self.log(f"Инфографика фракций открыта для системы {snapshot.system}{note}", "info")
 
     #: Прежнее имя обработчика: его зовут привязки клавиш и тесты.
     _on_map_open_plotly = _on_map_open_3d
@@ -4805,7 +4818,7 @@ class ColonialHelperApp:
         if not site:
             self._capi_set_status("Сначала подключите токен проекта", ok=False)
             return
-        url = f"{site.rstrip('/')}/account/capi"
+        url = localized_url(f"{site.rstrip('/')}/account/capi", self.config.get("site_locale"))
         try:
             webbrowser.open(url)
             self._capi_set_status("Открыл страницу Frontier CAPI на сайте", ok=None)
@@ -7289,14 +7302,19 @@ class ColonialHelperApp:
 
         try:
             site, token = saved_connection(self.config, credentials if isinstance(credentials, dict) else {})
-            self.api = ApiClient(token=token, site_url=site)
+            self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
+            self.api = ApiClient(token=token, site_url=site, locale=self.config["site_locale"])
             self.config["site_url"] = site
         except ValueError as exc:
             # Never silently send a saved token to a fallback host after a typo.
-            self.api = ApiClient()
+            self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
+            self.api = ApiClient(locale=self.config["site_locale"])
             self._site_config_error = f"Ошибка адреса сервера: {exc}. Токен не загружен."
 
     def save_config(self):
+        self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
+        locale_setter=getattr(getattr(self,"api",None),"set_locale",None)
+        if callable(locale_setter):locale_setter(self.config["site_locale"])
         site = getattr(self, "_next_site_url", self.api.site_url)
         self.config["site_url"] = site
         self.config["token_site_url"] = site
@@ -7536,7 +7554,7 @@ class ColonialHelperApp:
     # ============================================================
     def _open_site_account(self):
         import webbrowser
-        webbrowser.open(f"{self.api.site_url}/account?tab=tokens", new=2)
+        webbrowser.open(localized_url(f"{self.api.site_url}/account?tab=tokens", self.config.get("site_locale")), new=2)
 
     def _change_site_url(self):
         value = simpledialog.askstring("Сервер ED Ring Colony", "HTTPS-адрес сайта (не Supabase):",
@@ -10027,6 +10045,7 @@ class ColonialHelperApp:
         # история; из нескольких посещений системы в очереди остаётся свежее.
         try:
             self._bgs_sync_collector().feed(ev, live=live)
+            self._update_faction_infographic(ev)
         except Exception as exc:
             self.log(f"Faction sync queue: {exc}", "error")
         if live:
@@ -11216,8 +11235,7 @@ def main():
             traceback.print_exc(file=f)
             f.write("=" * 60 + "\n")
         try:
-            import tkinter.messagebox as msgbox
-            msgbox.showerror(
+            messagebox.showerror(
                 "Colonial Helper — Ошибка запуска",
                 f"{type(e).__name__}: {e}\n\n"
                 f"Подробности сохранены в:\n{error_file}"

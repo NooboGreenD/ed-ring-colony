@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from site_config import DEFAULT_SITE_URL, normalize_site_url
+from locale_config import normalize_locale
 
 API_BASE = f"{DEFAULT_SITE_URL}/api"
 
@@ -68,7 +69,8 @@ def _safe_json(resp: requests.Response) -> dict:
 
 
 class ApiClient:
-    def __init__(self, token: str = "", site_url: str = DEFAULT_SITE_URL):
+    def __init__(self, token: str = "", site_url: str = DEFAULT_SITE_URL, locale: str = "ru"):
+        self.locale = normalize_locale(locale)
         self.site_url = normalize_site_url(site_url)
         self.api_base = f"{self.site_url}/api"
         self.token = token
@@ -77,6 +79,11 @@ class ApiClient:
         self.email = None
         self.token_name = None
         self._session = requests.Session()
+        self._session.headers.update({"Accept-Language": self.locale})
+
+    def set_locale(self, locale: str) -> None:
+        self.locale = normalize_locale(locale)
+        self._session.headers.update({"Accept-Language": self.locale})
 
     def validate_token(self, token: str) -> dict:
         """Проверить API токен. Возвращает {ok, user_id, cmdr_name, email, token_name}."""
@@ -112,7 +119,9 @@ class ApiClient:
 
     def _post_upload(self, payload: dict, timeout: int = 30):
         """Один POST на /api/logs/upload из текущего потока."""
-        resp = _session_for_thread().post(
+        session = _session_for_thread()
+        session.headers.update({"Accept-Language": self.locale})
+        resp = session.post(
             f"{self.api_base}/logs/upload",
             json=payload,
             allow_redirects=False,

@@ -1,7 +1,7 @@
 """Сборка базовой сборки (лаунчера) Colonial Helper.
 
 Важное отличие от прежней схемы: в exe попадает **не программа, а рантайм**.
-Внутри — Python, tkinter, ttkbootstrap, requests и лаунчер (`launcher.py`),
+Внутри — Python, PySide6, requests и лаунчер (`launcher.py`),
 плюс встроенная копия пакета кода на случай первого запуска. Сами модули
 программы живут отдельным пакетом и обновляются по сети пофайлово, поэтому
 этот exe пересобирается редко: при смене версии Python, новой библиотеке в
@@ -37,27 +37,21 @@ EMBED_DIR = HERE / "build" / "app_bundle"
 BUNDLE_OUT = HERE / "dist" / "bundle"
 
 #: Пакеты, которые PyInstaller должен забрать целиком (данные + подмодули).
-COLLECT_PACKAGES = ("ttkbootstrap",)
+COLLECT_PACKAGES = ()
 #: Данные certifi нужны Requests для проверки TLS и должны быть в onefile exe.
 COLLECT_DATA_PACKAGES = ("certifi",)
 
 #: Библиотеки, которые обязаны быть в сборке, даже если импортируются лениво.
 ALWAYS_INCLUDE = (
-    "requests", "certifi", "pyperclip", "tkinter", "tkinter.ttk", "tkinter.filedialog",
-    "tkinter.messagebox", "tkinter.simpledialog", "tkinter.font",
-    "tkinter.colorchooser", "tkinter.scrolledtext",
-    "ttkbootstrap", "ttkbootstrap.style", "ttkbootstrap.themes",
-    "ttkbootstrap.localization", "ttkbootstrap.widgets", "ttkbootstrap.dialogs",
-    "ttkbootstrap.scrolled", "ttkbootstrap.tableview", "ttkbootstrap.toast",
-    "ttkbootstrap.tooltip", "ttkbootstrap.utility", "ttkbootstrap.validation",
-    "ttkbootstrap.window", "window_chrome",
-    # Стандартная библиотека, которую легко потерять при анализе одного
-    # лаунчера: дальше список дополняется автоматически.
+    "requests", "certifi", "pyperclip", "PySide6.QtCore", "PySide6.QtGui",
+    "PySide6.QtWidgets", "shiboken6", "qt_compat", "qt_lazy", "qt_factions",
+    "theme_tokens", "locale_config",
+    # Standard-library modules that may be missed by static analysis of the launcher.
     "webbrowser", "ctypes", "ctypes.wintypes", "csv", "sqlite3", "queue",
     "secrets", "hmac", "base64", "zipfile", "shutil", "tempfile", "difflib",
     "statistics", "unicodedata", "http.server", "urllib.parse", "urllib.request",
     "concurrent.futures", "email.utils", "logging.handlers", "uuid", "socket",
-    "ssl", "subprocess", "webbrowser",
+    "ssl", "subprocess",
 )
 
 

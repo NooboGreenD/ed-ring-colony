@@ -106,11 +106,12 @@ class SidebarNavigator:
             return str(page)
         if self._selected is not None:
             try:
-                self._selected.place_forget()
+                self._selected.pack_forget()
             except Exception:
-                pass
+                self._selected.hide()
         self._selected = page
-        page.place(x=0, y=0, relwidth=1, relheight=1)
+        page.pack(fill="both", expand=True)
+        page.show()
         self.title_label.configure(text=self._titles[page])
         for candidate, button in self._buttons.items():
             selected = candidate is page
