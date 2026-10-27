@@ -44,6 +44,7 @@ QWidget#shell {{ background: {BG}; }}
 QWidget#body {{ background: {BG}; }}
 QWidget#panel {{ background: {PANEL}; }}
 QWidget#panelAlt {{ background: {PANEL_ALT}; }}
+QWidget#panelClear {{ background: transparent; }}
 QFrame#accentOrange {{ background: {ORANGE}; border: none; }}
 QFrame#accentCyan {{ background: {CYAN}; border: none; }}
 QWidget#titlebar {{ background: {TITLE_BG}; }}
@@ -147,6 +148,18 @@ def run_async(owner: QObject, work: Callable[[], Any], on_done: Callable,
     """Start ``work`` for ``owner``; the returned task stays parented to it."""
     task = Task(owner)
     return task.start(work, on_done=on_done, on_error=on_error)
+
+
+def panel(widget: QWidget, name: str) -> QWidget:
+    """Give a plain container a themed background that QSS will actually paint.
+
+    Qt does not paint style-sheet backgrounds for custom ``QWidget`` instances
+    unless ``WA_StyledBackground`` is enabled, which made panels look
+    transparent and let the window colour show through.
+    """
+    widget.setObjectName(name)
+    widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    return widget
 
 
 def label(text: str = "", *, role: Optional[str] = None, size: Optional[int] = None,

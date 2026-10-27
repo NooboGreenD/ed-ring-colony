@@ -26,8 +26,8 @@ import webbrowser
 # the mature event-processing/UI controller code intact while the presentation
 # layer moves off Tk.
 from qt_lazy import (
-    tk, ttk, tb, filedialog, messagebox, simpledialog, ScrolledText,
-    END, INSERT, NORMAL, DISABLED, WORD, SOLID, X, Y, BOTH, LEFT, RIGHT,
+    tk, ttk, tb, filedialog, messagebox, simpledialog,
+    END, NORMAL, DISABLED, SOLID, X, Y, BOTH, LEFT, RIGHT,
     TOP, BOTTOM, CENTER, N, S, E, W, NW, VERTICAL, HORIZONTAL, QVBoxLayout,
 )
 
@@ -54,7 +54,7 @@ from journal_parser import (
 from route_tracker import RouteTracker
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from ui_scroll import SmoothScrollController
-from ui_navigation import SidebarNavigator
+from helper_shell import build_shell
 from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
@@ -113,7 +113,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.12"
+VERSION = "2.18.13"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -518,125 +518,17 @@ class ColonialHelperApp:
     }
 
     def _build_header(self):
-        # Window uses Qt's custom frameless chrome; title is shown there.
+        """Native Qt shell: header, sidebar navigation, page stack and status."""
         self.root.title(f"COLONIAL HELPER  /  v{VERSION}")
+        self.shell = build_shell(self.root, on_change=self._on_notebook_tab_changed,
+                                 version=VERSION)
 
-        frame = tb.Frame(self.root, padding=(14, 12), relief="solid", borderwidth=1)
-        frame.pack(fill=X, padx=14, pady=(12, 8))
-
-        identity = tb.Frame(frame)
-        identity.pack(fill=X)
-        title = tb.Label(
-            identity,
-            text="◆  ED RING COLONY",
-            font=("Segoe UI", 16, "bold"),
-            foreground=COLOR_ORANGE,
-        )
-        title.pack(side=LEFT, anchor=W)
-        subtitle = tb.Label(
-            identity,
-            text="ПАНЕЛЬ УПРАВЛЕНИЯ  ·  F12 — показать или скрыть оверлей",
-            font=("Segoe UI", 9),
-            foreground=COLOR_MUTED,
-        )
-        subtitle.pack(side=LEFT, anchor=W, padx=(14, 0), pady=(4, 0))
-
-        # Update controls remain the same widgets and callbacks; only their
-        # visual grouping changes so the release channel is easy to scan.
-        update_frame = tb.Frame(frame, padding=(9, 7), relief="solid", borderwidth=1)
-        update_frame.pack(fill=X, pady=(11, 7))
-        self.update_button = tb.Button(
-            update_frame,
-            text="⟳  Обновить программу",
-            width=22,
-            bootstyle="info-outline",
-            command=lambda: self._on_check_update(manual=True),
-        )
-        self.update_button.pack(side=LEFT, padx=(0, 8))
-
-        self.update_channel_var = tk.StringVar(value=self._update_channel_label())
-        self.update_channel_combo = tb.Combobox(
-            update_frame,
-            textvariable=self.update_channel_var,
-            width=34,
-            state="readonly",
-            values=[text for text in self.UPDATE_CHANNEL_LABELS.values()],
-        )
-        self.update_channel_combo.pack(side=LEFT, padx=(0, 8))
-        self.update_channel_combo.bind(
-            "<<ComboboxSelected>>", lambda _e: self._on_update_settings_changed())
-
-        self.update_auto_var = tk.BooleanVar(
-            value=bool(self.config.get("update_check_enabled", True)))
-        tb.Checkbutton(
-            update_frame,
-            text="Проверять при запуске",
-            variable=self.update_auto_var,
-            command=self._on_update_settings_changed,
-        ).pack(side=LEFT)
-
-        if bundle_mode():
-            tb.Button(
-                update_frame,
-                text="⛭ Восстановить",
-                width=16,
-                bootstyle="secondary-outline",
-                command=self._on_repair_install,
-            ).pack(side=LEFT, padx=(8, 0))
-
-        self.update_hint = tb.Label(
-            update_frame,
-            text=f"Установлена v{VERSION}",
-            font=("Consolas", 9, "bold"),
-            foreground=COLOR_MUTED,
-        )
-        self.update_hint.pack(side=RIGHT, padx=(8, 0))
-
-        self.update_progress = tb.Progressbar(
-            frame,
-            mode="determinate",
-            maximum=100,
-            bootstyle="info-striped",
-        )
-
-        indicators = tb.Frame(frame)
-        indicators.pack(fill=X, pady=(0, 7))
-        self.game_dot = tb.Label(
-            indicators, text="●", font=("Segoe UI", 10), foreground=COLOR_MUTED)
-        self.game_dot.pack(side=LEFT, padx=(2, 6))
-        self.game_label = tb.Label(
-            indicators, text="Игра: проверка…", font=("Segoe UI", 9),
-            foreground=COLOR_MUTED)
-        self.game_label.pack(side=LEFT)
-        self.game_hint = tb.Label(
-            indicators, text="", font=("Segoe UI", 9), foreground=COLOR_MUTED)
-        self.game_hint.pack(side=RIGHT)
-
-        self.status_frame = tb.Frame(
-            frame, relief="solid", borderwidth=1, padding=(10, 8))
-        self.status_frame.pack(fill=X)
-        self.status_dot = tb.Label(
-            self.status_frame, text="●", font=("Segoe UI", 11), foreground=COLOR_MUTED)
-        self.status_dot.pack(side=LEFT, padx=(0, 8))
-        self.status_text = tb.Label(
-            self.status_frame, text="Не подключено",
-            font=("Segoe UI", 10, "bold"), foreground=COLOR_MUTED)
-        self.status_text.pack(side=LEFT)
-        self.status_detail = tb.Label(
-            self.status_frame, text="Введите API токен",
-            font=("Segoe UI", 9), foreground=COLOR_MUTED)
-        self.status_detail.pack(side=RIGHT)
-
-    # ============================================================
-    #  Навигация по разделам
-    # ============================================================
     def _build_notebook(self):
         # Вместо девяти сжимающихся горизонтальных вкладок — постоянная
         # боковая навигация и рабочая область в стиле стартового лаунчера.
         # Все прежние страницы остаются теми же Tk-фреймами: меняется только
         # способ перехода между ними.
-        self.notebook = SidebarNavigator(
-            self.root, tb, on_change=self._on_notebook_tab_changed)
+        self.notebook = self.shell
         page_host = self.notebook.content_area
 
         self.tab_auth = tb.Frame(page_host)
@@ -6734,48 +6626,31 @@ class ColonialHelperApp:
         threading.Thread(target=worker, daemon=True, name="exobio-all-scan").start()
 
     def _build_tab_log(self):
-        frame = tb.Frame(self.tab_log, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        """Лог на чистом Qt: цветные уровни и кнопка очистки без Tk-виджетов."""
+        self.log_page = None
+        try:
+            from helper_pages import LogPage
 
-        tb.Label(frame, text="Информационное окно", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-
-        self.log_text = ScrolledText(
-            frame,
-            wrap=tk.WORD,
-            font=("Consolas", 10),
-            height=20,
-            autohide=True,
-            bootstyle="dark",
-        )
-        self.log_text.pack(fill=BOTH, expand=True)
-        self.log_text.text.config(state=DISABLED, bg=COLOR_PANEL, fg=COLOR_TEXT, insertbackground=COLOR_TEXT)
-
-        tb.Button(
-            frame,
-            text="Очистить лог",
-            command=self._on_clear_log,
-            bootstyle="secondary-outline",
-            width=15,
-        ).pack(anchor=W, pady=(10, 0))
-
+            host_layout = self.tab_log._get_tk_layout("pack")
+            self.log_page = LogPage()
+            host_layout.addWidget(self.log_page)
+            self.log_page.show()
+        except Exception as exc:
+            self.log("Не удалось открыть вкладку лога: %s" % exc, "error")
         self.log("Colonial Helper готов к работе", "info")
 
     # ============================================================
     #  Статус-бар внизу
     # ============================================================
     def _build_status_bar(self):
-        status_bar = tb.Frame(self.root, style="App.TFrame", padding=(14, 5))
-        status_bar.pack(fill=X, side=BOTTOM)
-        tb.Separator(status_bar, orient=HORIZONTAL).pack(fill=X, pady=(0, 5))
-        self.bottom_status = tb.Label(
-            status_bar,
-            text="Готов",
-            font=("Consolas", 9),
-            style="Muted.TLabel",
-            anchor=W,
-            padding=(2, 1),
-        )
-        self.bottom_status.pack(fill=X)
+        """The status line is part of the native shell."""
+        self.shell.set_status("Готов")
+
+    def set_status(self, text: str) -> None:
+        """Единственная точка записи в статусную строку."""
+        setter = getattr(getattr(self, "shell", None), "set_status", None)
+        if callable(setter):
+            setter(text)
 
     # ============================================================
     #  Обновление программы
@@ -7222,15 +7097,23 @@ class ColonialHelperApp:
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"[{timestamp}] {message}\n"
 
-        self.log_text.text.config(state=NORMAL)
-        self.log_text.text.insert(END, line)
-        end_idx = self.log_text.text.index(END)
-        start_idx = f"{end_idx} linestart -1 lines"
-        tag_name = f"log_{level}_{timestamp.replace(':','')}"
-        self.log_text.text.tag_add(tag_name, start_idx, f"{start_idx} lineend")
-        self.log_text.text.tag_config(tag_name, foreground=color)
-        self.log_text.text.see(END)
-        self.log_text.text.config(state=DISABLED)
+        page = getattr(self, "log_page", None)
+        if page is not None:
+            try:
+                page.append(line.rstrip("\n"), level)
+                page.update_count()
+            except Exception:
+                pass
+        else:
+            self.log_text.text.config(state=NORMAL)
+            self.log_text.text.insert(END, line)
+            end_idx = self.log_text.text.index(END)
+            start_idx = f"{end_idx} linestart -1 lines"
+            tag_name = f"log_{level}_{timestamp.replace(':','')}"
+            self.log_text.text.tag_add(tag_name, start_idx, f"{start_idx} lineend")
+            self.log_text.text.tag_config(tag_name, foreground=color)
+            self.log_text.text.see(END)
+            self.log_text.text.config(state=DISABLED)
 
         # Также в оверлей
         self.overlay_manager.log(message, level)
@@ -7609,7 +7492,7 @@ class ColonialHelperApp:
         self._token_check_busy = True
 
         self.log("Проверка токена...", "info")
-        self.bottom_status.config(text="Проверка токена...")
+        self.set_status("Проверка токена...")
 
         def worker():
             try:
@@ -7633,7 +7516,7 @@ class ColonialHelperApp:
         else:
             self.set_connection_status(False, result.get("error", "Ошибка"))
             self.log(f"Ошибка: {result.get('error')}", "error")
-        self.bottom_status.config(text="Готов")
+        self.set_status("Готов")
 
     def _auto_validate(self):
         self._on_validate_token()
@@ -8000,16 +7883,24 @@ class ColonialHelperApp:
         color = colors.get(level, COLOR_TEXT)
         block = f"[{timestamp}]\n{text}\n"
 
-        self.log_text.text.config(state=NORMAL)
-        self.log_text.text.insert(END, block)
-        end_idx = self.log_text.text.index(END)
-        line_count = block.count("\n")
-        start_idx = f"{end_idx} linestart -{line_count} lines"
-        tag_name = f"log_{level}_{timestamp.replace(':', '')}_block"
-        self.log_text.text.tag_add(tag_name, start_idx, f"{start_idx} lineend +{line_count - 1} lines")
-        self.log_text.text.tag_config(tag_name, foreground=color)
-        self.log_text.text.see(END)
-        self.log_text.text.config(state=DISABLED)
+        page = getattr(self, "log_page", None)
+        if page is not None:
+            try:
+                page.append_block(block.rstrip("\n"), level)
+                page.update_count()
+            except Exception:
+                pass
+        else:
+            self.log_text.text.config(state=NORMAL)
+            self.log_text.text.insert(END, block)
+            end_idx = self.log_text.text.index(END)
+            line_count = block.count("\n")
+            start_idx = f"{end_idx} linestart -{line_count} lines"
+            tag_name = f"log_{level}_{timestamp.replace(':', '')}_block"
+            self.log_text.text.tag_add(tag_name, start_idx, f"{start_idx} lineend +{line_count - 1} lines")
+            self.log_text.text.tag_config(tag_name, foreground=color)
+            self.log_text.text.see(END)
+            self.log_text.text.config(state=DISABLED)
 
     # Сколько файлов держим в памяти одновременно (текст файла + пул чтения).
     # При выборе всей истории журналов (сотни файлов) чтение и хранение ВСЕХ
@@ -8456,7 +8347,7 @@ class ColonialHelperApp:
 
         self.watcher_btn.config(text="⏹ Остановить", bootstyle="danger-outline")
         self.log("Watcher запущен. Мониторинг журналов...", "success")
-        self.bottom_status.config(text="Watcher: активен")
+        self.set_status("Watcher: активен")
         self.overlay_manager.log("Watcher запущен", "success")
 
         # Всё чтение журналов ушло в поток watcher'а (`_prepare_watcher_state`).
@@ -8987,7 +8878,7 @@ class ColonialHelperApp:
         self.watcher_stop_event.set()
         self.watcher_btn.config(text="▶ Следить за игрой", bootstyle="success-outline")
         self.log("Watcher остановлен", "info")
-        self.bottom_status.config(text="Готов")
+        self.set_status("Готов")
         self.overlay_manager.log("Watcher остановлен", "info")
 
     def _upload_target(self) -> str:
@@ -11189,9 +11080,13 @@ class ColonialHelperApp:
     #  Лог
     # ============================================================
     def _on_clear_log(self):
-        self.log_text.text.config(state=NORMAL)
-        self.log_text.text.delete("1.0", END)
-        self.log_text.text.config(state=DISABLED)
+        page = getattr(self, "log_page", None)
+        if page is not None:
+            page.clear()
+        else:
+            self.log_text.text.config(state=NORMAL)
+            self.log_text.text.delete("1.0", END)
+            self.log_text.text.config(state=DISABLED)
         self.log("Лог очищен", "info")
 
     # ============================================================
