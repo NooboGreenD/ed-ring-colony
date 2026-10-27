@@ -7,14 +7,16 @@ so both kinds coexist in one window during the migration.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -232,7 +234,7 @@ class AuthPage(QWidget):
         outer.setSpacing(0)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.content = QWidget()
         self.layout_ = QVBoxLayout(self.content)
         self.layout_.setContentsMargins(16, 14, 16, 16)
@@ -473,7 +475,7 @@ class UploadPage(QWidget):
         outer.setSpacing(0)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.content = QWidget()
         self.layout_ = QVBoxLayout(self.content)
         self.layout_.setContentsMargins(16, 14, 16, 16)
@@ -794,12 +796,510 @@ class RoutePage(QWidget):
 
 
 # ===========================================================================
+#  Страница «Колонизатор»
+# ===========================================================================
+#: Колонки таблицы проектов: ключ, заголовок, ширина.
+COLONY_COLUMNS = (
+    ("primary", "★", 34),
+    ("system", "Система", 140),
+    ("build", "Стройка", 150),
+    ("type", "Тип", 110),
+    ("progress", "Прогресс", 130),
+    ("buildId", "buildId", 190),
+)
+#: Поля формы создания проекта: ключ, подпись, тип (``combo`` — выпадающий).
+COLONY_FORM_FIELDS = (
+    ("systemName", "Система", "text"),
+    ("marketId", "Market ID *", "text"),
+    ("systemAddress", "System address *", "text"),
+    ("buildName", "Название *", "text"),
+    ("buildType", "Тип постройки *", "combo"),
+    ("maxNeed", "maxNeed (всего)", "text"),
+    ("bodyName", "Тело", "body"),
+    ("bodyNum", "BodyID тела (авто)", "text"),
+    ("architectName", "Архитектор", "text"),
+    ("discordLink", "Discord-ссылка", "text"),
+)
+
+
+class RefreshingCombo(QComboBox):
+    """Editable combo that refills its list right before the popup opens.
+
+    Replaces the Tk ``postcommand``: the list of bodies is rebuilt from the
+    journal each time the user opens the dropdown, so a newly scanned planet
+    appears without reopening the page.
+    """
+
+    def __init__(self, on_open: _Optional[Callable] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setEditable(True)
+        self._on_open = on_open
+
+    def showPopup(self) -> None:  # noqa: N802 - Qt API
+        if callable(self._on_open):
+            self._on_open()
+        super().showPopup()
+
+
+@dataclass
+class ColonyPageActions:
+    """Callbacks the Coloniser page triggers; every one is optional."""
+
+    refresh: _Optional[Callable] = None
+    select: _Optional[Callable] = None
+    open_project: _Optional[Callable] = None
+    set_primary: _Optional[Callable] = None
+    clear_primary: _Optional[Callable] = None
+    complete: _Optional[Callable] = None
+    copy_id: _Optional[Callable] = None
+    bind_site: _Optional[Callable] = None
+    unbind_site: _Optional[Callable] = None
+    fill_current: _Optional[Callable] = None
+    reconcile: _Optional[Callable] = None
+    options_changed: _Optional[Callable] = None
+    plan_selected: _Optional[Callable] = None
+    body_choices: _Optional[Callable] = None
+    body_selected: _Optional[Callable] = None
+    create: _Optional[Callable] = None
+    clear_form: _Optional[Callable] = None
+    check_system: _Optional[Callable] = None
+
+
+class ColonyPage(QWidget):
+    """Raven Colonial projects: table, actions and the «create project» form.
+
+    Widget names follow the ones the rest of the program already uses
+    (``fields``, ``table``, ``status_label`` …). Form values are read with
+    :meth:`value` and written with :meth:`set_value`, so the caller does not
+    care whether a field is a text entry or a dropdown.
+    """
+
+    def __init__(self, *, cmdr: str = "", autofill: bool = True,
+                 open_page_after_create: bool = True,
+                 actions: _Optional[ColonyPageActions] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.actions = actions or ColonyPageActions()
+        self.setObjectName("colonyPage")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.content = QWidget()
+        self.layout_ = QVBoxLayout(self.content)
+        self.layout_.setContentsMargins(16, 14, 16, 16)
+        self.layout_.setSpacing(8)
+        self.scroll.setWidget(self.content)
+        outer.addWidget(self.scroll)
+
+        self.layout_.addWidget(heading("Колонизатор — проекты Raven Colonial", size=14))
+        self.layout_.addWidget(label(
+            "Просмотр своих проектов, назначение основного, завершение стройки и "
+            "создание нового проекта. Запись (создание/изменение/завершение) "
+            "требует ключа RCC — его выдают на сайте Raven Colonial.",
+            role="muted", size=9, wrap=True))
+
+        self._build_top(cmdr)
+        self._build_table()
+        self._build_actions()
+        self._build_create_form(autofill, open_page_after_create)
+        self.layout_.addStretch(1)
+
+    # ------------------------------------------------------------------ pieces
+    def _call(self, name: str, *args) -> None:
+        callback = getattr(self.actions, name, None)
+        if callable(callback):
+            callback(*args)
+
+    def _divider(self) -> None:
+        line = QFrame()
+        line.setObjectName("separator")
+        line.setFixedHeight(1)
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 12, 0, 12)
+        wrapper_layout.addWidget(line)
+        self.layout_.addWidget(wrapper)
+
+    def _build_top(self, cmdr: str) -> None:
+        self.cmdr_entry = QLineEdit(str(cmdr or ""))
+        self.cmdr_entry.setPlaceholderText("Имя командира")
+        self.cmdr_entry.setMinimumHeight(30)
+        self.cmdr_entry.setMaximumWidth(280)
+        self.refresh_btn = action_button("Обновить список", self._refresh, height=32)
+        self.key_label = label("", role="muted", size=9)
+        holder = QWidget()
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.setSpacing(8)
+        holder_layout.addWidget(label("Командир:", size=9))
+        holder_layout.addWidget(self.cmdr_entry)
+        holder_layout.addWidget(self.refresh_btn)
+        holder_layout.addWidget(self.key_label)
+        holder_layout.addStretch(1)
+        self.layout_.addWidget(holder)
+
+    def _build_table(self) -> None:
+        self.table = QTableWidget(0, len(COLONY_COLUMNS))
+        self.table.setObjectName("colonyTable")
+        for index, (_key, title, _width) in enumerate(COLONY_COLUMNS):
+            item = QTableWidgetItem(title)
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter |
+                (Qt.AlignmentFlag.AlignCenter if index in (0, 4)
+                 else Qt.AlignmentFlag.AlignLeft))
+            self.table.setHorizontalHeaderItem(index, item)
+            self.table.setColumnWidth(index, _width)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
+        header = self.table.horizontalHeader()
+        header.setMinimumSectionSize(50)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.table.setStyleSheet(
+            f"QTableWidget {{ background: {PANEL}; color: {TEXT};"
+            f" border: 1px solid #3b4044; border-radius: 6px; }}"
+            f"QTableWidget::item {{ padding: 4px 6px; }}"
+            f"QTableWidget::item:selected {{ background: #33414a; color: {TEXT}; }}"
+            f"QHeaderView::section {{ background: {PANEL_ALT}; color: {MUTED};"
+            f" border: none; border-bottom: 1px solid #3b4044; padding: 6px;"
+            f" font-weight: 600; }}")
+        self.table.setMinimumHeight(150)
+        self.table.setMaximumHeight(260)
+        self.table.itemSelectionChanged.connect(self._selected)
+        self.table.cellDoubleClicked.connect(lambda _row, _col: self._call("open_project"))
+        self.layout_.addWidget(self.table)
+
+    def _build_actions(self) -> None:
+        self.action_buttons: List[QPushButton] = []
+        items = (
+            ("★ Сделать основным", "set_primary"),
+            ("Снять основной", "clear_primary"),
+            ("Завершить проект", "complete"),
+            ("Копировать buildId", "copy_id"),
+            ("Открыть в Raven Colonial", "open_project"),
+            ("Привязать площадку к проекту", "bind_site"),
+            ("Снять привязку площадки", "unbind_site"),
+        )
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 6, 0, 0)
+        grid.setSpacing(8)
+        for index, (text, action) in enumerate(items):
+            button = action_button(text, self._action_callback(action),
+                                   variant="danger" if action == "complete" else None,
+                                   height=30)
+            button.setEnabled(False)
+            grid.addWidget(button, index // 3, index % 3)
+            self.action_buttons.append(button)
+        grid.setColumnStretch(2, 1)
+        self.layout_.addWidget(holder)
+
+        self.status_label = StatusLabel("", MUTED)
+        font = self.status_label.font()
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setPointSize(9)
+        self.status_label.setFont(font)
+        self.layout_.addWidget(self.status_label)
+
+    def _action_callback(self, action: str):
+        return lambda: self._call(action)
+
+    def _refresh(self) -> None:
+        self._call("refresh")
+
+    def _selected(self) -> None:
+        self._call("select")
+
+    def _build_create_form(self, autofill: bool, open_page_after_create: bool) -> None:
+        self._divider()
+        self.layout_.addWidget(label("Создать проект", size=11, bold=True))
+
+        self.fill_btn = action_button("Заполнить из журнала", self._fill_current,
+                                      variant="primary", height=32)
+        self.reconcile_btn = action_button("Сверить стройплощадку с Raven",
+                                           self._reconcile, height=32)
+        self.autofill_check = QCheckBox(
+            "Заполнять автоматически при посадке на стройплощадку")
+        self.autofill_check.setChecked(bool(autofill))
+        self.autofill_check.toggled.connect(lambda _checked: self._call("options_changed"))
+        self.open_page_check = QCheckBox("Открывать страницу проекта после создания")
+        self.open_page_check.setChecked(bool(open_page_after_create))
+        self.open_page_check.toggled.connect(lambda _checked: self._call("options_changed"))
+        self.layout_.addWidget(row(self.fill_btn, self.reconcile_btn, None))
+        self.layout_.addWidget(self.autofill_check)
+        self.layout_.addWidget(self.open_page_check)
+
+        self.site_label = label(
+            "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+            role="muted", size=9, wrap=True)
+        self.layout_.addWidget(self.site_label)
+
+        form_holder = QWidget()
+        form = QGridLayout(form_holder)
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(6)
+        self.fields: Dict[str, QWidget] = {}
+        self.entries: Dict[str, QWidget] = self.fields
+        for index, (key, title, kind) in enumerate(COLONY_FORM_FIELDS):
+            row_index, column = divmod(index, 2)
+            form.addWidget(label(title, size=9, wrap=True), row_index, column * 2)
+            if kind == "combo":
+                widget = QComboBox()
+                widget.setMinimumWidth(150)
+                widget.setEditable(False)
+            elif kind == "body":
+                widget = RefreshingCombo(self._refresh_body_choices)
+                widget.setMinimumWidth(150)
+            else:
+                widget = QLineEdit()
+                widget.setMinimumWidth(150)
+                widget.setMinimumHeight(28)
+            self.fields[key] = widget
+            form.addWidget(widget, row_index, column * 2 + 1)
+            if key == "bodyName":
+                self.body_combo = widget
+                widget.activated.connect(lambda _index: self._call("body_selected"))
+                if widget.lineEdit() is not None:
+                    widget.lineEdit().editingFinished.connect(
+                        lambda: self._call("body_selected"))
+            if key == "bodyNum":
+                widget.setReadOnly(True)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(3, 1)
+        self.layout_.addWidget(form_holder)
+
+        plan_holder = QWidget()
+        plan_layout = QGridLayout(plan_holder)
+        plan_layout.setContentsMargins(0, 0, 0, 0)
+        plan_layout.setHorizontalSpacing(10)
+        plan_layout.setVerticalSpacing(6)
+        plan_layout.addWidget(label("План площадки", size=9), 0, 0)
+        self.plan_combo = QComboBox()
+        self.plan_combo.setMinimumWidth(150)
+        self.plan_combo.addItem(self.PLAN_NONE_LABEL)
+        self.plan_combo.currentIndexChanged.connect(
+            lambda _index: self._call("plan_selected"))
+        plan_layout.addWidget(self.plan_combo, 0, 1)
+        self.primary_port_check = QCheckBox("Основной порт системы")
+        plan_layout.addWidget(self.primary_port_check, 0, 2, 1, 2)
+        plan_layout.setColumnStretch(3, 1)
+        self.layout_.addWidget(plan_holder)
+
+        notes_row = QWidget()
+        notes = QGridLayout(notes_row)
+        notes.setContentsMargins(0, 0, 0, 0)
+        notes.setHorizontalSpacing(10)
+        notes.setVerticalSpacing(6)
+        notes.addWidget(label("Заметки", size=9), 0, 0)
+        self.fields["notes"] = notes_entry = QLineEdit()
+        notes_entry.setMinimumHeight(28)
+        notes.addWidget(notes_entry, 0, 1, 1, 3)
+        notes.addWidget(label("StarPos", size=9), 1, 0)
+        self.starpos_entry = QLineEdit()
+        self.starpos_entry.setReadOnly(True)
+        self.starpos_entry.setMinimumHeight(28)
+        notes.addWidget(self.starpos_entry, 1, 1, 1, 3)
+        commodities_hint = label("Товары (остаток потребности), "
+                                 "формат: aluminium:1200, steel:900",
+                                 size=9, wrap=True)
+        commodities_hint.setMaximumWidth(200)
+        notes.addWidget(commodities_hint, 2, 0)
+        self.commodities_entry = QLineEdit()
+        self.commodities_entry.setMinimumHeight(28)
+        notes.addWidget(self.commodities_entry, 2, 1, 1, 3)
+        notes.setColumnStretch(1, 1)
+        notes.setColumnStretch(3, 1)
+        self.layout_.addWidget(notes_row)
+
+        self.create_btn = action_button("Создать проект", self._create,
+                                         variant="primary", height=34)
+        self.clear_form_btn = action_button("Очистить форму", self._clear_form, height=34)
+        self.check_system_btn = action_button("Проверить площадку в системе",
+                                              self._check_system, height=34)
+        self.layout_.addWidget(row(self.create_btn, self.clear_form_btn,
+                                   self.check_system_btn, None))
+
+    # ----------------------------------------------------------- form plumbing
+    #: Первый пункт списка планов площадки: «создать новый».
+    PLAN_NONE_LABEL = "Нет (создать новый план)"
+
+    def _fill_current(self) -> None:
+        self._call("fill_current")
+
+    def _reconcile(self) -> None:
+        self._call("reconcile")
+
+    def _create(self) -> None:
+        self._call("create")
+
+    def _clear_form(self) -> None:
+        self._call("clear_form")
+
+    def _check_system(self) -> None:
+        self._call("check_system")
+
+    def _refresh_body_choices(self) -> None:
+        self._call("body_choices")
+
+    def value(self, key: str) -> str:
+        """Current text of a form field, whichever widget it is."""
+        widget = self.fields.get(key)
+        if widget is None:
+            return ""
+        if isinstance(widget, QComboBox):
+            return widget.currentText()
+        return widget.text()
+
+    def set_value(self, key: str, value) -> None:
+        widget = self.fields.get(key)
+        if widget is None:
+            return
+        text = "" if value is None else str(value)
+        if isinstance(widget, QComboBox):
+            position = widget.findText(text)
+            if position < 0:
+                widget.addItem(text)
+                position = widget.count() - 1
+            widget.setCurrentIndex(position)
+        else:
+            widget.setText(text)
+
+    def clear_fields(self) -> None:
+        for widget in self.fields.values():
+            if isinstance(widget, QComboBox):
+                widget.setCurrentIndex(-1)
+            else:
+                widget.clear()
+
+    def set_combo_values(self, key: str, values: Sequence[str]) -> None:
+        widget = self.fields.get(key)
+        if not isinstance(widget, QComboBox):
+            return
+        current = widget.currentText()
+        widget.blockSignals(True)
+        widget.clear()
+        widget.addItems([str(value) for value in values])
+        widget.blockSignals(False)
+        if current:
+            position = widget.findText(current)
+            if position >= 0:
+                widget.setCurrentIndex(position)
+
+    # ------------------------------------------------------------- public bits
+    def cmdr_text(self) -> str:
+        return self.cmdr_entry.text()
+
+    def set_cmdr(self, name: str) -> None:
+        self.cmdr_entry.setText(str(name or ""))
+
+    def set_status(self, text: str) -> None:
+        self.status_label.set_status(text, MUTED)
+
+    def status_text(self) -> str:
+        return self.status_label.text()
+
+    def set_key_status(self, text: str, color: _Optional[str] = None) -> None:
+        self.key_label.setText(str(text))
+        self.key_label.setStyleSheet(f"color:{color};" if color else "")
+
+    def key_text(self) -> str:
+        return self.key_label.text()
+
+    def set_site_text(self, text: str, color: _Optional[str] = None) -> None:
+        self.site_label.setText(str(text))
+        self.site_label.setStyleSheet(f"color:{color};" if color else "")
+
+    def site_text(self) -> str:
+        return self.site_label.text()
+
+    def set_actions_enabled(self, enabled: bool) -> None:
+        for button in self.action_buttons:
+            button.setEnabled(bool(enabled))
+
+    def set_create_enabled(self, enabled: bool) -> None:
+        self.create_btn.setEnabled(bool(enabled))
+
+    def set_rows(self, rows: Sequence[Sequence]) -> None:
+        """Replace the project list; each row follows ``COLONY_COLUMNS`` order."""
+        rows = list(rows or ())
+        self.table.setRowCount(len(rows))
+        for row_index, values in enumerate(rows):
+            for column, value in enumerate(list(values)[:len(COLONY_COLUMNS)]):
+                item = QTableWidgetItem("" if value is None else str(value))
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignVCenter |
+                    (Qt.AlignmentFlag.AlignCenter if column in (0, 4)
+                     else Qt.AlignmentFlag.AlignLeft))
+                # Только выбор: двойной клик открывает проект, а не правит ячейку.
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                self.table.setItem(row_index, column, item)
+
+    def clear_rows(self) -> None:
+        self.table.setRowCount(0)
+
+    def row_count(self) -> int:
+        return self.table.rowCount()
+
+    def row_values(self, row: int) -> Tuple[str, ...]:
+        values = []
+        for column in range(self.table.columnCount()):
+            item = self.table.item(row, column)
+            values.append(item.text() if item is not None else "")
+        return tuple(values)
+
+    def selected_values(self) -> _Optional[Tuple[str, ...]]:
+        """Texts of the selected project row, or ``None`` when nothing is chosen."""
+        rows = sorted({index.row() for index in self.table.selectedIndexes()})
+        if not rows:
+            return None
+        return self.row_values(rows[0])
+
+    def select_row(self, row: int) -> None:
+        self.table.selectRow(int(row))
+
+    def plan_labels(self) -> List[str]:
+        return [self.plan_combo.itemText(index)
+                for index in range(self.plan_combo.count())]
+
+    def set_plan_labels(self, labels: Sequence[str]) -> None:
+        """Refill the site-plan dropdown, keeping the current choice if it survives."""
+        current = self.plan_combo.currentText()
+        self.plan_combo.blockSignals(True)
+        self.plan_combo.clear()
+        self.plan_combo.addItems([str(value) for value in labels] or [self.PLAN_NONE_LABEL])
+        self.plan_combo.blockSignals(False)
+        position = self.plan_combo.findText(current)
+        self.plan_combo.setCurrentIndex(position if position >= 0 else 0)
+
+    def plan_index(self) -> int:
+        return self.plan_combo.currentIndex()
+
+    def plan_text(self) -> str:
+        return self.plan_combo.currentText()
+
+    def set_plan_text(self, text: str) -> None:
+        position = self.plan_combo.findText(str(text))
+        if position < 0:
+            self.plan_combo.addItem(str(text))
+            position = self.plan_combo.count() - 1
+        self.plan_combo.setCurrentIndex(position)
+
+
+# ===========================================================================
 #  Страница «Инфографика пилота»
 # ===========================================================================
-from typing import Dict, Iterable, List, Sequence, Tuple
-
 from PySide6.QtGui import QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QGridLayout
 
 PILOT_KPI_KEYS = ("kpi_tons", "kpi_deliveries", "kpi_cargo", "kpi_systems")
 PILOT_TILES = ("session", "ship", "route", "systems", "status", "journal")

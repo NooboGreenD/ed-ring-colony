@@ -577,6 +577,18 @@ class ColonialHelperApp:
     # ============================================================
     #  Вкладка: Подключение
     # ============================================================
+    @staticmethod
+    def _show_page(page) -> None:
+        """Показать страницу, только если её действительно принял каркас.
+
+        В stub-тестах Tk-фасад подменён и `addWidget` ничего не делает: у
+        страницы не появляется родителя. Вызванный в этом случае `show()`
+        превращал её в отдельное окно платформы, и сотни таких окон за один
+        прогон вешали Qt. В настоящем окне у страницы всегда есть родитель.
+        """
+        if page.parent() is not None:
+            self._show_page(page)
+
     def _build_tab_auth(self):
         """Вкладка «Подключение» на чистом Qt (см. helper_pages.AuthPage)."""
         from helper_pages import AuthPage, AuthPageActions, AuthPageState
@@ -610,7 +622,7 @@ class ColonialHelperApp:
         )
         self.auth_page = AuthPage(state, actions)
         self.tab_auth._get_tk_layout("pack").addWidget(self.auth_page)
-        self.auth_page.show()
+        self._show_page(self.auth_page)
 
         # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
         self.token_entry = self.auth_page.token_entry
@@ -703,7 +715,7 @@ class ColonialHelperApp:
                 on_columns_changed=self._on_pilot_columns_changed,
             )
             self.tab_pilot._get_tk_layout("pack").addWidget(page)
-            page.show()
+            self._show_page(page)
             self.pilot_page = page
         except Exception as exc:
             self.log(f"Не удалось открыть инфографику пилота: {exc}", "error")
@@ -976,7 +988,7 @@ class ColonialHelperApp:
             actions=actions,
         )
         self.tab_upload._get_tk_layout("pack").addWidget(self.upload_page)
-        self.upload_page.show()
+        self._show_page(self.upload_page)
 
         # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
         self.select_files_btn = self.upload_page.select_btn
@@ -1028,7 +1040,7 @@ class ColonialHelperApp:
         )
         self.route_page = RoutePage(actions)
         self.tab_route._get_tk_layout("pack").addWidget(self.route_page)
-        self.route_page.show()
+        self._show_page(self.route_page)
 
         # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
         self.route_tree = self.route_page.table
@@ -1064,208 +1076,58 @@ class ColonialHelperApp:
         return frame
 
     def _build_tab_colony(self):
-        frame = self._scrollable_frame(self.tab_colony)
+        """Вкладка «Колонизатор» на чистом Qt (helper_pages.ColonyPage)."""
+        from helper_pages import ColonyPage, ColonyPageActions
 
-        tb.Label(frame, text="Колонизатор — проекты Raven Colonial",
-                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 8))
-        tb.Label(
-            frame,
-            text="Просмотр своих проектов, назначение основного, завершение стройки и создание "
-                 "нового проекта. Запись (создание/изменение/завершение) требует ключа RCC — "
-                 "его выдают на сайте Raven Colonial.",
-            foreground=COLOR_MUTED,
-            wraplength=780,
-        ).pack(anchor=W, pady=(0, 10))
-
-        # ---- Командир и обновление ----
-        top = tb.Frame(frame)
-        top.pack(fill=X, pady=(0, 8))
-        tb.Label(top, text="Командир:", width=12, anchor=W).pack(side=LEFT)
-        self.colony_cmdr_var = tk.StringVar(value=self._current_cmdr_name())
-        tb.Entry(top, textvariable=self.colony_cmdr_var, width=28).pack(side=LEFT, padx=(0, 10))
-        tb.Button(top, text="Обновить список", command=self._on_colony_refresh,
-                  bootstyle="info-outline", width=18).pack(side=LEFT, padx=(0, 8))
-        self.colony_key_label = tb.Label(top, text="", foreground=COLOR_MUTED, font=("Consolas", 9))
-        self.colony_key_label.pack(side=LEFT)
-
-        # ---- Таблица проектов ----
-        tree_frame = tb.Frame(frame, relief="solid", borderwidth=1)
-        tree_frame.pack(fill=BOTH, expand=False)
-        columns = ("primary", "system", "build", "type", "progress", "build_id")
-        self.colony_tree = tb.Treeview(
-            tree_frame, columns=columns, show="headings", bootstyle="dark", height=8,
+        actions = ColonyPageActions(
+            refresh=self._on_colony_refresh,
+            select=self._on_colony_select,
+            open_project=self._on_colony_open_project,
+            set_primary=self._on_colony_set_primary,
+            clear_primary=self._on_colony_clear_primary,
+            complete=self._on_colony_complete,
+            copy_id=self._on_colony_copy_id,
+            bind_site=self._on_colony_bind_site,
+            unbind_site=self._on_colony_unbind_site,
+            fill_current=self._on_colony_fill_current,
+            reconcile=self._on_colony_reconcile,
+            options_changed=self._on_colony_options_changed,
+            plan_selected=self._on_colony_plan_selected,
+            body_choices=self._colony_refresh_body_choices,
+            body_selected=self._colony_sync_body_num,
+            create=self._on_colony_create,
+            clear_form=self._on_colony_clear_form,
+            check_system=self._on_colony_check_system,
         )
-        for col, title, width, anchor in [
-            ("primary", "★", 34, CENTER),
-            ("system", "Система", 170, W),
-            ("build", "Стройка", 190, W),
-            ("type", "Тип", 160, W),
-            ("progress", "Прогресс", 150, CENTER),
-            ("build_id", "buildId", 260, W),
-        ]:
-            self.colony_tree.heading(col, text=title)
-            self.colony_tree.column(col, width=width, anchor=anchor)
-        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.colony_tree.yview)
-        self.colony_tree.configure(yscrollcommand=vsb.set)
-        self.colony_tree.pack(side=LEFT, fill=BOTH, expand=True)
-        vsb.pack(side=RIGHT, fill=Y)
-        self.colony_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_colony_select())
-        self.colony_tree.bind("<Double-1>", lambda _e: self._on_colony_open_project())
-
-        # ---- Действия с выбранным проектом ----
-        actions = tb.Frame(frame)
-        actions.pack(fill=X, pady=(10, 0))
-        self.colony_action_buttons = []
-        for text, command, style in [
-            ("★ Сделать основным", self._on_colony_set_primary, "success-outline"),
-            ("Снять основной", self._on_colony_clear_primary, "secondary-outline"),
-            ("Завершить проект", self._on_colony_complete, "danger-outline"),
-            ("Копировать buildId", self._on_colony_copy_id, "info-outline"),
-            ("Открыть в Raven Colonial", self._on_colony_open_project, "info-outline"),
-            # Привязка нужна, когда автоматически сопоставить площадку с
-            # проектом нельзя: проект создавали через сайт (marketId другой)
-            # или в системе несколько активных проектов. Без неё тонны
-            # зависают в очереди с «проект не найден».
-            ("Привязать площадку к проекту", self._on_colony_bind_site, "warning-outline"),
-            ("Снять привязку площадки", self._on_colony_unbind_site, "secondary-outline"),
-        ]:
-            btn = tb.Button(actions, text=text, command=command, bootstyle=style, width=22,
-                            state="disabled")
-            btn.pack(side=LEFT, padx=(0, 8))
-            self.colony_action_buttons.append(btn)
-
-        self.colony_status = tb.Label(frame, text="", foreground=COLOR_MUTED, font=("Consolas", 9),
-                                      wraplength=780)
-        self.colony_status.pack(anchor=W, pady=(6, 0))
-
-        # ---- Создание проекта ----
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=12)
-        tb.Label(frame, text="Создать проект", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 6))
-
-        # Строка автозаполнения: что известно из журнала прямо сейчас.
-        autofill = tb.Frame(frame)
-        autofill.pack(fill=X, pady=(0, 6))
-        tb.Button(autofill, text="Заполнить из журнала", command=self._on_colony_fill_current,
-                  bootstyle="primary-outline", width=24).pack(side=LEFT, padx=(0, 10))
-        # Сверка: сколько осталось завезти по данным Raven Colonial (там учтён
-        # и груз других командиров) против того, что завезли вы по журналу, и
-        # досылка того, что не ушло из-за прерванной сессии или сбоя сети.
-        tb.Button(autofill, text="Сверить стройплощадку с Raven",
-                  command=self._on_colony_reconcile,
-                  bootstyle="warning-outline", width=30).pack(side=LEFT, padx=(0, 10))
-        self.colony_autofill_var = tk.BooleanVar(value=bool(self.config.get("colony_autofill", True)))
-        tb.Checkbutton(
-            autofill, text="Заполнять автоматически при посадке на стройплощадку",
-            variable=self.colony_autofill_var, command=self._on_colony_autofill_changed,
-        ).pack(side=LEFT, padx=(0, 10))
-        self.colony_open_page_var = tk.BooleanVar(
-            value=bool(self.config.get("colony_open_page_after_create", True)))
-        tb.Checkbutton(
-            autofill, text="Открывать страницу проекта после создания",
-            variable=self.colony_open_page_var, command=self._on_colony_autofill_changed,
-        ).pack(side=LEFT)
-
-        self.colony_site_label = tb.Label(
-            frame, text="Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
-            foreground=COLOR_MUTED, font=("Consolas", 9), wraplength=780,
+        self.colony_page = ColonyPage(
+            cmdr=self._current_cmdr_name(),
+            autofill=bool(self.config.get("colony_autofill", True)),
+            open_page_after_create=bool(self.config.get("colony_open_page_after_create", True)),
+            actions=actions,
         )
-        self.colony_site_label.pack(anchor=W, pady=(0, 8))
+        self.colony_page.set_combo_values(
+            "buildType", [build_type_label(code) for code, _ru, _en in BUILD_TYPES])
+        self.tab_colony._get_tk_layout("pack").addWidget(self.colony_page)
+        self._show_page(self.colony_page)
 
-        form = tb.Frame(frame)
-        form.pack(fill=X)
-        self.colony_fields = {}
-        self.colony_entries = {}
-
-        def add_field(key: str, label: str, row: int, column: int, values=None):
-            """Пара «подпись + поле» в сетке формы. `*` в подписи — поле обязательное.
-
-            `values` (даже пустой кортеж) делает поле выпадающим списком.
-            """
-            tb.Label(form, text=label, width=18, anchor=W).grid(
-                row=row, column=column * 2, sticky=W, pady=2, padx=(0 if column == 0 else 14, 4))
-            var = tk.StringVar(value="")
-            self.colony_fields[key] = var
-            if values is not None:
-                entry = tb.Combobox(form, textvariable=var, width=26, values=tuple(values))
-            else:
-                entry = tb.Entry(form, textvariable=var, width=28)
-            entry.grid(row=row, column=column * 2 + 1, sticky=W, pady=2)
-            self.colony_entries[key] = entry
-            return entry
-
-        # Обязательные поля Raven Colonial (схема ProjectCreate) помечены *.
-        add_field("systemName", "Система", 0, 0)
-        add_field("marketId", "Market ID *", 0, 1)
-        add_field("systemAddress", "System address *", 1, 0)
-        add_field("buildName", "Название *", 1, 1)
-        # Тип постройки — только из справочника Raven (неизвестный код валит
-        # страницу проекта на сайте), поэтому поле не редактируется вручную.
-        add_field("buildType", "Тип постройки *", 2, 0,
-                  values=[build_type_label(code) for code, _ru, _en in BUILD_TYPES])
-        self.colony_entries["buildType"].configure(state="readonly")
-        add_field("maxNeed", "maxNeed (всего)", 2, 1)
-        # Тело — из тел системы (журнал и сканы). Список обновляется при открытии.
-        add_field("bodyName", "Тело", 3, 0, values=())
-        self.colony_body_entry = self.colony_entries["bodyName"]
-        self.colony_body_entry.configure(postcommand=self._colony_refresh_body_choices)
-        self.colony_body_entry.bind("<<ComboboxSelected>>", lambda _e: self._colony_sync_body_num())
-        self.colony_body_entry.bind("<FocusOut>", lambda _e: self._colony_sync_body_num())
-        # Номер тела — это BodyID из журнала (номер тела в системе). Заполняется
-        # сам по выбранному телу; руками менять не нужно.
-        add_field("bodyNum", "BodyID тела (авто)", 3, 1)
-        add_field("architectName", "Архитектор", 4, 0)
-        add_field("discordLink", "Discord-ссылка", 4, 1)
-
-        # Запланированные площадки Raven Colonial (systemSiteId): если площадка
-        # уже внесена в план системы, проект привязывается к ней, а тип и тело
-        # подставляются из плана.
-        tb.Label(form, text="План площадки", width=18, anchor=W).grid(
-            row=5, column=0, sticky=W, pady=2, padx=(0, 4))
-        self.colony_site_plan_var = tk.StringVar(value="")
-        self.colony_site_plan_combo = tb.Combobox(
-            form, textvariable=self.colony_site_plan_var, width=26,
-            values=("Нет (создать новый план)",),
-        )
-        self.colony_site_plan_combo.grid(row=5, column=1, sticky=W, pady=2)
-        self.colony_site_plan_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_colony_plan_selected())
+        # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
+        self.colony_cmdr_entry = self.colony_page.cmdr_entry
+        self.colony_tree = self.colony_page.table
+        self.colony_action_buttons = self.colony_page.action_buttons
+        self.colony_status = self.colony_page.status_label
+        self.colony_key_label = self.colony_page.key_label
+        self.colony_site_label = self.colony_page.site_label
+        self.colony_fields = self.colony_page.fields
+        self.colony_entries = self.colony_page.fields
+        self.colony_body_entry = self.colony_page.body_combo
+        self.colony_site_plan_combo = self.colony_page.plan_combo
+        self.colony_primary_port_check = self.colony_page.primary_port_check
+        self.colony_starpos_entry = self.colony_page.starpos_entry
+        self.colony_commodities_entry = self.colony_page.commodities_entry
+        self.colony_create_btn = self.colony_page.create_btn
+        self.colony_autofill_check = self.colony_page.autofill_check
+        self.colony_open_page_check = self.colony_page.open_page_check
         self._colony_site_plans: list = []
-
-        self.colony_primary_port_var = tk.BooleanVar(value=False)
-        tb.Checkbutton(form, text="Основной порт системы", variable=self.colony_primary_port_var).grid(
-            row=5, column=2, columnspan=2, sticky=W, pady=2, padx=(14, 0))
-
-        tb.Label(form, text="Заметки", width=18, anchor=W).grid(
-            row=6, column=0, sticky="nw", pady=2, padx=(0, 4))
-        self.colony_fields["notes"] = tk.StringVar(value="")
-        tb.Entry(form, textvariable=self.colony_fields["notes"], width=64).grid(
-            row=6, column=1, columnspan=3, sticky=W, pady=2)
-
-        tb.Label(form, text="StarPos", width=18, anchor=W).grid(
-            row=7, column=0, sticky=W, pady=2, padx=(0, 4))
-        self.colony_starpos_var = tk.StringVar(value="")
-        tb.Entry(form, textvariable=self.colony_starpos_var, width=64, state="readonly").grid(
-            row=7, column=1, columnspan=3, sticky=W, pady=2)
-
-        tb.Label(
-            form,
-            text="Товары (остаток потребности), формат: aluminium:1200, steel:900",
-            width=18, anchor=W,
-        ).grid(row=8, column=0, sticky=W, pady=(6, 0), padx=(0, 4))
-        self.colony_commodities_var = tk.StringVar(value="")
-        tb.Entry(form, textvariable=self.colony_commodities_var, width=64).grid(
-            row=8, column=1, columnspan=3, sticky=W)
-
-        buttons = tb.Frame(frame)
-        buttons.pack(anchor=W, pady=(10, 0))
-        self.colony_create_btn = tb.Button(
-            buttons, text="Создать проект", command=self._on_colony_create,
-            bootstyle="success-outline", width=20,
-        )
-        self.colony_create_btn.pack(side=LEFT, padx=(0, 8))
-        tb.Button(buttons, text="Очистить форму", command=self._on_colony_clear_form,
-                  bootstyle="secondary-outline", width=18).pack(side=LEFT, padx=(0, 8))
-        tb.Button(buttons, text="Проверить площадку в системе", command=self._on_colony_check_system,
-                  bootstyle="info-outline", width=28).pack(side=LEFT)
 
         self._update_colony_key_label()
         self._colony_form_baseline = self._colony_form_snapshot()
@@ -1308,18 +1170,15 @@ class ColonialHelperApp:
         if not hasattr(self, "colony_key_label"):
             return
         if self.raven_api.is_connected:
-            self.colony_key_label.config(text="RCC ключ задан", foreground=COLOR_GREEN)
+            self.colony_page.set_key_status("RCC ключ задан", COLOR_GREEN)
         else:
-            self.colony_key_label.config(text="RCC ключ не задан — только просмотр",
-                                         foreground=COLOR_ORANGE)
+            self.colony_page.set_key_status("RCC ключ не задан — только просмотр",
+                                            COLOR_ORANGE)
 
     def _selected_colony_project(self) -> Optional[dict]:
-        if not hasattr(self, "colony_tree"):
+        if getattr(self, "colony_page", None) is None:
             return None
-        selection = self.colony_tree.selection()
-        if not selection:
-            return None
-        values = self.colony_tree.item(selection[0], "values")
+        values = self.colony_page.selected_values()
         if not values or len(values) < 6:
             return None
         return {
@@ -1333,29 +1192,27 @@ class ColonialHelperApp:
 
     def _on_colony_select(self):
         project = self._selected_colony_project()
-        state = "normal" if (project and project["buildId"]) else "disabled"
-        for btn in getattr(self, "colony_action_buttons", []):
-            btn.config(state=state)
+        self.colony_page.set_actions_enabled(bool(project and project["buildId"]))
         if project:
-            self.colony_status.config(
-                text=f"{project['systemName']}: {project['buildName']} "
+            self.colony_page.set_status(f"{project['systemName']}: {project['buildName']} "
                      f"({project['buildType']}) — {project['progress']}"
             )
 
     def _set_colony_busy(self, busy: bool, text: str = ""):
         """Блокируем кнопки на время запроса, чтобы не спамить Raven."""
-        for btn in getattr(self, "colony_action_buttons", []):
-            btn.config(state="disabled" if busy else "normal")
-        if hasattr(self, "colony_create_btn"):
-            self.colony_create_btn.config(state="disabled" if busy else "normal")
+        page = getattr(self, "colony_page", None)
+        if page is None:
+            return
+        page.set_actions_enabled(not busy)
+        page.set_create_enabled(not busy)
         if text:
-            self.colony_status.config(text=text)
+            page.set_status(text)
         if not busy:
             self._on_colony_select()
 
     # ---------- Колонизатор: запросы (в фоне) ----------
     def _on_colony_refresh(self):
-        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        cmdr = self.colony_page.cmdr_text().strip()
         if not cmdr:
             self.log("Укажите имя командира для поиска проектов.", "warn")
             return
@@ -1370,7 +1227,7 @@ class ColonialHelperApp:
     def _colony_refresh_done(self, result: dict, primary: dict):
         self._set_colony_busy(False)
         if not result.get("ok"):
-            self.colony_status.config(text=f"Не удалось загрузить проекты: {result.get('error')}")
+            self.colony_page.set_status(f"Не удалось загрузить проекты: {result.get('error')}")
             self.log(f"Raven Colonial: не удалось получить проекты — {result.get('error')}", "error")
             return
 
@@ -1378,7 +1235,7 @@ class ColonialHelperApp:
         projects = self._extract_colony_projects(data)
         primary_id = self._extract_primary_id(primary)
         self._fill_colony_tree(projects, primary_id)
-        self.colony_status.config(text=f"Проектов: {len(projects)}")
+        self.colony_page.set_status(f"Проектов: {len(projects)}")
         self.log(f"Raven Colonial: загружено проектов — {len(projects)}", "success")
 
     @staticmethod
@@ -1421,22 +1278,20 @@ class ColonialHelperApp:
         return f"{need} / {total} ({percent}%)"
 
     def _fill_colony_tree(self, projects: list, primary_id: str = ""):
-        self.colony_tree.delete(*self.colony_tree.get_children())
+        rows = []
         for project in projects:
             build_id = str(project.get("buildId", "") or "")
             is_primary = bool(primary_id and build_id and build_id == primary_id)
             build_type = str(project.get("buildType", "") or "")
-            self.colony_tree.insert(
-                "", END,
-                values=(
-                    "★" if is_primary else "",
-                    str(project.get("systemName", "") or ""),
-                    str(project.get("buildName", "") or ""),
-                    build_type,
-                    self._project_progress(project),
-                    build_id,
-                ),
-            )
+            rows.append((
+                "★" if is_primary else "",
+                str(project.get("systemName", "") or ""),
+                str(project.get("buildName", "") or ""),
+                build_type,
+                self._project_progress(project),
+                build_id,
+            ))
+        self.colony_page.set_rows(rows)
         self._colony_projects_cache = {p.get("buildId"): p for p in projects}
         # Основной проект Raven — он же источник списка материалов в оверлее.
         self._sync_colony_primary_project(primary_id)
@@ -1475,7 +1330,7 @@ class ColonialHelperApp:
 
     def _colony_build_type_code(self) -> str:
         """Код Raven из поля «Тип постройки»: выбран из списка или введён кодом."""
-        raw = (self.colony_fields["buildType"].get() or "").strip()
+        raw = (self.colony_page.value("buildType") or "").strip()
         if not raw:
             return ""
         if raw in BUILD_TYPE_CODES:
@@ -1491,7 +1346,7 @@ class ColonialHelperApp:
         BodyID — номер тела в системе (как в журнале и у Raven): по нему Raven
         ставит проект на нужное тело. Порядок — звезда, планеты, луны.
         """
-        system = (self.colony_fields["systemName"].get() or "").strip()
+        system = (self.colony_page.value("systemName") or "").strip()
         try:
             snapshot = self.system_map.snapshot(system)
         except Exception:
@@ -1504,22 +1359,22 @@ class ColonialHelperApp:
 
     def _colony_refresh_body_choices(self):
         """Список тел для выпадающего меню «Тело» (вызывается при раскрытии)."""
-        entry = getattr(self, "colony_body_entry", None)
-        if entry is None:
+        if getattr(self, "colony_page", None) is None:
             return
         try:
-            entry.configure(values=list(self._colony_body_choices()))
+            self.colony_page.set_combo_values("bodyName",
+                                              list(self._colony_body_choices()))
         except Exception:
             pass
 
     def _colony_sync_body_num(self):
         """BodyID подставляем по выбранному телу; неизвестное тело не трогаем."""
-        name = (self.colony_fields["bodyName"].get() or "").strip()
+        name = (self.colony_page.value("bodyName") or "").strip()
         if not name:
             return
         body_id = self._colony_body_choices().get(name)
         if body_id is not None:
-            self.colony_fields["bodyNum"].set(str(int(body_id)))
+            self.colony_page.set_value("bodyNum", str(int(body_id)))
 
     # ---------- Колонизатор: действия ----------
     def _current_site_market(self):
@@ -1535,13 +1390,7 @@ class ColonialHelperApp:
                 return int(site.market_id), str(site.system_name or "")
             except (TypeError, ValueError):
                 pass
-        field = (getattr(self, "colony_fields", {}) or {}).get("marketId")
-        raw = ""
-        if field is not None:
-            try:
-                raw = str(field.get() or "").strip()
-            except Exception:
-                raw = ""
+        raw = str(self.colony_page.value("marketId") or "").strip()
         try:
             return int(raw or 0), ""
         except ValueError:
@@ -1573,7 +1422,7 @@ class ColonialHelperApp:
         self.save_config()
         self.log(f"Площадка {market_id} привязана к проекту «{name}» ({build_id}): "
                  "доставки будут зачисляться ему.", "success")
-        self.colony_status.config(text=f"Площадка {market_id} → проект «{name}»")
+        self.colony_page.set_status(f"Площадка {market_id} → проект «{name}»")
 
         # Привязка меняет ответ на «какой это проект»: сбрасываем кэш поиска,
         # счётчики промахов и сразу досылаем то, что ждало в очереди.
@@ -1617,7 +1466,7 @@ class ColonialHelperApp:
         self.save_config()
         self.log(f"Привязка площадки {market_id} снята (была к проекту "
                  f"{record.get('build_id')}).", "info")
-        self.colony_status.config(text=f"Привязка площадки {market_id} снята")
+        self.colony_page.set_status(f"Привязка площадки {market_id} снята")
         self._raven_bound_projects.pop(str(record.get("build_id") or ""), None)
         invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
         if callable(invalidate):
@@ -1630,7 +1479,7 @@ class ColonialHelperApp:
         project = self._selected_colony_project()
         if not project:
             return
-        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        cmdr = self.colony_page.cmdr_text().strip()
         if not cmdr:
             self.log("Укажите имя командира.", "warn")
             return
@@ -1644,7 +1493,7 @@ class ColonialHelperApp:
                                f"Основной проект: {project['buildName']}"), daemon=True).start()
 
     def _on_colony_clear_primary(self):
-        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        cmdr = self.colony_page.cmdr_text().strip()
         if not cmdr:
             self.log("Укажите имя командира.", "warn")
             return
@@ -1675,10 +1524,10 @@ class ColonialHelperApp:
         self.after(0, lambda: self._colony_action_done(result, success_text))
 
     def _colony_action_done(self, result: dict, success_text: str):
-        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        cmdr = self.colony_page.cmdr_text().strip()
         if result.get("ok"):
             self.log(f"Raven Colonial: {success_text}", "success")
-            self.colony_status.config(text=success_text)
+            self.colony_page.set_status(success_text)
             if cmdr:
                 self._on_colony_refresh()
             else:
@@ -1686,7 +1535,7 @@ class ColonialHelperApp:
         else:
             self._set_colony_busy(False)
             error = result.get("error") or "неизвестная ошибка"
-            self.colony_status.config(text=f"Ошибка: {error}")
+            self.colony_page.set_status(f"Ошибка: {error}")
             self.log(f"Raven Colonial: {error}", "error")
 
     def _on_colony_copy_id(self):
@@ -1732,38 +1581,39 @@ class ColonialHelperApp:
 
         threading.Thread(target=open_in_thread, daemon=True).start()
 
-    def _on_colony_autofill_changed(self):
+    def _on_colony_options_changed(self):
         """Галочки формы создания сохраняем сразу, без кнопки «Применить»."""
-        self.config["colony_autofill"] = bool(self.colony_autofill_var.get())
-        self.config["colony_open_page_after_create"] = bool(self.colony_open_page_var.get())
+        self.config["colony_autofill"] = bool(self.colony_autofill_check.isChecked())
+        self.config["colony_open_page_after_create"] = bool(
+            self.colony_open_page_check.isChecked())
         self.save_config()
 
     def _update_colony_site_label(self):
         """Подпись под кнопкой автозаполнения: что известно из журнала."""
-        label = getattr(self, "colony_site_label", None)
-        if label is None:
+        page = getattr(self, "colony_page", None)
+        if page is None:
             return
         site = self.construction.site
         if site is None or not site.market_id:
-            label.config(
-                text="Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
-                foreground=COLOR_MUTED,
-            )
+            page.set_site_text(
+                "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+                COLOR_MUTED)
             return
         docked = "вы на площадке" if site.docked else "последняя посещённая площадка"
         color = COLOR_GREEN if site.has_depot else COLOR_ORANGE
-        label.config(text=f"{site.summary()} · {docked}", foreground=color)
+        page.set_site_text(f"{site.summary()} · {docked}", color)
 
     # ---------- Колонизатор: автозаполнение из журнала ----------
     def _colony_form_snapshot(self) -> dict:
         """Снимок формы: по нему видно, правил ли пользователь поля руками."""
-        snapshot = {key: var.get() for key, var in getattr(self, "colony_fields", {}).items()}
-        snapshot["_commodities"] = (
-            self.colony_commodities_var.get() if hasattr(self, "colony_commodities_var") else ""
-        )
-        snapshot["_primary"] = bool(self.colony_primary_port_var.get()) if hasattr(self, "colony_primary_port_var") else False
-        snapshot["_starpos"] = self.colony_starpos_var.get() if hasattr(self, "colony_starpos_var") else ""
-        snapshot["_plan"] = self.colony_site_plan_var.get() if hasattr(self, "colony_site_plan_var") else ""
+        page = getattr(self, "colony_page", None)
+        if page is None:
+            return {}
+        snapshot = {key: page.value(key) for key in page.fields}
+        snapshot["_commodities"] = page.commodities_entry.text()
+        snapshot["_primary"] = bool(page.primary_port_check.isChecked())
+        snapshot["_starpos"] = page.starpos_entry.text()
+        snapshot["_plan"] = page.plan_text()
         return snapshot
 
     def _colony_form_dirty(self) -> bool:
@@ -1784,15 +1634,15 @@ class ColonialHelperApp:
                 "включите Watcher или загрузите журналы.", "warn",
             )
             return
-        self.colony_fields["systemName"].set(system)
+        self.colony_page.set_value("systemName", system)
         address = getattr(state, "system_address", 0) or 0
         if address:
-            self.colony_fields["systemAddress"].set(str(address))
+            self.colony_page.set_value("systemAddress", str(address))
         market_id = str(self._last_depot_state.get("_market_id", "") or "")
         if market_id and market_id != "0":
-            self.colony_fields["marketId"].set(market_id)
-        if not self.colony_fields["architectName"].get():
-            self.colony_fields["architectName"].set(self._current_cmdr_name())
+            self.colony_page.set_value("marketId", market_id)
+        if not self.colony_page.value("architectName"):
+            self.colony_page.set_value("architectName", self._current_cmdr_name())
         self._colony_form_baseline = self._colony_form_snapshot()
         self.log(f"Подставлена текущая система: {system} (без данных стройплощадки)", "info")
         self._fetch_colony_site_context(system)
@@ -1803,33 +1653,33 @@ class ColonialHelperApp:
             self.log("Стройплощадка не найдена: в журнале нет ColonisationConstructionDepot.", "warn")
             return
 
-        self.colony_fields["systemName"].set(site.system_name or "")
-        self.colony_fields["marketId"].set(str(site.market_id))
-        self.colony_fields["systemAddress"].set(str(site.system_address or ""))
-        self.colony_starpos_var.set(
+        self.colony_page.set_value("systemName", site.system_name or "")
+        self.colony_page.set_value("marketId", str(site.market_id))
+        self.colony_page.set_value("systemAddress", str(site.system_address or ""))
+        self.colony_starpos_entry.setText(
             ", ".join(f"{value:.4f}" for value in site.star_pos) if site.star_pos else ""
         )
-        self.colony_fields["bodyName"].set(site.body_name or "")
-        self.colony_fields["bodyNum"].set("" if site.body_num is None else str(site.body_num))
-        self.colony_fields["maxNeed"].set(str(site.total_required) if site.total_required else "")
-        self.colony_primary_port_var.set(bool(site.is_primary_port))
+        self.colony_page.set_value("bodyName", site.body_name or "")
+        self.colony_page.set_value("bodyNum", "" if site.body_num is None else str(site.body_num))
+        self.colony_page.set_value("maxNeed", str(site.total_required) if site.total_required else "")
+        self.colony_primary_port_check.setChecked(bool(site.is_primary_port))
 
         # Название подставляем только если поле пустое или заполнено нами же
         # ранее: переименовывать проект за пользователем не нужно.
-        current_name = self.colony_fields["buildName"].get().strip()
+        current_name = self.colony_page.value("buildName").strip()
         if not current_name or current_name == getattr(self, "_colony_autofilled_name", ""):
             suggested = site.suggested_name
-            self.colony_fields["buildName"].set(suggested)
+            self.colony_page.set_value("buildName", suggested)
             self._colony_autofilled_name = suggested
 
-        if not self.colony_fields["architectName"].get().strip():
+        if not self.colony_page.value("architectName").strip():
             architect = self.construction.commander or self._current_cmdr_name()
             if architect:
-                self.colony_fields["architectName"].set(architect)
+                self.colony_page.set_value("architectName", architect)
 
         remaining = site.remaining_by_commodity()
         if remaining:
-            self.colony_commodities_var.set(format_commodities(remaining))
+            self.colony_commodities_entry.setText(format_commodities(remaining))
         elif not site.has_depot:
             self.log(
                 "Ресурсы площадки ещё не получены: зайдите в Construction Services "
@@ -1841,7 +1691,7 @@ class ColonialHelperApp:
         self._update_colony_site_label()
         prefix = "Автозаполнение" if auto else "Форма заполнена"
         self.log(f"{prefix}: {site.summary()}", "success" if site.has_depot else "info")
-        self.colony_status.config(text=site.summary())
+        self.colony_page.set_status(site.summary())
         # Планы площадок и архитектора системы берём из Raven Colonial — в
         # журнале их нет. Запрос фоновый, форма не блокируется.
         if site.system_name:
@@ -1865,8 +1715,8 @@ class ColonialHelperApp:
             if isinstance(name, dict):
                 name = name.get("architectName") or name.get("architect") or name.get("name")
             name = str(name or "").strip().strip('"')
-            if name and not self.colony_fields["architectName"].get().strip():
-                self.colony_fields["architectName"].set(name)
+            if name and not self.colony_page.value("architectName").strip():
+                self.colony_page.set_value("architectName", name)
                 self._colony_form_baseline = self._colony_form_snapshot()
                 self.log(f"Raven Colonial: архитектор системы {system} — {name}", "info")
 
@@ -1878,15 +1728,16 @@ class ColonialHelperApp:
             self._site_plan_label(plan) for plan in plans
         ]
         try:
-            self.colony_site_plan_combo.config(values=tuple(labels))
+            self.colony_page.set_plan_labels(labels)
         except Exception:
             pass
         if plans:
             self.log(
                 f"Raven Colonial: в системе {system} запланировано площадок — {len(plans)}", "info")
             # Один план — выбираем его сами: тип и тело возьмутся из плана.
-            if len(plans) == 1 and not self.colony_site_plan_var.get():
-                self.colony_site_plan_var.set(labels[1])
+            if len(plans) == 1 and not self.colony_page.plan_text().strip(
+                    self.colony_page.PLAN_NONE_LABEL):
+                self.colony_page.set_plan_text(labels[1])
                 self._on_colony_plan_selected()
 
     @staticmethod
@@ -1928,7 +1779,7 @@ class ColonialHelperApp:
         """Выбран план площадки — подставляем systemSiteId, тип и тело."""
         index = 0
         try:
-            index = int(self.colony_site_plan_combo.current())
+            index = int(self.colony_page.plan_index())
         except Exception:
             index = 0
         if index <= 0 or index - 1 >= len(self._colony_site_plans):
@@ -1939,31 +1790,30 @@ class ColonialHelperApp:
         if plan.get("buildType") and not self._colony_build_type_code():
             code = normalize_build_type(plan["buildType"])
             if code:
-                self.colony_fields["buildType"].set(build_type_label(code))
+                self.colony_page.set_value("buildType", build_type_label(code))
             else:
                 self.log(f"Тип «{plan['buildType']}» из плана Raven не входит в справочник — "
                          "выберите тип вручную.", "warn")
-        if plan.get("bodyName") and not self.colony_fields["bodyName"].get().strip():
-            self.colony_fields["bodyName"].set(plan["bodyName"])
-        if plan.get("bodyNum") not in (None, "") and not self.colony_fields["bodyNum"].get().strip():
-            self.colony_fields["bodyNum"].set(str(plan["bodyNum"]))
-        if not self.colony_fields["buildName"].get().strip():
-            self.colony_fields["buildName"].set(plan.get("name") or "")
+        if plan.get("bodyName") and not self.colony_page.value("bodyName").strip():
+            self.colony_page.set_value("bodyName", plan["bodyName"])
+        if plan.get("bodyNum") not in (None, "") and not self.colony_page.value("bodyNum").strip():
+            self.colony_page.set_value("bodyNum", str(plan["bodyNum"]))
+        if not self.colony_page.value("buildName").strip():
+            self.colony_page.set_value("buildName", plan.get("name") or "")
         self._colony_form_baseline = self._colony_form_snapshot()
         self.log(f"Выбран план площадки: {self._site_plan_label(plan)}", "info")
 
     def _on_colony_clear_form(self):
-        for var in self.colony_fields.values():
-            var.set("")
-        self.colony_starpos_var.set("")
-        self.colony_commodities_var.set("")
-        self.colony_primary_port_var.set(False)
-        self.colony_site_plan_var.set("")
+        self.colony_page.clear_fields()
+        self.colony_starpos_entry.setText("")
+        self.colony_commodities_entry.setText("")
+        self.colony_primary_port_check.setChecked(False)
+        self.colony_page.set_plan_text(self.colony_page.PLAN_NONE_LABEL)
         self._colony_selected_site_id = ""
         self._colony_draft_site = None
         self._colony_autofilled_name = ""
         self._colony_form_baseline = self._colony_form_snapshot()
-        self.colony_status.config(text="Форма очищена")
+        self.colony_page.set_status("Форма очищена")
         self._update_colony_site_label()
 
     def _on_colony_check_system(self):
@@ -1972,13 +1822,13 @@ class ColonialHelperApp:
         Создание проекта, который уже существует, Raven отклоняет, а сообщение
         об этом приходит только после запроса. Дешевле проверить заранее.
         """
-        system = self.colony_fields["systemName"].get().strip()
-        address = self.colony_fields["systemAddress"].get().strip()
-        market_id = self.colony_fields["marketId"].get().strip()
+        system = self.colony_page.value("systemName").strip()
+        address = self.colony_page.value("systemAddress").strip()
+        market_id = self.colony_page.value("marketId").strip()
         if not (system or address or market_id):
             self.log("Заполните систему, Market ID или System address.", "warn")
             return
-        self.colony_status.config(text="Проверяю площадку в Raven Colonial…")
+        self.colony_page.set_status("Проверяю площадку в Raven Colonial…")
         threading.Thread(target=self._colony_check_system_thread,
                          args=(system, address, market_id), daemon=True).start()
 
@@ -1996,16 +1846,16 @@ class ColonialHelperApp:
     def _colony_check_system_done(self, result):
         if not isinstance(result, dict) or not result.get("ok"):
             error = (result or {}).get("error") if isinstance(result, dict) else "нет ответа"
-            self.colony_status.config(text=f"Проверить не удалось: {error}")
+            self.colony_page.set_status(f"Проверить не удалось: {error}")
             self.log(f"Raven Colonial: проверка площадки — {error}", "warn")
             return
         projects = self._extract_colony_projects(result.get("data"))
         if not projects:
-            self.colony_status.config(text="Проекта на этой площадке нет — можно создавать.")
+            self.colony_page.set_status("Проекта на этой площадке нет — можно создавать.")
             self.log("Raven Colonial: активного проекта на площадке нет", "success")
             return
         names = ", ".join(f"{p.get('buildName')} ({p.get('buildId')})" for p in projects[:3])
-        self.colony_status.config(text=f"Внимание: в системе уже есть проект — {names}")
+        self.colony_page.set_status(f"Внимание: в системе уже есть проект — {names}")
         self.log(f"Raven Colonial: найден существующий проект — {names}", "warn")
 
     # ---------- Колонизатор: создание проекта ----------
@@ -2032,31 +1882,31 @@ class ColonialHelperApp:
             self.log("Для создания проекта нужен RCC ключ (вкладка «Подключение»).", "error")
             return
         site = getattr(self, "_colony_draft_site", None)
-        build_name = self.colony_fields["buildName"].get().strip()
-        system = self.colony_fields["systemName"].get().strip()
+        build_name = self.colony_page.value("buildName").strip()
+        system = self.colony_page.value("systemName").strip()
         missing = [
             label for key, label in (("marketId", "Market ID"), ("systemAddress", "System address"),
                                      ("buildName", "Название"))
-            if not self.colony_fields[key].get().strip()
+            if not self.colony_page.value(key).strip()
         ]
         if missing:
             hint = ""
             if site is None and {"Market ID", "System address"} & set(missing):
                 hint = " Пристыкуйтесь к стройплощадке и нажмите «Заполнить из журнала»."
             self.log(f"Raven Colonial требует заполнить: {', '.join(missing)}.{hint}", "warn")
-            self.colony_status.config(text=f"Не заполнены обязательные поля: {', '.join(missing)}")
+            self.colony_page.set_status(f"Не заполнены обязательные поля: {', '.join(missing)}")
             return
 
         build_code = self._colony_build_type_code()
         if not build_code:
             self.log("Выберите тип постройки из списка: только такие коды открываются "
                      "на Raven Colonial.", "warn")
-            self.colony_status.config(text="Не выбран тип постройки")
+            self.colony_page.set_status("Не выбран тип постройки")
             return
         self._colony_sync_body_num()
 
         def as_int(key: str) -> Optional[int]:
-            raw = self.colony_fields[key].get().strip()
+            raw = self.colony_page.value(key).strip()
             if not raw:
                 return None
             try:
@@ -2076,7 +1926,7 @@ class ColonialHelperApp:
         # Событие депота относится ровно к той площадке, чей MarketID стоит в
         # форме. Если командир поправил Market ID руками, чужой snapshot
         # отправлять нельзя — Raven посчитает по нему исходную потребность.
-        if site is not None and str(site.market_id) != str(self.colony_fields["marketId"].get().strip()):
+        if site is not None and str(site.market_id) != str(self.colony_page.value("marketId").strip()):
             site = None
 
         # Форма — источник истины: даже если площадка известна, командир мог
@@ -2086,11 +1936,11 @@ class ColonialHelperApp:
             site,
             build_name=build_name,
             build_type=build_code,
-            architect_name=self.colony_fields["architectName"].get().strip(),
-            discord_link=self.colony_fields["discordLink"].get().strip(),
-            notes=self.colony_fields["notes"].get().strip(),
-            is_primary_port=bool(self.colony_primary_port_var.get()),
-            commanders={cmdr: [] for cmdr in [(self.colony_cmdr_var.get() or "").strip()] if cmdr},
+            architect_name=self.colony_page.value("architectName").strip(),
+            discord_link=self.colony_page.value("discordLink").strip(),
+            notes=self.colony_page.value("notes").strip(),
+            is_primary_port=bool(self.colony_primary_port_check.isChecked()),
+            commanders={cmdr: [] for cmdr in [self.colony_page.cmdr_text().strip()] if cmdr},
             system_site_id=getattr(self, "_colony_selected_site_id", ""),
         )
         project["marketId"] = market_id
@@ -2101,14 +1951,14 @@ class ColonialHelperApp:
             project["maxNeed"] = max_need
         if body_num is not None:
             project["bodyNum"] = body_num
-        if self.colony_fields["bodyName"].get().strip():
-            project["bodyName"] = self.colony_fields["bodyName"].get().strip()
-        commodities = self._parse_commodities(self.colony_commodities_var.get())
+        if self.colony_page.value("bodyName").strip():
+            project["bodyName"] = self.colony_page.value("bodyName").strip()
+        commodities = self._parse_commodities(self.colony_commodities_entry.text())
         if commodities:
             project["commodities"] = commodities
 
-        cmdr = (self.colony_cmdr_var.get() or "").strip()
-        open_page = bool(self.colony_open_page_var.get())
+        cmdr = self.colony_page.cmdr_text().strip()
+        open_page = bool(self.colony_open_page_check.isChecked())
         self._set_colony_busy(True, "Создаю проект…")
         threading.Thread(target=self._colony_create_thread,
                          args=(project, cmdr, open_page), daemon=True).start()
@@ -2141,8 +1991,8 @@ class ColonialHelperApp:
                 invalidate(int(site.system_address or 0) if site else 0,
                            int(site.market_id or 0) if site else 0)
             self.site_project = {}
-            system = self.colony_fields["systemName"].get()
-            name = f"{system}: {self.colony_fields['buildName'].get()}".strip(": ")
+            system = self.colony_page.value("systemName")
+            name = f"{system}: {self.colony_page.value('buildName')}".strip(": ")
             message = f"Raven Colonial: проект создан — {name}"
             if build_id:
                 message += f" (buildId {build_id})"
@@ -2152,14 +2002,14 @@ class ColonialHelperApp:
                     f"Raven Colonial: проект создан, но не привязан к командиру — "
                     f"{result['link_error']}", "warn",
                 )
-            self.colony_status.config(text=f"Проект создан, buildId: {build_id or '—'}")
+            self.colony_page.set_status(f"Проект создан, buildId: {build_id or '—'}")
             if build_id and open_page:
                 self._colony_open_url(project_url(build_id), f"Проект {name}")
             if cmdr:
                 self._on_colony_refresh()
         else:
             error = result.get("error") or "неизвестная ошибка"
-            self.colony_status.config(text=f"Создать проект не удалось: {error}")
+            self.colony_page.set_status(f"Создать проект не удалось: {error}")
             self.log(f"Raven Colonial: проект не создан — {error}", "error")
 
 
@@ -6166,7 +6016,7 @@ class ColonialHelperApp:
             host_layout = self.tab_log._get_tk_layout("pack")
             self.log_page = LogPage()
             host_layout.addWidget(self.log_page)
-            self.log_page.show()
+            self._show_page(self.log_page)
         except Exception as exc:
             self.log("Не удалось открыть вкладку лога: %s" % exc, "error")
         self.log("Colonial Helper готов к работе", "info")
@@ -7140,11 +6990,10 @@ class ColonialHelperApp:
             return
         self.config["cmdr_name"] = name
         self.save_config()
-        if hasattr(self, "colony_cmdr_var"):
-            self.colony_cmdr_var.set(name)
+        if getattr(self, "colony_page", None) is not None:
+            self.colony_page.set_cmdr(name)
         if hasattr(self, "colony_key_label"):
-            self.colony_key_label.config(
-                text=f"RCC ключ задан · {name}", foreground=COLOR_GREEN)
+            self.colony_page.set_key_status(f"RCC ключ задан · {name}", COLOR_GREEN)
         self.log(f"Raven Colonial: командир по ключу RCC — {name}", "success")
         # Список проектов сразу не обновляем: пользователь может нажать
         # «Обновить список» сам, а лишний запрос на каждое сохранение не нужен.
@@ -10088,7 +9937,7 @@ class ColonialHelperApp:
         if getattr(self, "_colony_reconcile_busy", False):
             return
         self._colony_reconcile_busy = True
-        self.colony_status.config(text="Сверяю стройплощадку с Raven Colonial…")
+        self.colony_page.set_status("Сверяю стройплощадку с Raven Colonial…")
         threading.Thread(
             target=self._colony_reconcile_thread,
             args=(int(site.market_id), int(site.system_address or 0)),
@@ -10157,7 +10006,7 @@ class ColonialHelperApp:
             self.log(f"{head}: {reason}. По журналу вы завезли {journal['total']:,} t "
                      f"({journal['count']} дост.) — тонны не зачтутся, пока проект не создан."
                      .replace(",", " "), "warn")
-            self.colony_status.config(text="Проект на Raven Colonial не найден")
+            self.colony_page.set_status("Проект на Raven Colonial не найден")
             return
 
         self.site_project = dict(project)
@@ -10203,8 +10052,7 @@ class ColonialHelperApp:
                          + (f" — {top({row['key']: row['amount'] for row in state.get_state_dict()['commodities'] if row['amount'] > 0})}"
                             if on_board else ""))
         self.log("\n".join(lines), "info")
-        self.colony_status.config(
-            text=f"Осталось завезти {fmt(left)} t · по журналу вы завезли {fmt(journal['total'])} t")
+        self.colony_page.set_status(f"Осталось завезти {fmt(left)} t · по журналу вы завезли {fmt(journal['total'])} t")
 
         # Состояние рынка авианосца тоже освежаем: груз туда возят и другие
         # командиры, а журнал знает только наши переводы.
@@ -10269,7 +10117,7 @@ class ColonialHelperApp:
         self._colony_announced_sites.add(site.market_id)
 
         self.log(f"Стройплощадка: {site.summary()}", "info")
-        if not self.colony_autofill_var.get():
+        if not self.colony_autofill_check.isChecked():
             self.log(
                 "Автозаполнение формы создания проекта выключено — "
                 "нажмите «Заполнить из журнала».", "info",

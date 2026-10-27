@@ -527,13 +527,12 @@ class CarrierOverlayIntegrationTests(unittest.TestCase):
                         "systemName": "Kuma", "buildType": "Coriolis",
                         "commodities": {"steel": 100}},
         }
-        self.app.colony_tree = self.mock.MagicMock()
-        self.app.colony_tree.selection.return_value = ("item",)
-        # `item(id, "values")` возвращает сам кортеж значений, а не словарь.
-        self.app.colony_tree.item.return_value = (
+        # Страница отдаёт строку выделенного проекта кортежем — как её видит
+        # таблица: ★, система, стройка, тип, прогресс, buildId.
+        self.app.colony_page = self.mock.MagicMock()
+        self.app.colony_page.selected_values.return_value = (
             "", "Kuma", "Jameson Memorial", "Coriolis", "100 / 200", "abc-123")
-        self.app.colony_cmdr_var = self.mock.MagicMock()
-        self.app.colony_cmdr_var.get.return_value = "CMDR Test"
+        self.app.colony_page.cmdr_text.return_value = "CMDR Test"
         self.app.raven_api.set_primary = lambda cmdr, build_id: {"ok": True}
         with self._run_threads_inline():
             self.app._on_colony_set_primary()
@@ -542,8 +541,8 @@ class CarrierOverlayIntegrationTests(unittest.TestCase):
 
     def test_clear_primary_drops_the_list(self):
         self.app.colony_primary_project = {"buildId": "abc", "commodities": {"steel": 10}}
-        self.app.colony_cmdr_var = self.mock.MagicMock()
-        self.app.colony_cmdr_var.get.return_value = "CMDR Test"
+        self.app.colony_page = self.mock.MagicMock()
+        self.app.colony_page.cmdr_text.return_value = "CMDR Test"
         self.app.raven_api.clear_primary = lambda cmdr: {"ok": True}
         with self._run_threads_inline():
             self.app._on_colony_clear_primary()
