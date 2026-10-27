@@ -587,7 +587,7 @@ class ColonialHelperApp:
         прогон вешали Qt. В настоящем окне у страницы всегда есть родитель.
         """
         if page.parent() is not None:
-            self._show_page(page)
+            page.show()
 
     def _build_tab_auth(self):
         """Вкладка «Подключение» на чистом Qt (см. helper_pages.AuthPage)."""
@@ -2029,10 +2029,12 @@ class ColonialHelperApp:
     MAP_LABEL_LIMIT = 26
 
     def _build_tab_factions(self):
+        """Вкладка «Фракции» на чистом Qt (qt_factions.FactionInfographic)."""
         from qt_factions import FactionInfographic
-        outer=self._scrollable_frame(self.tab_factions,padding=18)
-        self.faction_infographic=FactionInfographic(
-            outer,locale=self.config.get("site_locale"),site_url=self.api.site_url)
+        self.faction_infographic = FactionInfographic(
+            locale=self.config.get("site_locale"), site_url=self.api.site_url)
+        self.tab_factions._get_tk_layout("pack").addWidget(self.faction_infographic)
+        self._show_page(self.faction_infographic)
         self._render_factions_infographic()
 
     def _update_faction_infographic(self,event:dict):
