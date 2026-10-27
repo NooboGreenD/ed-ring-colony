@@ -813,7 +813,7 @@ class Toplevel(QWidget,TkWidgetMixin):
         else:e.accept()
 
 class TkNamespace:
-    Tk=Window;Toplevel=Toplevel;Frame=Frame;Label=Label;Button=Button;Entry=Entry;Text=Text;Canvas=Canvas;Menu=Menu;Scrollbar=Scrollbar
+    Tk=Window;Toplevel=Toplevel;Frame=Frame;Label=Label;Button=Button;Checkbutton=Checkbutton;Entry=Entry;Text=Text;Canvas=Canvas;Menu=Menu;Scrollbar=Scrollbar
     StringVar=StringVar;IntVar=IntVar;DoubleVar=DoubleVar;BooleanVar=BooleanVar;TclError=RuntimeError
     END=END;INSERT=INSERT;NORMAL=NORMAL;DISABLED=DISABLED;WORD=WORD;SOLID=SOLID;FLAT=FLAT
     X=X;Y=Y;BOTH=BOTH;LEFT=LEFT;RIGHT=RIGHT;TOP=TOP;BOTTOM=BOTTOM;CENTER=CENTER
