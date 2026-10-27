@@ -26,12 +26,16 @@ from PySide6.QtWidgets import (
 )
 
 from ui_qt import (
+    CYAN,
+    GREEN,
     MUTED,
+    ORANGE,
     PANEL,
     TEXT,
     action_button,
     heading,
     label,
+    panel,
 )
 
 #: Pastel-on-dark colours for log levels, matching the rest of the program.
@@ -418,3 +422,517 @@ class AuthPage(QWidget):
 
     def set_auth_result(self, text: str, color: _Optional[str] = None) -> None:
         self.auth_result.set_status(text, color)
+
+
+# ===========================================================================
+#  Страница «Инфографика пилота»
+# ===========================================================================
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+from PySide6.QtGui import QBrush, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
+    QGridLayout,
+    QProgressBar,
+)
+
+PILOT_KPI_KEYS = ("kpi_tons", "kpi_deliveries", "kpi_cargo", "kpi_systems")
+PILOT_TILES = ("session", "ship", "route", "systems", "status", "journal")
+
+
+def pilot_columns(width: int, compact: bool) -> int:
+    """How many tile columns fit into ``width`` (compact mode is denser)."""
+    width = int(width or 0)
+    if compact:
+        if width >= 1180:
+            return 4
+        if width >= 880:
+            return 3
+        return 2 if width >= 620 else 1
+    if width >= 1300:
+        return 3
+    if width >= 840:
+        return 2
+    return 1
+
+
+def sparkline_points(values: Sequence[float], width: int, height: int,
+                     padding: int = 4) -> List[Tuple[float, float]]:
+    """Map a value series onto canvas coordinates (empty when not drawable)."""
+    points = [float(value) for value in values]
+    if len(points) < 2 or width < 10 or height < 10:
+        return []
+    low, high = min(points), max(points)
+    if high - low < 1e-9:
+        low, high = low - 1.0, high + 1.0
+    usable = max(1, height - padding * 2)
+    step_x = width / float(len(points) - 1)
+    return [(index * step_x,
+             padding + (1.0 - (value - low) / (high - low)) * usable)
+            for index, value in enumerate(points)]
+
+
+def bars_geometry(rows: Sequence[Tuple[str, float]], width: int, height: int,
+                  limit: int = 8) -> List[Dict[str, object]]:
+    """Geometry for the "top systems" chart: bar rectangle plus both captions."""
+    items = [(str(name), float(value)) for name, value in rows[:limit]]
+    if not items or width < 10 or height < 10:
+        return []
+    maximum = max(value for _name, value in items) or 1.0
+    row_height = max(18, min(28, height // max(1, len(items))))
+    # Полоса живёт между подписью слева и числом справа, иначе текст
+    # наезжает на неё и обрезается краем виджета.
+    label_width = min(150, int(width * 0.45))
+    value_width = 56
+    bar_left = label_width + 6
+    bar_space = max(10, width - bar_left - value_width)
+    output: List[Dict[str, object]] = []
+    for index, (name, value) in enumerate(items):
+        top = index * row_height + 2
+        output.append({
+            "name": name[:22],
+            "value": value,
+            "label_x": 0,
+            "value_x": width,
+            "rect": (bar_left, top, max(2, int(bar_space * (value / maximum))),
+                     row_height - 8),
+            "label_y": top + row_height - 6,
+        })
+    return output
+
+
+class ElidedLabel(QLabel):
+    """Label that shortens long text with an ellipsis instead of clipping it.
+
+    ``text()`` still returns the full value, so callers and tests keep the
+    complete string; only the painted text is shortened. Painting stays with
+    QLabel itself, so colours and alignment from the stylesheet keep working.
+    """
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self.setText(text)
+        # Ignored схлопывает метку в нулевую ширину; Preferred + эллипсис
+        # даёт нормальный размер и аккуратное усечение длинных значений.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(40)
+
+    def full_text(self) -> str:
+        return self._full
+
+    def text(self) -> str:  # noqa: D401 - Qt API contract
+        return self._full
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt API
+        self._full = str(text)
+        self.setToolTip(self._full)
+        self._apply()
+
+    def _apply(self) -> None:
+        width = max(0, self.width() - 2)
+        if width <= 0:
+            super().setText(self._full)
+            return
+        metrics = self.fontMetrics()
+        painted = metrics.elidedText(self._full, Qt.TextElideMode.ElideRight, width)
+        super().setText(painted)
+
+    def set_full_text(self, text: str) -> None:
+        """Set the complete value (the painted text may be shortened)."""
+        self.setText(text)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._apply()
+
+    # Запрашиваем место под полный текст: иначе раскладка «видит» уже
+    # обрезанную строку, сжимает метку и обрезает её ещё сильнее.
+    def sizeHint(self):  # noqa: N802 - Qt API
+        hint = super().sizeHint()
+        width = self.fontMetrics().horizontalAdvance(self._full) + 2
+        return hint.expandedTo(hint.__class__(max(width, self.minimumWidth()), hint.height()))
+
+
+class SparklineWidget(QWidget):
+    """Filled line chart of the current session (no external chart library)."""
+
+    def __init__(self, color: str = "#65c78a", *, height: int = 64,
+                 empty_text: str = "накопление данных…", parent=None) -> None:
+        super().__init__(parent)
+        self.color = QColor(color)
+        self.empty_text = empty_text
+        self.values: List[float] = []
+        self.setMinimumHeight(height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_values(self, values: Iterable[float]) -> None:
+        self.values = [float(value) for value in values]
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        width, height = self.width(), self.height()
+        points = sparkline_points(self.values, width, height)
+        if not points:
+            painter.setPen(QPen(QColor(MUTED)))
+            painter.drawText(6, height // 2 + 4, self.empty_text)
+            return
+        path = QPainterPath()
+        path.moveTo(points[0][0], height)
+        for x, y in points:
+            path.lineTo(x, y)
+        path.lineTo(points[-1][0], height)
+        path.closeSubpath()
+        fill = QColor(self.color)
+        fill.setAlpha(70)
+        painter.fillPath(path, QBrush(fill))
+        line = QPainterPath()
+        line.moveTo(*points[0])
+        for point in points[1:]:
+            line.lineTo(*point)
+        painter.setPen(QPen(self.color, 2))
+        painter.drawPath(line)
+        painter.setPen(QPen(self.color))
+        painter.drawText(4, 14, f"{self.values[-1]:.0f}")
+
+
+class BarsChart(QWidget):
+    """Horizontal bars: "top systems by tons"."""
+
+    def __init__(self, color: str = "#42b9d4", *, height: int = 110,
+                 empty_text: str = "данных пока нет", parent=None) -> None:
+        super().__init__(parent)
+        self.color = QColor(color)
+        self.empty_text = empty_text
+        self.rows: List[Tuple[str, float]] = []
+        self.setMinimumHeight(height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_rows(self, rows: Sequence[Tuple[str, float]]) -> None:
+        self.rows = [(str(name), float(value)) for name, value in rows]
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        width, height = self.width(), self.height()
+        geometry = bars_geometry(self.rows, width, height)
+        if not geometry:
+            painter.setPen(QPen(QColor(MUTED)))
+            painter.drawText(6, max(14, height // 2), self.empty_text)
+            return
+        label_font = painter.font()
+        label_font.setPointSize(8)
+        painter.setFont(label_font)
+        for item in geometry:
+            x, y, bar_width, bar_height = item["rect"]
+            painter.fillRect(x, y, bar_width, bar_height, self.color)
+            painter.setPen(QPen(QColor(MUTED)))
+            painter.drawText(int(item["label_x"]), int(item["label_y"]), str(item["name"]))
+            painter.setPen(QPen(QColor(TEXT)))
+            value_text = f"{item['value']:.0f} t"
+            painter.drawText(int(item["value_x"]) - 52, int(item["label_y"]), value_text)
+
+
+class PilotPage(QWidget):
+    """Pilot infographic: KPI cards, detail tiles, sparkline and bar chart.
+
+    Values are pushed in by the application (``set_value``/``set_bar``), so the
+    page never reaches for trackers itself and stays trivially testable.
+    """
+
+    ROW_KEYS = {
+        "session": ("session_rate", "session_construction", "session_route"),
+        "ship": ("ship", "modules"),
+        "route": ("route_status", "route_current", "route_next",
+                  "route_remaining", "last_delivery"),
+        "status": ("commander", "system", "game", "watcher", "services", "exobio"),
+        "journal": ("balance", "rebuy", "legal", "journal_state",
+                    "event_summary", "last_event"),
+    }
+    BAR_KEYS = {
+        "ship": (("hull_bar", "Корпус"), ("shield_bar", "Щиты"),
+                 ("fuel_bar", "Топливо"), ("power_bar", "Энергия")),
+        "route": (("route_progress", "Прогресс"),),
+    }
+    ROW_LABELS = {
+        "session_rate": "Темп", "session_construction": "На стройки",
+        "session_route": "На маршруте", "ship": "Корабль", "modules": "Модули",
+        "route_status": "Пройдено", "route_current": "Текущая",
+        "route_next": "Следующая", "route_remaining": "Осталось",
+        "last_delivery": "Последняя доставка", "commander": "CMDR",
+        "system": "Система", "game": "Игра", "watcher": "Watcher",
+        "services": "Сервисы", "exobio": "Экзобиология", "balance": "Баланс",
+        "rebuy": "Страховка", "legal": "Правовой статус",
+        "journal_state": "Журналы", "event_summary": "События",
+        "last_event": "Последнее",
+    }
+
+    def __init__(self, *, compact: bool = False, columns_provider=None,
+                 on_compact_changed=None, on_refresh=None,
+                 on_columns_changed=None, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("pilotPage")
+        self._compact = bool(compact)
+        self._columns_provider = columns_provider
+        self._on_compact_changed = on_compact_changed
+        self._on_refresh = on_refresh
+        self._on_columns_changed = on_columns_changed
+        self._columns = 0
+        self.values: Dict[str, QLabel] = {}
+        self.subs: Dict[str, QLabel] = {}
+        self.bars: Dict[str, QProgressBar] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(8)
+        layout.addWidget(self._header())
+        layout.addWidget(label(
+            "Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
+            "Сетевых запросов инфографика не делает.", role="muted", size=9, wrap=True))
+
+        self.kpi_row = QWidget()
+        self.kpi_layout = QHBoxLayout(self.kpi_row)
+        self.kpi_layout.setContentsMargins(0, 0, 0, 0)
+        self.kpi_layout.setSpacing(8)
+        layout.addWidget(self.kpi_row)
+        self._build_kpis()
+
+        self.tiles_area = QWidget()
+        self.tile_layout = QGridLayout(self.tiles_area)
+        self.tile_layout.setContentsMargins(0, 0, 0, 0)
+        self.tile_layout.setSpacing(8)
+        layout.addWidget(self.tiles_area, 1)
+        self._rebuild_tiles(self.columns())
+
+    # ------------------------------------------------------------------ header
+    def _header(self) -> QWidget:
+        holder = QWidget()
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.setSpacing(10)
+        title = label("ИНФОГРАФИКА ПИЛОТА", role="mono", size=15, bold=True, color=ORANGE)
+        holder_layout.addWidget(title)
+        holder_layout.addStretch(1)
+        self.updated_label = label("", role="mono", size=9, color=MUTED)
+        self.updated_label.setObjectName("pilotUpdated")
+        holder_layout.addWidget(self.updated_label)
+        self.refresh_button = action_button("Обновить", self._refresh_clicked, height=30)
+        holder_layout.addWidget(self.refresh_button)
+        self.compact_check = QCheckBox("Компактный режим")
+        self.compact_check.setChecked(self._compact)
+        self.compact_check.toggled.connect(self._compact_toggled)
+        holder_layout.addWidget(self.compact_check)
+        return holder
+
+    def _refresh_clicked(self) -> None:
+        if callable(self._on_refresh):
+            self._on_refresh()
+
+    def _compact_toggled(self, checked: bool) -> None:
+        self._compact = bool(checked)
+        if callable(self._on_compact_changed):
+            self._on_compact_changed(bool(checked))
+
+    # -------------------------------------------------------------------- KPIs
+    def _build_kpis(self) -> None:
+        specs = (
+            ("kpi_tons", "ТОННЫ ЗА СЕССИЮ", GREEN),
+            ("kpi_deliveries", "ДОСТАВКИ", CYAN),
+            ("kpi_cargo", "ГРУЗ", ORANGE),
+            ("kpi_systems", "СИСТЕМЫ", CYAN),
+        )
+        for index, (key, title, color) in enumerate(specs):
+            card = panel(QFrame(), "card")
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 9, 12, 9)
+            card_layout.setSpacing(2)
+            card_layout.addWidget(label(title, role="mono", size=9, bold=True, color=MUTED))
+            value = label("—", role="mono", size=28 if not self._compact else 20,
+                          bold=True, color=color)
+            value.setObjectName(key)
+            card_layout.addWidget(value)
+            sub = label("", role="mono", size=9, color=MUTED, wrap=True)
+            sub.setObjectName(f"{key}_sub")
+            card_layout.addWidget(sub)
+            self.values[key] = value
+            self.subs[f"{key}_sub"] = sub
+            self.kpi_layout.addWidget(card, 1)
+
+    # ------------------------------------------------------------------- tiles
+    def columns(self) -> int:
+        if callable(self._columns_provider):
+            try:
+                return int(self._columns_provider())
+            except Exception:
+                pass
+        return pilot_columns(self.width() or 1180, self._compact)
+
+    def _clear_tiles(self) -> None:
+        while self.tile_layout.count():
+            item = self.tile_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.bars.clear()
+
+    def _tile(self, title: str) -> Tuple[QFrame, QVBoxLayout]:
+        card = panel(QFrame(), "card")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 9, 12, 9)
+        card_layout.setSpacing(3)
+        card_layout.addWidget(label(title, role="mono",
+                                    size=9 if self._compact else 10,
+                                    bold=True, color=ORANGE))
+        return card, card_layout
+
+    def _row_widget(self, key: str, *, color: str = CYAN) -> QWidget:
+        holder = panel(QWidget(), "panelClear")
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.setSpacing(8)
+        title = label(self.ROW_LABELS.get(key, key), role="mono", size=9, color=MUTED)
+        title.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
+        holder_layout.addWidget(title, 0)
+        holder_layout.addStretch(1)
+        value = ElidedLabel("—")
+        value.setObjectName(key)
+        font = value.font()
+        font.setPointSize(10)
+        font.setBold(True)
+        font.setFamily("Consolas")
+        value.setFont(font)
+        value.setStyleSheet(f"color:{color};")
+        value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        value.setMaximumWidth(300)
+        holder_layout.addWidget(value)
+        self.values[key] = value
+        return holder
+
+    def _bar_widget(self, key: str, title: str) -> QWidget:
+        holder = QWidget()
+        holder_layout = QVBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 2, 0, 0)
+        holder_layout.setSpacing(2)
+        holder_layout.addWidget(label(title, role="mono", size=9, color=MUTED))
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(8)
+        bar.setStyleSheet(
+            "QProgressBar { background: #202428; border: none; border-radius: 4px; }"
+            "QProgressBar::chunk { background: #42b9d4; border-radius: 4px; }")
+        holder_layout.addWidget(bar)
+        self.bars[key] = bar
+        return holder
+
+    def _rebuild_tiles(self, columns: int) -> None:
+        columns = max(1, int(columns))
+        self._columns = columns
+        self._clear_tiles()
+        builders = {
+            "session": self._tile_session,
+            "ship": self._tile_ship,
+            "route": self._tile_route,
+            "systems": self._tile_systems,
+            "status": self._tile_status,
+            "journal": self._tile_journal,
+        }
+        for index, key in enumerate(PILOT_TILES):
+            row, column = divmod(index, columns)
+            card = builders[key]()
+            self.tile_layout.addWidget(card, row, column)
+            self.tile_layout.setRowStretch(row, 1)
+        for column in range(columns):
+            self.tile_layout.setColumnStretch(column, 1)
+
+    def _tile_session(self) -> QWidget:
+        card, card_layout = self._tile("ДИНАМИКА СЕССИИ")
+        self.spark = SparklineWidget(color=GREEN, height=64,
+                                     empty_text="журнал пока пуст")
+        card_layout.addWidget(self.spark)
+        for key in self.ROW_KEYS["session"]:
+            card_layout.addWidget(self._row_widget(key))
+        card_layout.addStretch(1)
+        return card
+
+    def _tile_ship(self) -> QWidget:
+        card, card_layout = self._tile("КОРАБЛЬ")
+        card_layout.addWidget(self._row_widget("ship"))
+        for key, title in self.BAR_KEYS["ship"]:
+            card_layout.addWidget(self._bar_widget(key, title))
+        card_layout.addWidget(self._row_widget("modules"))
+        card_layout.addStretch(1)
+        return card
+
+    def _tile_route(self) -> QWidget:
+        card, card_layout = self._tile("МАРШРУТ")
+        card_layout.addWidget(self._row_widget("route_status"))
+        for key, title in self.BAR_KEYS["route"]:
+            card_layout.addWidget(self._bar_widget(key, title))
+        for key in ("route_current", "route_next", "route_remaining", "last_delivery"):
+            card_layout.addWidget(self._row_widget(key))
+        card_layout.addStretch(1)
+        return card
+
+    def _tile_systems(self) -> QWidget:
+        card, card_layout = self._tile("ТОП СИСТЕМ ПО ТОННАМ")
+        self.systems_chart = BarsChart(color=CYAN, height=110)
+        card_layout.addWidget(self.systems_chart)
+        card_layout.addStretch(1)
+        return card
+
+    def _tile_status(self) -> QWidget:
+        card, card_layout = self._tile("СТАТУС И ПОДКЛЮЧЕНИЯ")
+        for key in self.ROW_KEYS["status"]:
+            card_layout.addWidget(self._row_widget(key))
+        card_layout.addStretch(1)
+        return card
+
+    def _tile_journal(self) -> QWidget:
+        card, card_layout = self._tile("ЖУРНАЛЫ И ЭКОНОМИКА")
+        for key in self.ROW_KEYS["journal"]:
+            color = MUTED if key == "last_event" else CYAN
+            card_layout.addWidget(self._row_widget(key, color=color))
+        card_layout.addStretch(1)
+        return card
+
+    # ------------------------------------------------------------------- data
+    def set_value(self, key: str, text: str) -> None:
+        widget = self.values.get(key) or self.subs.get(key)
+        if widget is None:
+            return
+        # Метка усечёт по фактической ширине, полное значение останется в подсказке.
+        widget.setText(str(text))
+
+    def set_bar(self, key: str, value: float) -> None:
+        bar = self.bars.get(key)
+        if bar is not None:
+            bar.setValue(int(max(0.0, min(100.0, float(value or 0)))))
+
+    def set_spark(self, values: Iterable[float]) -> None:
+        chart = getattr(self, "spark", None)
+        if chart is not None:
+            chart.set_values(values)
+
+    def set_systems(self, rows: Sequence[Tuple[str, float]]) -> None:
+        chart = getattr(self, "systems_chart", None)
+        if chart is not None:
+            chart.set_rows(rows)
+
+    def set_updated(self, text: str) -> None:
+        self.updated_label.setText(str(text))
+
+    def column_count(self) -> int:
+        return self._columns
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if self.columns() != self._columns:
+            self._rebuild_tiles(self.columns())
+            if callable(self._on_columns_changed):
+                self._on_columns_changed()

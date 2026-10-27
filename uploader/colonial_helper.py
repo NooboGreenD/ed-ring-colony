@@ -689,287 +689,90 @@ class ColonialHelperApp:
         self._pilot_journal_cache = ("", 0.0)
 
     def _build_tab_pilot(self):
+        """Инфографика пилота на чистом Qt (helper_pages.PilotPage)."""
+        from helper_pages import PilotPage
+
         self._pilot_init_state()
-        viewport = tb.Frame(self.tab_pilot)
-        viewport.pack(fill=BOTH, expand=True)
-
-        header = tb.Frame(viewport, padding=(15, 12, 15, 4))
-        header.pack(fill=X)
-        tb.Label(header, text="ИНФОГРАФИКА ПИЛОТА", font=("Consolas", 15, "bold"),
-                 foreground=COLOR_ORANGE).pack(side=LEFT)
-        self._pilot_compact_var = tk.BooleanVar(value=self._pilot_compact)
-        tb.Checkbutton(header, text="Компактный режим", variable=self._pilot_compact_var,
-                       command=self._on_pilot_compact_changed).pack(side=RIGHT)
-        tb.Button(header, text="Обновить", command=self._refresh_pilot_infographic,
-                  bootstyle="info-outline", width=12).pack(side=RIGHT, padx=(0, 12))
-        self._pilot_updated_label = tb.Label(header, text="", foreground=COLOR_MUTED)
-        self._pilot_updated_label.pack(side=RIGHT, padx=(0, 12))
-
-        tb.Label(
-            viewport,
-            text="Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
-                 "Сетевых запросов инфографика не делает.",
-            foreground=COLOR_MUTED,
-            wraplength=900,
-        ).pack(anchor=W, padx=15, pady=(0, 8))
-
-        self._pilot_body = tb.Frame(viewport, padding=(9, 0, 9, 9))
-        self._pilot_body.pack(fill=BOTH, expand=True)
-        # Раскладка пересобирается при изменении ширины окна: на узком окне
-        # три колонки превращаются в две и в одну, а не «сплющиваются».
-        self.tab_pilot.bind("<Configure>", self._on_pilot_resize)
-
-        self._rebuild_pilot_layout()
-        # Первый снимок и таймер запускаются при открытии этой страницы.
+        self.pilot_page = None
+        try:
+            page = PilotPage(
+                compact=self._pilot_compact,
+                columns_provider=self._pilot_column_count,
+                on_compact_changed=self._on_pilot_compact_changed_from_page,
+                on_refresh=self._refresh_pilot_infographic,
+                on_columns_changed=self._on_pilot_columns_changed,
+            )
+            self.tab_pilot._get_tk_layout("pack").addWidget(page)
+            page.show()
+            self.pilot_page = page
+        except Exception as exc:
+            self.log(f"Не удалось открыть инфографику пилота: {exc}", "error")
+        if self.pilot_page is None:
+            self._pilot_columns = 0
+            return
+        # Прежние имена: по ним обновление и тесты находят плитки и полосы.
+        self._pilot_tiles = self.pilot_page.values
+        self._pilot_tiles.update(self.pilot_page.subs)
+        self._pilot_bars = self.pilot_page.bars
+        self._pilot_canvases = {}
+        self._pilot_updated_label = self.pilot_page.updated_label
+        self._pilot_compact_var = self.pilot_page.compact_check
+        self._pilot_columns = self.pilot_page.column_count()
 
     # -- раскладка ---------------------------------------------------------
-    def _on_pilot_compact_changed(self):
-        self._pilot_compact = bool(self._pilot_compact_var.get())
+    def _on_pilot_compact_changed_from_page(self, checked: bool):
+        """Компактный режим переключили в нативной странице."""
+        if getattr(self, "pilot_page", None) is None:
+            return
+        self._pilot_compact = bool(checked)
         self.config["pilot_compact"] = self._pilot_compact
         self.save_config()
-        self._rebuild_pilot_layout()
+        self.pilot_page._rebuild_tiles(self._pilot_column_count())
+        self._pilot_columns = self.pilot_page.column_count()
+        self._refresh_pilot_infographic()
+
+    def _on_pilot_compact_changed(self):
+        """Совместимость: тот же обработчик для прежнего чекбокса."""
+        self._on_pilot_compact_changed_from_page(bool(self._pilot_compact_var.isChecked()))
+
+    def _on_pilot_columns_changed(self):
+        """Страница перестроила плитки при изменении ширины окна."""
+        if getattr(self, "pilot_page", None) is None:
+            return
+        self._pilot_columns = self.pilot_page.column_count()
         self._refresh_pilot_infographic()
 
     def _on_pilot_resize(self, _event=None):
-        if self._pilot_resize_job:
-            try:
-                self.root.after_cancel(self._pilot_resize_job)
-            except Exception:
-                pass
-        self._pilot_resize_job = self.root.after(250, self._rebuild_pilot_layout_if_needed)
+        self._on_pilot_columns_changed()
 
     def _rebuild_pilot_layout_if_needed(self):
-        self._pilot_resize_job = None
-        if self._pilot_column_count() != self._pilot_columns:
-            self._rebuild_pilot_layout()
+        if getattr(self, "pilot_page", None) is None:
+            return
+        if self.pilot_page.column_count() != self._pilot_column_count():
+            self.pilot_page._rebuild_tiles(self._pilot_column_count())
             self._refresh_pilot_infographic()
+        self._pilot_columns = self.pilot_page.column_count()
+
+    def _rebuild_pilot_layout(self):
+        """Пересобрать плитки под текущую ширину окна."""
+        if getattr(self, "pilot_page", None) is None:
+            return
+        self.pilot_page._rebuild_tiles(self._pilot_column_count())
+        self._pilot_columns = self.pilot_page.column_count()
 
     def _pilot_window_width(self) -> int:
         try:
             width = int(self.root.winfo_width())
         except Exception:
             width = 0
-        # До первого отображения Tk возвращает ширину 1 px, хотя геометрия
-        # окна уже задана как 1180 px. Не строим заранее заведомо неверную
-        # одноколоночную раскладку, которую пришлось бы целиком пересоздавать
-        # при первом открытии страницы.
+        # До первого отображения окно сообщает ширину 1 px, хотя геометрия уже
+        # задана как 1180 px. Не строим заранее заведомо неверную раскладку.
         return width if width >= 400 else 1180
 
     def _pilot_column_count(self) -> int:
-        width = self._pilot_window_width()
-        if self._pilot_compact:
-            if width >= 1180:
-                return 4
-            if width >= 880:
-                return 3
-            return 2 if width >= 620 else 1
-        if width >= 1300:
-            return 3
-        if width >= 840:
-            return 2
-        return 1
+        from helper_pages import pilot_columns
 
-    def _rebuild_pilot_layout(self):
-        for child in list(self._pilot_body.winfo_children()):
-            try:
-                child.destroy()
-            except Exception:
-                pass
-        self._pilot_tiles.clear()
-        self._pilot_bars.clear()
-        self._pilot_canvases.clear()
-
-        compact = self._pilot_compact
-        columns = self._pilot_column_count()
-        self._pilot_columns = columns
-        pad = (6, 4) if compact else (10, 8)
-
-        # 1. Крупные показатели — вся ширина окна
-        kpi_row = tb.Frame(self._pilot_body)
-        kpi_row.pack(fill=X, pady=(0, 8))
-        for index in range(4):
-            kpi_row.columnconfigure(index, weight=1, uniform="pilot_kpi")
-        self._pilot_kpi(kpi_row, "kpi_tons", "ТОННЫ ЗА СЕССИЮ", COLOR_GREEN, index=0, pad=pad)
-        self._pilot_kpi(kpi_row, "kpi_deliveries", "ДОСТАВКИ", COLOR_CYAN, index=1, pad=pad)
-        self._pilot_kpi(kpi_row, "kpi_cargo", "ГРУЗ", COLOR_ORANGE, index=2, pad=pad)
-        self._pilot_kpi(kpi_row, "kpi_systems", "СИСТЕМЫ", COLOR_CYAN, index=3, pad=pad)
-
-        # 2. Плитки с деталями — сетка, число колонок зависит от ширины
-        grid = tb.Frame(self._pilot_body)
-        grid.pack(fill=BOTH, expand=True)
-        for index in range(columns):
-            grid.columnconfigure(index, weight=1, uniform="pilot_grid")
-
-        tiles = [
-            ("session", self._pilot_tile_session),
-            ("ship", self._pilot_tile_ship),
-            ("route", self._pilot_tile_route),
-            ("systems", self._pilot_tile_systems),
-            ("status", self._pilot_tile_status),
-            ("journal", self._pilot_tile_journal),
-        ]
-        for index, (_key, builder) in enumerate(tiles):
-            row, column = divmod(index, columns)
-            grid.rowconfigure(row, weight=1)
-            builder(grid, row=row, column=column, pad=pad)
-
-    # -- строители плиток --------------------------------------------------
-    def _pilot_card(self, parent, title, row=None, column=None, pad=(10, 8), columnspan=1):
-        """Рамка плитки с заголовком; возвращает внутренний контейнер."""
-        card = tb.Frame(parent, relief="solid", borderwidth=1, padding=pad)
-        if row is None:
-            card.pack(fill=BOTH, expand=True, padx=6, pady=6)
-        else:
-            card.grid(row=row, column=column, columnspan=columnspan,
-                      sticky="nsew", padx=6, pady=6)
-        title_font = ("Consolas", 9 if self._pilot_compact else 10, "bold")
-        tb.Label(card, text=title, font=title_font, foreground=COLOR_ORANGE).pack(anchor=W)
-        body = tb.Frame(card)
-        body.pack(fill=BOTH, expand=True, pady=(4, 0))
-        return body
-
-    def _pilot_kpi(self, parent, key, title, color, index=0, pad=(10, 8)):
-        card = tb.Frame(parent, relief="solid", borderwidth=1, padding=pad)
-        card.grid(row=0, column=index, sticky="nsew", padx=6, pady=2)
-        tb.Label(card, text=title, font=("Consolas", 9, "bold"),
-                 foreground=COLOR_MUTED).pack(anchor=W)
-        value_font = ("Consolas", 20 if self._pilot_compact else 28, "bold")
-        self._pilot_tiles[key] = tb.Label(card, text="—", font=value_font, foreground=color)
-        self._pilot_tiles[key].pack(anchor=W)
-        self._pilot_tiles[f"{key}_sub"] = tb.Label(
-            card, text="", font=("Consolas", 9), foreground=COLOR_MUTED, wraplength=260)
-        self._pilot_tiles[f"{key}_sub"].pack(anchor=W)
-
-    def _pilot_row(self, parent, key, label, value="—", color=None):
-        """Строка «подпись … значение» внутри плитки."""
-        row = tb.Frame(parent)
-        row.pack(fill=X, pady=1)
-        tb.Label(row, text=label, font=("Consolas", 9), foreground=COLOR_MUTED).pack(side=LEFT)
-        value_label = tb.Label(
-            row, text=value, font=("Consolas", 10, "bold"),
-            foreground=color or COLOR_CYAN)
-        value_label.pack(side=RIGHT)
-        self._pilot_tiles[key] = value_label
-        return value_label
-
-    def _pilot_bar(self, parent, key, label):
-        frame = tb.Frame(parent)
-        frame.pack(fill=X, pady=(4, 0))
-        tb.Label(frame, text=label, font=("Consolas", 9), foreground=COLOR_MUTED).pack(anchor=W)
-        bar = tb.Progressbar(frame, mode="determinate", length=100)
-        bar.pack(fill=X)
-        self._pilot_bars[key] = bar
-
-    def _pilot_canvas(self, parent, key, height=70):
-        canvas = tk.Canvas(parent, height=height, highlightthickness=0, borderwidth=0)
-        canvas.pack(fill=X, pady=(4, 2))
-        self._pilot_canvases[key] = canvas
-        return canvas
-
-    def _pilot_tile_session(self, parent, row, column, pad):
-        body = self._pilot_card(parent, "ДИНАМИКА СЕССИИ", row=row, column=column, pad=pad)
-        self._pilot_canvas(body, "spark_tons", height=64)
-        self._pilot_row(body, "session_rate", "Темп")
-        self._pilot_row(body, "session_construction", "На стройки")
-        self._pilot_row(body, "session_route", "На маршруте")
-
-    def _pilot_tile_ship(self, parent, row, column, pad):
-        body = self._pilot_card(parent, "КОРАБЛЬ", row=row, column=column, pad=pad)
-        self._pilot_row(body, "ship", "Корабль")
-        self._pilot_bar(body, "hull_bar", "Корпус")
-        self._pilot_bar(body, "shield_bar", "Щиты")
-        self._pilot_bar(body, "fuel_bar", "Топливо")
-        self._pilot_bar(body, "power_bar", "Энергия")
-        self._pilot_row(body, "modules", "Модули")
-
-    def _pilot_tile_route(self, parent, row, column, pad):
-        body = self._pilot_card(parent, "МАРШРУТ", row=row, column=column, pad=pad)
-        self._pilot_row(body, "route_status", "Пройдено")
-        self._pilot_bar(body, "route_progress", "Прогресс")
-        self._pilot_row(body, "route_current", "Текущая")
-        self._pilot_row(body, "route_next", "Следующая")
-        self._pilot_row(body, "route_remaining", "Осталось")
-        self._pilot_row(body, "last_delivery", "Последняя доставка")
-
-    def _pilot_tile_systems(self, parent, row, column, pad):
-        body = self._pilot_card(parent, "ТОП СИСТЕМ ПО ТОННАМ", row=row, column=column, pad=pad)
-        self._pilot_canvas(body, "bars_systems", height=110)
-
-    def _pilot_tile_status(self, parent, row, column, pad):
-        body = self._pilot_card(parent, "СТАТУС И ПОДКЛЮЧЕНИЯ", row=row, column=column, pad=pad)
-        self._pilot_row(body, "commander", "CMDR")
-        self._pilot_row(body, "system", "Система")
-        self._pilot_row(body, "game", "Игра")
-        self._pilot_row(body, "watcher", "Watcher")
-        self._pilot_row(body, "services", "Сервисы")
-        self._pilot_row(body, "exobio", "Экзобиология")
-
-    def _pilot_tile_journal(self, parent, row, column, pad):
-        body = self._pilot_card(parent, "ЖУРНАЛЫ И ЭКОНОМИКА", row=row, column=column, pad=pad)
-        self._pilot_row(body, "balance", "Баланс")
-        self._pilot_row(body, "rebuy", "Страховка")
-        self._pilot_row(body, "legal", "Правовой статус")
-        self._pilot_row(body, "journal_state", "Журналы")
-        self._pilot_row(body, "event_summary", "События")
-        self._pilot_row(body, "last_event", "Последнее", color=COLOR_MUTED)
-
-    # -- отрисовка графиков ------------------------------------------------
-    def _pilot_draw_sparkline(self, canvas, values, color, label=""):
-        """Спарклайн: линия с заливкой. Без внешних библиотек — чистый Canvas."""
-        try:
-            canvas.delete("all")
-            width = int(canvas.winfo_width()) or 240
-            height = int(canvas.winfo_height()) or 60
-            if width < 10 or height < 10:
-                return
-            points = [float(v) for v in values]
-            if len(points) < 2:
-                canvas.create_text(6, height // 2, anchor="w", fill=COLOR_MUTED,
-                                   text=label or "накопление данных…", font=("Consolas", 8))
-                return
-            low, high = min(points), max(points)
-            if high - low < 1e-9:
-                low, high = low - 1.0, high + 1.0
-            pad_y = 4
-            usable = max(1, height - pad_y * 2)
-            step_x = width / float(len(points) - 1)
-            coords = []
-            for index, value in enumerate(points):
-                x = index * step_x
-                y = pad_y + (1.0 - (value - low) / (high - low)) * usable
-                coords.extend((x, y))
-            canvas.create_polygon([coords[0], height] + coords + [coords[-2], height],
-                                  fill=color, stipple="gray50", outline="")
-            canvas.create_line(*coords, fill=color, width=2, smooth=True)
-            canvas.create_text(4, 10, anchor="w", fill=color, font=("Consolas", 9, "bold"),
-                               text=f"{points[-1]:.0f}")
-        except Exception:
-            pass
-
-    def _pilot_draw_bars(self, canvas, rows, color):
-        """Горизонтальные полосы: [(подпись, значение), ...]."""
-        try:
-            canvas.delete("all")
-            width = int(canvas.winfo_width()) or 240
-            height = int(canvas.winfo_height()) or 100
-            if width < 10 or height < 10 or not rows:
-                canvas.create_text(6, height // 2 or 10, anchor="w", fill=COLOR_MUTED,
-                                   text="данных пока нет", font=("Consolas", 8))
-                return
-            maximum = max(value for _label, value in rows) or 1
-            row_height = max(14, min(26, height // max(1, len(rows))))
-            for index, (label, value) in enumerate(rows[:8]):
-                top = index * row_height + 2
-                bar_width = int((width - 90) * (value / maximum))
-                canvas.create_rectangle(0, top, max(2, bar_width), top + row_height - 6,
-                                        fill=color, outline="")
-                canvas.create_text(2, top + row_height - 4, anchor="sw", fill=COLOR_MUTED,
-                                   font=("Consolas", 8), text=str(label)[:28])
-                canvas.create_text(width - 2, top + row_height - 4, anchor="se",
-                                   fill=COLOR_TEXT, font=("Consolas", 8, "bold"),
-                                   text=f"{value:.0f} t")
-        except Exception:
-            return
+        return pilot_columns(self._pilot_window_width(), self._pilot_compact)
 
     # -- обновление --------------------------------------------------------
     def _pilot_is_visible(self) -> bool:
@@ -1059,13 +862,13 @@ class ColonialHelperApp:
                 "fuel_bar": self._pilot_percent(state.get("fuel_percent")),
                 "power_bar": self._pilot_percent(state.get("power_percent")),
             }.items():
-                if key in self._pilot_bars:
-                    self._pilot_bars[key].configure(value=value)
+                if getattr(self, "pilot_page", None) is not None:
+                    self.pilot_page.set_bar(key, value)
 
             # --- маршрут ---
             self._pilot_set("route_status", f"{visited}/{route_total} систем" if route_total else "не загружен")
-            if "route_progress" in self._pilot_bars:
-                self._pilot_bars["route_progress"].configure(value=route_percent)
+            if getattr(self, "pilot_page", None) is not None:
+                self.pilot_page.set_bar("route_progress", route_percent)
             overlay_data = self._get_overlay_data()
             self._pilot_set("route_current", str(overlay_data.get("current", "—")))
             self._pilot_set("route_next", str(overlay_data.get("next", "—")))
@@ -1099,16 +902,13 @@ class ColonialHelperApp:
             self._pilot_set("last_event", (self._last_session_event or "—")[:48])
 
             # --- графики ---
-            if "spark_tons" in self._pilot_canvases:
-                self._pilot_draw_sparkline(self._pilot_canvases["spark_tons"],
-                                           self._pilot_series["tons"], COLOR_GREEN,
-                                           "журнал пока пуст")
-            if "bars_systems" in self._pilot_canvases:
-                rows = sorted(getattr(self, "_session_tons_by_system", {}).items(),
-                              key=lambda item: item[1], reverse=True)
-                self._pilot_draw_bars(self._pilot_canvases["bars_systems"], rows, COLOR_CYAN)
-
-            self._pilot_updated_label.configure(text=datetime.now().strftime("%H:%M:%S"))
+            if getattr(self, "pilot_page", None) is None:
+                return
+            self.pilot_page.set_spark(self._pilot_series["tons"])
+            rows = sorted(getattr(self, "_session_tons_by_system", {}).items(),
+                          key=lambda item: item[1], reverse=True)
+            self.pilot_page.set_systems(rows)
+            self.pilot_page.set_updated(datetime.now().strftime("%H:%M:%S"))
         except Exception:
             # Инфографика не должна мешать watcher/UI при неполном состоянии
             # трекера во время самого первого чтения Journal.
@@ -1127,10 +927,11 @@ class ColonialHelperApp:
             self._refresh_pilot_infographic()
 
     def _pilot_set(self, key: str, text: str):
-        label = self._pilot_tiles.get(key)
-        if label is not None:
+        """Записать значение в плитку нативной страницы."""
+        page = getattr(self, "pilot_page", None)
+        if page is not None:
             try:
-                label.configure(text=text)
+                page.set_value(key, text)
             except Exception:
                 pass
 
