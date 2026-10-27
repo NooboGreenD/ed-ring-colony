@@ -118,6 +118,27 @@ def install_gui_stubs():
         "VERTICAL", "HORIZONTAL", "WORD", "CHAR", "NONE", "SOLID", "RAISED",
         "TRUE", "FALSE", "READONLY", "HIDDEN",
     )
+
+    # Keep controller tests independent of the host's Qt/OpenGL runtime while
+    # the shipped application uses the real PySide-backed factories.
+    import qt_lazy
+    for name in ("Label","Frame","Canvas","Toplevel","Text","Menu","Scrollbar","StringVar","IntVar","DoubleVar","BooleanVar","TclError"):
+        setattr(qt_lazy.tk,name,getattr(tkinter_stub,name))
+    for name in ("Frame","Label","Button","Checkbutton","Radiobutton","Entry","Combobox",
+                 "Progressbar","Scale","Separator","Scrollbar","Notebook","Treeview","LabelFrame","Style","Window","Canvas","Text","Menu"):
+        setattr(qt_lazy.tb,name,getattr(ttkbootstrap_stub,name))
+        setattr(qt_lazy.ttk,name,getattr(ttkbootstrap_stub,name))
+    qt_lazy.tb.BooleanVar=ttkbootstrap_stub.BooleanVar;qt_lazy.tb.StringVar=ttkbootstrap_stub.StringVar
+    qt_lazy.tk.BooleanVar=tkinter_stub.BooleanVar;qt_lazy.tk.StringVar=tkinter_stub.StringVar
+    qt_lazy.ScrolledText=ScrolledText
+    qt_lazy.QVBoxLayout=mock.MagicMock(name="QVBoxLayout")
+    qt_lazy.tk.TclError=RuntimeError
+    for name in ("showinfo","showwarning","showerror","askyesno","askokcancel"):
+        setattr(qt_lazy.messagebox,name,mock.MagicMock(name=f"messagebox.{name}",return_value=True))
+    for name in ("askopenfilename","askdirectory","asksaveasfilename"):
+        setattr(qt_lazy.filedialog,name,mock.MagicMock(name=f"filedialog.{name}",return_value=""))
+    qt_lazy.simpledialog.askstring=mock.MagicMock(name="simpledialog.askstring",return_value=None)
+    qt_lazy.ensure_app=mock.MagicMock(name="ensure_app")
     return ttkbootstrap_stub
 
 

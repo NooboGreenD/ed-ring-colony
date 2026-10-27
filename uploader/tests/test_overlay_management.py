@@ -29,25 +29,15 @@ from test_overlay_layout import _FakeMaster, _FakeWindow  # noqa: E402
 
 
 def _ensure_gui_stubs():
-    """Подменить tkinter/ttkbootstrap (в песочнице настоящего Tk нет)."""
-    sys.path.insert(0, str(HERE))
-    from test_initial_upload_flow import install_gui_stubs
-
-    install_gui_stubs()
-    # В общей заглушке tb.Label(...) возвращает один и тот же объект на все
-    # вызовы, из-за чего нельзя проверить текст конкретной подписи.
+    """Подменить lazy Qt widget factories для model-level overlay tests."""
+    from qt_lazy import tk, tb
     widgets = ("Frame", "Labelframe", "Label", "Button", "Checkbutton",
                "Radiobutton", "Entry", "Combobox", "Progressbar", "Scale",
-               "Spinbox", "Separator", "Notebook", "Treeview", "Text", "Meter")
-    for module_name, names in (("ttkbootstrap", widgets), ("tkinter", ("Canvas", "Toplevel", "Frame"))):
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        for name in names:
-            widget = getattr(module, name, None)
-            if widget is None:
-                continue
-            widget.side_effect = lambda *args, _name=name, **kwargs: mock.MagicMock(name=_name)
+               "Separator", "Notebook", "Treeview", "Text", "Canvas", "Toplevel")
+    for namespace in (tk, tb):
+        for name in widgets:
+            setattr(namespace,name,mock.MagicMock(name=f"Qt{name}",
+                side_effect=lambda *args,_name=name,**kwargs:mock.MagicMock(name=_name)))
 
 
 _ensure_gui_stubs()

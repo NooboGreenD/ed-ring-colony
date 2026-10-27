@@ -1,6 +1,6 @@
 """Оверлейные окна для Colonial Helper — HUD-стиль ED Ring Colony."""
-import tkinter as tk
-from tkinter import END
+from __future__ import annotations
+from qt_lazy import tk, END
 from typing import Dict, Any, List, Optional, Callable, Sequence, Tuple
 import threading
 import time
@@ -91,10 +91,10 @@ def _is_ed_foreground() -> bool:
 
 
 def _set_window_topmost(hwnd: int, topmost: bool):
-    """Установить/снять WS_EX_TOPMOST для окна через Win32 API.
-    
-    ПРИМЕЧАНИЕ: Для overrideredirect окон tkinter Win32 API SetWindowPos
-    может полностью сломать Z-order окна. Используем только tkinter.
+    """Legacy Win32 hook retained for callers that still pass an HWND.
+
+    Production topmost handling uses the PySide6 window flags via
+    ``attributes('-topmost', ...)``; direct SetWindowPos is intentionally unused.
     """
     pass
 
@@ -239,7 +239,7 @@ def _set_click_through(hwnd: int, enabled: bool, alpha: float = 1.0,
                        keep_layered: Optional[bool] = None) -> bool:
     """Сделать окно прозрачным для мыши (WS_EX_TRANSPARENT | WS_EX_LAYERED).
 
-    Нужен именно Win32: tkinter не умеет «клик насквозь». Окно остаётся
+    Нужен именно Win32: обычные Qt surface attributes не умеют «клик насквозь». Окно остаётся
     видимым и поверх игры, но все щелчки уходят в игру. Возвращает True,
     только если нужный стиль действительно стоит на окне — это проверяется
     повторным чтением, поэтому неудачная запись больше не выдаёт себя за
@@ -1639,7 +1639,7 @@ class OverlayWindow:
             pass
 
     def set_topmost(self, topmost: bool):
-        """Установить/снять topmost через tkinter (безопасно для overrideredirect)."""
+        """Установить/снять topmost через Qt window flags."""
         if self._is_topmost == topmost:
             return
         self._is_topmost = topmost

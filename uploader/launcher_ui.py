@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import sys
 import threading
@@ -22,7 +23,8 @@ import requests
 import bundle
 import bundle_updater
 from site_config import DEFAULT_SITE_URL
-from window_chrome import add_custom_titlebar
+from qt_lazy import ensure_app, tk, ttk
+from locale_config import SUPPORTED_LOCALES, DEFAULT_LOCALE, normalize_locale, localized_url
 
 _launcher_module = sys.modules.get("launcher")
 if _launcher_module is None:
@@ -74,12 +76,12 @@ def normalize_home_data(payload: Any) -> Dict[str, List[Dict[str, str]]]:
 
 
 def fetch_home_data(session=None, site_url: str = DEFAULT_SITE_URL,
-                    timeout: Tuple[float, float] = (4.0, 8.0)) -> Dict[str, List[Dict[str, str]]]:
+                    timeout: Tuple[float, float] = (4.0, 8.0), locale: str = DEFAULT_LOCALE) -> Dict[str, List[Dict[str, str]]]:
     """Fetch the same localized, public home feed shown on the project site."""
     http = session or requests.Session()
     response = http.get(
         f"{site_url.rstrip('/')}/api/home-data",
-        params={"locale": "ru"},
+        params={"locale": normalize_locale(locale)},
         headers={"Accept": "application/json", "User-Agent": f"ColonialHelperLauncher/{LAUNCHER_VERSION}"},
         timeout=timeout,
     )
@@ -236,9 +238,6 @@ class LauncherDashboard:
     """Tk dashboard; network and package work always run off the UI thread."""
 
     def __init__(self, root, install_root: Path, version: str, channel: str):
-        import tkinter as tk
-        from tkinter import ttk
-
         self.tk = tk
         self.ttk = ttk
         self.root = root
@@ -253,6 +252,8 @@ class LauncherDashboard:
         self.install_root = Path(install_root)
         self.version = str(version or "—")
         self.channel = channel
+        self.settings_path = Path.home() / ".colonial_helper.json"
+        self.site_locale = self._read_locale()
         self.launch_requested = False
         self.update_manifest: Optional[Dict[str, Any]] = None
         self.current_tab = "news"
@@ -266,10 +267,6 @@ class LauncherDashboard:
         root.minsize(900, 610)
         root.configure(bg=BG)
         root.protocol("WM_DELETE_WINDOW", self.close)
-        add_custom_titlebar(
-            root, tk, "COLONIAL HELPER  /  СТАРТОВЫЙ ЭКРАН",
-            close_command=self.close, allow_maximize=True,
-        )
         self._center_window()
         self._build()
         self._render_feed("news")
@@ -305,6 +302,36 @@ class LauncherDashboard:
             highlightthickness=0, **kwargs,
         )
 
+    def _read_locale(self) -> str:
+        try:
+            payload=json.loads(self.settings_path.read_text(encoding="utf-8"))
+            return normalize_locale(payload.get("site_locale")) if isinstance(payload,dict) else DEFAULT_LOCALE
+        except (OSError,ValueError):
+            return DEFAULT_LOCALE
+
+    def _save_locale(self, locale: str) -> None:
+        locale=normalize_locale(locale)
+        try:payload=json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except (OSError,ValueError):payload={}
+        if not isinstance(payload,dict):payload={}
+        payload["site_locale"]=locale
+        temporary=self.settings_path.with_suffix(self.settings_path.suffix+".tmp")
+        try:
+            fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+            with os.fdopen(fd,"w",encoding="utf-8") as stream:
+                json.dump(payload,stream,ensure_ascii=False,indent=2)
+                stream.flush();os.fsync(stream.fileno())
+            try:os.chmod(temporary,0o600)
+            except OSError:pass
+            temporary.replace(self.settings_path)
+        except OSError:pass
+
+    def _on_locale_changed(self, _event=None):
+        label=self.locale_combo.get()
+        code=next((key for key,value in SUPPORTED_LOCALES.items() if f"{key} — {value}"==label),DEFAULT_LOCALE)
+        self.site_locale=normalize_locale(code);self._save_locale(self.site_locale)
+        self.feed_loaded=False;self.refresh_news()
+
     def _build(self):
         tk = self.tk
         outer = tk.Frame(self.root, bg=BG)
@@ -334,7 +361,16 @@ class LauncherDashboard:
         self.version_value = self._label(side, f"v{self.version}", font=("Consolas", 13, "bold"))
         self.version_value.pack(anchor="w", padx=18)
         self._label(side, f"Канал обновлений: {self.channel}", fg=MUTED,
-                    font=("Segoe UI", 9)).pack(anchor="w", padx=18, pady=(4, 16))
+                    font=("Segoe UI", 9)).pack(anchor="w", padx=18, pady=(4, 8))
+        self._label(side, "ЯЗЫК САЙТА И HELPER", fg=MUTED,
+                    font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=18, pady=(0, 4))
+        self.locale_combo = self.ttk.Combobox(
+            side, state="readonly", width=22,
+            values=[f"{code} — {name}" for code,name in SUPPORTED_LOCALES.items()],
+        )
+        self.locale_combo.pack(fill="x", padx=16, pady=(0, 12))
+        self.locale_combo.set(f"{self.site_locale} — {SUPPORTED_LOCALES[self.site_locale]}")
+        self.locale_combo.bind("<<ComboboxSelected>>", self._on_locale_changed)
         tk.Frame(side, bg=LINE, height=1).pack(fill="x", padx=16, pady=(0, 14))
         self.update_status = self._label(side, "Проверяем обновления…", fg=MUTED,
                                          justify="left", wraplength=220,
@@ -351,7 +387,7 @@ class LauncherDashboard:
         self.update_detail.pack(anchor="w", padx=18, pady=(2, 16))
         tk.Frame(side, bg=LINE, height=1).pack(fill="x", padx=16, pady=(0, 12))
         self._button(side, "Открыть сайт проекта ↗",
-                     lambda: webbrowser.open(DEFAULT_SITE_URL)).pack(fill="x", padx=16, pady=(0, 8))
+                     lambda: webbrowser.open(localized_url(DEFAULT_SITE_URL,self.site_locale))).pack(fill="x", padx=16, pady=(0, 8))
         self._label(side, "Новости загружаются с сайта проекта.\nДля запуска Helper сеть не нужна.",
                     fg=MUTED, justify="left", wraplength=220,
                     font=("Segoe UI", 8)).pack(anchor="w", padx=18, pady=(12, 10))
@@ -549,7 +585,7 @@ class LauncherDashboard:
 
         def work():
             try:
-                data, error = fetch_home_data(), ""
+                data, error = fetch_home_data(locale=self.site_locale), ""
             except Exception as exc:
                 data, error = None, str(exc)
             self._schedule(lambda: self._news_complete(data, error))
@@ -678,8 +714,7 @@ class LauncherDashboard:
 def show_launcher(install_root: Path, embedded_dir: Optional[Path],
                   embedded_manifest: Optional[Dict[str, Any]]) -> bool:
     """Prepare/verify a runnable local version, then show the news dashboard."""
-    import tkinter as tk
-
+    ensure_app()
     launcher = _launcher_runtime()
     launcher.configure_tls_ca_bundle(install_root)
     try:

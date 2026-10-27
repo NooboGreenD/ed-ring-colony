@@ -1,4 +1,4 @@
-"""The frozen launcher must carry the TLS certificates needed by Requests."""
+"""The frozen desktop runtime must ship Qt, not the retired Tk stack."""
 
 import sys
 import unittest
@@ -18,14 +18,17 @@ class BuildExeTests(unittest.TestCase):
         self.assertEqual(options[certifi_index - 1], "--collect-data")
         self.assertNotIn("--collect-submodules", options[certifi_index + 1:])
 
-    def test_window_chrome_is_explicitly_frozen_with_launcher(self):
-        self.assertIn("window_chrome", build_exe.ALWAYS_INCLUDE)
+    def test_qt_runtime_and_facades_are_explicitly_frozen(self):
+        for module in ("PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
+                       "qt_compat", "qt_lazy", "qt_factions", "theme_tokens", "locale_config"):
+            self.assertIn(module, build_exe.ALWAYS_INCLUDE)
 
-    def test_existing_theme_package_resources_are_still_collected(self):
-        options = build_exe.collect_package_args()
-        self.assertIn("--collect-data", options)
-        self.assertIn("ttkbootstrap", options)
-        self.assertIn("--collect-submodules", options)
+    def test_tk_and_ttkbootstrap_are_not_runtime_dependencies(self):
+        self.assertFalse(any(name == "tkinter" or name.startswith("tkinter.")
+                             or name == "ttkbootstrap" or name.startswith("ttkbootstrap.")
+                             for name in build_exe.ALWAYS_INCLUDE))
+        self.assertNotIn("ttkbootstrap", build_exe.COLLECT_PACKAGES)
+        self.assertEqual(build_exe.COLLECT_PACKAGES, ())
 
 
 if __name__ == "__main__":
