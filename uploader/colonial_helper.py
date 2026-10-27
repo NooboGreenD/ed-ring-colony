@@ -578,235 +578,84 @@ class ColonialHelperApp:
     #  Вкладка: Подключение
     # ============================================================
     def _build_tab_auth(self):
-        # Вкладка содержит несколько API и полей. На небольших окнах вся
-        # форма должна прокручиваться, а не обрезаться снизу.
-        frame = self._scrollable_frame(self.tab_auth)
+        """Вкладка «Подключение» на чистом Qt (см. helper_pages.AuthPage)."""
+        from helper_pages import AuthPage, AuthPageActions, AuthPageState
 
-        tb.Label(frame, text="Основной API ED Ring Colony", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-
-        tb.Label(frame, text=f"Сервер: {self.api.site_url}", foreground=COLOR_CYAN).pack(anchor=W)
-        server_buttons = tb.Frame(frame)
-        server_buttons.pack(anchor=W, pady=(5, 10))
-        tb.Button(server_buttons, text="Открыть API-токены на сайте", command=self._open_site_account,
-                  bootstyle="info-outline").pack(side=LEFT, padx=(0, 10))
-        tb.Button(server_buttons, text="Другой сервер…", command=self._change_site_url,
-                  bootstyle="secondary-outline").pack(side=LEFT)
-        if getattr(self, "_site_config_error", ""):
-            tb.Label(frame, text=self._site_config_error, foreground=COLOR_RED, wraplength=700).pack(anchor=W)
-
-        tb.Label(frame, text="API-токен сайта", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
-        tb.Label(
-            frame,
-            text="Поле для API-токена ED Ring Colony из профиля сайта. Используется для загрузки журналов.",
-            foreground=COLOR_MUTED,
-        ).pack(anchor=W)
-
-        self.token_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="•")
-        self.token_entry.pack(fill=X, pady=(5, 10))
-        if self.api.token:
-            self.token_entry.insert(0, self.api.token)
-
-        btn_frame = tb.Frame(frame)
-        btn_frame.pack(anchor=W, pady=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Проверить токен",
-            command=self._on_validate_token,
-            bootstyle="warning-outline",
-            width=20,
-        ).pack(side=LEFT, padx=(0, 10))
-
-        tb.Button(
-            btn_frame,
-            text="Вставить из буфера",
-            command=self._on_paste_token,
-            bootstyle="info-outline",
-            width=20,
-        ).pack(side=LEFT, padx=(0, 10))
-
-        self.toggle_token_btn = tb.Button(
-            btn_frame,
-            text="Показать",
-            command=self._toggle_token_visibility,
-            bootstyle="secondary-outline",
-            width=12,
+        state = AuthPageState(
+            site_url=self.api.site_url,
+            token=self.api.token or "",
+            journal_path=str(self.journal_path),
+            site_error=getattr(self, "_site_config_error", "") or "",
+            raven_key=getattr(self.raven_api, "api_key", "") or "",
+            edsm_key=self.edsm_api.api_key or "",
+            edsm_name=self.edsm_api.commander_name or "",
+            edsm_status="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен",
+            eddn_enabled=bool(self.eddn_api.enabled),
+            inara_key=self.inara_api.api_key or "",
+            inara_name=self.inara_api.commander_name or "",
+            inara_status="Inara: включена" if self.inara_api.enabled else "Inara: не настроена",
         )
-        self.toggle_token_btn.pack(side=LEFT)
-
-        self.auth_result = tb.Label(frame, text="", font=("Segoe UI", 11), wraplength=700)
-        self.auth_result.pack(anchor=W, pady=(5, 0))
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
-
-        # -- Frontier CAPI (website-owned binding) ------------------------
-        tb.Label(frame, text="Досье пилота (Frontier CAPI)", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-        tb.Label(
-            frame,
-            text=(
-                "Подключение и данные CAPI принадлежат вашему аккаунту на сайте. "
-                "Сначала привяжите Frontier в личном кабинете сайта; Colonial Helper "
-                "не хранит Frontier-токены и запрашивает синхронизацию только через "
-                "ваш токен проекта. Сайт сам получает, разбирает и сохраняет данные."
-            ),
-            foreground=COLOR_MUTED,
-            wraplength=700,
-            justify=LEFT,
-        ).pack(anchor=W, pady=(0, 8))
-
-        capi_btn_frame = tb.Frame(frame)
-        capi_btn_frame.pack(anchor=W, pady=(0, 8))
-        self.capi_link_btn = tb.Button(
-            capi_btn_frame,
-            text="Открыть Frontier CAPI на сайте",
-            command=self._on_capi_link,
-            bootstyle="primary",
-            width=30,
+        actions = AuthPageActions(
+            open_tokens=self._open_site_account,
+            change_server=self._change_site_url,
+            validate_token=self._on_validate_token,
+            paste_token=self._on_paste_token,
+            capi_link=self._on_capi_link,
+            capi_fetch=self._on_capi_fetch,
+            browse_journal=self._on_browse_journal_path,
+            save_edsm=self._save_edsm_settings,
+            save_inara=self._save_inara_settings,
+            check_raven=self._on_check_raven,
+            eddn_toggle=self._on_eddn_toggle,
         )
-        self.capi_link_btn.pack(side=LEFT, padx=(0, 10))
-        self.capi_fetch_btn = tb.Button(
-            capi_btn_frame,
-            text="Обновить досье",
-            command=self._on_capi_fetch,
-            bootstyle="success-outline",
-            width=18,
-        )
-        self.capi_fetch_btn.pack(side=LEFT)
+        self.auth_page = AuthPage(state, actions)
+        self.tab_auth._get_tk_layout("pack").addWidget(self.auth_page)
+        self.auth_page.show()
 
-        self.capi_status = tb.Label(frame, text="Проверка привязки сайта…", font=("Segoe UI", 10), foreground=COLOR_MUTED,
-                                    wraplength=700)
-        self.capi_status.pack(anchor=W, pady=(4, 0))
+        # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
+        self.token_entry = self.auth_page.token_entry
+        self.toggle_token_btn = self.auth_page.toggle_token_btn
+        self.auth_result = self.auth_page.auth_result
+        self.capi_link_btn = self.auth_page.capi_link_btn
+        self.capi_fetch_btn = self.auth_page.capi_fetch_btn
+        self.capi_status = self.auth_page.capi_status
+        self.path_entry = self.auth_page.path_entry
+        self.raven_key_entry = self.auth_page.raven_key_entry
+        self.raven_status_label = self.auth_page.raven_status_label
+        self.edsm_key_entry = self.auth_page.edsm_key_entry
+        self.edsm_name_entry = self.auth_page.edsm_name_entry
+        self.edsm_status_label = self.auth_page.edsm_status_label
+        self.eddn_enabled_var = self.auth_page.eddn_enabled_var
+        self.inara_key_entry = self.auth_page.inara_key_entry
+        self.inara_name_entry = self.auth_page.inara_name_entry
+        self.inara_status_label = self.auth_page.inara_status_label
         self._capi_refresh_status()
 
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
-
-        tb.Label(frame, text="Папка журналов Elite Dangerous", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-
-        path_frame = tb.Frame(frame)
-        path_frame.pack(fill=X, pady=(0, 10))
-
-        self.path_entry = tb.Entry(path_frame, font=("Consolas", 10))
-        self.path_entry.pack(side=LEFT, fill=X, expand=True, padx=(0, 10))
-        self.path_entry.insert(0, str(self.journal_path))
-
-        tb.Button(
-            path_frame,
-            text="Обзор...",
-            command=self._on_browse_journal_path,
-            bootstyle="info-outline",
-            width=12,
-        ).pack(side=RIGHT)
-
-        tb.Label(
-            frame,
-            text="По умолчанию: Saved Games\\Frontier Developments\\Elite Dangerous",
-            foreground=COLOR_MUTED,
-            font=("Segoe UI", 9),
-        ).pack(anchor=W)
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
-
-        tb.Label(frame, text="Raven Colonial API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-
-        tb.Label(frame, text="API-ключ Raven Colonial", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
-        tb.Label(
-            frame,
-            text="Вставьте сюда ключ из профиля ravencolonial.com. Нажмите «Проверить ключ» и сохраните настройки.",
-            foreground=COLOR_MUTED,
-        ).pack(anchor=W)
-
-        self.raven_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
-        self.raven_key_entry.pack(fill=X, pady=(5, 10))
-        if self.raven_api.api_key:
-            self.raven_key_entry.insert(0, self.raven_api.api_key)
-
-        raven_btn_frame = tb.Frame(frame)
-        raven_btn_frame.pack(anchor=W, pady=(0, 10))
-
-        tb.Button(
-            raven_btn_frame,
-            text="Проверить ключ",
-            command=self._on_check_raven,
-            bootstyle="warning-outline",
-            width=20,
-        ).pack(side=LEFT, padx=(0, 10))
-
-        self.raven_status_label = tb.Label(frame, text="Raven Colonial: не подключено", font=("Segoe UI", 11), foreground=COLOR_MUTED)
-        self.raven_status_label.pack(anchor=W, pady=(5, 0))
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
-        tb.Label(frame, text="EDSM Journal API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-        tb.Label(frame, text="Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM.", foreground=COLOR_MUTED).pack(anchor=W)
-        tb.Label(frame, text="EDSM API key", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(8, 2))
-        tb.Label(frame, text="Ключ EDSM API для отправки событий журнала. Можно оставить пустым.", foreground=COLOR_MUTED).pack(anchor=W)
-        self.edsm_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
-        self.edsm_key_entry.pack(fill=X, pady=(4, 5))
-        self.edsm_key_entry.insert(0, self.edsm_api.api_key)
-        tb.Label(frame, text="Имя командира в EDSM", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(3, 2))
-        tb.Label(frame, text="Точное имя CMDR, зарегистрированное в EDSM.", foreground=COLOR_MUTED).pack(anchor=W)
-        self.edsm_name_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
-        self.edsm_name_entry.pack(fill=X, pady=(4, 8))
-        self.edsm_name_entry.insert(0, self.edsm_api.commander_name)
-        tb.Button(frame, text="Сохранить EDSM настройки", command=self._save_edsm_settings, bootstyle="info-outline", width=28).pack(anchor=W)
-        self.edsm_status_label = tb.Label(frame, text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", foreground=COLOR_MUTED)
-        self.edsm_status_label.pack(anchor=W, pady=(5, 0))
-
-        # EDDN → Spansh. Публикация открытая, поэтому включается только явно.
-        tb.Separator(frame).pack(fill=X, pady=(14, 8))
-        tb.Label(frame, text="EDDN → Spansh", font=("Segoe UI", 10, "bold")).pack(anchor=W)
-        tb.Label(
-            frame,
-            text=("Исследовательские события журнала (Location, FSDJump, CarrierJump, Scan, "
-                  "SAASignalsFound, Docked) уходят в открытую ленту EDDN, из которой берёт данные Spansh. "
-                  "Публикация необратима и видна всем. Колонизация, вклады и грузы сюда не попадают."),
-            foreground=COLOR_MUTED,
-            wraplength=720,
-            justify="left",
-        ).pack(anchor=W, pady=(2, 4))
-        self.eddn_enabled_var = tb.BooleanVar(value=self.eddn_api.enabled)
-        tb.Checkbutton(
-            frame,
-            text="Публиковать исследовательские события в EDDN",
-            variable=self.eddn_enabled_var,
-            command=self._save_eddn_setting,
-            bootstyle="success-round-toggle",
-        ).pack(anchor=W)
-
-        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
-        tb.Label(frame, text="Inara API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
-        tb.Label(frame, text="Необязательно: отправка навигации, стыковок, сканирования и грузовых событий в Inara.", foreground=COLOR_MUTED).pack(anchor=W)
-        tb.Label(frame, text="Inara API key", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(8, 2))
-        self.inara_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
-        self.inara_key_entry.pack(fill=X, pady=(4, 5))
-        self.inara_key_entry.insert(0, self.inara_api.api_key)
-        tb.Label(frame, text="Имя командира в Inara", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(3, 2))
-        self.inara_name_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
-        self.inara_name_entry.pack(fill=X, pady=(4, 8))
-        self.inara_name_entry.insert(0, self.inara_api.commander_name)
-        tb.Button(frame, text="Сохранить Inara настройки", command=self._save_inara_settings, bootstyle="info-outline", width=28).pack(anchor=W)
-        self.inara_status_label = tb.Label(frame, text="Inara: включена" if self.inara_api.enabled else "Inara: не настроена", foreground=COLOR_MUTED)
-        self.inara_status_label.pack(anchor=W, pady=(5, 0))
+    def _on_eddn_toggle(self, checked: bool):
+        """Сохранить выбор «публиковать в EDDN» из нативного чекбокса."""
+        self.eddn_api.set_enabled(bool(checked))
+        self.config["eddn_enabled"] = bool(checked)
+        self.save_config()
+        self.log(f"EDDN: публикация {'включена' if checked else 'выключена'}", "info")
 
     def _save_inara_settings(self):
-        self.inara_api.set_credentials(self.inara_key_entry.get(), self.inara_name_entry.get())
+        self.inara_api.set_credentials(self.inara_key_entry.text(), self.inara_name_entry.text())
         self.config["inara_api_key"] = self.inara_api.api_key
         self.config["inara_commander_name"] = self.inara_api.commander_name
         self.save_config()
-        self.inara_status_label.config(text="Inara: включена" if self.inara_api.enabled else "Inara: не настроена")
+        self.inara_status_label.set_status(
+            "Inara: включена" if self.inara_api.enabled else "Inara: не настроена", COLOR_MUTED)
 
     def _save_eddn_setting(self):
-        enabled = bool(self.eddn_enabled_var.get())
-        self.eddn_api.set_enabled(enabled)
-        self.config["eddn_enabled"] = enabled
-        self.save_config()
-        self.log(f"EDDN: публикация {'включена' if enabled else 'выключена'}", "info")
+        self._on_eddn_toggle(bool(self.eddn_enabled_var.isChecked()))
 
     def _save_edsm_settings(self):
-        self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
+        self.edsm_api.set_credentials(self.edsm_key_entry.text(), self.edsm_name_entry.text())
         self.config["edsm_api_key"] = self.edsm_api.api_key
         self.config["edsm_commander_name"] = self.edsm_api.commander_name
         self.save_config()
-        self.edsm_status_label.config(text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен")
+        self.edsm_status_label.set_status(
+            "EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", COLOR_MUTED)
 
     # ============================================================
     #  Инфографика пилота: крупные плитки, спарклайны, компактный режим
@@ -4700,9 +4549,12 @@ class ColonialHelperApp:
             return
         color = COLOR_MUTED if ok is None else (COLOR_GREEN if ok else COLOR_RED)
         try:
-            label.config(text=text, foreground=color)
-        except Exception:
-            pass
+            label.set_status(text, color)
+        except AttributeError:
+            try:
+                label.config(text=text, foreground=color)
+            except Exception:
+                pass
 
     def _capi_open_site(self):
         """Открыть единственное место, где Frontier можно привязать/отвязать."""
@@ -7126,13 +6978,13 @@ class ColonialHelperApp:
             self.status_dot.config(foreground=COLOR_GREEN)
             self.status_text.config(text="● Подключено", foreground=COLOR_GREEN)
             self.status_detail.config(text=detail or "Готов к работе")
-            self.auth_result.config(text=f"✓ Подключено как {detail}", foreground=COLOR_GREEN)
+            self.auth_result.set_status(f"✓ Подключено как {detail}", COLOR_GREEN)
         else:
             self.status_dot.config(foreground=COLOR_RED)
             self.status_text.config(text="○ Не подключено", foreground=COLOR_RED)
             self.status_detail.config(text=detail or "Введите API токен")
             if detail and "ошибка" in detail.lower():
-                self.auth_result.config(text=f"✗ {detail}", foreground=COLOR_RED)
+                self.auth_result.set_status(f"✗ {detail}", COLOR_RED)
 
     # ============================================================
     #  Конфиг
@@ -7210,18 +7062,19 @@ class ColonialHelperApp:
         # каждым сохранением конфига, а не только после проверки ключа.
         if hasattr(self, "raven_key_entry"):
             try:
-                entry_key = self.raven_key_entry.get().strip()
+                entry_key = self.raven_key_entry.text().strip()
             except Exception:
                 entry_key = ""
             if entry_key and entry_key != self.raven_api.api_key:
                 self.raven_api.set_key(entry_key)
         self.config["raven_colonial_key"] = self.raven_api.api_key
         if hasattr(self, "edsm_key_entry"):
-            self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
+            self.edsm_api.set_credentials(self.edsm_key_entry.text(), self.edsm_name_entry.text())
         self.config["edsm_api_key"] = self.edsm_api.api_key
         self.config["edsm_commander_name"] = self.edsm_api.commander_name
         if hasattr(self, "inara_key_entry"):
-            self.inara_api.set_credentials(self.inara_key_entry.get(), self.inara_name_entry.get())
+            self.inara_api.set_credentials(self.inara_key_entry.text(),
+                                           self.inara_name_entry.text())
         self.config["inara_api_key"] = self.inara_api.api_key
         self.config["inara_commander_name"] = self.inara_api.commander_name
         try:
@@ -7477,7 +7330,7 @@ class ColonialHelperApp:
         Повторный запуск проверки блокируется флагом: два параллельных
         `validate_token` меняли бы состояние клиента одновременно.
         """
-        token = self.token_entry.get().strip()
+        token = self.token_entry.text().strip()
         if not token:
             self.set_connection_status(False, "Токен не введён")
             self.log("Введите API токен", "error")
@@ -7533,8 +7386,7 @@ class ColonialHelperApp:
         try:
             text = pyperclip.paste()
             if text and text.strip():
-                self.token_entry.delete(0, END)
-                self.token_entry.insert(0, text.strip())
+                self.token_entry.setText(text.strip())
                 self.log("Токен вставлен из буфера обмена", "success")
             else:
                 self.log("Буфер обмена пуст", "warn")
@@ -7542,25 +7394,19 @@ class ColonialHelperApp:
             self.log(f"Ошибка вставки: {e}", "error")
 
     def _toggle_token_visibility(self):
-        current = self.token_entry.cget("show")
-        if current == "":
-            self.token_entry.config(show="•")
-            self.toggle_token_btn.config(text="Показать")
-        else:
-            self.token_entry.config(show="")
-            self.toggle_token_btn.config(text="Скрыть")
+        self.auth_page.toggle_token_visibility()
 
     def _on_check_raven(self):
-        key = self.raven_key_entry.get().strip()
+        key = self.raven_key_entry.text().strip()
         if not key:
-            self.raven_status_label.config(text="Raven Colonial: ключ пустой", foreground="#f85149")
+            self.raven_status_label.set_status("Raven Colonial: ключ пустой", COLOR_RED)
             self.log("Raven Colonial API ключ пустой", "warn")
             return
         self.raven_api.set_key(key)
         self.config["raven_colonial_key"] = key
         self.save_config()
         self._update_colony_key_label()
-        self.raven_status_label.config(text="Raven Colonial: проверка...", foreground="#d29922")
+        self.raven_status_label.set_status("Raven Colonial: проверка…", COLOR_ORANGE)
         self.log("Raven Colonial: проверка ключа...", "info")
         # Асинхронная проверка ключа через API
         threading.Thread(target=self._check_raven_key_async, args=(key,), daemon=True).start()
@@ -7577,8 +7423,8 @@ class ColonialHelperApp:
         result = self.raven_api.get_cmdr_by_key(key)
         if result.get("ok"):
             cmdr = self.raven_api.cmdr_display_name(result)
-            self.root.after(0, lambda: self.raven_status_label.config(
-                text="Raven Colonial: подключено", foreground="#3fb950"))
+            self.root.after(0, lambda: self.raven_status_label.set_status(
+                "Raven Colonial: подключено", COLOR_GREEN))
             self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
             if cmdr:
                 self.root.after(0, lambda name=cmdr: self._apply_rcc_commander(name))
@@ -7600,8 +7446,7 @@ class ColonialHelperApp:
         else:
             text, log_text = f"Raven Colonial: ошибка {status}", f"Raven Colonial: {error}"
             level = "error"
-        self.root.after(0, lambda t=text: self.raven_status_label.config(
-            text=t, foreground="#f85149"))
+        self.root.after(0, lambda t=text: self.raven_status_label.set_status(t, COLOR_RED))
         self.root.after(0, lambda m=log_text, lv=level: self.log(m, lv))
 
     def _apply_rcc_commander(self, name: str):
@@ -7628,8 +7473,7 @@ class ColonialHelperApp:
         path = filedialog.askdirectory(initialdir=str(self.journal_path))
         if path:
             self.journal_path = Path(path)
-            self.path_entry.delete(0, END)
-            self.path_entry.insert(0, str(self.journal_path))
+            self.path_entry.setText(str(self.journal_path))
             self.save_config()
 
     def _exobiology_overlay_state(self):

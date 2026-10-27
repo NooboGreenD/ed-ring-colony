@@ -221,7 +221,7 @@ class UploadCacheScopeTests(unittest.TestCase):
     def test_token_switch_is_blocked_while_watcher_uses_the_previous_account(self):
         self.app.watcher_active = True
         self.app.token_entry = mock.Mock()
-        self.app.token_entry.get.return_value = "other-token"
+        self.app.token_entry.text.return_value = "other-token"
         self.app.log = mock.Mock()
         with mock.patch.object(self.app.api, "validate_token") as validate:
             self.app._on_validate_token()
