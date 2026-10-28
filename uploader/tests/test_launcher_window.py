@@ -136,6 +136,56 @@ class LauncherWindowTests(unittest.TestCase):
                        "●  NACHRICHTEN NICHT ERREICHBAR"})
         window.close()
 
+    def test_window_is_rebuilt_after_the_language_signal_returns(self):
+        """Дерево виджетов не пересобирается внутри обработчика списка.
+
+        Пока Qt закрывает выпадающий список, окно остаётся как было; новая
+        подпись появляется только на следующем проходе цикла событий. Именно
+        так исчезает риск, что окно пропадёт во время переключения.
+        """
+        window = self._window()
+        window.locale_combo.setCurrentIndex(window.locale_combo.findData("en"))
+        self.assertEqual(window.launch_button.text(), "▶   Запустить Colonial Helper")
+        self.app.processEvents()
+        self.assertEqual(window.launch_button.text(), "▶   Launch Colonial Helper")
+        window.close()
+
+    def test_rapid_switching_settles_on_the_last_language(self):
+        window = self._window()
+        for code in ("en", "de", "ja", "ko"):
+            window.locale_combo.setCurrentIndex(window.locale_combo.findData(code))
+        self.app.processEvents()
+        self.assertEqual(window.site_locale, "ko")
+        self.assertEqual(window.locale_combo.currentData(), "ko")
+        window.close()
+
+    def test_answer_for_the_previous_language_is_ignored(self):
+        """Ответ, пришедший после смены языка, не перерисовывает ленту."""
+        import i18n
+
+        window = self._window()
+        stale = window._feed_generation
+        window.locale_combo.setCurrentIndex(window.locale_combo.findData("ja"))
+        self.app.processEvents()
+        self.assertEqual(i18n.current_locale(), "ja")
+        window._news_loaded({"news": [{"title": "старый ответ", "body": ""}],
+                             "galnet": []}, stale)
+        self.app.processEvents()
+        self.assertEqual(window.feed_data.get("news"), [])
+        titles = [item.text() for item in window.findChildren(QLabel)]
+        self.assertNotIn("старый ответ", titles)
+        self.assertTrue(re.search("[ぁ-んァ-ン一-龥]", window.feed_status.text()))
+        window.close()
+
+    def test_failed_feed_does_not_block_the_next_request(self):
+        """После смены языка лента должна запрашиваться заново."""
+        window = self._window()
+        window.refresh_news()
+        first = window._feed_generation
+        window.refresh_news()
+        self.assertGreater(window._feed_generation, first)
+        window.close()
+
     def test_saved_language_is_restored_on_the_next_start(self):
         launcher_settings.save_site_locale("de", self.settings)
         window = self._window()

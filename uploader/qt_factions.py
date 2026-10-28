@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from i18n import tr
 from locale_config import localized_url, normalize_locale
 from site_config import DEFAULT_SITE_URL
 from ui_qt import (
@@ -33,6 +34,8 @@ from ui_qt import (
 #: Pastel colours of the influence bars, in order of decreasing influence.
 PALETTE = ("#e57b28", "#42b9d4", "#65c78a", "#8e7bf0", "#e27676", "#dfbd65")
 
+#: Подпись пустого списка: ключ перевода, ``tr()`` зовётся при сборке карточки
+#: (константа модуля не может зависеть от выбранного языка).
 EMPTY_HINT = ("Запустите Watcher и загрузите журнал из населённой системы, "
               "чтобы увидеть присутствующие фракции.")
 
@@ -68,15 +71,16 @@ class FactionInfographic(QWidget):
 
         self.layout_.addWidget(label("FACTION PRESENCE  /  JOURNAL SNAPSHOT",
                                      size=9, bold=True, color=CYAN))
-        self.open_btn = action_button("Открыть Atlas ↗", self._open_atlas, height=32)
-        self.layout_.addWidget(row(heading("Фракции в текущей системе", size=20),
+        self.open_btn = action_button(tr("Открыть Atlas ↗"), self._open_atlas, height=32)
+        self.layout_.addWidget(row(heading(tr("Фракции в текущей системе"), size=20),
                                    self.open_btn, None))
         self.layout_.addWidget(label(
-            "Минорные фракции, влияние и состояния из последнего события "
-            "FSDJump/Location в журнале.", role="muted", size=9, wrap=True,
+            tr("Минорные фракции, влияние и состояния из последнего события "
+               "FSDJump/Location в журнале."), role="muted", size=9, wrap=True,
             word_wrap_width=820))
 
-        self.system_label = label("Ожидание данных о системе…", size=11, bold=True, color=CYAN)
+        self.system_label = label(tr("Ожидание данных о системе…"), size=11, bold=True,
+                                  color=CYAN)
         self.layout_.addWidget(self.system_label)
         self.control_label = label("", role="muted", size=9, wrap=True)
         self.layout_.addWidget(self.control_label)
@@ -102,14 +106,14 @@ class FactionInfographic(QWidget):
         controlling = str(controlling or "").strip()
         rows = [row for row in (factions or []) if isinstance(row, dict)]
 
-        self.system_label.setText(f"СИСТЕМА  /  {system}" if system
-                                  else "Ожидание данных о системе…")
+        self.system_label.setText(tr("СИСТЕМА  /  {system}", system=system) if system
+                                  else tr("Ожидание данных о системе…"))
         self.control_label.setText(
-            f"Контролирующая фракция: {controlling}" if controlling else "")
+            tr("Контролирующая фракция: {faction}", faction=controlling) if controlling else "")
 
         self._clear_cards()
         if not rows:
-            self.empty = label(EMPTY_HINT, role="muted", size=9, wrap=True,
+            self.empty = label(tr(EMPTY_HINT), role="muted", size=9, wrap=True,
                                word_wrap_width=760)
             self.cards_layout.addWidget(self.empty)
             return
@@ -151,7 +155,7 @@ class FactionInfographic(QWidget):
 
         name = str(faction.get("name") or "—")
         card._faction_name = name
-        marker = "  ·  КОНТРОЛИРУЕТ СИСТЕМУ" if name == controlling else ""
+        marker = tr("  ·  КОНТРОЛИРУЕТ СИСТЕМУ") if name == controlling else ""
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 9, 12, 10)
@@ -161,21 +165,23 @@ class FactionInfographic(QWidget):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(8)
         title_row.addWidget(label(name + marker, size=10, bold=True, color=color), 1)
-        title_row.addWidget(action_button("Открыть в Atlas ↗", self._open_atlas, height=28))
+        title_row.addWidget(action_button(tr("Открыть в Atlas ↗"), self._open_atlas,
+                                          height=28))
         layout.addLayout(title_row)
 
         try:
             influence = max(0.0, min(1.0, float(faction.get("influence", 0) or 0)))
         except (TypeError, ValueError):
             influence = 0.0
-        details = [f"Влияние {influence * 100:.1f}%"]
+        details = [tr("Влияние {percent}%", percent=f"{influence * 100:.1f}")]
         for key in ("allegiance", "government", "state"):
             value = faction.get(key)
             if value:
                 details.append(str(value))
         states = faction.get("active_states") or []
         if states:
-            details.append("Активно: " + ", ".join(str(state) for state in states[:3]))
+            details.append(tr("Активно: {states}",
+                              states=", ".join(str(state) for state in states[:3])))
         layout.addWidget(label("  ·  ".join(details), role="muted", size=9, wrap=True))
 
         bar = QProgressBar()

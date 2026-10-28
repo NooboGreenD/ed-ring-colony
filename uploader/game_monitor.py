@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
+from i18n import tr
+
 IS_WINDOWS = sys.platform == "win32"
 
 # Процессы клиента игры (старые/новые/legacy-сборки).
@@ -82,10 +84,10 @@ class GameState:
     def label(self) -> str:
         """Короткий текст для UI."""
         if self.error:
-            return f"недоступно ({self.error})"
+            return tr("недоступно ({error})", error=self.error)
         if not self.running:
-            return "не запущена"
-        return "в фокусе" if self.focused else "запущена"
+            return tr("не запущена")
+        return tr("в фокусе") if self.focused else tr("запущена")
 
 
 # ============================================================

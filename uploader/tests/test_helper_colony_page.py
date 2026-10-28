@@ -12,6 +12,7 @@ try:
     from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QPushButton, QTableWidget
 
     import helper_pages
+    import i18n
     from ui_qt import ensure_app
 
     QT_ERROR = None
@@ -32,6 +33,7 @@ class ColonyPageTests(unittest.TestCase):
         cls.app = ensure_app()
 
     def setUp(self):
+        i18n.set_locale("ru")
         self.events = []
         self.actions = helper_pages.ColonyPageActions(
             **{name: (lambda n=name: self.events.append(n)) for name in (
@@ -196,6 +198,60 @@ class ColonyPageTests(unittest.TestCase):
         self.page.set_actions_enabled(True)
         self.page.set_create_enabled(True)
         self.assertTrue(self.page.create_btn.isEnabled())
+
+    # -------------------------------------------------------------- language
+    def test_page_follows_the_language_chosen_in_the_launcher(self):
+        import re
+
+        cyrillic = re.compile("[А-Яа-яЁё]")
+        for code, marker in (("en", "Create project"), ("ko", "프로젝트"), ("zh", "项目")):
+            i18n.set_locale(code)
+            page = helper_pages.ColonyPage(cmdr="CMDR Test")
+            try:
+                texts = [page.create_btn.text(), page.clear_form_btn.text(),
+                         page.refresh_btn.text(), page.cmdr_entry.placeholderText()]
+                for widget in page.findChildren(QCheckBox):
+                    texts.append(widget.text())
+                self.assertIn(marker, " ".join(texts))
+                self.assertEqual([text for text in texts if cyrillic.search(text)], [],
+                                 f"{code}: остались русские подписи")
+            finally:
+                page.close()
+        i18n.set_locale("ru")
+
+    def test_plan_none_item_follows_the_language_and_still_means_none(self):
+        for code in ("en", "ja"):
+            i18n.set_locale(code)
+            page = helper_pages.ColonyPage()
+            try:
+                labels = [helper_pages.ColonyPage.PLAN_NONE_LABEL, "Alpha (hestia)"]
+                page.set_plan_labels(labels)
+                self.assertEqual(page.plan_index(), 0)
+                self.assertTrue(page.plan_none_selected())
+                self.assertNotEqual(page.plan_text(), helper_pages.ColonyPage.PLAN_NONE_LABEL)
+                page.set_plan_text("Alpha (hestia)")
+                self.assertFalse(page.plan_none_selected())
+                page.set_plan_text(helper_pages.ColonyPage.PLAN_NONE_LABEL)
+                self.assertTrue(page.plan_none_selected())
+            finally:
+                page.close()
+        i18n.set_locale("ru")
+
+    def test_table_headers_are_translated_but_field_names_are_not(self):
+        i18n.set_locale("de")
+        page = helper_pages.ColonyPage()
+        try:
+            headers = [page.table.horizontalHeaderItem(i).text()
+                       for i in range(page.table.columnCount())]
+            translated = dict((key, headers[index])
+                              for index, (key, _t, _w)
+                              in enumerate(helper_pages.COLONY_COLUMNS))
+            self.assertEqual(translated["buildId"], "buildId")
+            self.assertEqual(translated["primary"], "★")
+            self.assertEqual(translated["system"], "System")
+        finally:
+            page.close()
+        i18n.set_locale("ru")
 
     # ---------------------------------------------------------------- drawing
     def test_page_renders_with_rows(self):

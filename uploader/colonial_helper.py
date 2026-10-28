@@ -93,7 +93,37 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.16"
+#: Русские строки файла, которые не являются подписями интерфейса: значения
+#: полей журнала, токены разбора ответов сервера и имя источника данных.
+#: ``Вы`` — имя первооткрывателя (``FirstFootfallBy``), ``включена``/``отключена``
+#: — куски диагностической строки в журнал, ``сверху``/``линейный`` — принимаемые
+#: написания режимов карты, ``БД проекта`` — имя источника для журнала.
+NON_UI_LITERALS = frozenset({
+    # значения полей журнала и принимаемые написания настроек
+    "Вы", "включена", "отключена", "сверху", "линейный", "БД проекта",
+    # токены разбора ответов сервера (см. tests/test_i18n.ERROR_MARKER_LITERALS)
+    "занят", "не удалось", "невер", "недоступ", "ошиб", "сбой",
+    # причины и заметки, которые уходят только в журнал программы, а не в окно
+    "привязка площадки", "Raven Colonial не ответил (", "нет генератора",
+    "нет данных", "трюм пуст по CarrierStats", "по рынку носителя",
+    "проекта пока нет", "пока нет", "проект не найден (market_id=",
+    "в событии нет MarketID", "не определён SystemAddress",
+    "пустое имя товара", "в событии нет тоннажа", "неизвестная ошибка",
+    "ошибка", "пустой ответ", ", найден: ", " — после ",
+    " попыток снято с досылки", "сервер не принял доставку, будет повтор (",
+    "отправка невозможна (", "Сверка стройплощадки ", ": проект «",
+    "  Raven Colonial: осталось завезти ", " — потребность закрыта",
+    "  По журналу: вы завезли ", " доставок", ", последняя ",
+    "  Отправлено этим приложением в Raven Colonial: ", " доставок)",
+    "  Авианосец ", ": на борту ", "Обнаружен журнал другого CMDR '",
+    "' (ожидался '", "'). Доставки из ", " пропущены.", "t на маршрут)",
+    # консоль и файл аварийного журнала: окно ещё не существует
+    "Лог очищен", "ОШИБКА: не найден модуль 'requests'",
+    "Решение: pip install requests", "КРИТИЧЕСКАЯ ОШИБКА при запуске:\n",
+    "\n\nПодробности сохранены в:\n",
+})
+
+VERSION = "2.18.31"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -163,6 +193,20 @@ COLOR_CYAN = "#3498db"
 COLOR_GREEN = "#2ecc71"
 COLOR_RED = "#e74c3c"
 COLOR_YELLOW = "#f1c40f"            # дедлайн стройки на исходе
+
+
+def _screen_with_game_label() -> str:
+    """Подпись «с игрой» (ключ перевода — из ``helper_pages``)."""
+    from helper_pages import screen_with_game_label
+
+    return screen_with_game_label()
+
+
+def _screen_label(index) -> str:
+    """Подпись экрана монитора: «экран N» на текущем языке."""
+    from helper_pages import screen_label
+
+    return screen_label(index)
 
 
 class ColonialHelperApp:
@@ -1108,9 +1152,9 @@ class ColonialHelperApp:
         if not hasattr(self, "colony_key_label"):
             return
         if self.raven_api.is_connected:
-            self.colony_page.set_key_status("RCC ключ задан", COLOR_GREEN)
+            self.colony_page.set_key_status(tr("RCC ключ задан"), COLOR_GREEN)
         else:
-            self.colony_page.set_key_status("RCC ключ не задан — только просмотр",
+            self.colony_page.set_key_status(tr("RCC ключ не задан — только просмотр"),
                                             COLOR_ORANGE)
 
     def _selected_colony_project(self) -> Optional[dict]:
@@ -1154,7 +1198,7 @@ class ColonialHelperApp:
         if not cmdr:
             self.log("Укажите имя командира для поиска проектов.", "warn")
             return
-        self._set_colony_busy(True, "Загружаю проекты Raven Colonial…")
+        self._set_colony_busy(True, tr("Загружаю проекты Raven Colonial…"))
         threading.Thread(target=self._colony_refresh_thread, args=(cmdr,), daemon=True).start()
 
     def _colony_refresh_thread(self, cmdr: str):
@@ -1165,7 +1209,8 @@ class ColonialHelperApp:
     def _colony_refresh_done(self, result: dict, primary: dict):
         self._set_colony_busy(False)
         if not result.get("ok"):
-            self.colony_page.set_status(f"Не удалось загрузить проекты: {result.get('error')}")
+            self.colony_page.set_status(
+                tr("Не удалось загрузить проекты: {error}", error=result.get("error")))
             self.log(f"Raven Colonial: не удалось получить проекты — {result.get('error')}", "error")
             return
 
@@ -1173,7 +1218,7 @@ class ColonialHelperApp:
         projects = self._extract_colony_projects(data)
         primary_id = self._extract_primary_id(primary)
         self._fill_colony_tree(projects, primary_id)
-        self.colony_page.set_status(f"Проектов: {len(projects)}")
+        self.colony_page.set_status(tr("Проектов: {count}", count=len(projects)))
         self.log(f"Raven Colonial: загружено проектов — {len(projects)}", "success")
 
     @staticmethod
@@ -1360,7 +1405,8 @@ class ColonialHelperApp:
         self.save_config()
         self.log(f"Площадка {market_id} привязана к проекту «{name}» ({build_id}): "
                  "доставки будут зачисляться ему.", "success")
-        self.colony_page.set_status(f"Площадка {market_id} → проект «{name}»")
+        self.colony_page.set_status(
+            tr("Площадка {site} → проект «{project}»", site=market_id, project=name))
 
         # Привязка меняет ответ на «какой это проект»: сбрасываем кэш поиска,
         # счётчики промахов и сразу досылаем то, что ждало в очереди.
@@ -1404,7 +1450,7 @@ class ColonialHelperApp:
         self.save_config()
         self.log(f"Привязка площадки {market_id} снята (была к проекту "
                  f"{record.get('build_id')}).", "info")
-        self.colony_page.set_status(f"Привязка площадки {market_id} снята")
+        self.colony_page.set_status(tr("Привязка площадки {site} снята", site=market_id))
         self._raven_bound_projects.pop(str(record.get("build_id") or ""), None)
         invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
         if callable(invalidate):
@@ -1421,44 +1467,48 @@ class ColonialHelperApp:
         if not cmdr:
             self.log("Укажите имя командира.", "warn")
             return
-        self._set_colony_busy(True, "Назначаю основной проект…")
+        self._set_colony_busy(True, tr("Назначаю основной проект…"))
         # Запоминаем сразу: блок CARRIER должен показать материалы этого
         # проекта, не дожидаясь ответа сервера и обновления списка.
         cached = (getattr(self, "_colony_projects_cache", {}) or {}).get(project["buildId"])
         self.colony_primary_project = dict(cached or project)
         threading.Thread(target=self._colony_simple_call_thread,
                          args=("set_primary", (cmdr, project["buildId"]),
-                               f"Основной проект: {project['buildName']}"), daemon=True).start()
+                               tr("Основной проект: {name}", name=project["buildName"])),
+                         daemon=True).start()
 
     def _on_colony_clear_primary(self):
         cmdr = self.colony_page.cmdr_text().strip()
         if not cmdr:
             self.log("Укажите имя командира.", "warn")
             return
-        self._set_colony_busy(True, "Снимаю основной проект…")
+        self._set_colony_busy(True, tr("Снимаю основной проект…"))
         self.colony_primary_project = {}
         threading.Thread(target=self._colony_simple_call_thread,
-                         args=("clear_primary", (cmdr,), "Основной проект снят"), daemon=True).start()
+                         args=("clear_primary", (cmdr,), tr("Основной проект снят")),
+                         daemon=True).start()
 
     def _on_colony_complete(self):
         project = self._selected_colony_project()
         if not project:
             return
         if not ask_yes_no(
-            "Завершить проект",
-            f"Отметить «{project['buildName']}» ({project['systemName']}) завершённым?\n"
-            "Это действие необратимо.",
+            tr("Завершить проект"),
+            tr("Отметить «{name}» ({system}) завершённым?\nЭто действие необратимо.",
+               name=project["buildName"], system=project["systemName"]),
             parent=self.root,
         ):
             return
-        self._set_colony_busy(True, "Завершаю проект…")
+        self._set_colony_busy(True, tr("Завершаю проект…"))
         threading.Thread(target=self._colony_simple_call_thread,
-                         args=("mark_complete", (project["buildId"],), "Проект завершён"),
+                         args=("mark_complete", (project["buildId"],), tr("Проект завершён")),
                          daemon=True).start()
 
     def _colony_simple_call_thread(self, method_name: str, args: tuple, success_text: str):
         method = getattr(self.raven_api, method_name, None)
-        result = method(*args) if method else {"ok": False, "error": f"нет метода {method_name}"}
+        result = (method(*args) if method
+                  else {"ok": False,
+                        "error": tr("нет метода {name}", name=method_name)})
         self.after(0, lambda: self._colony_action_done(result, success_text))
 
     def _colony_action_done(self, result: dict, success_text: str):
@@ -1472,8 +1522,8 @@ class ColonialHelperApp:
                 self._set_colony_busy(False)
         else:
             self._set_colony_busy(False)
-            error = result.get("error") or "неизвестная ошибка"
-            self.colony_page.set_status(f"Ошибка: {error}")
+            error = result.get("error") or tr("неизвестная ошибка")
+            self.colony_page.set_status(tr("Ошибка: {error}", error=error))
             self.log(f"Raven Colonial: {error}", "error")
 
     def _on_colony_copy_id(self):
@@ -1498,7 +1548,7 @@ class ColonialHelperApp:
             self.log("Выберите проект в списке.", "warn")
             return
         self._colony_open_url(project_url(project["buildId"]),
-                              f"Проект {project['buildName']}")
+                              tr("Проект {name}", name=project["buildName"]))
 
     def _colony_open_url(self, url: str, what: str = ""):
         """Открыть ссылку в системном браузере (не блокируя UI)."""
@@ -1534,10 +1584,10 @@ class ColonialHelperApp:
         site = self.construction.site
         if site is None or not site.market_id:
             page.set_site_text(
-                "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+                tr("Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке."),
                 COLOR_MUTED)
             return
-        docked = "вы на площадке" if site.docked else "последняя посещённая площадка"
+        docked = tr("вы на площадке") if site.docked else tr("последняя посещённая площадка")
         color = COLOR_GREEN if site.has_depot else COLOR_ORANGE
         page.set_site_text(f"{site.summary()} · {docked}", color)
 
@@ -1627,7 +1677,7 @@ class ColonialHelperApp:
         self._colony_draft_site = site
         self._colony_form_baseline = self._colony_form_snapshot()
         self._update_colony_site_label()
-        prefix = "Автозаполнение" if auto else "Форма заполнена"
+        prefix = tr("Автозаполнение") if auto else tr("Форма заполнена")
         self.log(f"{prefix}: {site.summary()}", "success" if site.has_depot else "info")
         self.colony_page.set_status(site.summary())
         # Планы площадок и архитектора системы берём из Raven Colonial — в
@@ -1662,7 +1712,7 @@ class ColonialHelperApp:
             return
         plans = self._extract_site_plans(sites.get("data"))
         self._colony_site_plans = plans
-        labels = ["Нет (создать новый план)"] + [
+        labels = [self.colony_page.plan_none_label()] + [
             self._site_plan_label(plan) for plan in plans
         ]
         try:
@@ -1673,8 +1723,7 @@ class ColonialHelperApp:
             self.log(
                 f"Raven Colonial: в системе {system} запланировано площадок — {len(plans)}", "info")
             # Один план — выбираем его сами: тип и тело возьмутся из плана.
-            if len(plans) == 1 and not self.colony_page.plan_text().strip(
-                    self.colony_page.PLAN_NONE_LABEL):
+            if len(plans) == 1 and self.colony_page.plan_none_selected():
                 self.colony_page.set_plan_text(labels[1])
                 self._on_colony_plan_selected()
 
@@ -1746,12 +1795,12 @@ class ColonialHelperApp:
         self.colony_starpos_entry.setText("")
         self.colony_commodities_entry.setText("")
         self.colony_primary_port_check.setChecked(False)
-        self.colony_page.set_plan_text(self.colony_page.PLAN_NONE_LABEL)
+        self.colony_page.set_plan_none()
         self._colony_selected_site_id = ""
         self._colony_draft_site = None
         self._colony_autofilled_name = ""
         self._colony_form_baseline = self._colony_form_snapshot()
-        self.colony_page.set_status("Форма очищена")
+        self.colony_page.set_status(tr("Форма очищена"))
         self._update_colony_site_label()
 
     def _on_colony_check_system(self):
@@ -1766,7 +1815,7 @@ class ColonialHelperApp:
         if not (system or address or market_id):
             self.log("Заполните систему, Market ID или System address.", "warn")
             return
-        self.colony_page.set_status("Проверяю площадку в Raven Colonial…")
+        self.colony_page.set_status(tr("Проверяю площадку в Raven Colonial…"))
         threading.Thread(target=self._colony_check_system_thread,
                          args=(system, address, market_id), daemon=True).start()
 
@@ -1783,17 +1832,19 @@ class ColonialHelperApp:
 
     def _colony_check_system_done(self, result):
         if not isinstance(result, dict) or not result.get("ok"):
-            error = (result or {}).get("error") if isinstance(result, dict) else "нет ответа"
-            self.colony_page.set_status(f"Проверить не удалось: {error}")
+            error = (result or {}).get("error") if isinstance(result, dict) else tr("нет ответа")
+            self.colony_page.set_status(tr("Проверить не удалось: {error}", error=error))
             self.log(f"Raven Colonial: проверка площадки — {error}", "warn")
             return
         projects = self._extract_colony_projects(result.get("data"))
         if not projects:
-            self.colony_page.set_status("Проекта на этой площадке нет — можно создавать.")
+            self.colony_page.set_status(
+                tr("Проекта на этой площадке нет — можно создавать."))
             self.log("Raven Colonial: активного проекта на площадке нет", "success")
             return
         names = ", ".join(f"{p.get('buildName')} ({p.get('buildId')})" for p in projects[:3])
-        self.colony_page.set_status(f"Внимание: в системе уже есть проект — {names}")
+        self.colony_page.set_status(
+            tr("Внимание: в системе уже есть проект — {names}", names=names))
         self.log(f"Raven Colonial: найден существующий проект — {names}", "warn")
 
     # ---------- Колонизатор: создание проекта ----------
@@ -1823,23 +1874,26 @@ class ColonialHelperApp:
         build_name = self.colony_page.value("buildName").strip()
         system = self.colony_page.value("systemName").strip()
         missing = [
-            label for key, label in (("marketId", "Market ID"), ("systemAddress", "System address"),
-                                     ("buildName", "Название"))
+            title for key, title in (("marketId", "Market ID"),
+                                     ("systemAddress", "System address"),
+                                     ("buildName", tr("Название *")))
             if not self.colony_page.value(key).strip()
         ]
         if missing:
             hint = ""
             if site is None and {"Market ID", "System address"} & set(missing):
-                hint = " Пристыкуйтесь к стройплощадке и нажмите «Заполнить из журнала»."
-            self.log(f"Raven Colonial требует заполнить: {', '.join(missing)}.{hint}", "warn")
-            self.colony_page.set_status(f"Не заполнены обязательные поля: {', '.join(missing)}")
+                hint = tr("Пристыкуйтесь к стройплощадке и нажмите «Заполнить из журнала».")
+            self.log(f"Raven Colonial требует заполнить: {', '.join(missing)}. {hint}", "warn")
+            self.colony_page.set_status(tr(
+                "Не заполнены обязательные поля: {fields}",
+                fields=", ".join(tr(title) for title in missing)))
             return
 
         build_code = self._colony_build_type_code()
         if not build_code:
             self.log("Выберите тип постройки из списка: только такие коды открываются "
                      "на Raven Colonial.", "warn")
-            self.colony_page.set_status("Не выбран тип постройки")
+            self.colony_page.set_status(tr("Не выбран тип постройки"))
             return
         self._colony_sync_body_num()
 
@@ -1897,7 +1951,7 @@ class ColonialHelperApp:
 
         cmdr = self.colony_page.cmdr_text().strip()
         open_page = bool(self.colony_open_page_check.isChecked())
-        self._set_colony_busy(True, "Создаю проект…")
+        self._set_colony_busy(True, tr("Создаю проект…"))
         threading.Thread(target=self._colony_create_thread,
                          args=(project, cmdr, open_page), daemon=True).start()
 
@@ -1931,7 +1985,7 @@ class ColonialHelperApp:
             self.site_project = {}
             system = self.colony_page.value("systemName")
             name = f"{system}: {self.colony_page.value('buildName')}".strip(": ")
-            message = f"Raven Colonial: проект создан — {name}"
+            message = tr("Raven Colonial: проект создан — {name}", name=name)
             if build_id:
                 message += f" (buildId {build_id})"
             self.log(message, "success")
@@ -1940,14 +1994,16 @@ class ColonialHelperApp:
                     f"Raven Colonial: проект создан, но не привязан к командиру — "
                     f"{result['link_error']}", "warn",
                 )
-            self.colony_page.set_status(f"Проект создан, buildId: {build_id or '—'}")
+            self.colony_page.set_status(
+                tr("Проект создан, buildId: {build_id}", build_id=build_id or "—"))
             if build_id and open_page:
-                self._colony_open_url(project_url(build_id), f"Проект {name}")
+                self._colony_open_url(project_url(build_id), tr("Проект {name}", name=name))
             if cmdr:
                 self._on_colony_refresh()
         else:
-            error = result.get("error") or "неизвестная ошибка"
-            self.colony_page.set_status(f"Создать проект не удалось: {error}")
+            error = result.get("error") or tr("неизвестная ошибка")
+            self.colony_page.set_status(
+                tr("Создать проект не удалось: {error}", error=error))
             self.log(f"Raven Colonial: проект не создан — {error}", "error")
 
 
@@ -2022,7 +2078,7 @@ class ColonialHelperApp:
         self._map_sync_tree_selection()
         self._map_show_details(self._map_selected)
 
-    def _copy_map_text(self, text: str, hint: str = "Скопировано"):
+    def _copy_map_text(self, text: str, hint: str = ""):
         try:
             import pyperclip
 
@@ -2033,8 +2089,8 @@ class ColonialHelperApp:
                 self.root.clipboard_append(text)
             except Exception:
                 pass
-        if hint:
-            self._map_set_hint(hint)
+        if hint is not None:
+            self._map_set_hint(hint or tr("Скопировано"))
 
     def _fetch_external_scans_if_needed(self, system_name: str, force: bool = False):
         """Запросить сканы тел системы из БД проекта или EDSM в фоновом потоке."""
@@ -2179,9 +2235,10 @@ class ColonialHelperApp:
         url = localized_url(f"{site.rstrip('/')}/account/capi", self.config.get("site_locale"))
         try:
             webbrowser.open(url)
-            self._capi_set_status("Открыл страницу Frontier CAPI на сайте", ok=None)
+            self._capi_set_status(tr("Открыл страницу Frontier CAPI на сайте"), ok=None)
         except Exception as exc:
-            self._capi_set_status(f"Не удалось открыть браузер: {exc}", ok=False)
+            self._capi_set_status(
+                tr("Не удалось открыть браузер: {error}", error=exc), ok=False)
 
     def _on_capi_link(self):
         """Совместимый обработчик кнопки: привязка выполняется только на сайте."""
@@ -2257,7 +2314,7 @@ class ColonialHelperApp:
         """
         api = getattr(self, "api", None)
         if not api or not api.is_connected:
-            self._capi_set_status("Сначала подключите токен проекта", ok=False)
+            self._capi_set_status(tr("Сначала подключите токен проекта"), ok=False)
             return
         self._capi_set_status(tr("Сайт синхронизирует данные Frontier…"), ok=None)
 
@@ -2486,14 +2543,14 @@ class ColonialHelperApp:
             rule = str(settings.get(f"{block_key}_auto_rule", "always") or "always")
             rows.append(OverlayBlockRow(
                 key=block_key,
-                label=BLOCK_LABELS.get(block_key, block_key),
+                label=tr(BLOCK_LABELS.get(block_key, block_key)),
                 visible=bool(settings.get(f"show_{block_key}", True)),
                 locked=bool(settings.get(f"{block_key}_locked", False)),
                 screen=self._block_screen_label(block_key),
                 alpha=self._block_alpha_label(block_key),
                 font_size=self._block_font_label(block_key),
-                size=SIZE_PRESET_LABELS.get(self._block_size_preset(block_key), "M — 100%"),
-                auto_rule=AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]),
+                size=self._size_label(self._block_size_preset(block_key)),
+                auto_rule=tr(AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"])),
                 hotkey=str(settings.get(f"{block_key}_hotkey", "") or "—") or "—",
             ))
 
@@ -2502,46 +2559,46 @@ class ColonialHelperApp:
             items = []
             for section_key, (text, _attributes) in sections.items():
                 setting = option_key(block_key, section_key)
-                items.append((setting, text, bool(settings.get(setting, True))))
-            content.append((block_key, block_key, items))
+                items.append((setting, tr(text), bool(settings.get(setting, True))))
+            content.append((block_key, tr(BLOCK_LABELS.get(block_key, block_key)), items))
 
-        anchor_values = [ANCHOR_LABELS[key] for key in ANCHOR_KEYS]
+        anchor_values = [tr(ANCHOR_LABELS[key]) for key in ANCHOR_KEYS]
         anchors = []
         for block_key in self.overlay_manager.BLOCKS:
             current = settings.get(f"{block_key}_anchor", "custom")
-            anchors.append((block_key, BLOCK_LABELS.get(block_key, block_key),
-                            ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"]),
+            anchors.append((block_key, tr(BLOCK_LABELS.get(block_key, block_key)),
+                            tr(ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"])),
                             anchor_values))
 
-        carrier_labels = list(CARRIER_FILTERS.items())
+        carrier_labels = [(mode, tr(text)) for mode, text in CARRIER_FILTERS.items()]
         state = OverlayPageState(
             alpha=float(settings.get("alpha", 0.90)),
             font_family=str(settings.get("font_family", "Consolas")),
             font_size=int(settings.get("font_size", 10) or 10),
             font_choices=("Consolas", "Courier New", "Segoe UI", "Arial", "Lucida Console"),
-            alpha_choices=tuple(self.OVERLAY_ALPHA_CHOICES),
+            alpha_choices=tuple(tr(value) for value in self.OVERLAY_ALPHA_CHOICES),
             hotkey_choices=tuple(self.OVERLAY_HOTKEY_CHOICES),
             lock_hotkey_choices=tuple(self.OVERLAY_LOCK_HOTKEY_CHOICES),
-            size_labels=[SIZE_PRESET_LABELS[name] for name, _factor in SIZE_PRESETS],
-            rule_labels=[AUTO_RULE_LABELS[name] for name in AUTO_RULES],
+            size_labels=[self._size_label(name) for name, _factor in SIZE_PRESETS],
+            rule_labels=[tr(AUTO_RULE_LABELS[name]) for name in AUTO_RULES],
             rows=rows,
             anchors=anchors,
             screen_choices=screen_choices,
             screens_text=self._overlay_screens_text(),
-            all_size="M — 100%",
+            all_size=self._size_label("M"),
             lock_hotkey=str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—",
             auto_rules=bool(settings.get("auto_rules_enabled", False)),
             attach_game=bool(settings.get("attach_to_game", True)),
             idle_choices=[self._idle_label(seconds) for seconds in IDLE_TIMEOUTS],
             idle=self._idle_label(int(settings.get("idle_timeout", 0) or 0)),
-            ship_blocks=[(key, text,
+            ship_blocks=[(key, tr(text),
                           bool(settings.get(f"show_{key}", True)))
                          for key, text in self.OVERLAY_SHIP_BLOCKS],
             ship_modules=str(settings.get("ship_modules_view", "important")),
             content=content,
-            carrier_filters=[(mode, text) for mode, text in carrier_labels],
-            carrier_filter=CARRIER_FILTERS.get(
-                settings.get("carrier_filter", "all"), list(CARRIER_FILTERS.values())[0]),
+            carrier_filters=carrier_labels,
+            carrier_filter=tr(CARRIER_FILTERS.get(
+                settings.get("carrier_filter", "all"), list(CARRIER_FILTERS.values())[0])),
             carrier_search=str(settings.get("carrier_search", "") or ""),
             profiles=self.overlay_manager.list_profiles(),
             profile=self.overlay_manager.active_profile,
@@ -2592,12 +2649,15 @@ class ColonialHelperApp:
 
     # ---------- Блоки: персональные настройки ----------
     OVERLAY_ALPHA_CHOICES = ("общая", "40%", "55%", "70%", "85%", "100%")
+    #: Колонка «Шрифт»: «общий» — наследовать общий размер, остальное — кегль.
     OVERLAY_FONT_CHOICES = ("общий", "8", "9", "10", "11", "12", "14", "16", "18")
     OVERLAY_HOTKEY_CHOICES = ("—", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8",
                               "F9", "F10", "F11", "F12")
     OVERLAY_LOCK_HOTKEY_CHOICES = ("—", "Ctrl+F12", "Ctrl+F11", "Ctrl+F10", "Shift+F12",
                                    "Alt+F12", "Ctrl+Shift+F12", "Ctrl+Shift+L")
-    #: Колонка «Экран»: блок с игрой или отвязан и стоит на экране N.
+    #: Колонка «Экран»: ключ значения «блок живёт поверх игры». Подпись берётся
+    #: из ``helper_pages.screen_with_game_label`` — ключ перевода должен быть
+    #: один на оба модуля, иначе сравнение подписей разъедется.
     OVERLAY_SCREEN_WITH_GAME = "с игрой"
     #: Блоки корабля (SHIP) с подписями: галочки «показывать» на вкладке оверлея.
     OVERLAY_SHIP_BLOCKS = (
@@ -2614,25 +2674,31 @@ class ColonialHelperApp:
         ("modules", "Модули"),
     )
 
+    def _size_label(self, preset: str) -> str:
+        """Подпись пресета размера на текущем языке."""
+        return tr(SIZE_PRESET_LABELS.get(preset, SIZE_PRESET_LABELS["M"]))
+
     def _idle_label(self, seconds: int) -> str:
         """Подпись для выбора таймера простоя."""
         seconds = int(seconds or 0)
         if seconds <= 0:
-            return "не скрывать"
+            return tr("не скрывать")
         if seconds < 60:
-            return f"{seconds} с"
-        return f"{seconds // 60} мин"
+            return tr("{seconds} с", seconds=seconds)
+        return tr("{minutes} мин", minutes=seconds // 60)
 
     def _idle_seconds(self, label: str) -> int:
-        """Обратно: подпись -> секунды."""
-        text = (label or "").strip().lower()
-        if not text or text.startswith("не "):
-            return 0
-        if "мин" in text:
-            digits = "".join(ch for ch in text if ch.isdigit())
-            return int(digits or 0) * 60
+        """Обратно: подпись -> секунды (по той же таблице, что и подписи).
+
+        Раньше разбирались слова «мин»/«с»: на другом языке разбор молча давал
+        ноль и таймер простоя выключался.
+        """
+        text = (label or "").strip()
+        for seconds in IDLE_TIMEOUTS:
+            if self._idle_label(seconds) == text:
+                return int(seconds)
         digits = "".join(ch for ch in text if ch.isdigit())
-        return int(digits or 0)
+        return int(digits or 0) * (60 if ":" in text else 1) if digits else 0
 
     def _block_size_preset(self, key: str) -> str:
         """Ближайший пресет к текущему размеру блока."""
@@ -2651,12 +2717,12 @@ class ColonialHelperApp:
     # -- подписи и разбор значений --
     def _overlay_screen_choices(self) -> list:
         """Значения колонки «Экран»: «с игрой» и номера подключённых экранов."""
-        choices = [self.OVERLAY_SCREEN_WITH_GAME]
+        choices = [_screen_with_game_label()]
         try:
             monitors = self.overlay_manager.monitors()
         except Exception:
             monitors = []
-        choices.extend(f"экран {monitor.index}" for monitor in monitors)
+        choices.extend(_screen_label(monitor.index) for monitor in monitors)
         return choices
 
     def _overlay_screens_text(self) -> str:
@@ -2670,40 +2736,41 @@ class ColonialHelperApp:
         parts = []
         for monitor in monitors:
             width, height = monitor.size
-            text = f"экран {monitor.index} — {width}×{height}"
+            text = tr("экран {index} — {width}×{height}",
+                      index=monitor.index, width=width, height=height)
             if monitor.primary:
-                text += " (основной)"
+                text += tr(" (основной)")
             parts.append(text)
-        return "Экраны: " + "; ".join(parts)
+        return tr("Экраны: {list}", list="; ".join(parts))
 
     def _block_screen_label(self, key: str) -> str:
         """Текущее значение колонки «Экран» для блока."""
         manager = self.overlay_manager
         if not manager.block_detached(key):
-            return self.OVERLAY_SCREEN_WITH_GAME
+            return _screen_with_game_label()
         try:
             monitor = manager.block_monitor(key)
         except Exception:
             monitor = None
-        return f"экран {monitor.index}" if monitor is not None else "экран 1"
+        return _screen_label(monitor.index if monitor is not None else 1)
 
     def _block_alpha_label(self, key: str) -> str:
         value = self.overlay_manager.settings.get(f"{key}_alpha")
-        return "общая" if value is None else f"{int(round(float(value) * 100))}%"
+        return tr("общая") if value is None else f"{int(round(float(value) * 100))}%"
 
     def _block_font_label(self, key: str) -> str:
         value = self.overlay_manager.settings.get(f"{key}_font_size")
-        return "общий" if value in (None, "") else str(int(value))
+        return tr("общий") if value in (None, "") else str(int(value))
 
     def _rule_key_by_label(self, label: str) -> str:
         for rule_key, text in AUTO_RULE_LABELS.items():
-            if text == label:
+            if tr(text) == label:
                 return rule_key
         return "always"
 
     def _preset_key_by_label(self, label: str) -> str:
-        for name, text in SIZE_PRESET_LABELS.items():
-            if text == label:
+        for name in SIZE_PRESET_LABELS:
+            if self._size_label(name) == label:
                 return name
         return "M"
 
@@ -2729,8 +2796,10 @@ class ColonialHelperApp:
         if value is None:
             value = self.overlay_page.block_value(key, "screen")
         value = str(value or "").strip()
-        label = BLOCK_LABELS.get(key, key)
-        if value == self.OVERLAY_SCREEN_WITH_GAME or not value:
+        label = tr(BLOCK_LABELS.get(key, key))
+        # «С игрой» — это значение без номера экрана; сравнивать подпись нельзя,
+        # иначе на другом языке блок «отвязывался» вместо возврата к игре.
+        if not "".join(ch for ch in value if ch.isdigit()):
             self.overlay_manager.set_block_detached(key, False, move_to_game=True)
             self.log(f"{label}: снова с игрой — виден только поверх игры", "info")
         else:
@@ -2777,7 +2846,7 @@ class ColonialHelperApp:
     def _on_block_alpha_changed(self, key: str, label=None):
         if label is None:
             label = self.overlay_page.block_value(key, "alpha")
-        if label == "общая":
+        if str(label) == tr("общая"):
             self.overlay_manager.set_block_alpha(key, None)
         else:
             digits = "".join(ch for ch in str(label) if ch.isdigit())
@@ -2786,7 +2855,7 @@ class ColonialHelperApp:
     def _on_block_font_changed(self, key: str, label=None):
         if label is None:
             label = self.overlay_page.block_value(key, "font_size")
-        if label == "общий":
+        if str(label) == tr("общий"):
             self.overlay_manager.set_block_font_size(key, None)
         else:
             digits = "".join(ch for ch in str(label) if ch.isdigit())
@@ -2852,7 +2921,7 @@ class ColonialHelperApp:
 
     def _on_carrier_filter_changed(self):
         label = self.overlay_page.carrier_filter_text()
-        mode = next((key for key, text in CARRIER_FILTERS.items() if text == label), "all")
+        mode = next((key for key, text in CARRIER_FILTERS.items() if tr(text) == label), "all")
         self.overlay_manager.set_carrier_filter(mode=mode)
 
     def _on_carrier_search_changed(self):
@@ -2871,11 +2940,10 @@ class ColonialHelperApp:
             page.set_block_value(key, "screen", self._block_screen_label(key))
             page.set_block_value(key, "alpha", self._block_alpha_label(key))
             page.set_block_value(key, "font_size", self._block_font_label(key))
-            page.set_block_value(key, "size",
-                                 SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
+            page.set_block_value(key, "size", self._size_label(self._block_size_preset(key)))
             rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
             page.set_block_value(key, "auto_rule",
-                                 AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
+                                 tr(AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"])))
             page.set_block_value(key, "hotkey",
                                  str(settings.get(f"{key}_hotkey", "") or "—") or "—")
         page.set_idle_text(self._idle_label(int(settings.get("idle_timeout", 0) or 0)))
@@ -2883,7 +2951,7 @@ class ColonialHelperApp:
             str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—")
         page.set_screens_text(self._overlay_screens_text())
         page.set_auto_rules(bool(settings.get("auto_rules_enabled", False)))
-        page.set_all_size_text("M — 100%")
+        page.set_all_size_text(self._size_label("M"))
 
     def _on_overlay_settings_changed(self, key: str, name: str, _value):
         """Настройка изменилась из оверлея (например, по горячей клавише)."""
@@ -2897,16 +2965,17 @@ class ColonialHelperApp:
         for key in self.overlay_manager.BLOCKS:
             combo = str(self.overlay_manager.settings.get(f"{key}_hotkey", "") or "")
             if combo:
-                lines.append(f"{combo} — {BLOCK_LABELS.get(key, key)}")
+                lines.append(f"{combo} — {tr(BLOCK_LABELS.get(key, key))}")
         all_combo = str(self.overlay_manager.settings.get("toggle_all_hotkey", "F12") or "")
         if all_combo:
-            lines.append(f"{all_combo} — показать/скрыть все блоки")
+            lines.append(tr("{combo} — показать/скрыть все блоки", combo=all_combo))
         lock_combo = str(self.overlay_manager.settings.get("lock_toggle_hotkey", "Ctrl+F12") or "")
         if lock_combo:
-            lines.append(f"{lock_combo} — закрепить/открепить все блоки")
-        hint = "Назначено: " + "; ".join(lines) if lines else "Клавиши не назначены."
+            lines.append(tr("{combo} — закрепить/открепить все блоки", combo=lock_combo))
+        hint = (tr("Назначено: {list}", list="; ".join(lines)) if lines
+                else tr("Клавиши не назначены."))
         if not self.overlay_manager.hotkeys.available:
-            hint += "  (системные горячие клавиши работают только в Windows)"
+            hint += tr("  (системные горячие клавиши работают только в Windows)")
         self.overlay_page.set_hotkey_hint_text(hint)
 
     def _on_toggle_overlay(self):
@@ -2959,8 +3028,8 @@ class ColonialHelperApp:
         name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             name = ask_string(
-                "Профиль раскладки",
-                "Имя профиля (например: Хаул, Эксобиология, Бой):",
+                tr("Профиль раскладки"),
+                tr("Имя профиля (например: Хаул, Эксобиология, Бой):"),
                 parent=self.root,
             )
             if not name:
@@ -2992,7 +3061,8 @@ class ColonialHelperApp:
         name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             return
-        if not ask_yes_no("Удалить профиль", f"Удалить профиль «{name}»?", parent=self.root):
+        if not ask_yes_no(tr("Удалить профиль"),
+                          tr("Удалить профиль «{name}»?", name=name), parent=self.root):
             return
         if self.overlay_manager.delete_profile(name):
             self._refresh_profile_combo("")
@@ -3007,7 +3077,7 @@ class ColonialHelperApp:
     def _on_anchor_changed(self, block_key: str, label: str):
         anchor = "custom"
         for key, text in ANCHOR_LABELS.items():
-            if text == label:
+            if tr(text) == label:
                 anchor = key
                 break
         self.overlay_manager.snap_block(block_key, anchor)
@@ -3041,11 +3111,12 @@ class ColonialHelperApp:
         try:
             area = self.overlay_manager.overlay_area()
             state = self.overlay_manager.game_state()
-            source = "экран с игрой" if (state.running and state.monitor) else "основной экран"
-            self.overlay_page.set_info_text(
-                f"Область раскладки: {source} {area[2]}x{area[3]} "
-                f"(сдвиг {area[0]},{area[1]}), отступ "
-                f"{self.overlay_manager.settings.get('layout_margin', 24)} px")
+            source = (tr("экран с игрой") if (state.running and state.monitor)
+                      else tr("основной экран"))
+            self.overlay_page.set_info_text(tr(
+                "Область раскладки: {source} {width}x{height} (сдвиг {x},{y}), отступ {margin} px",
+                source=source, width=area[2], height=area[3], x=area[0], y=area[1],
+                margin=self.overlay_manager.settings.get("layout_margin", 24)))
         except Exception:
             pass
 
@@ -3225,7 +3296,7 @@ class ColonialHelperApp:
         if page is None or not hasattr(self, "exobiology"):
             return
         tracker = self.exobiology
-        system = str(tracker.current_system or "").strip() or "не определена"
+        system = str(tracker.current_system or "").strip() or tr("не определена")
         page.set_system_text(system)
 
         scanned = tracker.system_scanned_count()
@@ -3233,11 +3304,12 @@ class ColonialHelperApp:
         bio_bodies = tracker.system_bio_bodies_count()
         bio_total = tracker.system_bio_signals_total()
 
-        body_text = f"Тел отсканировано: {scanned}" + (
-            f" из {known}" if known and known > scanned else "")
+        body_text = tr("Тел отсканировано: {count}", count=scanned) + (
+            tr(" из {known}", known=known) if known and known > scanned else "")
         page.set_summary_text(
-            f"{body_text}  ·  Тел с биосигналами: {bio_bodies}  ·  "
-            f"Всего биосигналов: {bio_total}")
+            tr("{bodies}  ·  Тел с биосигналами: {with_signals}  ·  "
+               "Всего биосигналов: {signals}",
+               bodies=body_text, with_signals=bio_bodies, signals=bio_total))
 
         if not tracker.current_system:
             page.set_rows([])
@@ -3253,7 +3325,7 @@ class ColonialHelperApp:
             str(b.get("name") or "")
         ))
 
-        from exobiology import body_matches
+        from exobiology import body_matches, preset_label
         rows = []
         for body in system_bodies:
             name = str(body.get("name") or "")
@@ -3265,7 +3337,7 @@ class ColonialHelperApp:
             matched_rules = []
             for rule in criteria:
                 if body_matches(body, rule):
-                    matched_rules.append(str(rule.get("label") or rule.get("id") or ""))
+                    matched_rules.append(preset_label(rule))
 
             matched_str = ", ".join(matched_rules[:2]) if matched_rules else "—"
             if len(matched_rules) > 2:
@@ -3274,10 +3346,11 @@ class ColonialHelperApp:
             rows.append({
                 "body": disp_name,
                 "class": str(body.get("planet_class") or "—"),
-                "atmosphere": str(body.get("atmosphere") or body.get("atmosphere_type") or "нет"),
-                "landable": "Да" if body.get("landable") else "Нет",
+                "atmosphere": str(body.get("atmosphere") or body.get("atmosphere_type")
+                                  or tr("нет")),
+                "landable": tr("Да") if body.get("landable") else tr("Нет"),
                 "signals": str(signals) if signals else "—",
-                "mapped": "Да" if body.get("mapped") else "—",
+                "mapped": tr("Да") if body.get("mapped") else "—",
                 "matched": matched_str,
             })
         page.set_rows(rows)
@@ -3427,7 +3500,7 @@ class ColonialHelperApp:
         if getattr(self, "_exobio_full_scanning", False):
             return
         self._exobio_full_scanning = True
-        self._set_exobio_status("Сканирование журналов...", COLOR_ORANGE)
+        self._set_exobio_status(tr("Сканирование журналов..."), COLOR_ORANGE)
 
         def worker():
             from exobiology import scan_all_journals_for_exobio
@@ -3436,7 +3509,8 @@ class ColonialHelperApp:
                 if hasattr(self, "root") and self.root:
                     try:
                         self.root.after(0, lambda c=cur, t=total: self._set_exobio_status(
-                            f"Сканирование: файл {c} из {t}...", COLOR_ORANGE))
+                            tr("Сканирование: файл {current} из {total}...",
+                               current=c, total=t), COLOR_ORANGE))
                     except Exception:
                         pass
 
@@ -3453,7 +3527,8 @@ class ColonialHelperApp:
                 if cache:
                     tracker.save_to_cache(cache)
                 self._set_exobio_status(
-                    f"Сканирование завершено: учтено {count} новых событий", COLOR_GREEN)
+                    tr("Сканирование завершено: учтено {count} новых событий",
+                       count=count), COLOR_GREEN)
                 self.log(f"Полное сканирование экзобиологии: {count} событий обработано", "info")
                 if hasattr(self, "overlay_manager") and self.overlay_manager:
                     self.overlay_manager.refresh_exobio()
@@ -3550,7 +3625,7 @@ class ColonialHelperApp:
         """Прежний переход «открыть карту системы» теперь ведёт к фракциям."""
         snapshot = self._map_last_snapshot or self.system_map.snapshot()
         if not snapshot.system:
-            self._map_set_hint("Нет данных о текущей системе для карты")
+            self._map_set_hint(tr("Нет данных о текущей системе для карты"))
             return
         target = str(key or getattr(self, "_map_selected", "") or "")
         view_mode = getattr(self, "map_view_mode", None)
@@ -3602,7 +3677,7 @@ class ColonialHelperApp:
             "selected": selected,
         }
 
-    def _copy_map_text(self, text: str, hint: str = "Скопировано"):
+    def _copy_map_text(self, text: str, hint: str = ""):
         try:
             import pyperclip
 
@@ -3613,8 +3688,8 @@ class ColonialHelperApp:
                 self.root.clipboard_append(text)
             except Exception:
                 pass
-        if hint:
-            self._map_set_hint(hint)
+        if hint is not None:
+            self._map_set_hint(hint or tr("Скопировано"))
 
     def _build_tab_log(self):
         """Лог на чистом Qt: цветные уровни и кнопка очистки без Tk-виджетов."""
@@ -3635,7 +3710,7 @@ class ColonialHelperApp:
     # ============================================================
     def _build_status_bar(self):
         """The status line is part of the native shell."""
-        self.shell.set_status("Готов")
+        self.shell.set_status(tr("Готов"))
         # Стартовое состояние видно сразу, не дожидаясь автопроверки: иначе до
         # первого ответа сети строка «Подключено / Не подключено» пустая и
         # непонятно, есть ли вообще токен.
@@ -3644,9 +3719,10 @@ class ColonialHelperApp:
             if api.is_connected:
                 self.set_connection_status(True, api.display_name)
             else:
-                self.set_connection_status(False, "токен сохранён, проверяю подключение…")
+                self.set_connection_status(
+                    False, tr("токен сохранён, проверяю подключение…"))
         else:
-            self.set_connection_status(False, "введите токен")
+            self.set_connection_status(False, tr("введите токен"))
 
     def set_status(self, text: str) -> None:
         """Единственная точка записи в статусную строку."""
@@ -3718,7 +3794,8 @@ class ColonialHelperApp:
             return
         self._update_busy = True
         channel = self._update_channel_value()
-        self._set_update_ui(True, hint="проверка обновлений…", button_text="Проверяю…")
+        self._set_update_ui(True, hint=tr("проверка обновлений…"),
+                            button_text=tr("Проверяю…"))
         # Источник показываем прямо в логе: обновления всегда идут через
         # сервер проекта, и пилот это видит, а не вспоминает догадки.
         self.log(f"Проверяю обновления… (сервер проекта: "
@@ -3741,7 +3818,8 @@ class ColonialHelperApp:
             return {
                 "ok": False,
                 "kind": "bundle",
-                "error": "пакетные обновления доступны в базовой сборке ColonialHelper.exe",
+                "error": tr("пакетные обновления доступны в базовой сборке "
+                            "ColonialHelper.exe"),
                 "latest": VERSION,
             }
         result = bundle_updater.check_for_update(
@@ -3754,10 +3832,11 @@ class ColonialHelperApp:
         latest = str(result.get("latest") or VERSION)
 
         if not result.get("ok"):
-            message = str(result.get("error") or "сервер не вернул манифест")
+            message = str(result.get("error") or tr("сервер не вернул манифест"))
             # Не обрезаем до пары слов: в сообщении о подписи ключевое —
             # каким ключом сервер подписал канал и чему верит эта сборка.
-            self._set_update_ui(False, hint=f"канал недоступен: {message[:80]}")
+            self._set_update_ui(False, hint=tr("канал недоступен: {message}",
+                                               message=message[:80]))
             if manual:
                 self.log(f"Обновления не проверены: {message}", "warn")
             return
@@ -3765,7 +3844,8 @@ class ColonialHelperApp:
         if result.get("needs_launcher"):
             # Пакет собран под новый рантайм: обновить одни модули нельзя.
             need = str(result.get("min_launcher") or "")
-            self._set_update_ui(False, hint=f"нужна базовая сборка ≥ {need}")
+            self._set_update_ui(False, hint=tr("нужна базовая сборка ≥ {version}",
+                                               version=need))
             self.log(f"Версия {latest} требует новой базовой сборки "
                      f"(лаунчер {LAUNCHER_VERSION}, нужен {need}).", "warn")
             if manual:
@@ -3773,7 +3853,8 @@ class ColonialHelperApp:
             return
 
         if not result.get("update_available"):
-            self._set_update_ui(False, hint=f"актуальная версия v{latest}")
+            self._set_update_ui(False, hint=tr("актуальная версия v{version}",
+                                               version=latest))
             self.log(f"Установлена актуальная версия {VERSION}", "success")
             return
 
@@ -3785,8 +3866,10 @@ class ColonialHelperApp:
         size_kb = int(plan.get("bytes") or 0) / 1024
         changed = len(plan.get("download") or [])
         rollback = bool(result.get("rollback"))
-        action = "откат канала" if rollback else "доступна"
-        self._set_update_ui(False, hint=f"{action} v{latest} ({size_kb:.0f} КБ)")
+        self._set_update_ui(False, hint=tr(
+            "{action} v{version} ({size} КБ)",
+            action=tr("откат канала") if rollback else tr("доступна"),
+            version=latest, size=f"{size_kb:.0f}"))
         self.log(f"{'Администратор откатил канал на' if rollback else 'Доступна версия'} "
                  f"{latest} (установлена {VERSION}): изменилось файлов — {changed}, "
                  f"скачать {size_kb:.0f} КБ. Программу перекачивать не нужно.", "warn")
@@ -3794,14 +3877,17 @@ class ColonialHelperApp:
             self.log("Нажмите «Обновить программу», чтобы установить.", "info")
             return
 
+        headline = (tr("Администратор вернул канал на {version}", version=latest)
+                    if rollback
+                    else tr("Доступна версия {version}", version=latest))
         if not ask_yes_no(
-            "Обновление Colonial Helper",
-            f"{'Администратор вернул канал на' if rollback else 'Доступна версия'} "
-            f"{latest} (у вас {VERSION}).\n\n"
-            f"Обновятся только изменившиеся модули: {changed} шт., "
-            f"{size_kb:.0f} КБ.\n"
-            "Программа перезапустится — токен и настройки сохранятся.\n\n"
-            "Обновить сейчас?",
+            tr("Обновление Colonial Helper"),
+            tr("{headline} (у вас {current}).\n\n"
+               "Обновятся только изменившиеся модули: {count} шт., {size} КБ.\n"
+               "Программа перезапустится — токен и настройки сохранятся.\n\n"
+               "Обновить сейчас?",
+               headline=headline, current=VERSION, count=changed,
+               size=f"{size_kb:.0f}"),
             parent=self.root,
         ):
             return
@@ -3811,7 +3897,8 @@ class ColonialHelperApp:
         """Скачать изменившиеся файлы и переключить программу на новую версию."""
         self._update_busy = True
         self._update_last_percent = -10
-        self._set_update_ui(True, hint="обновление…", button_text="Обновляю…")
+        self._set_update_ui(True, hint=tr("обновление…"),
+                            button_text=tr("Обновляю…"))
 
         def report(done: int, total: int):
             if not total:
@@ -3821,7 +3908,8 @@ class ColonialHelperApp:
                 return
             self._update_last_percent = percent
             self.after(0, lambda p=percent: self._set_update_ui(
-                True, hint=f"обновление {p}%", button_text="Обновляю…", progress=p))
+                True, hint=tr("обновление {percent}%", percent=p),
+                button_text=tr("Обновляю…"), progress=p))
 
         def worker():
             result = bundle_updater.apply_update(
@@ -3834,13 +3922,13 @@ class ColonialHelperApp:
         self._update_busy = False
         self._update_last_percent = -10
         if not result.get("ok"):
-            message = str(result.get("error") or "неизвестная ошибка")
-            self._set_update_ui(False, hint="обновление не установлено")
+            message = str(result.get("error") or tr("неизвестная ошибка"))
+            self._set_update_ui(False, hint=tr("обновление не установлено"))
             self.log(f"Обновление не установлено: {message}", "error")
             if ask_yes_no(
-                "Обновление Colonial Helper",
-                f"Не удалось установить обновление:\n{message}\n\n"
-                "Скачать пакет целиком и восстановить установку?",
+                tr("Обновление Colonial Helper"),
+                tr("Не удалось установить обновление:\n{error}\n\n"
+                   "Скачать пакет целиком и восстановить установку?", error=message),
                 parent=self.root,
             ):
                 self._on_repair_install()
@@ -3848,13 +3936,14 @@ class ColonialHelperApp:
 
         version = str(result.get("version") or "")
         downloaded_kb = int(result.get("downloaded") or 0) / 1024
-        self._set_update_ui(False, hint=f"установлена v{version} — нужен перезапуск")
+        self._set_update_ui(False, hint=tr("установлена v{version} — нужен перезапуск",
+                                           version=version))
         self.log(f"Версия {version} установлена ({downloaded_kb:.0f} КБ скачано, "
                  f"{result.get('reused')} файлов взято из текущей версии).", "success")
         if ask_yes_no(
-            "Обновление установлено",
-            f"Версия {version} установлена.\n\n"
-            "Перезапустить программу сейчас?",
+            tr("Обновление установлено"),
+            tr("Версия {version} установлена.\n\n"
+               "Перезапустить программу сейчас?", version=version),
             parent=self.root,
         ):
             self._restart_after_update()
@@ -3865,9 +3954,9 @@ class ColonialHelperApp:
         """Запустить новый процесс и аккуратно закрыть текущий."""
         if not bundle_updater.restart_program():
             show_info(
-                "Перезапуск",
-                "Не удалось перезапустить автоматически — закройте и откройте "
-                "программу вручную.",
+                tr("Перезапуск"),
+                tr("Не удалось перезапустить автоматически — закройте и откройте "
+                   "программу вручную."),
                 parent=self.root)
             return
         self.log("Перезапуск на новой версии…", "info")
@@ -3879,23 +3968,24 @@ class ColonialHelperApp:
         """«Восстановить установку»: скачать пакет целиком и переложить файлы."""
         if not bundle_mode():
             show_info(
-                "Восстановление",
-                "Программа запущена из исходников — восстанавливать нечего.",
+                tr("Восстановление"),
+                tr("Программа запущена из исходников — восстанавливать нечего."),
                 parent=self.root)
             return
         if self._update_busy:
             return
         self._update_busy = True
         channel = self._update_channel_value()
-        self._set_update_ui(True, hint="восстановление…", button_text="Качаю пакет…")
+        self._set_update_ui(True, hint=tr("восстановление…"),
+                            button_text=tr("Качаю пакет…"))
         self.log("Скачиваю пакет программы целиком…", "info")
 
         def report(done: int, total: int):
             if total:
                 percent = int(done * 100 / total)
                 self.after(0, lambda p=percent: self._set_update_ui(
-                    True, hint=f"восстановление {p}%", button_text="Качаю пакет…",
-                    progress=p))
+                    True, hint=tr("восстановление {percent}%", percent=p),
+                    button_text=tr("Качаю пакет…"), progress=p))
 
         def worker():
             result = bundle_updater.repair(
@@ -3907,14 +3997,14 @@ class ColonialHelperApp:
     def _on_repair_done(self, result: dict):
         self._update_busy = False
         if not result.get("ok"):
-            self._set_update_ui(False, hint="восстановить не удалось")
+            self._set_update_ui(False, hint=tr("восстановить не удалось"))
             self.log(f"Восстановление не удалось: {result.get('error')}", "error")
             return
         version = str(result.get("version") or "")
-        self._set_update_ui(False, hint=f"восстановлена v{version}")
+        self._set_update_ui(False, hint=tr("восстановлена v{version}", version=version))
         self.log(f"Установка восстановлена: версия {version}.", "success")
-        if ask_yes_no("Восстановление", "Перезапустить программу сейчас?",
-                               parent=self.root):
+        if ask_yes_no(tr("Восстановление"), tr("Перезапустить программу сейчас?"),
+                      parent=self.root):
             self._restart_after_update()
 
     def _offer_launcher_update(self, latest: str):
@@ -3927,30 +4017,32 @@ class ColonialHelperApp:
 
     def _on_launcher_checked(self, info: dict, latest: str):
         if not info.get("ok") or not info.get("url"):
-            self._set_update_ui(False, hint="базовая сборка не опубликована")
+            self._set_update_ui(False, hint=tr("базовая сборка не опубликована"))
             self.log("Новая базовая сборка ещё не опубликована на сервере. "
                      "Обратитесь к администратору.", "warn")
             return
         size_mb = int(info.get("size") or 0) / (1024 * 1024)
         if not ask_yes_no(
-            "Нужна новая базовая сборка",
-            f"Версия {latest} требует обновлённой программы "
-            f"({info.get('version')}).\n\n"
-            f"Скачать {size_mb:.1f} МБ? Это бывает редко — обычные обновления "
-            "весят килобайты.",
+            tr("Нужна новая базовая сборка"),
+            tr("Версия {version} требует обновлённой программы ({launcher}).\n\n"
+               "Скачать {size} МБ? Это бывает редко — обычные обновления "
+               "весят килобайты.",
+               version=latest, launcher=info.get("version"),
+               size=f"{size_mb:.1f}"),
             parent=self.root,
         ):
             return
         folder = Path.home() / "Downloads"
         self._update_busy = True
-        self._set_update_ui(True, hint="скачивание сборки…", button_text="Скачиваю…")
+        self._set_update_ui(True, hint=tr("скачивание сборки…"),
+                            button_text=tr("Скачиваю…"))
 
         def report(done: int, total: int):
             if total:
                 percent = int(done * 100 / total)
                 self.after(0, lambda p=percent: self._set_update_ui(
-                    True, hint=f"скачивание сборки {p}%", button_text="Скачиваю…",
-                    progress=p))
+                    True, hint=tr("скачивание сборки {percent}%", percent=p),
+                    button_text=tr("Скачиваю…"), progress=p))
 
         def worker():
             result = bundle_updater.download_launcher(info, folder, progress=report)
@@ -3969,13 +4061,13 @@ class ColonialHelperApp:
         self._update_busy = False
         self._update_last_percent = -10
         if not result.get("ok"):
-            message = str(result.get("error") or "неизвестная ошибка")
-            self._set_update_ui(False, hint="скачивание не удалось")
+            message = str(result.get("error") or tr("неизвестная ошибка"))
+            self._set_update_ui(False, hint=tr("скачивание не удалось"))
             self.log(f"Не удалось скачать обновление: {message}", "error")
             return
         path = str(result.get("path") or "")
         size_mb = int(result.get("size") or 0) / (1024 * 1024)
-        self._set_update_ui(False, hint=f"скачано: {Path(path).name}")
+        self._set_update_ui(False, hint=tr("скачано: {file}", file=Path(path).name))
         self.log(f"Сборка {release.get('version_text') or ''} скачана: {path} "
                  f"({size_mb:.1f} МБ)", "success")
         self.log("Закройте программу и замените ColonialHelper.exe скачанным файлом.", "info")
@@ -4178,7 +4270,8 @@ class ColonialHelperApp:
             self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
             i18n.set_locale(self.config["site_locale"])
             self.api = ApiClient(locale=self.config["site_locale"])
-            self._site_config_error = f"Ошибка адреса сервера: {exc}. Токен не загружен."
+            self._site_config_error = tr(
+                "Ошибка адреса сервера: {error}. Токен не загружен.", error=exc)
 
     def save_config(self):
         self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
@@ -4343,21 +4436,22 @@ class ColonialHelperApp:
         """
         if not self.api.is_connected:
             show_warning(
-                "Нет подключения",
-                "Подключитесь к серверу (введите API-токен на вкладке «Подключение»)",
+                tr("Нет подключения"),
+                tr("Подключитесь к серверу (введите API-токен на вкладке "
+                   "«Подключение»)"),
                 parent=self.root,
             )
             return
         if not ask_yes_no(
-            "Очистка журналов на сервере",
-            "Будут удалены ВСЕ ранее загруженные журналные данные этого профиля:\n"
-            "  • поставки (тоннаж в досье)\n"
-            "  • история импортов\n"
-            "  • снимки строек и сводка пилота\n"
-            "  • сканы тел, загруженные вами\n\n"
-            "После очистки запустите «Загрузить журналы из папки» — логи будут "
-            "пересчитаны и записаны заново.\n\n"
-            "Продолжить?",
+            tr("Очистка журналов на сервере"),
+            tr("Будут удалены ВСЕ ранее загруженные журналные данные этого профиля:\n"
+               "  • поставки (тоннаж в досье)\n"
+               "  • история импортов\n"
+               "  • снимки строек и сводка пилота\n"
+               "  • сканы тел, загруженные вами\n\n"
+               "После очистки запустите «Загрузить журналы из папки» — логи будут "
+               "пересчитаны и записаны заново.\n\n"
+               "Продолжить?"),
             parent=self.root,
         ):
             return
@@ -4374,8 +4468,8 @@ class ColonialHelperApp:
         if not result.get("ok"):
             self.log(f"Очистка не удалась: {result.get('error', 'неизвестная ошибка')}", "error")
             show_error(
-                "Ошибка очистки",
-                result.get("error", "Не удалось очистить журнальные данные"),
+                tr("Ошибка очистки"),
+                result.get("error", tr("Не удалось очистить журнальные данные")),
                 parent=self.root,
             )
             return
@@ -4394,9 +4488,10 @@ class ColonialHelperApp:
             "info",
         )
         show_info(
-            "Очистка завершена",
-            "Сервер очистил журнальные данные профиля. Локальный кэш тоже сброшен. "
-            "Нажмите «Загрузить журналы из папки», чтобы пересчитать логи с нуля.",
+            tr("Очистка завершена"),
+            tr("Сервер очистил журнальные данные профиля. Локальный кэш тоже "
+               "сброшен. Нажмите «Загрузить журналы из папки», чтобы пересчитать "
+               "логи с нуля."),
             parent=self.root,
         )
 
@@ -4619,7 +4714,8 @@ class ColonialHelperApp:
         if getattr(self, "colony_page", None) is not None:
             self.colony_page.set_cmdr(name)
         if hasattr(self, "colony_key_label"):
-            self.colony_page.set_key_status(f"RCC ключ задан · {name}", COLOR_GREEN)
+            self.colony_page.set_key_status(
+                tr("RCC ключ задан · {name}", name=name), COLOR_GREEN)
         self.log(f"Raven Colonial: командир по ключу RCC — {name}", "success")
         # Список проектов сразу не обновляем: пользователь может нажать
         # «Обновить список» сам, а лишний запрос на каждое сохранение не нужен.
@@ -4802,19 +4898,26 @@ class ColonialHelperApp:
         width = 44
         lines = []
         lines.append("═" * width)
-        lines.append(" ИТОГИ ИМПОРТА")
+        lines.append(" " + tr("ИТОГИ ИМПОРТА"))
         lines.append("─" * width)
-        lines.append(f" Файлов обработано:      {files_count}")
-        lines.append(f" Событий прочитано:      {total_events}")
-        lines.append(f" Найдено доставок:       {len(deliveries)}")
-        lines.append(f" Общий вес доставок:     {total_tons:.0f} t")
-        lines.append(f" Время обработки:        {elapsed:.1f} с")
+        # Подписи берём из каталога, а выравнивание считаем по самой длинной:
+        # иначе в переводе цифры разъезжаются с подписями.
+        rows = [
+            (tr("Файлов обработано:"), str(files_count)),
+            (tr("Событий прочитано:"), str(total_events)),
+            (tr("Найдено доставок:"), str(len(deliveries))),
+            (tr("Общий вес доставок:"), f"{total_tons:.0f} t"),
+            (tr("Время обработки:"), tr("{seconds} с", seconds=f"{elapsed:.1f}")),
+        ]
+        pad = max(len(label) for label, _value in rows) + 2
+        lines.extend(f" {label}{' ' * (pad - len(label))}{value}"
+                     for label, value in rows)
         kind_lines = self._format_delivery_kinds(deliveries, total_tons)
         if kind_lines:
             lines.extend(kind_lines)
         if event_counts:
             lines.append("─" * width)
-            lines.append(" События по типам:")
+            lines.append(" " + tr("События по типам:"))
             name_width = min(34, max((len(k) for k in event_counts), default=10) + 1)
             for name, count in sorted(event_counts.items(), key=lambda kv: (-kv[1], kv[0])):
                 lines.append(f"   {name:<{name_width}} {count:>7}")
@@ -4822,7 +4925,8 @@ class ColonialHelperApp:
         return "\n".join(lines)
 
     #: Подписи видов сдачи груза в итоговой таблице импорта. Значения ключей —
-    #: `delivery_kind` из парсера журнала (зеркало `src/lib/cargoScope.ts`).
+    #: `delivery_kind` из парсера журнала (зеркало `src/lib/cargoScope.ts`);
+    #: сами подписи — ключи перевода, их печатает :meth:`_format_delivery_kinds`.
     DELIVERY_KIND_LABELS = (
         ("construction_site", "Стройплощадки колонизации"),
         ("colonisation_ship", "Колонизационные корабли"),
@@ -4855,13 +4959,16 @@ class ColonialHelperApp:
         if not tons:
             return []
 
-        lines = ["─" * width, " Куда ушёл груз:"]
-        for kind, label in cls.DELIVERY_KIND_LABELS:
+        lines = ["─" * width, " " + tr("Куда ушёл груз:")]
+        kind_labels = [(kind, tr(label)) for kind, label in cls.DELIVERY_KIND_LABELS]
+        label_width = max((len(label) for _kind, label in kind_labels), default=20)
+        label_width = min(34, max(20, label_width))
+        for kind, label in kind_labels:
             value = tons.pop(kind, 0.0)
             if value <= 0:
                 continue
             share = (value / total_tons * 100.0) if total_tons > 0 else 0.0
-            lines.append(f"   {label:<28} {value:>9.0f} t  {share:>5.1f}%")
+            lines.append(f"   {label:<{label_width}} {value:>9.0f} t  {share:>5.1f}%")
         for kind, value in sorted(tons.items(), key=lambda kv: -kv[1]):
             if value <= 0:
                 continue
@@ -4960,7 +5067,8 @@ class ColonialHelperApp:
             )
         if not total:
             self.root.after(0, lambda: self.log("Нет файлов для загрузки — все выбранные уже импортированы", "warn"))
-            self.root.after(0, lambda: self._update_progress(100, "Все выбранные файлы уже загружены", force=True))
+            self.root.after(0, lambda: self._update_progress(
+                100, tr("Все выбранные файлы уже загружены"), force=True))
             self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
             return
 
@@ -5093,7 +5201,8 @@ class ColonialHelperApp:
                 # Отдаём под чтение/разбор 0-85%, остальное — под отправку.
                 self._update_progress(
                     processed_count / total * 85,
-                    f"Разбор файлов: {processed_count}/{total}",
+                    tr("Разбор файлов: {done}/{total}",
+                       done=processed_count, total=total),
                 )
 
             self._flush_station_reports()
@@ -5133,12 +5242,15 @@ class ColonialHelperApp:
         # ---- Отправка snapshots стройплощадок (общий прогресс проекта) ----
         construction_ok = True
         if construction_events:
-            self._update_progress(85, f"Отправка snapshots стройки: {len(construction_events)}...", force=True)
+            self._update_progress(
+                85, tr("Отправка снимков строек: {count}…",
+                       count=len(construction_events)), force=True)
 
             def construction_progress(done, total_chunks):
                 self._update_progress(
                     85 + 5.0 * done / max(1, total_chunks),
-                    f"Отправка snapshots стройки: {done}/{total_chunks} пачек",
+                    tr("Отправка снимков строек: {done}/{total} пачек",
+                       done=done, total=total_chunks),
                 )
 
             construction_result = self.api.upload_construction_events(
@@ -5180,7 +5292,7 @@ class ColonialHelperApp:
                 self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
             if construction_ok and community_goal_reports_ok:
                 self.root.after(0, lambda: self._mark_files_imported(accepted_files))
-            self.root.after(0, lambda: self._update_progress(100, "Готово", force=True))
+            self.root.after(0, lambda: self._update_progress(100, tr("Готово"), force=True))
             self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
             return
 
@@ -5192,10 +5304,12 @@ class ColonialHelperApp:
         def delivery_progress(done, total_chunks):
             self._update_progress(
                 90 + 10.0 * done / max(1, total_chunks),
-                f"Отправка доставок: {done}/{total_chunks} пачек",
+                tr("Отправка доставок: {done}/{total} пачек",
+                   done=done, total=total_chunks),
             )
 
-        self._update_progress(90, f"Отправка {len(all_deliveries)} записей...", force=True)
+        self._update_progress(
+            90, tr("Отправка {count} записей…", count=len(all_deliveries)), force=True)
         try:
             result = self.api.upload_deliveries(
                 [self._delivery_for_api(d) for d in all_deliveries],
@@ -5210,7 +5324,8 @@ class ColonialHelperApp:
                 0, lambda e=e: self.log(f"Непредвиденная ошибка при отправке: {e}", "error")
             )
             self.root.after(
-                0, lambda e=str(e): self._update_progress(None, f"Ошибка: {e[:100]}", force=True)
+                0, lambda e=str(e): self._update_progress(
+                    None, tr("Ошибка: {error}", error=e[:100]), force=True)
             )
             self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
             return
@@ -5333,7 +5448,7 @@ class ColonialHelperApp:
 
         self.upload_page.set_watcher_running(True)
         self.log("Watcher запущен. Мониторинг журналов...", "success")
-        self.set_status("Watcher: активен")
+        self.set_status(tr("Watcher: активен"))
         self.overlay_manager.log("Watcher запущен", "success")
 
         # Всё чтение журналов ушло в поток watcher'а (`_prepare_watcher_state`).
@@ -5700,10 +5815,13 @@ class ColonialHelperApp:
         notes = []
         site = self.construction.site
         if site is not None and site.market_id:
-            notes.append(f"стройплощадка {site.market_id} ({site.system_name or 'система не известна'})")
+            notes.append(tr(
+                "стройплощадка {market_id} ({system})",
+                market_id=site.market_id,
+                system=site.system_name or tr("система не известна")))
         market_id = int(self.carrier.state.market_id or 0)
         if market_id:
-            notes.append(f"авианосец {market_id}")
+            notes.append(tr("авианосец {market_id}", market_id=market_id))
         if notes:
             self.log("Восстановлено из журнала: " + ", ".join(notes), "info")
             # Оба состояния теперь известны — сразу спрашиваем Raven Colonial,
@@ -5864,7 +5982,7 @@ class ColonialHelperApp:
         self.watcher_stop_event.set()
         self.upload_page.set_watcher_running(False)
         self.log("Watcher остановлен", "info")
-        self.set_status("Готов")
+        self.set_status(tr("Готов"))
         self.overlay_manager.log("Watcher остановлен", "info")
 
     def _upload_target(self) -> str:
@@ -5909,14 +6027,16 @@ class ColonialHelperApp:
             percent = min(100.0, done_bytes * 100.0 / total_bytes)
             done_mb = done_bytes / (1024 * 1024)
             total_mb = total_bytes / (1024 * 1024)
-            detail = (
-                f"Первичная загрузка: {percent:.1f}% | "
-                f"файлы {done_files}/{total_files} | "
-                f"{done_mb:.1f}/{total_mb:.1f} MB | {current_file}"
-            )
+            detail = tr(
+                "Первичная загрузка: {percent}% | файлы {done}/{total} | "
+                "{done_mb}/{total_mb} MB | {file}",
+                percent=f"{percent:.1f}", done=done_files, total=total_files,
+                done_mb=f"{done_mb:.1f}", total_mb=f"{total_mb:.1f}",
+                file=current_file)
         else:
             percent = 100.0
-            detail = f"Первичная загрузка: файлов для чтения нет | {done_files}/{total_files}"
+            detail = tr("Первичная загрузка: файлов для чтения нет | {done}/{total}",
+                        done=done_files, total=total_files)
         self.upload_page.set_progress(percent, detail)
 
     def _finish_journal_reconciliation(self, message: str):
@@ -5973,7 +6093,9 @@ class ColonialHelperApp:
 
         if construction and self.api.is_connected:
             def construction_progress(done, total_chunks):
-                self._update_progress(100.0, f"Отправка snapshots стройки: {done}/{total_chunks} пачек")
+                self._update_progress(
+                    100.0, tr("Отправка снимков строек: {done}/{total} пачек",
+                              done=done, total=total_chunks))
 
             result = self.api.upload_construction_events(
                 construction, cmdr_name, progress_cb=construction_progress
@@ -6005,7 +6127,9 @@ class ColonialHelperApp:
 
         if deliveries and self.api.is_connected:
             def delivery_progress(done, total_chunks):
-                self._update_progress(100.0, f"Отправка доставок: {done}/{total_chunks} пачек")
+                self._update_progress(
+                    100.0, tr("Отправка доставок: {done}/{total} пачек",
+                              done=done, total=total_chunks))
 
             result = self.api.upload_deliveries(
                 [self._delivery_for_api(d) for d in deliveries], cmdr_name, progress_cb=delivery_progress
@@ -6080,7 +6204,7 @@ class ColonialHelperApp:
             done_bytes = 0
             total_files = len(reconciliation_files)
             self.root.after(0, lambda n=total_files, b=total_bytes: self._show_journal_reconciliation_progress(
-                0, n, b, 0, "Подготовка журналов..."
+                0, n, b, 0, tr("Подготовка журналов...")
             ))
             # Отправку на сайт откладываем до конца сверки: иначе на каждый
             # файл уходит отдельный запрос (на 800 файлах — сотни запросов).
@@ -6107,9 +6231,11 @@ class ColonialHelperApp:
                 # начала — это вся история, а не «недосланное за сессию».
                 self._flush_deferred_uploads(full_history=first_reconciliation)
             if total_files == 0:
-                self.root.after(0, lambda: self._finish_journal_reconciliation("Новых строк для загрузки не найдено"))
+                self.root.after(0, lambda: self._finish_journal_reconciliation(
+                    tr("Новых строк для загрузки не найдено")))
             elif not self.watcher_stop_event.is_set():
-                self.root.after(0, lambda: self._finish_journal_reconciliation("Первичная загрузка журналов завершена"))
+                self.root.after(0, lambda: self._finish_journal_reconciliation(
+                    tr("Первичная загрузка журналов завершена")))
 
         while not self.watcher_stop_event.is_set():
             time.sleep(5)
@@ -7017,7 +7143,7 @@ class ColonialHelperApp:
                     if value > 0:
                         need[canonical_commodity(raw)] = value
                 if need:
-                    label = (f"{project.get('buildName') or 'проект'}"
+                    label = (f"{project.get('buildName') or tr('проект')}"
                              f" · {project.get('systemName') or ''}").strip(" ·")
                     return need, label, "project"
 
@@ -7037,7 +7163,7 @@ class ColonialHelperApp:
                     if value > 0:
                         need[canonical_commodity(raw)] = value
                 if need:
-                    label = (f"{site_project.get('buildName') or 'стройплощадка'}"
+                    label = (f"{site_project.get('buildName') or tr('стройплощадка')}"
                              f" · {site_project.get('systemName') or ''}").strip(" ·")
                     return need, label, "site_project"
 
@@ -7053,7 +7179,7 @@ class ColonialHelperApp:
         need = {k: int(v) for k, v in (need or {}).items() if int(v or 0) > 0}
         if not need:
             return {}, "", ""
-        label = site.station_name or site.system_name or "стройплощадка"
+        label = site.station_name or site.system_name or tr("стройплощадка")
         return need, label, "site"
 
     def _feed_carrier(self, event: dict, live: bool = False):
@@ -7428,11 +7554,14 @@ class ColonialHelperApp:
             after = remaining.get(name)
             before = previous.get(name)
             if after is None:
-                problems.append(f"{name} ({tons} t) — товара нет в потребности проекта")
+                problems.append(tr(
+                    "{name} ({tons} t) — товара нет в потребности проекта",
+                    name=name, tons=tons))
                 still_waiting[name] = tons
             elif before is not None and int(after) >= int(before):
-                problems.append(f"{name} ({tons} t) — потребность не уменьшилась "
-                                f"({before} -> {after})")
+                problems.append(tr(
+                    "{name} ({tons} t) — потребность не уменьшилась ({before} -> {after})",
+                    name=name, tons=tons, before=before, after=after))
                 still_waiting[name] = tons
 
         if not problems:
@@ -7550,7 +7679,7 @@ class ColonialHelperApp:
         if getattr(self, "_colony_reconcile_busy", False):
             return
         self._colony_reconcile_busy = True
-        self.colony_page.set_status("Сверяю стройплощадку с Raven Colonial…")
+        self.colony_page.set_status(tr("Сверяю стройплощадку с Raven Colonial…"))
         threading.Thread(
             target=self._colony_reconcile_thread,
             args=(int(site.market_id), int(site.system_address or 0)),
@@ -7615,11 +7744,11 @@ class ColonialHelperApp:
 
         if not isinstance(project, dict) or not project.get("buildId"):
             self.site_project = {}
-            reason = error or "проекта пока нет в Raven Colonial"
+            reason = error or tr("проекта пока нет в Raven Colonial")
             self.log(f"{head}: {reason}. По журналу вы завезли {journal['total']:,} t "
                      f"({journal['count']} дост.) — тонны не зачтутся, пока проект не создан."
                      .replace(",", " "), "warn")
-            self.colony_page.set_status("Проект на Raven Colonial не найден")
+            self.colony_page.set_status(tr("Проект на Raven Colonial не найден"))
             return
 
         self.site_project = dict(project)
@@ -7631,7 +7760,8 @@ class ColonialHelperApp:
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
         left = sum(remaining.values())
-        name = str(project.get("buildName") or site.station_name or "площадка").strip()
+        name = str(project.get("buildName") or site.station_name
+                   or tr("площадка")).strip()
 
         def fmt(number: int) -> str:
             return f"{number:,}".replace(",", " ")
@@ -7659,13 +7789,16 @@ class ColonialHelperApp:
         if carrier_market:
             state = self.carrier.state
             on_board = state.tracked_total
-            source = "Raven Colonial" if state.remote_seen else "локальный учёт по журналу"
+            source = ("Raven Colonial" if state.remote_seen
+                      else tr("локальный учёт по журналу"))
             lines.append(f"  Авианосец {carrier_market}: на борту {fmt(on_board)} t "
                          f"({source})"
                          + (f" — {top({row['key']: row['amount'] for row in state.get_state_dict()['commodities'] if row['amount'] > 0})}"
                             if on_board else ""))
         self.log("\n".join(lines), "info")
-        self.colony_page.set_status(f"Осталось завезти {fmt(left)} t · по журналу вы завезли {fmt(journal['total'])} t")
+        self.colony_page.set_status(tr(
+            "Осталось завезти {left} t · по журналу вы завезли {total} t",
+            left=fmt(left), total=fmt(journal["total"])))
 
         # Состояние рынка авианосца тоже освежаем: груз туда возят и другие
         # командиры, а журнал знает только наши переводы.
@@ -7690,12 +7823,12 @@ class ColonialHelperApp:
             return
         tons = sum(int(d.get("amount", 0) or 0) for d in unsent)
         if not ask_yes_no(
-            "Дослать доставки в Raven Colonial",
-            f"По журналу на эту площадку завезено {fmt(tons)} t ({len(unsent)} доставок), "
-            "которые это приложение в Raven Colonial не отправляло.\n\n"
-            "Отправить их сейчас?\n"
-            "Если вы пользуетесь SrvSurvey или другим плагином, тоннаж может быть "
-            "зачтён проекту дважды.",
+            tr("Дослать доставки в Raven Colonial"),
+            tr("По журналу на эту площадку завезено {tons} t ({count} доставок), "
+               "которые это приложение в Raven Colonial не отправляло.\n\n"
+               "Отправить их сейчас?\n"
+               "Если вы пользуетесь SrvSurvey или другим плагином, тоннаж может быть "
+               "зачтён проекту дважды.", tons=fmt(tons), count=len(unsent)),
             parent=self.root,
         ):
             return
@@ -8026,15 +8159,15 @@ class ColonialHelperApp:
 
         if not self.route.systems:
             page.set_rows([])
-            page.set_counter("Маршрут не загружен")
+            page.set_counter(tr("Маршрут не загружен"))
             return
 
         rows = []
         for s in self.route.systems:
             status_label = {
-                "visited": "✓ Посещена",
-                "current": "● Текущая",
-                "pending": "○ Ожидает",
+                "visited": tr("✓ Посещена"),
+                "current": tr("● Текущая"),
+                "pending": tr("○ Ожидает"),
             }.get(s["status"], s["status"])
 
             visited_str = ""
@@ -8051,9 +8184,8 @@ class ColonialHelperApp:
         page.set_rows(rows)
         visited = self.route.visited_count
         total = len(self.route.systems)
-        page.set_counter(
-            f"Всего: {total} | Посещено: {visited} | Осталось: {total - visited}"
-        )
+        page.set_counter(tr("Всего: {total} | Посещено: {visited} | Осталось: {left}",
+                            total=total, visited=visited, left=total - visited))
 
     # ============================================================
     #  Лог

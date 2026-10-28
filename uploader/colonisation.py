@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from event_dispatch import normalize_commodity
+from i18n import tr
 
 # Признаки стройплощадки в `Docked.StationName`.
 #
@@ -293,20 +294,20 @@ class ConstructionSite:
         }
 
     def summary(self) -> str:
-        """Одна строка для лога и подписи под формой."""
+        """Одна строка для лога и подписи под формой (она видна в окне)."""
         if not self.market_id:
-            return "Стройплощадка не найдена"
-        head = f"{self.system_name or '?'} · {self.station_name or 'площадка'}"
+            return tr("Стройплощадка не найдена")
+        head = f"{self.system_name or '?'} · {self.station_name or tr('площадка')}"
         progress = self.progress_percent
         parts = [head]
         if progress is not None:
-            parts.append(f"прогресс {progress}%")
+            parts.append(tr("прогресс {percent}%", percent=progress))
         if self.resources:
-            parts.append(
-                f"остаток {self.total_remaining:,} t из {self.total_required:,} t"
-            )
+            parts.append(tr(
+                "остаток {left} t из {total} t",
+                left=f"{self.total_remaining:,}", total=f"{self.total_required:,}"))
         if not self.has_depot:
-            parts.append("ресурсы ещё не получены (зайдите в Construction Services)")
+            parts.append(tr("ресурсы ещё не получены (зайдите в Construction Services)"))
         return " · ".join(parts).replace(",", " ")
 
     def update_from_depot(self, event: dict) -> bool:

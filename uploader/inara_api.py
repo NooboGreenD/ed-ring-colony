@@ -21,6 +21,7 @@ import time
 
 import requests
 from typing import Optional
+from i18n import tr
 
 from http_errors import apply_client_headers, describe_bad_response, short_body
 
@@ -65,7 +66,7 @@ class InaraAPI:
         """
         if not self.enabled:
             return {"ok": False, "skipped": True}
-        result: dict = {"ok": False, "error": "Inara: не отправлено"}
+        result: dict = {"ok": False, "error": tr("Inara: не отправлено")}
         for attempt in range(1, max(1, self.MAX_ATTEMPTS) + 1):
             result = self._submit_once(event_name, event_data, timestamp)
             if result.get("ok") or not result.get("retryable"):
@@ -101,7 +102,8 @@ class InaraAPI:
                 "ok": False,
                 "status": 0,
                 "retryable": True,
-                "error": f"Inara: нет соединения ({exc}); событие будет повторено",
+                "error": tr("Inara: нет соединения ({error}); событие будет повторено",
+                            error=exc),
             }
 
         try:
@@ -112,7 +114,8 @@ class InaraAPI:
         if not isinstance(data, dict):
             # HTML от Cloudflare / пустое тело: короткое описание вместо
             # куска разметки в логе.
-            return describe_bad_response("Inara", response, detail="нет JSON в ответе")
+            return describe_bad_response("Inara", response,
+                                         detail=tr("нет JSON в ответе"))
 
         header = data.get("header") or {}
         header_status = header.get("eventStatus")
@@ -126,20 +129,20 @@ class InaraAPI:
                 "retryable": False,
                 "header_status": header_status,
                 "data": data,
-                "error": f"Inara: {text or 'ошибка авторизации'}",
+                "error": tr("Inara отклонила запрос: {reason}",
+                            reason=text or tr("ошибка авторизации")),
             }
             if "no access allowed" in text.lower():
                 # Личный ключ Inara работает только в паре с приложением,
                 # внесённым в белый список администрацией: иначе любой запрос
                 # отклоняется с «This application has no access allowed.».
                 result["error_kind"] = "inara_not_whitelisted"
-                result["error"] = (
-                    f"Inara: приложению «{self.app_name}» не разрешён доступ — "
-                    f"ключ действителен, но приложение не в белом списке Inara. "
-                    f"Доступ запрашивает автор приложения у администрации Inara; "
-                    f"до одобрения события Inara можно отключить в настройках — "
-                    f"на EDSM и Raven Colonial это не влияет"
-                )
+                result["error"] = tr(
+                    "Inara: приложению «{app}» не разрешён доступ — ключ действителен, "
+                    "но приложение не в белом списке Inara. Доступ запрашивает автор "
+                    "приложения у администрации Inara; до одобрения события Inara можно "
+                    "отключить в настройках — на EDSM и Raven Colonial это не влияет",
+                    app=self.app_name)
             return result
 
         events = data.get("events") or []
@@ -152,7 +155,8 @@ class InaraAPI:
                 "ok": False,
                 "status": response.status_code,
                 "data": data,
-                "error": f"Inara: нет eventStatus в ответе ({short_body(response)})",
+                "error": tr("Inara: нет eventStatus в ответе ({detail})",
+                            detail=short_body(response)),
             }
 
         event_status = int(event_status)

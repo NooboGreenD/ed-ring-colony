@@ -24,6 +24,7 @@
 import sys
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
+from i18n import tr
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -61,8 +62,11 @@ class MonitorInfo:
     def label(self) -> str:
         """«Экран 2 · 2560×1440» (+ «основной» у главного монитора)."""
         width, height = self.size
-        text = f"Экран {self.index} · {width}×{height}"
-        return text + " · основной" if self.primary else text
+        if self.primary:
+            return tr("Экран {index} · {width}×{height} · основной",
+                      index=self.index, width=width, height=height)
+        return tr("Экран {index} · {width}×{height}",
+                  index=self.index, width=width, height=height)
 
 
 def order_monitors(raw: Iterable[Tuple[Rect, Rect, bool, str]]) -> List[MonitorInfo]:

@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QPushButton, QTableWidget
+    from PySide6.QtWidgets import QLabel, QPushButton, QTableWidget
 
     import helper_pages
     from ui_qt import ensure_app
@@ -42,6 +42,34 @@ class RoutePageTests(unittest.TestCase):
             clear=lambda: self.events.append("clear"),
         )
         self.page = helper_pages.RoutePage(actions)
+
+    def tearDown(self):
+        import i18n
+
+        i18n.set_locale("ru")
+
+    def test_page_follows_the_language_chosen_in_the_launcher(self):
+        """Страница маршрута не должна остаться русской в другом языке."""
+        import re
+
+        import i18n
+
+        for code in ("en", "zh"):
+            i18n.set_locale(code)
+            page = helper_pages.RoutePage()
+            try:
+                headers = [page.table.horizontalHeaderItem(i).text()
+                           for i in range(page.table.columnCount())]
+                texts = [item.text() for item in page.findChildren(QLabel)]
+                texts += [item.text() for item in page.findChildren(QPushButton)]
+                texts += headers
+                russian = [text for text in texts
+                           if text and re.search("[А-Яа-яЁё]", text)]
+                self.assertEqual(russian, [], f"{code}: остались русские подписи")
+                # Номер строки и имя поля API переводятся не должны.
+                self.assertEqual(headers[0], "#")
+            finally:
+                page.deleteLater()
 
     # ------------------------------------------------------------- structure
     def test_keeps_the_attribute_names_the_app_uses(self):

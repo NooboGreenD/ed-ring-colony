@@ -27,6 +27,15 @@
 import json
 import time
 from typing import Dict, List, Any, Optional
+
+from i18n import tr
+
+#: Русские строки файла, которые не являются подписями интерфейса:
+#: ``HeatDamage (оценка)`` и ``Repair (корпус)`` — ключи источника значения
+#: корпуса (подпись берётся из ``ship_hud.HULL_SOURCES``), а ``ремонт`` —
+#: слово, которым игра называет синтез в русской локализации: по нему
+#: распознаётся событие, переводить его нельзя.
+NON_UI_LITERALS = frozenset({"HeatDamage (оценка)", "Repair (корпус)", "ремонт"})
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -371,7 +380,8 @@ class ShipTracker:
             updated |= self._handle_touchdown(ev)
         elif event == "HeatWarning":
             self.state.heat_at = ev.get("timestamp", "") or self.state.heat_at
-            self.state.note(ev.get("timestamp", ""), "предупреждение: перегрев > 100%")
+            self.state.note(ev.get("timestamp", ""),
+                            tr("предупреждение: перегрев > 100%"))
             updated = True
         elif event == "HeatDamage":
             updated |= self._handle_heat_damage(ev)
@@ -399,7 +409,8 @@ class ShipTracker:
             updated |= self._handle_reboot_repair(ev)
         elif event == "SystemsShutdown":
             self.state.systems_offline = True
-            self.state.note(ev.get("timestamp", ""), "SystemsShutdown: системы отключены")
+            self.state.note(ev.get("timestamp", ""),
+                            tr("SystemsShutdown: системы отключены"))
             updated = True
         elif event == "LoadGame":
             updated |= self._handle_load_game(ev)
@@ -593,7 +604,7 @@ class ShipTracker:
                 self.state.shield_at = ev.get("timestamp", "") or self.state.shield_at
                 self.state.shield_health = 1.0 if shield_up else 0.0
                 if not shield_up and self.state.has_shield_generator:
-                    self.state.note(ev.get("timestamp", ""), "ЩИТЫ УПАЛИ")
+                    self.state.note(ev.get("timestamp", ""), tr("ЩИТЫ УПАЛИ"))
             if int(flags) & (1 << 20):  # Overheat
                 self.state.heat_at = ev.get("timestamp", "") or self.state.heat_at
             updated = True
@@ -765,7 +776,8 @@ class ShipTracker:
         delta = max(0.0, old_hull - health)
         if delta > 0:
             self._apply_impact_module_damage(delta, ev)
-        self.state.note(ev.get("timestamp", ""), f"корпус {int(health * 100)} %")
+        self.state.note(ev.get("timestamp", ""),
+                        tr("корпус {percent} %", percent=int(health * 100)))
         return applied
 
     def _handle_crime_or_collision(self, ev: dict) -> bool:
@@ -782,7 +794,8 @@ class ShipTracker:
             new_hull = max(0.0, round(old_hull - loss, 4))
             self._apply_hull(new_hull, "Collision", ev)
             self._apply_impact_module_damage(loss * 1.5, ev)
-            self.state.note(ts, f"столкновение: корпус {int(new_hull * 100)} %")
+            self.state.note(ts, tr("столкновение: корпус {percent} %",
+                                   percent=int(new_hull * 100)))
             updated = True
         else:
             # Удар по щитам: щиты поглощают, генератор щита получает нагрузку
@@ -790,7 +803,7 @@ class ShipTracker:
                 if "shieldgenerator" in module.name.lower() or "shield" in slot.lower():
                     module.health = max(0.0, round(module.health - 0.02, 4))
                     module.health_at = ts
-            self.state.note(ts, "столкновение на скорости (удар в щит)")
+            self.state.note(ts, tr("столкновение на скорости (удар в щит)"))
             updated = True
         return updated
 
@@ -802,7 +815,8 @@ class ShipTracker:
         if not self.state.shield_up and self.state.has_shield_generator:
             new_hull = max(0.0, round(self.state.hull_health - 0.01, 4))
             self._apply_hull(new_hull, "Touchdown", ev)
-            self.state.note(ts, f"посадка без щитов: касание {int(new_hull * 100)} %")
+            self.state.note(ts, tr("посадка без щитов: касание {percent} %",
+                                   percent=int(new_hull * 100)))
             return True
         return False
 
@@ -843,7 +857,7 @@ class ShipTracker:
                 module.health_at = ts
 
         self.state.modules_incomplete = True
-        self.state.note(ts, "перегрев: урон модулям и корпусу")
+        self.state.note(ts, tr("перегрев: урон модулям и корпусу"))
         return updated
 
     def _handle_shield_state(self, ev: dict) -> bool:
@@ -860,7 +874,8 @@ class ShipTracker:
                     module.health = max(0.0, round(module.health - 0.02, 4))
                     module.health_at = self.state.shield_at
             self.state.modules_incomplete = True
-        self.state.note(ev.get("timestamp", ""), "щиты восстановлены" if up else "ЩИТЫ УПАЛИ")
+        self.state.note(ev.get("timestamp", ""),
+                        tr("щиты восстановлены") if up else tr("ЩИТЫ УПАЛИ"))
         return True
 
     def _handle_module_damage(self, ev: dict) -> bool:
@@ -890,9 +905,10 @@ class ShipTracker:
             module = self.state.modules[slot]
             module.suspect = True
             self.state.modules_incomplete = True
-            self.state.note(ev.get("timestamp", ""), f"JetCone: {slot} — под вопросом")
+            self.state.note(ev.get("timestamp", ""),
+                            tr("JetCone: {slot} — под вопросом", slot=slot))
         else:
-            self.state.note(ev.get("timestamp", ""), "JetCone: модуль повреждён")
+            self.state.note(ev.get("timestamp", ""), tr("JetCone: модуль повреждён"))
         return True
 
     def _handle_cockpit_breached(self, ev: dict) -> bool:
@@ -903,7 +919,7 @@ class ShipTracker:
             if "cockpit" in slot.lower() or "canopy" in module.name.lower():
                 module.health = max(0.0, module.health - 0.2)
                 module.suspect = True
-        self.state.note(ev.get("timestamp", ""), "КАБИНА ПРОБИТА")
+        self.state.note(ev.get("timestamp", ""), tr("КАБИНА ПРОБИТА"))
         return True
 
     def _handle_repair(self, ev: dict) -> bool:
@@ -921,7 +937,8 @@ class ShipTracker:
                 module.health = 1.0
                 module.suspect = False
             self.state.canopy_breached = False
-            self.state.note(ev.get("timestamp", ""), "Repair: корпус и модули восстановлены")
+            self.state.note(ev.get("timestamp", ""),
+                            tr("Repair: корпус и модули восстановлены"))
             return True
         slot = find_slot_for_ref(self.state.modules, ref)
         if not slot:
@@ -942,7 +959,7 @@ class ShipTracker:
         self._apply_hull(1.0, "RepairAll", ev)
         self.state.canopy_breached = False
         self.state.modules_incomplete = False
-        self.state.note(ev.get("timestamp", ""), "RepairAll: всё восстановлено")
+        self.state.note(ev.get("timestamp", ""), tr("RepairAll: всё восстановлено"))
         return True
 
     def _handle_repair_drone(self, ev: dict) -> bool:
@@ -973,7 +990,7 @@ class ShipTracker:
             self.state.modules_incomplete = True
             updated = True
         if updated:
-            self.state.note(ev.get("timestamp", ""), "ремонт дронами")
+            self.state.note(ev.get("timestamp", ""), tr("ремонт дронами"))
         return updated
 
     def _handle_synthesis(self, ev: dict) -> bool:
@@ -984,7 +1001,7 @@ class ShipTracker:
         self._apply_hull(1.0, f"Synthesis ({name or 'repair'})", ev)
         self.state.canopy_breached = False
         self.state.modules_incomplete = True
-        self.state.note(ev.get("timestamp", ""), "Synthesis: корпус восстановлен")
+        self.state.note(ev.get("timestamp", ""), tr("Synthesis: корпус восстановлен"))
         return True
 
     def _handle_afmu_repair(self, ev: dict) -> bool:
@@ -1025,7 +1042,8 @@ class ShipTracker:
             module.suspect = False
             touched += 1
         if touched:
-            self.state.note(ev.get("timestamp", ""), f"Reboot: {touched} мод. в работе")
+            self.state.note(ev.get("timestamp", ""),
+                            tr("Reboot: {count} мод. в работе", count=touched))
         return bool(touched)
 
     def _handle_ammo_used(self, ev: dict) -> bool:

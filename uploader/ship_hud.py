@@ -22,6 +22,18 @@
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from i18n import tr
+
+#: Русские строки файла, которые не являются подписями интерфейса.
+#: ``HeatDamage (оценка)`` — ключ источника значения корпуса (на него ссылается
+#: ``ship_tracker``), а не текст для командира: подпись берётся из значения
+#: :data:`HULL_SOURCES`.
+NON_UI_LITERALS = frozenset({
+    # ключи источника значения корпуса, а не подписи: подпись берётся из
+    # значения `HULL_SOURCES` ниже
+    "HeatDamage (оценка)", "Repair (корпус)",
+})
+
 #: Разрезы HUD — те же ключи, что в настройках блока (``show_<разрез>``).
 SECTIONS = ("flags", "pips", "hull", "shield", "power", "fuel",
             "cargo_info", "balance", "legal", "destination", "modules")
@@ -36,10 +48,17 @@ BAR_MAX_WIDTH = 12
 #: строка гарантированно влезала в блок 360 px при шрифте 10 pt.
 BAR_WIDTH_DEFAULT = 10
 
-#: Что печатать, пока журнал ничего не сказал о корабле.
+#: Что печатать, пока журнал ничего не сказал о корабле. Это ключ перевода:
+#: подпись берётся из :func:`empty_hint`, иначе текст остался бы русским.
 EMPTY_HINT = "нет данных: дождитесь Loadout или Status"
 
+
+def empty_hint() -> str:
+    """Подпись «данных о корабле ещё нет» на текущем языке."""
+    return tr(EMPTY_HINT)
+
 #: Откуда взято значение корпуса — в HUD пишем коротко, место на счету.
+#: Значения — ключи перевода, их печатает :func:`hull_source_text`.
 HULL_SOURCES = {
     "HullDamage": "попадание", "Loadout": "снимок", "RepairDrone": "дрон",
     "Synthesis": "синтез", "HeatDamage": "перегрев", "ModulesInfo": "файл",
@@ -47,7 +66,15 @@ HULL_SOURCES = {
     "RepairAll": "ремонт", "Resurrect": "воскрешение",
     "Collision": "столкновение", "Touchdown": "посадка",
     "HeatDamage (оценка)": "перегрев", "Damage": "урон",
+    # ``Repair`` чинит корпус целиком, ``Repair (корпус)`` — тот же источник
+    # из ship_tracker: без записи в подписи в HUD уезжал бы технический ключ.
+    "Repair (корпус)": "ремонт",
 }
+
+def hull_source_text(source: str) -> str:
+    """Короткая подпись источника значения корпуса на текущем языке."""
+    return tr(HULL_SOURCES.get(source, source))
+
 
 #: Сколько символов влезает в строку при блоке 360 px и шрифте 10 pt.
 DEFAULT_MAX_CHARS = 40
@@ -120,7 +147,8 @@ CHIP_RULES: Tuple[Tuple[str, str, str], ...] = (
     ("LowHealth", "ЗДОРОВЬЕ", "bad"),
 )
 
-#: Подписи модулей: loc-id журнала -> короткое русское имя для строки HUD.
+#: Подписи модулей: loc-id журнала -> короткое имя для строки HUD. Это ключи
+#: перевода: их печатает :func:`short_name` через ``tr()``.
 LABELS: Tuple[Tuple[str, str], ...] = (
     ("repairer", "AFMU"),
     ("hyperdrive", "ФСД"),
@@ -193,7 +221,7 @@ def short_name(name: str) -> str:
     core = "_".join(tail) or parts[-1] if tail or parts else text
     for hint, label in LABELS:
         if hint in core:
-            return label
+            return tr(label)
     return core.replace("_", " ")[:18]
 
 
@@ -274,20 +302,26 @@ def _age_seconds(iso: str, now: Optional[float]) -> Optional[float]:
     return max(0.0, float(reference) - made)
 
 
+#: Подпись «только что»: её же сравнивает сборка HUD, чтобы не тратить место
+#: на строку «данные свежие». Сравнение идёт с переводом, а не с русским
+#: текстом, — иначе после смены языка подпись попадала бы в подсказку.
+AGE_NOW = "сейчас"
+
+
 def age_text(iso: str, now: Optional[float] = None) -> str:
     """«сейчас» / «42с» / «7м» / «2ч» — насколько свежи данные."""
     seconds = _age_seconds(iso, now)
     if seconds is None:
         return ""
     if seconds < 10:
-        return "сейчас"
+        return tr(AGE_NOW)
     if seconds < 60:
-        return f"{int(seconds)}с"
+        return tr("{seconds}с", seconds=int(seconds))
     if seconds < 3600:
-        return f"{int(seconds // 60)}м"
+        return tr("{minutes}м", minutes=int(seconds // 60))
     if seconds < 86400:
-        return f"{int(seconds // 3600)}ч"
-    return f"{int(seconds // 86400)}д"
+        return tr("{hours}ч", hours=int(seconds // 3600))
+    return tr("{days}д", days=int(seconds // 86400))
 
 
 def hhmm(iso: str) -> str:
@@ -356,11 +390,11 @@ def modules_table_line(row: Dict[str, Any], *, width: int = 34) -> str:
     """
     flags = []
     if not row.get("on", True):
-        flags.append("ВЫКЛ")
+        flags.append(tr("ВЫКЛ"))
     if row.get("priority"):
         flags.append(f"P{row['priority']}")
     if row.get("ammo"):
-        flags.append(f"ЗАП {row['ammo']}")
+        flags.append(tr("ЗАП {ammo}", ammo=row["ammo"]))
     note = " ".join(flags)
     mark = "?" if row.get("suspect") else ("!" if row["percent"] < 50 else
                                           ("*" if row["percent"] < 100 else " "))
@@ -425,16 +459,17 @@ def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] 
         hint_bits = []
         hull_age = age_text(state.get("hull_at", ""), now)
         # «сейчас» — не информация, а место в строке стоит дорого.
-        if hull_age and hull_age != "сейчас":
+        if hull_age and hull_age != tr(AGE_NOW):
             hint_bits.append(hull_age)
         source = str(state.get("hull_source") or "")
         if source:
-            hint_bits.append(HULL_SOURCES.get(source, source))
+            hint_bits.append(hull_source_text(source))
         lines.append({
             "section": "hull",
             "kind": "bar",
-            "label": "КОРПУС",
-            "value": f"{hull_percent}%" if hull_percent is not None else "нет данных",
+            "label": tr("КОРПУС"),
+            "value": (f"{hull_percent}%" if hull_percent is not None
+                      else tr("нет данных")),
             "hint": " · ".join(hint_bits),
             "percent": hull_percent,
             "bar_width": BAR_WIDTH_DEFAULT,
@@ -443,14 +478,14 @@ def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] 
 
     if shown("shield"):
         # Процента щитов в журнале нет — показываем состояние, а не выдуманные 100 %.
-        value = {"up": "вверху", "down": "упали", "none": "нет генератора",
-                 "unknown": "нет данных"}[shield_state]
+        value = tr({"up": "вверху", "down": "упали", "none": "нет генератора",
+                    "unknown": "нет данных"}[shield_state])
         lines.append({
             "section": "shield",
             "kind": "bar",
-            "label": "ЩИТЫ",
+            "label": tr("ЩИТЫ"),
             "value": value,
-            "hint": ("регенерация" if shield_state == "down" else ""),
+            "hint": (tr("регенерация") if shield_state == "down" else ""),
             # Процента щитов журнал не отдаёт: шкалы нет, только состояние.
             "percent": None,
             "tone": {"up": "ok", "down": "bad", "none": "muted", "unknown": "muted"}[shield_state],
@@ -467,7 +502,7 @@ def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] 
         lines.append({
             "section": "power",
             "kind": "bar",
-            "label": "ЭНЕРГИЯ",
+            "label": tr("ЭНЕРГИЯ"),
             "value": (f"{power_used:.2f}/{power_cap:.2f} MW" if power_cap > 0
                       else f"{power_used:.2f} MW"),
             "hint": hint,
@@ -478,13 +513,13 @@ def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] 
     if shown("fuel"):
         hint_bits = []
         if fuel_res > 0:
-            hint_bits.append(f"рез {fuel_res:.1f}")
+            hint_bits.append(tr("рез {value}", value=f"{fuel_res:.1f}"))
         if state.get("fuel_low"):
-            hint_bits.append("МАЛО")
+            hint_bits.append(tr("МАЛО"))
         lines.append({
             "section": "fuel",
             "kind": "bar",
-            "label": "ТОПЛИВО",
+            "label": tr("ТОПЛИВО"),
             "value": (f"{fuel_level:.1f}/{fuel_cap:.1f} t" if fuel_cap > 0
                       else f"{fuel_level:.1f} t"),
             "hint": " · ".join(hint_bits),
@@ -495,11 +530,12 @@ def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] 
 
     info_bits = []
     if shown("cargo_info"):
-        info_bits.append(f"ГРУЗ {int(state.get('cargo_count', 0) or 0)}"
-                         f"/{int(state.get('cargo_capacity', 0) or 0)} t")
+        info_bits.append(tr("ГРУЗ {used}/{capacity} t",
+                            used=int(state.get("cargo_count", 0) or 0),
+                            capacity=int(state.get("cargo_capacity", 0) or 0)))
     ammo_total = state.get("ammo_total")
     if ammo_total is not None:
-        info_bits.append(f"БОЕЗАПАС {int(ammo_total)}")
+        info_bits.append(tr("БОЕЗАПАС {ammo}", ammo=int(ammo_total)))
         if state.get("ammo_stale"):
             info_bits[-1] += "?"
     afmu = state.get("afmu") or {}
@@ -519,41 +555,43 @@ def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] 
                       "tone": "warn" if "WANTED" in " ".join(info_bits).upper() else "text"})
 
     if shown("destination") and state.get("destination_name"):
-        lines.append({"section": "destination", "kind": "text", "label": "КУДА",
+        lines.append({"section": "destination", "kind": "text", "label": tr("КУДА"),
                       "value": str(state["destination_name"]), "hint": "", "tone": "muted"})
 
     chips: List[Dict[str, str]] = []
     if shown("flags"):
+        # Сравниваем имена флагов, а не подписи: подпись зависит от языка, и
+        # сравнение по ней ломалось при смене языка интерфейса.
         seen = set()
         for name, text, tone in CHIP_RULES:
-            if name in (state.get("flags_list") or []) and text not in seen:
-                seen.add(text)
-                chips.append({"text": text, "tone": tone})
-        if state.get("overheat") and "ПЕРЕГРЕВ" not in seen:
-            chips.append({"text": "ПЕРЕГРЕВ", "tone": "bad"})
+            if name in (state.get("flags_list") or []) and name not in seen:
+                seen.add(name)
+                chips.append({"text": tr(text), "tone": tone})
+        if state.get("overheat") and "Overheat" not in seen:
+            chips.append({"text": tr("ПЕРЕГРЕВ"), "tone": "bad"})
         if state.get("canopy_breached"):
-            chips.append({"text": "КАБИНА ПРОБИТА", "tone": "bad"})
+            chips.append({"text": tr("КАБИНА ПРОБИТА"), "tone": "bad"})
         if state.get("systems_offline"):
-            chips.append({"text": "СИСТЕМЫ ВЫКЛ", "tone": "bad"})
+            chips.append({"text": tr("СИСТЕМЫ ВЫКЛ"), "tone": "bad"})
 
     rows, hidden = module_rows(modules, mode=modules_mode)
     if modules_mode == "off":
         rows, hidden = [], 0
     damage_bits: List[str] = []
-    modules_head_bits = [f"{len(modules)} мод."]
+    modules_head_bits = [tr("{count} мод.", count=len(modules))]
     if damaged:
-        damage_bits.append(f"повр {len(damaged)}")
+        damage_bits.append(tr("повр {count}", count=len(damaged)))
     if critical:
-        damage_bits.append(f"крит {len(critical)}")
+        damage_bits.append(tr("крит {count}", count=len(critical)))
     # «выкл» дублирует строку списка (в ней стоит ВЫКЛ): две подсказки про одно
     # и то же на счету компактности не поместятся. При «только итог» строк нет —
     # там счётчик выключенных остаётся.
     if off and not any(not row["on"] for row in rows):
-        damage_bits.append(f"выкл {len(off)}")
+        damage_bits.append(tr("выкл {count}", count=len(off)))
     snapshot_age = age_text(state.get("modules_at", ""), now)
-    if snapshot_age and snapshot_age != "сейчас" and modules_mode != "off":
-        damage_bits.append(f"снимок {snapshot_age}")
-    modules_note = ("прочность целых модулей — по снимку: журнал её не обновляет"
+    if snapshot_age and snapshot_age != tr(AGE_NOW) and modules_mode != "off":
+        damage_bits.append(tr("снимок {age}", age=snapshot_age))
+    modules_note = (tr("прочность целых модулей — по снимку: журнал её не обновляет")
                     if state.get("modules_incomplete") else "")
     if modules_mode == "off" and (modules_hidden or not damage_bits):
         # Галочка «Модули» снята совсем — строку не показываем даже с итогом;
@@ -596,7 +634,7 @@ def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] 
         "chips": chips,
         "lines": lines,
         "modules": {
-            "header": ("МОДУЛИ · " + " · ".join(modules_head_bits + damage_bits)
+            "header": (tr("МОДУЛИ ·") + " " + " · ".join(modules_head_bits + damage_bits)
                        if modules_head_bits else ""),
             #: Те же кусочки по отдельности — при узком блоке заголовок
             #  переносится целиком, а не обрезается.
@@ -634,7 +672,7 @@ def empty_hud() -> Dict[str, Any]:
         "title": ship_title({}),
         "chips": [],
         "lines": [{"section": "note", "kind": "text", "label": "",
-                   "value": EMPTY_HINT, "hint": "", "tone": "muted", "percent": None}],
+                   "value": empty_hint(), "hint": "", "tone": "muted", "percent": None}],
         "modules": {"header": "", "rows": [], "text": "", "hidden": 0,
                     "mode": "off", "note": ""},
         "incidents": [],
@@ -646,7 +684,7 @@ def empty_hud() -> Dict[str, Any]:
 
 def ship_title(state: Dict[str, Any]) -> str:
     """Заголовок блока: тип, имя и идентификатор корабля в одну строку."""
-    ship_type = str(state.get("ship_type") or "Корабль не определён")
+    ship_type = str(state.get("ship_type") or tr("Корабль не определён"))
     name = str(state.get("ship_name") or "").strip()
     ident = str(state.get("ship_ident") or "").strip()
     parts = [ship_type]
@@ -745,7 +783,7 @@ def hud_rows(hud: Dict[str, Any], max_chars: Optional[int] = None) -> List[Dict[
     if modules.get("header"):
         parts = [p for p in (modules.get("header_parts") or []) if p]
         # Метка «МОДУЛИ ·» занимает ~8 символов — учитываем это в бюджете частей.
-        head = "МОДУЛИ ·"
+        head = tr("МОДУЛИ ·")
         if parts:
             chunks = pack_parts(parts, budget - len(head) - 1)
             texts = [f"{head} {chunks[0]}"] + [f" · {chunk}" for chunk in chunks[1:]]
@@ -757,7 +795,7 @@ def hud_rows(hud: Dict[str, Any], max_chars: Optional[int] = None) -> List[Dict[
         rows.append({"kind": "mod", "text": modules_table_line(row), "tone": row.get("tone", "ok")})
     tail_bits = []
     if modules.get("hidden"):
-        tail_bits.append(f"ещё {modules['hidden']}")
+        tail_bits.append(tr("ещё {count}", count=modules["hidden"]))
     if modules.get("note"):
         tail_bits.append(modules["note"])
     if tail_bits:

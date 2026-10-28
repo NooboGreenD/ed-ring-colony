@@ -5,6 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from i18n import tr
 from site_config import DEFAULT_SITE_URL, normalize_site_url
 from locale_config import normalize_locale
 
@@ -54,17 +55,19 @@ def _safe_json(resp: requests.Response) -> dict:
     в подвешенном состоянии без понятной ошибки пользователю.
     """
     if 300 <= resp.status_code < 400:
-        return {"ok": False, "error": "Сервер перенаправляет запрос. Проверьте HTTPS-адрес сайта; токен не переслан."}
+        return {"ok": False, "error": tr(
+            "Сервер перенаправляет запрос. Проверьте HTTPS-адрес сайта; токен не переслан.")}
     try:
         data = resp.json()
         if not isinstance(data, dict):
-            return {"ok": False, "error": "Сервер вернул JSON неверного формата"}
+            return {"ok": False, "error": tr("Сервер вернул JSON неверного формата")}
         return data
     except ValueError:
         snippet = (resp.text or "")[:200].replace("\n", " ").strip()
         return {
             "ok": False,
-            "error": f"Сервер вернул некорректный ответ (HTTP {resp.status_code}): {snippet or 'пустое тело'}",
+            "error": tr("Сервер вернул некорректный ответ (HTTP {status}): {body}",
+                        status=resp.status_code, body=snippet or tr("пустое тело")),
         }
 
 
@@ -107,15 +110,17 @@ class ApiClient:
                 self.token_name = data.get("token_name")
                 return {"ok": True, **data}
             if resp.status_code == 401:
-                return {"ok": False, "error": (
-                    "Токен не найден или отозван на этом сервере. Если api_tokens не переносили "
-                    f"в новую базу, создайте новый токен: {self.site_url}/account?tab=tokens"
-                )}
+                return {"ok": False, "error": tr(
+                    "Токен не найден или отозван на этом сервере. Если api_tokens "
+                    "не переносили в новую базу, создайте новый токен: {url}",
+                    url=f"{self.site_url}/account?tab=tokens")}
             return {"ok": False, "error": data.get("error", "Unknown error")}
         except requests.exceptions.SSLError:
-            return {"ok": False, "error": "Ошибка HTTPS-сертификата сервера. Проверка TLS не отключается; проверьте сертификат и системное время."}
+            return {"ok": False, "error": tr(
+                    "Ошибка HTTPS-сертификата сервера. Проверка TLS не отключается; "
+                    "проверьте сертификат и системное время.")}
         except requests.RequestException as e:
-            return {"ok": False, "error": f"Сетевая ошибка: {e}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=e)}
 
     def _post_upload(self, payload: dict, timeout: int = 30):
         """Один POST на /api/logs/upload из текущего потока."""
@@ -149,7 +154,7 @@ class ApiClient:
         при большом импорте.
         """
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         if not deliveries:
             return {"ok": True, "inserted": 0, "eventsFound": 0}
 
@@ -171,7 +176,7 @@ class ApiClient:
         прогресс стройки и не должны увеличивать личный тоннаж командира.
         """
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         if not events:
             return {"ok": True, "inserted": 0}
         # Сервер отклоняет больше 500 snapshots в одном запросе (413).
@@ -189,7 +194,7 @@ class ApiClient:
     ) -> dict:
         """Upload private, account-scoped Community Goal journal snapshots."""
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         if not reports:
             return {"ok": True, "stored": 0}
         chunk_size = max(1, min(int(chunk_size), 500))
@@ -234,7 +239,7 @@ class ApiClient:
                         return False, None, data.get("error", f"Upload failed (HTTP {status})")
                     return True, data, ""
                 except requests.RequestException as e:
-                    error = f"Сетевая ошибка: {e}"
+                    error = tr("Сетевая ошибка: {error}", error=e)
                     if attempt < MAX_UPLOAD_ATTEMPTS:
                         time.sleep(0.5 * attempt)
                         continue
@@ -243,7 +248,7 @@ class ApiClient:
                     # Подстраховка: любая другая неожиданная ошибка на чанке не
                     # должна ронять весь процесс загрузки (и оставлять UI
                     # в подвешенном состоянии) — считаем чанк неудачным.
-                    return False, None, f"Неожиданная ошибка: {e}"
+                    return False, None, tr("Неожиданная ошибка: {error}", error=e)
 
             if depth < MAX_CHUNK_SPLIT_DEPTH and len(chunk) > MIN_CHUNK_SPLIT_SIZE:
                 middle = len(chunk) // 2
@@ -272,7 +277,7 @@ class ApiClient:
                     state["failed"] += 1
                     state["done"] += 1
                     if not state["last_error"]:
-                        state["last_error"] = "сервер не принимает данные, отправка прервана"
+                        state["last_error"] = tr("сервер не принимает данные, отправка прервана")
                 notify_progress()
                 return
             ok, data, error = try_chunk(chunk)
@@ -305,7 +310,8 @@ class ApiClient:
         if state["failed"] > 0:
             result = {
                 "ok": False,
-                "error": f"Частичная ошибка ({state['failed']} чанков не загружено): {state['last_error']}",
+                "error": tr("Частичная ошибка ({failed} чанков не загружено): {error}",
+                            failed=state["failed"], error=state["last_error"]),
                 "inserted": state["inserted"],
                 "partial": True,
             }
@@ -317,7 +323,8 @@ class ApiClient:
                 "ok": True,
                 "inserted": state["inserted"],
                 "partial": True,
-                "error": f"База не приняла {state['deferred']} строк (таймаут); повторите отправку",
+                "error": tr("База не приняла {count} строк (таймаут); повторите отправку",
+                            count=state["deferred"]),
             }
         else:
             result = {"ok": True, "inserted": state["inserted"]}
@@ -346,7 +353,7 @@ class ApiClient:
         новые snapshots могли их перезаписать.
         """
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         try:
             resp = _session_for_thread().post(
                 f"{self.api_base}/journal/reset",
@@ -359,7 +366,7 @@ class ApiClient:
                 return {"ok": True, "reset": data.get("reset", {}), "message": data.get("message", "")}
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except requests.RequestException as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     # -- авианосцы (учёт на сайте проекта) -----------------------------------
     def sync_carrier_events(self, events: list) -> dict:
@@ -369,7 +376,7 @@ class ApiClient:
         задваивает (хеши грузовых дельт считаются из полей событий).
         """
         if not self.token or not events:
-            return {"ok": False, "error": "Нет токена или данных"}
+            return {"ok": False, "error": tr("Нет токена или данных")}
         try:
             resp = _session_for_thread().post(
                 f"{self.api_base}/carriers/sync",
@@ -382,7 +389,7 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except requests.RequestException as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     # -- минорные фракции (данные карты Atlas) --------------------------------
     def sync_bgs_snapshots(self, events: list) -> dict:
@@ -392,7 +399,7 @@ class ApiClient:
         повтор пачки после сетевого сбоя ничего не портит.
         """
         if not self.token or not events:
-            return {"ok": False, "error": "Нет токена или данных"}
+            return {"ok": False, "error": tr("Нет токена или данных")}
         try:
             resp = _session_for_thread().post(
                 f"{self.api_base}/factions/sync",
@@ -405,12 +412,12 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except requests.RequestException as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def fetch_my_carriers(self) -> dict:
         """Личный авианосец и носители эскадрильи → GET /api/carriers/mine."""
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         try:
             resp = _session_for_thread().get(
                 f"{self.api_base}/carriers/mine",
@@ -423,12 +430,12 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except requests.RequestException as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def fetch_carrier(self, carrier_id) -> dict:
         """Карточка любого носителя → GET /api/carriers/{id} (чужому — без груза)."""
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         try:
             resp = _session_for_thread().get(
                 f"{self.api_base}/carriers/{int(carrier_id)}",
@@ -441,7 +448,7 @@ class ApiClient:
                 return data
             return {"ok": False, "status": resp.status_code, "error": data.get("error", f"HTTP {resp.status_code}")}
         except (requests.RequestException, TypeError, ValueError) as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     @property
     def is_connected(self) -> bool:
@@ -449,13 +456,13 @@ class ApiClient:
 
     @property
     def display_name(self) -> str:
-        return self.cmdr_name or self.email or "Пользователь"
+        return self.cmdr_name or self.email or tr("Пользователь")
 
     def get_system_scans(self, system_name: str) -> dict:
         """Получить сканы тел системы из БД проекта (/api/atlas/system-bodies)."""
         name = str(system_name or "").strip()
         if not name:
-            return {"ok": False, "error": "Пустое имя системы"}
+            return {"ok": False, "error": tr("Пустое имя системы")}
         try:
             resp = self._session.get(
                 f"{self.api_base}/atlas/system-bodies",
@@ -468,7 +475,7 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def upload_system_scans(self, system_name: str, bodies: list, cmdr: str = None) -> dict:
         """Отправить сканы тел системы в БД проекта (/api/atlas/system-bodies)."""
@@ -493,12 +500,12 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def upload_station_reports(self, reports: list) -> dict:
         """Complete per-service station snapshots. The collector owns durable retries."""
         if not self.token or not reports:
-            return {"ok": False, "error": "Нет токена или данных"}
+            return {"ok": False, "error": tr("Нет токена или данных")}
         try:
             resp = _session_for_thread().post(
                 f"{self.api_base}/stations/report",
@@ -510,12 +517,12 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def upload_ship_state(self, state: dict) -> dict:
         """Передать приватный снимок текущего Loadout и состояния корабля."""
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         try:
             resp = self._session.post(
                 f"{self.api_base}/cmdr/ship-state",
@@ -528,12 +535,12 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def pull_atlas_route(self) -> dict:
         """Забрать один маршрут, явно отправленный владельцем из Atlas."""
         if not self.token:
-            return {"ok": False, "error": "Нет токена"}
+            return {"ok": False, "error": tr("Нет токена")}
         try:
             resp = self._session.post(
                 f"{self.api_base}/cmdr/route",
@@ -546,12 +553,12 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def upload_pilot_stats(self, stats: dict, cmdr: str = None) -> dict:
         """Отправить баланс и статистику пилота в БД проекта (/api/cmdr/stats)."""
         if not self.token or not stats:
-            return {"ok": False, "error": "Нет токена или данных"}
+            return {"ok": False, "error": tr("Нет токена или данных")}
         payload = {
             "token": self.token,
             "cmdr": cmdr or self.cmdr_name,
@@ -569,7 +576,7 @@ class ApiClient:
                 return data
             return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def get_capi_status(self) -> dict:
         """Read the website-owned CAPI binding and its parsed profile summary.
@@ -578,7 +585,7 @@ class ApiClient:
         refresh tokens are never returned to the desktop client.
         """
         if not self.token:
-            return {"ok": False, "error": "Нет токена проекта"}
+            return {"ok": False, "error": tr("Нет токена проекта")}
         try:
             resp = self._session.get(
                 f"{self.api_base}/capi/helper",
@@ -592,7 +599,7 @@ class ApiClient:
             return {"ok": False, "status": resp.status_code,
                     "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
     def sync_capi(self) -> dict:
         """Ask the website to sync its existing Frontier binding.
@@ -602,7 +609,7 @@ class ApiClient:
         payload are uploaded from Colonial Helper.
         """
         if not self.token:
-            return {"ok": False, "error": "Нет токена проекта"}
+            return {"ok": False, "error": tr("Нет токена проекта")}
         try:
             resp = self._session.post(
                 f"{self.api_base}/capi/helper",
@@ -616,5 +623,5 @@ class ApiClient:
             return {"ok": False, "status": resp.status_code, **data,
                     "error": data.get("error", f"HTTP {resp.status_code}")}
         except Exception as exc:
-            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 

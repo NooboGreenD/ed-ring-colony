@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from i18n import tr
+
 import bundle
 from launcher_content import (  # noqa: F401 - re-exported public API
     article_blocks,
@@ -57,7 +59,7 @@ def _launcher_runtime():
     if not hasattr(module, "choose_version"):
         module = sys.modules.get("launcher")
     if module is None or not hasattr(module, "choose_version"):
-        raise RuntimeError("Не найден модуль bootstrapper")
+        raise RuntimeError(tr("Не найден модуль bootstrapper"))
     return module
 
 

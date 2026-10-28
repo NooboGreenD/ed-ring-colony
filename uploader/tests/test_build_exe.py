@@ -26,6 +26,12 @@ class BuildExeTests(unittest.TestCase):
         for module in ("ui_qt", "launcher_window", "launcher_content", "launcher_settings"):
             self.assertIn(module, build_exe.LAUNCHER_MODULES)
 
+    def test_translation_catalog_is_frozen_into_the_launcher(self):
+        # Сообщения об ошибках запуска идут через `tr()`, и они должны быть
+        # доступны до того, как установлен пакет программы.
+        for module in ("i18n", "i18n_catalogs"):
+            self.assertIn(module, build_exe.LAUNCHER_MODULES)
+
     def test_retired_tk_layers_are_not_frozen_any_more(self):
         # Эмуляционный слой Tk удалён из кода: если он вернётся в сборку,
         # значит его случайно импортируют обратно.

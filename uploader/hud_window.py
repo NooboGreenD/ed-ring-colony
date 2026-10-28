@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 import ui_qt
 from hud_win32 import _set_click_through, _toplevel_hwnd
+from i18n import tr
 
 # ============================================================
 #  Цветовая схема в стиле ED Ring Colony сайта
@@ -768,14 +769,14 @@ class HudWindow(QWidget):
         submenus: list = []
         detached = bool(getattr(self, "_detached", False))
 
-        menu.addAction("Закрепить (клики уходят в игру)", self._toggle_lock)
+        menu.addAction(tr("Закрепить (клики уходят в игру)"), self._toggle_lock)
         menu.addAction(
-            ("[x] " if detached else "[ ] ") + "Отвязать от игры (виден всегда)",
+            ("[x] " if detached else "[ ] ") + tr("Отвязать от игры (виден всегда)"),
             self._toggle_detached,
         )
         monitors = self._menu_monitors()
         if len(monitors) > 1:
-            screen_menu = menu.addMenu("Экран")
+            screen_menu = menu.addMenu(tr("Экран"))
             current = self._current_monitor_index()
             for monitor in monitors:
                 mark = "[x] " if detached and monitor.index == current else "[ ] "
@@ -786,9 +787,9 @@ class HudWindow(QWidget):
             submenus.append(screen_menu)
         menu.addSeparator()
 
-        anchor_menu = menu.addMenu("Anchor")
+        anchor_menu = menu.addMenu(tr("Якорь"))
         for position in ANCHOR_KEYS:
-            label = ANCHOR_LABELS.get(position, position)
+            label = tr(ANCHOR_LABELS.get(position, position))
             anchor_menu.addAction(
                 ("[x] " if self._anchor == position else "[ ] ") + label,
                 lambda p=position: self._set_anchor(p),
@@ -796,12 +797,12 @@ class HudWindow(QWidget):
         submenus.append(anchor_menu)
         menu.addSeparator()
         width, height = self.size()
-        menu.addAction(f"Width: {width}px").setEnabled(False)
-        menu.addAction(f"Height: {height}px").setEnabled(False)
-        menu.addAction("Reset size", self._reset_size)
+        menu.addAction(tr("Ширина: {value} px", value=width)).setEnabled(False)
+        menu.addAction(tr("Высота: {value} px", value=height)).setEnabled(False)
+        menu.addAction(tr("Сбросить размер"), self._reset_size)
         menu.addSeparator()
 
-        alpha_menu = menu.addMenu("Alpha")
+        alpha_menu = menu.addMenu(tr("Прозрачность"))
         for alpha in (0.3, 0.5, 0.7, 0.85, 0.95, 1.0):
             alpha_menu.addAction(
                 ("[x] " if abs(float(self._alpha) - alpha) < 0.05 else "[ ] ")
@@ -810,11 +811,12 @@ class HudWindow(QWidget):
             )
         submenus.append(alpha_menu)
 
-        font_menu = menu.addMenu("Font size")
+        font_menu = menu.addMenu(tr("Размер шрифта"))
         own_font = self.settings.get(f"{self.overlay_key}_font_size")
         shared = int(self.settings.get("font_size", 10) or 10)
         font_menu.addAction(
-            ("[x] " if own_font in (None, "") else "[ ] ") + f"Как у всех ({shared})",
+            ("[x] " if own_font in (None, "") else "[ ] ")
+            + tr("Как у всех ({size})", size=shared),
             lambda: self._set_own_font(None),
         )
         for value in (8, 9, 10, 11, 12, 14, 16, 18):

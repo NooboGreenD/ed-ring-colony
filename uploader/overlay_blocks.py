@@ -50,6 +50,7 @@ from hud_window import (
     hud_separator,
     paint,
 )
+from i18n import tr
 from overlay_options import filter_carrier_rows, option_key
 
 
@@ -101,6 +102,12 @@ def format_table(headers: Sequence[str], rows: Sequence[Sequence[object]],
                        else text[: max(1, max_width - 1)] + "…")
         lines = cut
     return "\n".join(lines)
+
+
+#: Русские строки файла, которые не являются подписями интерфейса.
+#: ``Вы`` — значение поля журнала ``first_footfall_by``: имя пилота-первооткрывателя
+#: приходит из игры по-русски, и с ним сравниваются, а не показывают его.
+NOT_UI_LITERALS = frozenset({"Вы"})
 
 
 def _section_text(index: str, text: str) -> str:
@@ -160,12 +167,12 @@ class RouteOverlay(HudWindow):
         )
         wrap = max(120, int(settings.get("route_width", 280)) - 26)
         for name, text, color, delta, bold in (
-            ("current_label", "Сейчас: —", COLOR_TEXT_MUTED, -1, False),
+            ("current_label", tr("Сейчас: —"), COLOR_TEXT_MUTED, -1, False),
             ("next_label", "→ —", COLOR_CYAN, 0, True),
-            ("star_label", "Звезда: —", COLOR_TEXT_MUTED, -1, False),
-            ("distance_label", "Прыжок: — св. л.", COLOR_TEXT, -1, False),
-            ("remaining_label", "Осталось: —", COLOR_TEXT, -1, False),
-            ("destination_label", "Цель: —", COLOR_ACCENT, -1, False),
+            ("star_label", tr("Звезда: —"), COLOR_TEXT_MUTED, -1, False),
+            ("distance_label", tr("Прыжок: — св. л."), COLOR_TEXT, -1, False),
+            ("remaining_label", tr("Осталось: —"), COLOR_TEXT, -1, False),
+            ("destination_label", tr("Цель: —"), COLOR_ACCENT, -1, False),
         ):
             label = self.make_label(self.content, text, color=color, bold=bold,
                                     dp=delta, wrap=wrap)
@@ -188,25 +195,30 @@ class RouteOverlay(HudWindow):
     def update_route(self, current, next_system, visited, total, remaining=None,
                      next_info=None, summary=None) -> None:
         summary = summary or {}
-        self.current_label.setText(f"Сейчас: {current}")
+        self.current_label.setText(tr("Сейчас: {system}", system=current))
         self.next_label.setText(
-            (f"→ {next_system}" if summary.get("jumps_left", 1) else "Маршрут завершён")
-            if total else "Маршрут не задан")
+            (f"→ {next_system}" if summary.get("jumps_left", 1)
+             else tr("Маршрут завершён"))
+            if total else tr("Маршрут не задан"))
         star = summary.get("star_class") or "—"
         scoopable = summary.get("scoopable")
-        fuel = ("заправка возможна" if scoopable is True
-                else ("без заправки" if scoopable is False else "заправка неизвестна"))
-        self.star_label.setText(f"Звезда: {star} · {fuel}")
+        fuel = (tr("заправка возможна") if scoopable is True
+                else (tr("без заправки") if scoopable is False
+                      else tr("заправка неизвестна")))
+        self.star_label.setText(tr("Звезда: {star} · {fuel}", star=star, fuel=fuel))
         paint(self.star_label, color=COLOR_GREEN_TEXT if scoopable is True else COLOR_TEXT_MUTED)
 
         def ly(value):
             return "—" if value is None else f"{value:,.1f}"
 
-        self.distance_label.setText(f"Прыжок: {ly(summary.get('jump_distance'))} св. л.")
+        self.distance_label.setText(tr("Прыжок: {distance} св. л.",
+                                       distance=ly(summary.get("jump_distance"))))
         left = summary.get("jumps_left", max(0, total - visited))
-        self.remaining_label.setText(
-            f"Осталось: {left} прыж. · {ly(summary.get('remaining_distance'))} св. л.")
-        self.destination_label.setText(f"Цель: {summary.get('destination') or '—'}")
+        self.remaining_label.setText(tr(
+            "Осталось: {jumps} прыж. · {distance} св. л.",
+            jumps=left, distance=ly(summary.get("remaining_distance"))))
+        self.destination_label.setText(tr("Цель: {destination}",
+                                          destination=summary.get("destination") or "—"))
         self.progress_label.setText(f"{visited} / {total}" if total else "")
         self.progress_bar.set_fraction(visited / total if total else 0)
         self.apply_data_options()
@@ -284,7 +296,8 @@ class StatusOverlay(HudWindow):
         self.status_frame, dot, self.status_text = self._indicator_row("■", "OFFLINE")
         self.status_dot = dot
         self.body.addWidget(self.status_frame)
-        self.game_frame, dot, self.game_text = self._indicator_row("□", "ИГРА / НЕТ ДАННЫХ")
+        self.game_frame, dot, self.game_text = self._indicator_row(
+            "□", tr("ИГРА / НЕТ ДАННЫХ"))
         self.game_dot = dot
         self.body.addWidget(self.game_frame)
         self.watcher_frame, dot, self.watcher_text = self._indicator_row("□", "WATCHER / OFF")
@@ -295,7 +308,7 @@ class StatusOverlay(HudWindow):
                                              wrap=250)
         self.body.addWidget(self.progress_text)
         self.body.addWidget(hud_separator(self.content))
-        self.detail_text = self.make_label(self.content, "Ошибок нет",
+        self.detail_text = self.make_label(self.content, tr("Ошибок нет"),
                                            color=COLOR_TEXT_MUTED, dp=-2, wrap=250)
         self.body.addWidget(self.detail_text)
         self.body.addStretch(1)
@@ -326,11 +339,11 @@ class StatusOverlay(HudWindow):
         """Строка «Игра: запущена / в фокусе / не запущена»."""
         if running:
             color = COLOR_GREEN_TEXT if focused else COLOR_YELLOW
-            text = "ИГРА / В ФОКУСЕ" if focused else "ИГРА / ЗАПУЩЕНА"
+            text = tr("ИГРА / В ФОКУСЕ") if focused else tr("ИГРА / ЗАПУЩЕНА")
             dot = "■"
         else:
             color = COLOR_RED_TEXT
-            text = "ИГРА / НЕ ЗАПУЩЕНА"
+            text = tr("ИГРА / НЕ ЗАПУЩЕНА")
             dot = "□"
         if detail:
             text = f"{text} ({detail})"
@@ -409,7 +422,7 @@ class ShipOverlay(HudWindow):
         self.body.addWidget(hud_section(self.content, "Vessel telemetry",
                                        size=self._fs - 2))
         self.ship_name_label = self.make_label(
-            self.content, "КОРАБЛЬ НЕ ОПРЕДЕЛЁН", color=COLOR_ACCENT,
+            self.content, tr("КОРАБЛЬ НЕ ОПРЕДЕЛЁН"), color=COLOR_ACCENT,
             background=COLOR_PANEL_ALT, dp=1, bold=True, wrap=self._wrap)
         self.body.addWidget(self.ship_name_label)
 
@@ -715,6 +728,7 @@ class CarrierOverlay(HudWindow):
         columns_layout.setSpacing(6)
         self._header_cells = []
         for index, (text, chars, align) in enumerate(self.COLUMNS):
+            text = tr(text)
             label = self.make_label(self.columns, text, color=COLOR_TEXT_MUTED,
                                     dp=-1, bold=index in self.BOLD_COLUMNS,
                                     align_right=align == "right")
@@ -765,9 +779,9 @@ class CarrierOverlay(HudWindow):
         # Javelin-Class или чужой.
         kind = str(data.get("kind") or "")
         if kind == "squadron":
-            kind_mark = "эскадр."
+            kind_mark = tr("эскадр.")
         elif kind == "other" and data.get("at_carrier") and not stats_seen:
-            kind_mark = "чужой"
+            kind_mark = tr("чужой")
         else:
             kind_mark = ""
         head = " · ".join(part for part in (callsign or system, kind_mark) if part)
@@ -793,23 +807,24 @@ class CarrierOverlay(HudWindow):
             # поимённо и честно пишем, откуда цифра.
             tracked = int(data.get("tracked_total") or 0)
             self.total_label.setText(
-                f"{tracked} t (учтено по журналу)" if tracked else "Тоннаж неизвестен")
+                tr("{tons} t (учтено по журналу)", tons=tracked) if tracked
+                else tr("Тоннаж неизвестен"))
             self.cargo_bar.set_fraction(0)
 
         details = []
         if stats_seen:
-            details.append(f"свободно {int(data.get('free') or 0)} t")
+            details.append(tr("свободно {tons} t", tons=int(data.get("free") or 0)))
             if int(data.get("reserved") or 0):
-                details.append(f"резерв {int(data.get('reserved') or 0)} t")
+                details.append(tr("резерв {tons} t", tons=int(data.get("reserved") or 0)))
             if int(data.get("untracked") or 0):
-                details.append(f"прочее {int(data.get('untracked') or 0)} t")
+                details.append(tr("прочее {tons} t", tons=int(data.get("untracked") or 0)))
         if bool(data.get("pending_decommission")):
-            details.append("списывается!")
+            details.append(tr("списывается!"))
         if bool(data.get("at_carrier")):
-            details.append("вы на борту")
+            details.append(tr("вы на борту"))
         jump_system = str(data.get("jump_system") or "").strip()
         if jump_system:
-            details.append(f"прыжок → {jump_system[:24]}")
+            details.append(tr("прыжок → {system}", system=jump_system[:24]))
         elif data.get("location_estimated") and system:
             details.append(f"≈ {system[:24]}")
         services = [str(item) for item in (data.get("services") or []) if item]
@@ -817,7 +832,8 @@ class CarrierOverlay(HudWindow):
         if services:
             shown = ", ".join(services[:4]) + (
                 f" +{len(services) - 4}" if len(services) > 4 else "")
-            detail_text = (f"{detail_text}\n" if detail_text else "") + f"службы: {shown}"
+            detail_text = ((f"{detail_text}\n" if detail_text else "")
+                           + tr("службы: {list}", list=shown))
         self.detail_label.setText(detail_text)
 
         rows = list(data.get("commodities") or [])
@@ -827,29 +843,35 @@ class CarrierOverlay(HudWindow):
         filtered = mode != "all" or bool(query)
         self._render_rows(
             shown,
-            "Нет товаров по фильтру" if filtered and rows else self._empty_text(data))
+            tr("Нет товаров по фильтру") if filtered and rows else self._empty_text(data))
 
         need_label = str(data.get("need_label") or "").strip()
         need_source = str(data.get("need_source") or "").strip()
         need_total = int(data.get("need_total") or 0)
         if need_label and need_total > 0:
-            kind_label = "Проект (основной)" if need_source == "project" else "Стройплощадка"
-            self.project_label.setText(f"{kind_label}: {need_label}\nнужно {need_total} t")
+            kind_label = (tr("Проект (основной)") if need_source == "project"
+                          else tr("Стройплощадка"))
+            self.project_label.setText(tr(
+                "{kind}: {name}\nнужно {tons} t",
+                kind=kind_label, name=need_label, tons=need_total))
         elif need_label:
-            self.project_label.setText(f"Проект: {need_label} · потребность закрыта")
+            self.project_label.setText(tr(
+                "Проект: {name} · потребность закрыта", name=need_label))
         else:
             self.project_label.setText(
-                "Проект не выбран — отметьте основной во вкладке «Колонизатор»")
+                tr("Проект не выбран — отметьте основной во вкладке «Колонизатор»"))
 
         tracked_total = int(data.get("tracked_total") or 0)
         delivered_total = int(data.get("delivered_total") or 0)
         if need_total > 0:
             left = sum(int(row.get("remaining") or 0) for row in rows)
             have = sum(int(row.get("amount") or 0) for row in rows)
-            summary = f"На борту {have} / {need_total} t · осталось {left} t"
+            summary = tr("На борту {have} / {need} t · осталось {left} t",
+                         have=have, need=need_total, left=left)
             color = COLOR_GREEN_TEXT if left == 0 else COLOR_CYAN
         elif stats_seen:
-            summary = f"На борту {stored} t · свободно {int(data.get('free') or 0)} t"
+            summary = tr("На борту {tons} t · свободно {free} t",
+                         tons=stored, free=int(data.get("free") or 0))
             color = COLOR_ACCENT
         else:
             summary = ""
@@ -860,15 +882,17 @@ class CarrierOverlay(HudWindow):
             cargo_source = "remote" if data.get("remote_seen") else (
                 "journal" if (tracked_total or delivered_total) else "")
         source = {
-            "server": "груз: сайт проекта",
+            "server": tr("груз: сайт проекта"),
             "remote": "груз: Raven Colonial",
-            "journal": "груз: по журналу (только ваши перевозки)",
-            "estimate": "груз: оценка, сведена с CarrierStats",
+            "journal": tr("груз: по журналу (только ваши перевозки)"),
+            "estimate": tr("груз: оценка, сведена с CarrierStats"),
         }.get(cargo_source, "")
         if cargo_source == "server" and int(data.get("server_age") or 0) >= 15:
-            source = f"{source} ({int(data.get('server_age') or 0)} мин назад)"
+            source = tr("{source} ({minutes} мин назад)",
+                        source=source, minutes=int(data.get("server_age") or 0))
         if delivered_total and need_total:
-            source = (f"{source} · завезено вами {delivered_total} t").strip(" ·")
+            source = tr("{source} · завезено вами {tons} t",
+                        source=source, tons=delivered_total).strip(" ·")
         if source:
             summary = f"{summary}\n{source}" if summary else source
 
@@ -878,10 +902,11 @@ class CarrierOverlay(HudWindow):
                 f"{str(row.get('name') or '')[:18]} {int(row.get('tracked_total') or 0)} t"
                 for row in others[:3]
             ]
-            summary = (f"{summary}\n" if summary else "") + "ещё носители: " + ", ".join(parts)
+            summary = ((f"{summary}\n" if summary else "")
+                       + tr("ещё носители: {list}", list=", ".join(parts)))
 
-        prefix = (f"Показано {len(shown)} / {len(rows)} · итоги по всем товарам\n"
-                  if filtered else "")
+        prefix = (tr("Показано {shown} / {total} · итоги по всем товарам\n",
+                     shown=len(shown), total=len(rows)) if filtered else "")
         self.summary_label.setText(prefix + summary)
         paint(self.summary_label, color=color)
 
@@ -924,29 +949,37 @@ class CarrierOverlay(HudWindow):
         self.inner.add(frame)
         return {"frame": frame, "cells": cells}
 
-    #: Что писать вместо списка товаров, когда показывать нечего.
+    #: Что писать вместо списка товаров, когда показывать нечего. Это ключ
+    #: перевода: подпись берётся из :meth:`empty_default`, иначе текст остался
+    #: бы русским при любом языке интерфейса.
     EMPTY_DEFAULT = ("[ Нет данных по товарам ]\nОткройте Carrier Management\n"
                      "или пристыкуйтесь к авианосцу")
+
+    @classmethod
+    def empty_default(cls) -> str:
+        """Подпись «данных по товарам нет» на текущем языке."""
+        return tr(cls.EMPTY_DEFAULT)
 
     @classmethod
     def _empty_text(cls, data: dict) -> str:
         """Почему список пуст — это разные ситуации, и врать нельзя."""
         data = data or {}
         if not data.get("stats_seen"):
-            return cls.EMPTY_DEFAULT
+            return cls.empty_default()
         stored = int(data.get("stored") or 0)
         if stored <= 0:
-            return "[ Трюм пуст ]\nПо CarrierStats на борту 0 t"
+            return tr("[ Трюм пуст ]\nПо CarrierStats на борту 0 t")
         if str(data.get("reconciled") or "") == "dropped":
-            return (f"[ Состав груза неизвестен ]\nНа борту {stored} t по CarrierStats,\n"
-                    "поимённый учёт устарел")
-        return cls.EMPTY_DEFAULT
+            return tr("[ Состав груза неизвестен ]\nНа борту {tons} t по CarrierStats,\n"
+                      "поимённый учёт устарел", tons=stored)
+        return cls.empty_default()
 
     def _render_rows(self, rows: list, empty_text: str = "") -> None:
         """Обновить список, переиспользуя виджеты (без мерцания текста)."""
         if self._empty_label is None:
-            self._empty_label = self.make_label(self.inner, empty_text or self.EMPTY_DEFAULT,
-                                                color=COLOR_TEXT_MUTED, dp=-1)
+            self._empty_label = self.make_label(
+                self.inner, empty_text or self.empty_default(),
+                color=COLOR_TEXT_MUTED, dp=-1)
             self.inner.add(self._empty_label)
 
         if not rows:
@@ -954,7 +987,7 @@ class CarrierOverlay(HudWindow):
                 for entry in self._row_pool:
                     entry["frame"].hide()
                 self._row_order = []
-            self._empty_label.setText(empty_text or self.EMPTY_DEFAULT)
+            self._empty_label.setText(empty_text or self.empty_default())
             self._empty_label.show()
             return
 
@@ -1053,7 +1086,8 @@ class ExobiologyOverlay(HudWindow):
         self.body.addWidget(hud_section(self.content, "Target body",
                                         size=self._font_size - 2))
         self.body_label = self.make_label(
-            self.content, "ТЕЛО / —", color=COLOR_ACCENT, background=COLOR_PANEL_ALT,
+            self.content, tr("ТЕЛО / —"), color=COLOR_ACCENT,
+            background=COLOR_PANEL_ALT,
             dp=0, bold=True, wrap=self._wrap)
         self.body_label.setContentsMargins(6, 4, 6, 4)
         self.body.addWidget(self.body_label)
@@ -1080,8 +1114,9 @@ class ExobiologyOverlay(HudWindow):
         self.body.addWidget(self.signals_label)
         self.body.addWidget(hud_separator(self.content))
 
-        self.samples_header = self.make_label(self.content, "B / ОБРАЗЦЫ",
-                                              color=COLOR_TEXT_MUTED, dp=-1, bold=True)
+        self.samples_header = self.make_label(
+            self.content, _section_text("B", tr("ОБРАЗЦЫ")),
+            color=COLOR_TEXT_MUTED, dp=-1, bold=True)
         self.body.addWidget(self.samples_header)
         self.organics_label = self.make_label(self.content, "—", dp=-1, wrap=self._wrap)
         self.body.addWidget(self.organics_label)
@@ -1093,10 +1128,11 @@ class ExobiologyOverlay(HudWindow):
         self.body.addWidget(self.next_action_label)
         self.body.addWidget(hud_separator(self.content))
 
-        self.predict_header = self.make_label(self.content, "C / ВЕРОЯТНЫЕ РОДЫ",
+        self.predict_header = self.make_label(
+            self.content, _section_text("C", tr("ВЕРОЯТНЫЕ РОДЫ")),
                                               color=COLOR_TEXT_MUTED, dp=-1, bold=True)
         self.body.addWidget(self.predict_header)
-        self.predict_label = self.make_label(self.content, "нет данных",
+        self.predict_label = self.make_label(self.content, tr("нет данных"),
                                              color=COLOR_GREEN_TEXT, dp=-1, wrap=self._wrap)
         self.body.addWidget(self.predict_label)
 
@@ -1104,7 +1140,7 @@ class ExobiologyOverlay(HudWindow):
         # резиновое, и при переполнении обрезается низ.
         self.planet_separator = hud_separator(self.content)
         self.body.addWidget(self.planet_separator)
-        self.planets_header = self.make_label(self.content, "Поиск планет:",
+        self.planets_header = self.make_label(self.content, tr("Поиск планет:"),
                                               color=COLOR_TEXT_MUTED, dp=-1, bold=True)
         self.body.addWidget(self.planets_header)
         self.planets_label = self.make_label(self.content, "—", color=COLOR_GREEN_TEXT,
@@ -1113,7 +1149,7 @@ class ExobiologyOverlay(HudWindow):
 
         self.bodies_separator = hud_separator(self.content)
         self.body.addWidget(self.bodies_separator)
-        self.bodies_header = self.make_label(self.content, "Тела системы:",
+        self.bodies_header = self.make_label(self.content, tr("Тела системы:"),
                                              color=COLOR_TEXT_MUTED, dp=-1, bold=True)
         self.body.addWidget(self.bodies_header)
         self.bodies_label = self.make_label(self.content, "—", color=COLOR_TEXT_MUTED,
@@ -1121,7 +1157,7 @@ class ExobiologyOverlay(HudWindow):
         self.body.addWidget(self.bodies_label)
 
         self.footer_label = self.make_label(
-            self.content, "ℹ Прогноз по родам · Оценка выплат ориентировочная",
+            self.content, tr("ℹ Прогноз по родам · Оценка выплат ориентировочная"),
             color=COLOR_TEXT_MUTED, dp=-3, wrap=self._wrap)
         self.body.addWidget(self.footer_label)
         self.body.addStretch(1)
@@ -1149,10 +1185,11 @@ class ExobiologyOverlay(HudWindow):
         menu.addSeparator()
         compact = bool(self.settings.get("exobio_compact", True))
         menu.addAction(
-            ("[x] " if compact else "[ ] ") + "Компактный вид (значки и шкалы)",
+            ("[x] " if compact else "[ ] ") + tr("Компактный вид (значки и шкалы)"),
             self._toggle_compact_mode)
         menu.addAction(
-            "⊞ Таблица (компактно)" if not self._table_mode else "≡ Лента (по-старому)",
+            tr("⊞ Таблица (компактно)") if not self._table_mode
+            else tr("≡ Лента (по-старому)"),
             self._toggle_layout_mode)
 
     def _toggle_layout_mode(self) -> None:
@@ -1308,9 +1345,9 @@ class ExobiologyOverlay(HudWindow):
             self._paint_chip(self.chip_bio, "🌿 0 BIO", *self.CHIP_BIO_OFF)
 
         if landable:
-            self._paint_chip(self.chip_land, "🛬 ПОСАДКА", *self.CHIP_LAND_ON)
+            self._paint_chip(self.chip_land, tr("🛬 ПОСАДКА"), *self.CHIP_LAND_ON)
         else:
-            self._paint_chip(self.chip_land, "⛔ НЕ СЕСТЬ", *self.CHIP_LAND_OFF)
+            self._paint_chip(self.chip_land, tr("⛔ НЕ СЕСТЬ"), *self.CHIP_LAND_OFF)
 
         if mapped:
             self._paint_chip(self.chip_dss, "📡 DSS ✓", *self.CHIP_DSS_ON)
@@ -1319,10 +1356,10 @@ class ExobiologyOverlay(HudWindow):
 
         # Бонус первопроходца ×5: плашка есть только когда это про нас.
         if no_first_footfall:
-            self._paint_chip(self.chip_footfall, "👣 БОНУС ×5", *self.CHIP_BONUS)
+            self._paint_chip(self.chip_footfall, tr("👣 БОНУС ×5"), *self.CHIP_BONUS)
             self.chip_footfall.setVisible(True)
         elif first_footfall_by and first_footfall_by not in ("Вы", "You"):
-            self._paint_chip(self.chip_footfall, "👣 ЕСТЬ", *self.CHIP_BIO_OFF)
+            self._paint_chip(self.chip_footfall, tr("👣 ЕСТЬ"), *self.CHIP_BIO_OFF)
             self.chip_footfall.setVisible(True)
         else:
             self.chip_footfall.setVisible(False)
@@ -1337,16 +1374,16 @@ class ExobiologyOverlay(HudWindow):
     def _render_content(self) -> None:
         state = self._state
         if not state:
-            self.body_label.setText("Тело: —")
-            self.params_label.setText("Отсканируйте тело (FSS или подход)")
+            self.body_label.setText(tr("Тело: —"))
+            self.params_label.setText(tr("Отсканируйте тело (FSS или подход)"))
             self.signals_label.setText("")
-            self.samples_header.setText(_section_text("B", "Образцы"))
+            self.samples_header.setText(_section_text("B", tr("Образцы")))
             self.organics_label.setText("—")
             self.next_action_label.setText("")
             self._set_action_visible(False)
-            self.predict_header.setText(_section_text("C", "Вероятные роды"))
-            self.predict_label.setText("нет данных")
-            self.bodies_header.setText(_section_text("E", "Тела системы"))
+            self.predict_header.setText(_section_text("C", tr("Вероятные роды")))
+            self.predict_label.setText(tr("нет данных"))
+            self.bodies_header.setText(_section_text("E", tr("Тела системы")))
             self.bodies_label.setText("—")
             self._hide_telemetry_chips()
             self._render_planets({})
@@ -1358,7 +1395,7 @@ class ExobiologyOverlay(HudWindow):
             # системы могут быть: показываем разделы честно.
             system = str(state.get("system") or "").strip()
             prefix = f"{system} · " if system else ""
-            self.body_label.setText(f"{prefix}Тело: —")
+            self.body_label.setText(f"{prefix}{tr('Тело: —')}")
 
             bio_bodies = state.get("system_bodies") or []
             total_bio_signals = sum(int(body.get("bio_signals") or 0) for body in bio_bodies)
@@ -1366,32 +1403,35 @@ class ExobiologyOverlay(HudWindow):
                                 or state.get("system_known_bodies") or 0)
 
             if bio_bodies:
-                self.params_label.setText(
-                    f"данных о текущем теле нет — в системе {len(bio_bodies)} тел с "
-                    f"биосигналами ({total_bio_signals} сигн.)\n"
-                    "подлетите к планете (FSS или подход) или выберите в списке")
-                self.signals_label.setText(f"Биосигналов в системе: {total_bio_signals}")
+                self.params_label.setText(tr(
+                    "данных о текущем теле нет — в системе {bodies} тел с "
+                    "биосигналами ({signals} сигн.)\n"
+                    "подлетите к планете (FSS или подход) или выберите в списке",
+                    bodies=len(bio_bodies), signals=total_bio_signals))
+                self.signals_label.setText(tr("Биосигналов в системе: {count}",
+                                              count=total_bio_signals))
                 self.next_action_label.setText(
-                    "→ выберите планету для высадки и сбора образцов")
+                    tr("→ выберите планету для высадки и сбора образцов"))
                 self._set_action_visible(True)
             elif scanned_count > 0:
-                self.params_label.setText(
-                    f"данных о текущем теле нет — отсканировано {scanned_count} тел "
-                    "(FSS или подход)\nсканируйте другие планеты системы (FSS/DSS)")
+                self.params_label.setText(tr(
+                    "данных о текущем теле нет — отсканировано {bodies} тел "
+                    "(FSS или подход)\nсканируйте другие планеты системы (FSS/DSS)",
+                    bodies=scanned_count))
                 self.signals_label.setText("")
                 self.next_action_label.setText("")
                 self._set_action_visible(False)
             else:
                 self.params_label.setText(
-                    "данных о текущем теле нет — отсканируйте тело (FSS или подход)")
+                    tr("данных о текущем теле нет — отсканируйте тело (FSS или подход)"))
                 self.signals_label.setText("")
                 self.next_action_label.setText("")
                 self._set_action_visible(False)
 
-            self.samples_header.setText(_section_text("B", "Образцы"))
+            self.samples_header.setText(_section_text("B", tr("Образцы")))
             self.organics_label.setText("—")
-            self.predict_header.setText(_section_text("C", "Вероятные роды"))
-            self.predict_label.setText("нет данных")
+            self.predict_header.setText(_section_text("C", tr("Вероятные роды")))
+            self.predict_label.setText(tr("нет данных"))
             self._hide_telemetry_chips()
             self._render_bodies(state)
             self._render_planets(state)
@@ -1408,7 +1448,7 @@ class ExobiologyOverlay(HudWindow):
         landable = bool(state.get("landable"))
         signals = int(state.get("bio_signals") or 0)
         temp = float(state.get("temperature") or 0)
-        atmo = str(state.get("atmosphere") or "нет атмосферы")
+        atmo = str(state.get("atmosphere") or tr("нет атмосферы"))
         volc = str(state.get("volcanism") or "")
         no_first_footfall = bool(state.get("no_first_footfall"))
         first_footfall_by = str(state.get("first_footfall_by") or "")
@@ -1422,20 +1462,27 @@ class ExobiologyOverlay(HudWindow):
             volc_text = f"  ·  🌋 {volc}" if volc and volc.lower() != "нет" else ""
             self.params_label.setText(f"🌫 {atmo}{volc_text}")
             self.signals_label.setText(
-                f"Биосигналов: {signals}  |  "
-                f"{'карта есть (DSS)' if mapped else 'карты нет'}" if signals else
-                f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
+                tr("Биосигналов: {count}  |  {map}", count=signals,
+                   map=tr("карта есть (DSS)") if mapped else tr("карты нет"))
+                if signals else
+                tr("Биосигналов нет  |  {map}",
+                   map=tr("карта есть (DSS)") if mapped else tr("карты нет")))
         else:
             self._hide_telemetry_chips()
             self.params_label.setText(
                 f"{atmo}\n"
-                f"T {temp:.0f} K   g {gravity / 10.0:.2f}\n"
-                f"Вулканизм: {volc or 'нет'}   "
-                f"{'посадка возможна' if landable else 'посадка невозможна'}")
+                + f"T {temp:.0f} K   g {gravity / 10.0:.2f}"
+                + "\n"
+                + tr("Вулканизм: {volcanism}   {landing}",
+                     volcanism=volc or tr("нет"),
+                     landing=(tr("посадка возможна") if landable
+                              else tr("посадка невозможна"))))
             self.signals_label.setText(
-                f"Биосигналов: {signals}  |  "
-                f"{'карта есть (DSS)' if mapped else 'карты нет'}" if signals else
-                f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
+                tr("Биосигналов: {count}  |  {map}", count=signals,
+                   map=tr("карта есть (DSS)") if mapped else tr("карты нет"))
+                if signals else
+                tr("Биосигналов нет  |  {map}",
+                   map=tr("карта есть (DSS)") if mapped else tr("карты нет")))
 
         self._render_samples(state, mapped)
         self._render_predictions(state, mapped)
@@ -1448,13 +1495,14 @@ class ExobiologyOverlay(HudWindow):
         if not total_value:
             total_value = sum(int(row.get("value_cr") or 0) for row in organics)
         no_footfall = bool(state.get("no_first_footfall"))
-        bonus_tag = " (бонус ×5)" if no_footfall else ""
-        header = (f"Образцы{bonus_tag}:"
-                  + (f"  ≈ {format_credits(total_value)} кр" if total_value else ""))
+        bonus_tag = tr(" (бонус ×5)") if no_footfall else ""
+        header = (tr("Образцы{bonus}:", bonus=bonus_tag)
+                  + (tr("  ≈ {value} кр", value=format_credits(total_value))
+                     if total_value else ""))
         self.samples_header.setText(_section_text("B", header))
 
         if not organics:
-            self.organics_label.setText("образцы не взяты")
+            self.organics_label.setText(tr("образцы не взяты"))
             action = self._suggest_next_action(state, [])
             self.next_action_label.setText(action)
             self._set_action_visible(bool(action))
@@ -1468,29 +1516,31 @@ class ExobiologyOverlay(HudWindow):
             value = int(row.get("value_cr") or 0)
             name = str(row.get("species") or "?")
             if row.get("seen_before"):
-                name += " (уже встречалось)"
+                name += tr(" (уже встречалось)")
             status = ""
             if complete:
-                status = "комплект готов ✓"
+                status = tr("комплект готов ✓")
             elif samples:
                 wait = int(row.get("wait_seconds") or 0)
                 stage = str(row.get("stage") or "")
-                status = (f"ждите {wait} с" if wait > 0
-                          else f"готов к образцу ({stage or 'Sample'}) — смените точку")
+                status = (tr("ждите {seconds} с", seconds=wait)
+                          if wait > 0
+                          else tr("готов к образцу ({stage}) — смените точку",
+                                  stage=stage or "Sample"))
             lines.append((name, f"{marks} {samples}/3",
-                          format_credits(value) if value else "—", status))
+                          format_credits(value) if value else "—", status, complete))
         flat = []
-        for name, marks_value, price_value, status in lines:
+        for name, marks_value, price_value, status, ready in lines:
             price = "" if price_value in ("", "—") else f"  ≈ {price_value}"
             flat.append(f"{name}  {marks_value}{price}")
             if status:
-                flat.append(f"   {'✔ ' if 'готов ✓' in status else ''}{status}")
+                flat.append(f"   {'✔ ' if ready else ''}{status}")
         if self._table_mode and lines:
-            col_price = "≈кр (×5)" if no_footfall else "≈кр"
+            col_price = tr("≈кр (×5)") if no_footfall else tr("≈кр")
             self._table_or_flow(
                 self.organics_label,
-                ("вид", "образцы", col_price, "статус"),
-                [line[:3] + (line[3],) for line in lines],
+                (tr("вид"), tr("образцы"), col_price, tr("статус")),
+                [line[:4] for line in lines],
                 "\n".join(flat),
                 aligns=("left", "left", "right", "left"),
             )
@@ -1506,24 +1556,26 @@ class ExobiologyOverlay(HudWindow):
         if not organics:
             signals = int(state.get("bio_signals") or 0)
             if signals:
-                return f"→ найдите организм: биосигналов на теле {signals}"
+                return tr("→ найдите организм: биосигналов на теле {count}",
+                          count=signals)
             if not state.get("landable", True):
-                return "→ на это тело не сесть"
-            return "→ отсканируйте тело, чтобы получить прогноз"
+                return tr("→ на это тело не сесть")
+            return tr("→ отсканируйте тело, чтобы получить прогноз")
         waiting = [row for row in organics
                    if not row.get("complete") and int(row.get("wait_seconds") or 0) > 0]
         if waiting:
             wait = min(int(row.get("wait_seconds")) for row in waiting)
-            return f"→ {wait} с до следующего образца"
+            return tr("→ {seconds} с до следующего образца", seconds=wait)
         open_rows = [row for row in organics if not row.get("complete")]
         if open_rows:
-            return "→ возьмите образец с новой точки"
-        return "→ все комплекты собраны — можно лететь дальше"
+            return tr("→ возьмите образец с новой точки")
+        return tr("→ все комплекты собраны — можно лететь дальше")
 
     def _render_predictions(self, state: dict, mapped: bool) -> None:
         if not state.get("landable", True):
-            self.predict_header.setText(_section_text("C", "Вероятные роды"))
-            self.predict_label.setText("посадка невозможна — био-прогноз отключен")
+            self.predict_header.setText(_section_text("C", tr("Вероятные роды")))
+            self.predict_label.setText(
+                tr("посадка невозможна — био-прогноз отключен"))
             return
 
         predictions = state.get("predictions") or []
@@ -1535,12 +1587,12 @@ class ExobiologyOverlay(HudWindow):
 
         no_footfall = bool(state.get("no_first_footfall"))
         self.predict_header.setText(_section_text(
-            "C", f"Вероятные роды{' (бонус ×5)' if no_footfall else ''}"))
+            "C", tr("Вероятные роды") + (tr(" (бонус ×5)") if no_footfall else "")))
 
         if not predictions:
             self.predict_label.setText(
-                "роды отфильтрованы (вкладка «Экзобиология»)" if allowed
-                else "нет подходящих родов")
+                tr("роды отфильтрованы (вкладка «Экзобиология»)") if allowed
+                else tr("нет подходящих родов"))
             return
         entries = []
         for row in predictions[:self.MAX_PREDICTIONS]:
@@ -1569,16 +1621,16 @@ class ExobiologyOverlay(HudWindow):
             head = (f"{item['genus']}  {item['percent']}"
                     + (f"  {item['bar']}" if item["bar"] else ""))
             if item["value"]:
-                bonus_tag = " (бонус ×5)" if no_footfall else ""
+                bonus_tag = tr(" (бонус ×5)") if no_footfall else ""
                 head += f"  ≈ {item['value']}{bonus_tag}"
             details = " · ".join(part for part in (
-                (f"виды: {item['species']}" if item["species"] else ""),
+                (tr("виды: {list}", list=item["species"]) if item["species"] else ""),
                 item["notes"]) if part)
             lines.append(head + (f"\n   {details}" if details else ""))
         if extra > 0:
-            lines.append(f"… и ещё {extra}")
+            lines.append(tr("… и ещё {count}", count=extra))
         if self._table_mode:
-            col_val = "≈кр (×5)" if no_footfall else "≈кр"
+            col_val = tr("≈кр (×5)") if no_footfall else tr("≈кр")
             rows = [(item["genus"], item["percent"], item["bar"] or "·",
                      item["value"] or "—",
                      " · ".join(part for part in (item["species"], item["notes"]) if part)
@@ -1586,7 +1638,8 @@ class ExobiologyOverlay(HudWindow):
                     for item in entries]
             self._table_or_flow(
                 self.predict_label,
-                ("род", "%", "вероятность", col_val, "виды и причина"),
+                (tr("род"), "%", tr("вероятность"), col_val,
+                 tr("виды и причина")),
                 rows, "\n".join(lines),
                 aligns=("left", "right", "left", "right", "left"))
             return
@@ -1613,23 +1666,24 @@ class ExobiologyOverlay(HudWindow):
         self._set_planets_visible(True)
 
         if not criteria:
-            self.planets_header.setText(_section_text("D", "Поиск планет"))
-            self.planets_label.setText("критерии не выбраны — вкладка «Экзобиология»")
+            self.planets_header.setText(_section_text("D", tr("Поиск планет")))
+            self.planets_label.setText(
+                tr("критерии не выбраны — вкладка «Экзобиология»"))
             paint(self.planets_label, color=COLOR_TEXT_MUTED)
             return
 
         rows = state.get("planets") or []
         self.planets_header.setText(
-            _section_text("D", f"Поиск планет · найдено {len(rows)}"))
+            _section_text("D", tr("Поиск планет · найдено {count}", count=len(rows))))
         if not rows:
             known = int(state.get("system_known_bodies")
                         or state.get("system_scanned_bodies") or 0)
             if known:
-                text = ("в этой системе подходящих планет нет\n"
-                        f"(журнал знает {known} тел системы)")
+                text = tr("в этой системе подходящих планет нет\n"
+                          "(журнал знает {count} тел системы)", count=known)
             else:
-                text = ("журнал ещё не знает сканов тел этой системы\n"
-                        "(сканируйте планеты FSS/DSS при работающем Watcher)")
+                text = tr("журнал ещё не знает сканов тел этой системы\n"
+                          "(сканируйте планеты FSS/DSS при работающем Watcher)")
             self.planets_label.setText(text)
             paint(self.planets_label, color=COLOR_TEXT_MUTED)
             return
@@ -1643,15 +1697,15 @@ class ExobiologyOverlay(HudWindow):
             traits = []
             category = str(row.get("atmosphere_category") or "")
             if category in ("thin", "thick"):
-                traits.append("атмосфера")
+                traits.append(tr("атмосфера"))
             elif category == "none":
-                traits.append("без атмосферы")
-            traits.append("посадка" if row.get("landable") else "не сесть")
+                traits.append(tr("без атмосферы"))
+            traits.append(tr("посадка") if row.get("landable") else tr("не сесть"))
             if int(row.get("bio_signals") or 0):
-                traits.append(f"сигналов {row['bio_signals']}")
+                traits.append(tr("сигналов {count}", count=row["bio_signals"]))
             distance = float(row.get("distance_ls") or 0.0)
             if distance > 0:
-                traits.append(f"{distance:.0f} св.с")
+                traits.append(tr("{distance} св.с", distance=f"{distance:.0f}"))
             table_rows.append((name, str(row.get("planet_class") or "?"), ", ".join(traits)))
             # Почему планета попала в список — иначе фильтры непрозрачны.
             matched = [str(item) for item in (row.get("matched") or []) if item]
@@ -1663,10 +1717,11 @@ class ExobiologyOverlay(HudWindow):
         for name, why in matched_lines:
             lines.append(f"   ↳ {why}")
         if extra > 0:
-            lines.append(f"… и ещё {extra}")
+            lines.append(tr("… и ещё {count}", count=extra))
         if self._table_mode and table_rows:
             self._table_or_flow(
-                self.planets_label, ("тело", "класс", "признаки"), table_rows,
+                self.planets_label, (tr("тело"), tr("класс"), tr("признаки")),
+                table_rows,
                 "\n".join(lines), color=COLOR_GREEN_TEXT)
             return
         self._set_flow_text(self.planets_label, "\n".join(lines))
@@ -1675,28 +1730,32 @@ class ExobiologyOverlay(HudWindow):
     def _render_bodies(self, state: dict) -> None:
         bodies = state.get("system_bodies") or []
         self.bodies_header.setText(_section_text(
-            "E", f"Тела системы · биосигналы {len(bodies)}" if bodies else "Тела системы"))
+            "E", tr("Тела системы · биосигналы {count}", count=len(bodies))
+            if bodies else tr("Тела системы")))
         if not bodies:
-            self.bodies_label.setText("в этой системе биосигналов не найдено")
+            self.bodies_label.setText(tr("в этой системе биосигналов не найдено"))
             return
         rows = []
         for row in bodies[:self.MAX_BODIES]:
             name = self._short_body(state, row.get("body"))
             marks = []
             if row.get("has_organics"):
-                marks.append("образцы")
-            marks.append("карта есть" if row.get("mapped") else "карты нет")
+                marks.append(tr("образцы"))
+            marks.append(tr("карта есть") if row.get("mapped") else tr("карты нет"))
             if not row.get("landable"):
-                marks.append("не сесть")
+                marks.append(tr("не сесть"))
             rows.append((name, str(row.get("planet_class") or "?"),
                          str(row.get("bio_signals", 0)), ", ".join(marks)))
         extra = len(bodies) - self.MAX_BODIES
-        lines = [f"{name}  ·  сигналов {bio}  ·  {marks}" for name, _cls, bio, marks in rows]
+        lines = [tr("{body}  ·  сигналов {count}  ·  {marks}",
+                    body=name, count=bio, marks=marks)
+                 for name, _cls, bio, marks in rows]
         if extra > 0:
-            lines.append(f"… и ещё {extra}")
+            lines.append(tr("… и ещё {count}", count=extra))
         if self._table_mode and rows:
             self._table_or_flow(
-                self.bodies_label, ("тело", "класс", "био", "признаки"), rows,
+                self.bodies_label,
+                (tr("тело"), tr("класс"), tr("био"), tr("признаки")), rows,
                 "\n".join(lines), aligns=("left", "left", "right", "left"))
             return
         self._set_flow_text(self.bodies_label, "\n".join(lines))

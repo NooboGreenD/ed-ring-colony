@@ -9,6 +9,8 @@ import html
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
+
+from i18n import tr
 from urllib.parse import quote
 
 import requests
@@ -32,7 +34,7 @@ Block = Tuple[str, List[Segment]]
 def normalize_home_data(payload: Any) -> Dict[str, List[Dict[str, str]]]:
     """Reduce the public site response to safe, displayable article fields."""
     if not isinstance(payload, dict):
-        raise ValueError("Ответ сайта имеет неверный формат")
+        raise ValueError(tr("Ответ сайта имеет неверный формат"))
     output: Dict[str, List[Dict[str, str]]] = {}
     for key in ("news", "galnet"):
         records = payload.get(key, [])
@@ -68,7 +70,7 @@ def fetch_home_data(session=None, site_url: str = DEFAULT_SITE_URL,
 
 def format_date(value: str) -> str:
     if not value:
-        return "НОВОСТИ ПРОЕКТА"
+        return tr("НОВОСТИ ПРОЕКТА")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return parsed.astimezone().strftime("%d.%m.%Y  ·  %H:%M")

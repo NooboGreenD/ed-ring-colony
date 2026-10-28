@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
+from i18n import tr
 
 _IS_WINDOWS = sys.platform.startswith("win")
 
@@ -136,7 +137,7 @@ class HotkeyManager:
         self.master = master
         self.logger = logger
         self.available = _IS_WINDOWS
-        self.last_error: str = "" if _IS_WINDOWS else "Горячие клавиши доступны только в Windows"
+        self.last_error: str = "" if _IS_WINDOWS else tr("Горячие клавиши доступны только в Windows")
         self._bindings: Dict[str, Callable] = {}
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -232,8 +233,8 @@ class HotkeyManager:
                                             wintypes.UINT, wintypes.UINT]
         except Exception as exc:  # pragma: no cover — только если ctypes сломан
             self.available = False
-            self.last_error = f"не удалось инициализировать WinAPI: {exc}"
-            self._log(f"Горячие клавиши отключены: {exc}")
+            self.last_error = tr("не удалось инициализировать WinAPI: {error}", error=exc)
+            self._log(tr("Горячие клавиши отключены: {error}", error=exc))
             return
 
         msg = wintypes.MSG()
@@ -262,11 +263,11 @@ class HotkeyManager:
                     if user32.RegisterHotKey(None, hotkey_id, mods, vk):
                         registered[hotkey_id] = combo
                     else:
-                        self.last_error = f"клавиша {combo} занята другим приложением"
-                        self._log(f"Не удалось назначить горячую клавишу {combo}: занята")
+                        self.last_error = tr("клавиша {combo} занята другим приложением", combo=combo)
+                        self._log(tr("Не удалось назначить горячую клавишу {combo}: занята", combo=combo))
                 except Exception as exc:
                     self.last_error = str(exc)
-                    self._log(f"Ошибка регистрации {combo}: {exc}")
+                    self._log(tr("Ошибка регистрации {combo}: {error}", combo=combo, error=exc))
 
         register_all()
         self._reload.clear()

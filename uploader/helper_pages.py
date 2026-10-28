@@ -75,7 +75,7 @@ class LogPage(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
-        layout.addWidget(heading("Информационное окно", size=12))
+        layout.addWidget(heading(tr("Информационное окно"), size=12))
         self.view = QPlainTextEdit()
         self.view.setObjectName("logView")
         self.view.setReadOnly(True)
@@ -96,7 +96,7 @@ class LogPage(QWidget):
         actions_layout = QHBoxLayout(actions)
         actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(8)
-        self.clear_button = action_button("Очистить лог", self.clear)
+        self.clear_button = action_button(tr("Очистить лог"), self.clear)
         actions_layout.addWidget(self.clear_button)
         self.counter = label("", role="mono", size=8, color=MUTED)
         actions_layout.addWidget(self.counter)
@@ -144,7 +144,7 @@ class LogPage(QWidget):
 
     def update_count(self) -> None:
         count = self.entry_count()
-        self.counter.setText(f"записей: {count}" if count else "")
+        self.counter.setText(tr("записей: {count}", count=count) if count else "")
 
     def is_read_only(self) -> bool:
         return self.view.isReadOnly()
@@ -665,6 +665,27 @@ class UploadPage(QWidget):
 # ===========================================================================
 #: Заголовки колонок и стартовая ширина в пикселях.
 ROUTE_COLUMNS = (("#", 46), ("Система", 300), ("Статус", 130), ("Посещена", 170))
+#: Заголовки таблиц, которые не переводятся: номер строки, звёздочка основного
+#: проекта и техническое имя поля.
+KEEP_COLUMN_TITLES = frozenset({"#", "★", "buildId"})
+
+#: Подписи, одинаковые на всех языках: проценты размера блока HUD. Переводить
+#: их нечего — «XS — 75%» и по-немецки «XS — 75%», поэтому в каталоге их нет.
+UNTRANSLATED_TEXTS = frozenset({"XS — 75%", "S — 85%", "M — 100%",
+                               "L — 125%", "XL — 150%"})
+
+
+def column_title(title: str) -> str:
+    """Подпись заголовка колонки на текущем языке.
+
+    Переводится только то, что видит командир: «#», «★» и «buildId» — это
+    номер строки, значок и имя поля API, их перевод сделал бы таблицу
+    непонятной.
+    """
+    text = str(title)
+    return text if text in KEEP_COLUMN_TITLES else tr(text)
+
+
 #: Цвет строки по состоянию системы маршрута.
 ROUTE_STATUS_COLORS = {"visited": GREEN, "current": ORANGE, "pending": MUTED}
 
@@ -697,23 +718,23 @@ class RoutePage(QWidget):
         layout.setContentsMargins(16, 14, 16, 16)
         layout.setSpacing(8)
 
-        layout.addWidget(heading("Отслеживание маршрута", size=14))
-        layout.addWidget(label(
+        layout.addWidget(heading(tr("Отслеживание маршрута"), size=14))
+        layout.addWidget(label(tr(
             "Импортируйте маршрут из NavRoute.json или CSV. Системы отмечаются "
-            "автоматически при разборе журналов.", role="muted", size=9, wrap=True))
+            "автоматически при разборе журналов."), role="muted", size=9, wrap=True))
 
-        self.import_btn = action_button("Импорт маршрута", self._import_route, height=34)
-        self.export_btn = action_button("Экспорт CSV", self._export_csv, height=34)
-        self.atlas_btn = action_button("Забрать из Atlas", self._import_atlas,
+        self.import_btn = action_button(tr("Импорт маршрута"), self._import_route, height=34)
+        self.export_btn = action_button(tr("Экспорт CSV"), self._export_csv, height=34)
+        self.atlas_btn = action_button(tr("Забрать из Atlas"), self._import_atlas,
                                        variant="primary", height=34)
-        self.clear_btn = action_button("Очистить", self._clear, height=34)
+        self.clear_btn = action_button(tr("Очистить"), self._clear, height=34)
         layout.addWidget(row(self.import_btn, self.export_btn, self.atlas_btn,
                              self.clear_btn, None))
 
         self.table = QTableWidget(0, len(ROUTE_COLUMNS))
         self.table.setObjectName("routeTable")
         for index, (title, _width) in enumerate(ROUTE_COLUMNS):
-            header_item = QTableWidgetItem(title)
+            header_item = QTableWidgetItem(column_title(title))
             header_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignVCenter |
                 (Qt.AlignmentFlag.AlignLeft if index == 1
@@ -746,7 +767,7 @@ class RoutePage(QWidget):
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.table, 1)
 
-        self.counter = label("Маршрут не загружен", role="muted", size=9, wrap=True)
+        self.counter = label(tr("Маршрут не загружен"), role="muted", size=9, wrap=True)
         layout.addWidget(self.counter)
 
     # ------------------------------------------------------------------ pieces
@@ -910,11 +931,11 @@ class ColonyPage(QWidget):
         self.scroll.setWidget(self.content)
         outer.addWidget(self.scroll)
 
-        self.layout_.addWidget(heading("Колонизатор — проекты Raven Colonial", size=14))
-        self.layout_.addWidget(label(
+        self.layout_.addWidget(heading(tr("Колонизатор — проекты Raven Colonial"), size=14))
+        self.layout_.addWidget(label(tr(
             "Просмотр своих проектов, назначение основного, завершение стройки и "
             "создание нового проекта. Запись (создание/изменение/завершение) "
-            "требует ключа RCC — его выдают на сайте Raven Colonial.",
+            "требует ключа RCC — его выдают на сайте Raven Colonial."),
             role="muted", size=9, wrap=True))
 
         self._build_top(cmdr)
@@ -941,16 +962,16 @@ class ColonyPage(QWidget):
 
     def _build_top(self, cmdr: str) -> None:
         self.cmdr_entry = QLineEdit(str(cmdr or ""))
-        self.cmdr_entry.setPlaceholderText("Имя командира")
+        self.cmdr_entry.setPlaceholderText(tr("Имя командира"))
         self.cmdr_entry.setMinimumHeight(30)
         self.cmdr_entry.setMaximumWidth(280)
-        self.refresh_btn = action_button("Обновить список", self._refresh, height=32)
+        self.refresh_btn = action_button(tr("Обновить список"), self._refresh, height=32)
         self.key_label = label("", role="muted", size=9)
         holder = QWidget()
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(8)
-        holder_layout.addWidget(label("Командир:", size=9))
+        holder_layout.addWidget(label(tr("Командир:"), size=9))
         holder_layout.addWidget(self.cmdr_entry)
         holder_layout.addWidget(self.refresh_btn)
         holder_layout.addWidget(self.key_label)
@@ -961,7 +982,7 @@ class ColonyPage(QWidget):
         self.table = QTableWidget(0, len(COLONY_COLUMNS))
         self.table.setObjectName("colonyTable")
         for index, (_key, title, _width) in enumerate(COLONY_COLUMNS):
-            item = QTableWidgetItem(title)
+            item = QTableWidgetItem(column_title(title))
             item.setTextAlignment(
                 Qt.AlignmentFlag.AlignVCenter |
                 (Qt.AlignmentFlag.AlignCenter if index in (0, 4)
@@ -996,13 +1017,13 @@ class ColonyPage(QWidget):
     def _build_actions(self) -> None:
         self.action_buttons: List[QPushButton] = []
         items = (
-            ("★ Сделать основным", "set_primary"),
-            ("Снять основной", "clear_primary"),
-            ("Завершить проект", "complete"),
-            ("Копировать buildId", "copy_id"),
-            ("Открыть в Raven Colonial", "open_project"),
-            ("Привязать площадку к проекту", "bind_site"),
-            ("Снять привязку площадки", "unbind_site"),
+            (tr("★ Сделать основным"), "set_primary"),
+            (tr("Снять основной"), "clear_primary"),
+            (tr("Завершить проект"), "complete"),
+            (tr("Копировать buildId"), "copy_id"),
+            (tr("Открыть в Raven Colonial"), "open_project"),
+            (tr("Привязать площадку к проекту"), "bind_site"),
+            (tr("Снять привязку площадки"), "unbind_site"),
         )
         holder = QWidget()
         grid = QGridLayout(holder)
@@ -1036,25 +1057,25 @@ class ColonyPage(QWidget):
 
     def _build_create_form(self, autofill: bool, open_page_after_create: bool) -> None:
         self._divider()
-        self.layout_.addWidget(label("Создать проект", size=11, bold=True))
+        self.layout_.addWidget(label(tr("Создать проект"), size=11, bold=True))
 
-        self.fill_btn = action_button("Заполнить из журнала", self._fill_current,
+        self.fill_btn = action_button(tr("Заполнить из журнала"), self._fill_current,
                                       variant="primary", height=32)
-        self.reconcile_btn = action_button("Сверить стройплощадку с Raven",
+        self.reconcile_btn = action_button(tr("Сверить стройплощадку с Raven"),
                                            self._reconcile, height=32)
-        self.autofill_check = QCheckBox(
-            "Заполнять автоматически при посадке на стройплощадку")
+        self.autofill_check = QCheckBox(tr(
+            "Заполнять автоматически при посадке на стройплощадку"))
         self.autofill_check.setChecked(bool(autofill))
         self.autofill_check.toggled.connect(lambda _checked: self._call("options_changed"))
-        self.open_page_check = QCheckBox("Открывать страницу проекта после создания")
+        self.open_page_check = QCheckBox(tr("Открывать страницу проекта после создания"))
         self.open_page_check.setChecked(bool(open_page_after_create))
         self.open_page_check.toggled.connect(lambda _checked: self._call("options_changed"))
         self.layout_.addWidget(row(self.fill_btn, self.reconcile_btn, None))
         self.layout_.addWidget(self.autofill_check)
         self.layout_.addWidget(self.open_page_check)
 
-        self.site_label = label(
-            "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+        self.site_label = label(tr(
+            "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке."),
             role="muted", size=9, wrap=True)
         self.layout_.addWidget(self.site_label)
 
@@ -1067,7 +1088,7 @@ class ColonyPage(QWidget):
         self.entries: Dict[str, QWidget] = self.fields
         for index, (key, title, kind) in enumerate(COLONY_FORM_FIELDS):
             row_index, column = divmod(index, 2)
-            form.addWidget(label(title, size=9, wrap=True), row_index, column * 2)
+            form.addWidget(label(tr(title), size=9, wrap=True), row_index, column * 2)
             if kind == "combo":
                 widget = QComboBox()
                 widget.setMinimumWidth(150)
@@ -1098,14 +1119,14 @@ class ColonyPage(QWidget):
         plan_layout.setContentsMargins(0, 0, 0, 0)
         plan_layout.setHorizontalSpacing(10)
         plan_layout.setVerticalSpacing(6)
-        plan_layout.addWidget(label("План площадки", size=9), 0, 0)
+        plan_layout.addWidget(label(tr("План площадки"), size=9), 0, 0)
         self.plan_combo = QComboBox()
         self.plan_combo.setMinimumWidth(150)
-        self.plan_combo.addItem(self.PLAN_NONE_LABEL)
+        self.plan_combo.addItem(self.plan_none_label())
         self.plan_combo.currentIndexChanged.connect(
             lambda _index: self._call("plan_selected"))
         plan_layout.addWidget(self.plan_combo, 0, 1)
-        self.primary_port_check = QCheckBox("Основной порт системы")
+        self.primary_port_check = QCheckBox(tr("Основной порт системы"))
         plan_layout.addWidget(self.primary_port_check, 0, 2, 1, 2)
         plan_layout.setColumnStretch(3, 1)
         self.layout_.addWidget(plan_holder)
@@ -1115,7 +1136,7 @@ class ColonyPage(QWidget):
         notes.setContentsMargins(0, 0, 0, 0)
         notes.setHorizontalSpacing(10)
         notes.setVerticalSpacing(6)
-        notes.addWidget(label("Заметки", size=9), 0, 0)
+        notes.addWidget(label(tr("Заметки"), size=9), 0, 0)
         self.fields["notes"] = notes_entry = QLineEdit()
         notes_entry.setMinimumHeight(28)
         notes.addWidget(notes_entry, 0, 1, 1, 3)
@@ -1124,8 +1145,8 @@ class ColonyPage(QWidget):
         self.starpos_entry.setReadOnly(True)
         self.starpos_entry.setMinimumHeight(28)
         notes.addWidget(self.starpos_entry, 1, 1, 1, 3)
-        commodities_hint = label("Товары (остаток потребности), "
-                                 "формат: aluminium:1200, steel:900",
+        commodities_hint = label(tr("Товары (остаток потребности), "
+                                    "формат: aluminium:1200, steel:900"),
                                  size=9, wrap=True)
         commodities_hint.setMaximumWidth(200)
         notes.addWidget(commodities_hint, 2, 0)
@@ -1136,17 +1157,25 @@ class ColonyPage(QWidget):
         notes.setColumnStretch(3, 1)
         self.layout_.addWidget(notes_row)
 
-        self.create_btn = action_button("Создать проект", self._create,
+        self.create_btn = action_button(tr("Создать проект"), self._create,
                                          variant="primary", height=34)
-        self.clear_form_btn = action_button("Очистить форму", self._clear_form, height=34)
-        self.check_system_btn = action_button("Проверить площадку в системе",
+        self.clear_form_btn = action_button(tr("Очистить форму"), self._clear_form, height=34)
+        self.check_system_btn = action_button(tr("Проверить площадку в системе"),
                                               self._check_system, height=34)
         self.layout_.addWidget(row(self.create_btn, self.clear_form_btn,
                                    self.check_system_btn, None))
 
     # ----------------------------------------------------------- form plumbing
     #: Первый пункт списка планов площадки: «создать новый».
+    #: Это ключ перевода, а не текст для показа: подпись берётся из
+    #: :meth:`plan_none_label`, потому что сравнивать подпись с текстом на
+    #: языке интерфейса значило бы сломать выбор плана при смене языка.
     PLAN_NONE_LABEL = "Нет (создать новый план)"
+
+    @classmethod
+    def plan_none_label(cls) -> str:
+        """Подпись пункта «создать новый план» на текущем языке."""
+        return tr(cls.PLAN_NONE_LABEL)
 
     def _fill_current(self) -> None:
         self._call("fill_current")
@@ -1287,14 +1316,19 @@ class ColonyPage(QWidget):
                 for index in range(self.plan_combo.count())]
 
     def set_plan_labels(self, labels: Sequence[str]) -> None:
-        """Refill the site-plan dropdown, keeping the current choice if it survives."""
-        current = self.plan_combo.currentText()
+        """Refill the site-plan dropdown, keeping the current choice if it survives.
+
+        Первый пункт — «создать новый план»; его подпись приходит ключом на
+        русском и переводится здесь, чтобы вызывающий код не зависел от языка.
+        """
+        current = self.plan_combo.currentIndex()
+        texts = [self.plan_none_label() if str(value) == self.PLAN_NONE_LABEL
+                 else str(value) for value in labels]
         self.plan_combo.blockSignals(True)
         self.plan_combo.clear()
-        self.plan_combo.addItems([str(value) for value in labels] or [self.PLAN_NONE_LABEL])
+        self.plan_combo.addItems(texts or [self.plan_none_label()])
         self.plan_combo.blockSignals(False)
-        position = self.plan_combo.findText(current)
-        self.plan_combo.setCurrentIndex(position if position >= 0 else 0)
+        self.plan_combo.setCurrentIndex(current if 0 <= current < self.plan_combo.count() else 0)
 
     def plan_index(self) -> int:
         return self.plan_combo.currentIndex()
@@ -1303,11 +1337,24 @@ class ColonyPage(QWidget):
         return self.plan_combo.currentText()
 
     def set_plan_text(self, text: str) -> None:
+        if str(text) == self.PLAN_NONE_LABEL:
+            self.plan_combo.setCurrentIndex(0)
+            return
         position = self.plan_combo.findText(str(text))
         if position < 0:
             self.plan_combo.addItem(str(text))
             position = self.plan_combo.count() - 1
         self.plan_combo.setCurrentIndex(position)
+
+    def plan_none_selected(self) -> bool:
+        """Выбран ли пункт «создать новый план» (сравнение по индексу, не по тексту)."""
+        return self.plan_combo.currentIndex() <= 0
+
+    def set_plan_none(self) -> None:
+        """Вернуть список планов к пункту «создать новый план»."""
+        if self.plan_combo.count() == 0:
+            self.plan_combo.addItem(self.plan_none_label())
+        self.plan_combo.setCurrentIndex(0)
 
 
 # ===========================================================================
@@ -1316,8 +1363,20 @@ class ColonyPage(QWidget):
 #: Колонки таблицы блоков HUD.
 OVERLAY_BLOCK_FIELDS = ("visible", "locked", "screen", "alpha", "font_size",
                         "size", "auto_rule", "hotkey")
-#: Текст в колонке «Экран», когда блок живёт поверх игры.
+#: Ключ значения «блок живёт поверх игры» в колонке «Экран». Это именно ключ, а
+#: не подпись: сравнивать текст на языке интерфейса нельзя, поэтому подпись
+#: берётся из :func:`screen_with_game_label`, а разбор идёт по цифрам.
 OVERLAY_SCREEN_WITH_GAME = "с игрой"
+
+
+def screen_with_game_label() -> str:
+    """Подпись «с игрой» на текущем языке."""
+    return tr(OVERLAY_SCREEN_WITH_GAME)
+
+
+def screen_label(index) -> str:
+    """Подпись экрана монитора: «экран N»."""
+    return tr("экран {index}", index=index)
 
 
 @dataclass
@@ -1344,6 +1403,8 @@ class OverlayPageState:
     font_family: str = "Consolas"
     font_size: int = 10
     font_choices: Sequence[str] = ()
+    #: Первое значение — ключ «наследовать общий размер»; подпись берётся при
+    #: сборке таблицы, иначе перевод зависел бы от порядка импорта модулей.
     font_size_choices: Sequence[str] = ("общий", "8", "9", "10", "11", "12", "14", "16", "18")
     alpha_choices: Sequence[str] = ()
     hotkey_choices: Sequence[str] = ()
@@ -1421,8 +1482,18 @@ class OverlayPage(QWidget):
     …) instead of Tk variables.
     """
 
+    #: Ключи перевода для кнопки включения оверлея: подпись берётся из
+    #: :meth:`toggle_on_text` / :meth:`toggle_off_text` при отрисовке.
     TOGGLE_ON_TEXT = "▶ Включить оверлей"
     TOGGLE_OFF_TEXT = "⏹ Выключить оверлей"
+
+    @classmethod
+    def toggle_on_text(cls) -> str:
+        return tr(cls.TOGGLE_ON_TEXT)
+
+    @classmethod
+    def toggle_off_text(cls) -> str:
+        return tr(cls.TOGGLE_OFF_TEXT)
 
     def __init__(self, state: OverlayPageState,
                  actions: _Optional[OverlayPageActions] = None,
@@ -1510,14 +1581,14 @@ class OverlayPage(QWidget):
 
     # -------------------------------------------------------------- sections
     def _build_header(self) -> None:
-        self.layout_.addWidget(heading("Настройки оверлея HUD", size=14))
-        self._hint(
+        self.layout_.addWidget(heading(tr("Настройки оверлея HUD"), size=14))
+        self._hint(tr(
             "Оверлей работает поверх Elite Dangerous в режиме Borderless Windowed.\n"
             "Закреплённый блок не мешает мыши — клики уходят в игру. Чтобы подвинуть "
             "блоки или поменять размер, открепите их (Ctrl+F12 или галочки «Закреп.»). "
-            "F12 — показать/скрыть.")
-        self.toggle_btn = action_button(self.TOGGLE_ON_TEXT, self._toggle, height=34)
-        self.reset_btn = action_button("Сбросить позиции", self._reset_positions,
+            "F12 — показать/скрыть."))
+        self.toggle_btn = action_button(self.toggle_on_text(), self._toggle, height=34)
+        self.reset_btn = action_button(tr("Сбросить позиции"), self._reset_positions,
                                        variant="danger", height=34)
         self.layout_.addWidget(row(self.toggle_btn, self.reset_btn, None))
 
@@ -1528,12 +1599,12 @@ class OverlayPage(QWidget):
         self.alpha_slider.setValue(int(round(float(self.state.alpha) * 100)))
         self.alpha_label = label(f"{self.state.alpha:.0%}", size=9)
         self.alpha_slider.valueChanged.connect(self._on_alpha_slider)
-        self.layout_.addWidget(row(label("Прозрачность:", size=9),
+        self.layout_.addWidget(row(label(tr("Прозрачность:"), size=9),
                                    self.alpha_slider, self.alpha_label, None))
 
         self.font_combo = self._combo(self.state.font_choices, self.state.font_family)
         self.font_combo.currentTextChanged.connect(lambda _text: self._call("font_changed"))
-        self.layout_.addWidget(row(label("Шрифт:", size=9), self.font_combo, None))
+        self.layout_.addWidget(row(label(tr("Шрифт:"), size=9), self.font_combo, None))
 
         self.font_size_slider = QSlider(Qt.Orientation.Horizontal)
         self.font_size_slider.setRange(8, 18)
@@ -1541,7 +1612,7 @@ class OverlayPage(QWidget):
         self.font_size_slider.setValue(int(self.state.font_size))
         self.size_label = label(str(self.state.font_size), size=9)
         self.font_size_slider.valueChanged.connect(self._on_font_size_slider)
-        self.layout_.addWidget(row(label("Размер шрифта:", size=9),
+        self.layout_.addWidget(row(label(tr("Размер шрифта:"), size=9),
                                    self.font_size_slider, self.size_label, None))
 
     def _on_alpha_slider(self, value: int) -> None:
@@ -1554,15 +1625,15 @@ class OverlayPage(QWidget):
 
     def _build_blocks(self) -> None:
         self._divider(top=12, bottom=8)
-        self._section("Блоки HUD: вид и поведение")
-        self._hint(
+        self._section(tr("Блоки HUD: вид и поведение"))
+        self._hint(tr(
             "Каждый блок настраивается отдельно: показывать ли его, закреплён ли он, "
             "на каком экране живёт, своя прозрачность и свой размер шрифта, размер окна "
             "и правило «показывать по ситуации». Закреплённый блок не двигается и "
             "пропускает клики мыши в игру; откреплённый можно тянуть и настраивать. "
             "«Экран»: «с игрой» — блок виден только поверх игры; «экран N» — блок "
             "отвязан от игры, виден всегда и стоит на выбранном мониторе. Всё "
-            "применяется сразу — оверлей перезапускать не нужно.")
+            "применяется сразу — оверлей перезапускать не нужно."))
 
         self.block_table = QWidget()
         grid = QGridLayout(self.block_table)
@@ -1572,7 +1643,7 @@ class OverlayPage(QWidget):
         headers = ("Блок", "Показ", "Закреп.", "Экран", "Прозр.", "Шрифт",
                    "Размер", "Показывать", "Клавиша", "")
         for column, text in enumerate(headers):
-            header = label(text, size=8, bold=True, color=MUTED)
+            header = label(tr(text) if text else text, size=8, bold=True, color=MUTED)
             grid.addWidget(header, 0, column)
 
         self.block_widgets: Dict[str, Dict[str, QWidget]] = {}
@@ -1605,8 +1676,9 @@ class OverlayPage(QWidget):
                 lambda text, key=block.key: self._call("block_alpha", key, text))
             grid.addWidget(widgets["alpha"], row_index, 4)
 
-            widgets["font_size"] = self._combo(self.state.font_size_choices,
-                                               block.font_size, 66)
+            widgets["font_size"] = self._combo(
+                tuple(tr(value) for value in self.state.font_size_choices),
+                block.font_size, 66)
             widgets["font_size"].currentTextChanged.connect(
                 lambda text, key=block.key: self._call("block_font", key, text))
             grid.addWidget(widgets["font_size"], row_index, 5)
@@ -1626,7 +1698,7 @@ class OverlayPage(QWidget):
                 lambda text, key=block.key: self._call("block_hotkey", key, text))
             grid.addWidget(widgets["hotkey"], row_index, 8)
 
-            grid.addWidget(action_button("сброс", self._block_reset_callback(block.key),
+            grid.addWidget(action_button(tr("сброс"), self._block_reset_callback(block.key),
                                          height=26), row_index, 9)
             self.block_widgets[block.key] = widgets
         grid.setColumnStretch(7, 1)
@@ -1642,8 +1714,8 @@ class OverlayPage(QWidget):
 
         self.all_size_combo = self._combo(self.state.size_labels, self.state.all_size, 110)
         self.all_size_combo.currentTextChanged.connect(lambda _t: self._call("all_size_changed"))
-        self.all_size_btn = action_button("Применить", self._all_size_apply, height=30)
-        self.layout_.addWidget(row(label("Размер всех блоков:", size=9),
+        self.all_size_btn = action_button(tr("Применить"), self._all_size_apply, height=30)
+        self.layout_.addWidget(row(label(tr("Размер всех блоков:"), size=9),
                                    self.all_size_combo, self.all_size_btn, None))
 
     def _block_reset_callback(self, key: str):
@@ -1654,47 +1726,47 @@ class OverlayPage(QWidget):
 
     def _build_behaviour(self) -> None:
         self._divider()
-        self._section("Поведение оверлея")
-        self._hint(
+        self._section(tr("Поведение оверлея"))
+        self._hint(tr(
             "Закреплённый блок — только для глаз: мышь проходит сквозь него в игру, "
             "сразу после запуска и всегда. Откреплённый блок ловит мышь: его можно "
-            "тянуть за шапку, менять размер за угол и открывать меню «···».")
-        self.lock_all_btn = action_button("Закрепить все", lambda: self._call("lock_all", True),
-                                          height=30)
-        self.unlock_all_btn = action_button("Открепить все",
+            "тянуть за шапку, менять размер за угол и открывать меню «···»."))
+        self.lock_all_btn = action_button(tr("Закрепить все"),
+                                          lambda: self._call("lock_all", True), height=30)
+        self.unlock_all_btn = action_button(tr("Открепить все"),
                                             lambda: self._call("lock_all", False), height=30)
         self.lock_hotkey_combo = self._combo(self.state.lock_hotkey_choices,
                                              self.state.lock_hotkey, 110)
         self.lock_hotkey_combo.currentTextChanged.connect(
             lambda _text: self._call("lock_hotkey_changed"))
         self.layout_.addWidget(row(self.lock_all_btn, self.unlock_all_btn,
-                                   label("Клавиша:", size=9), self.lock_hotkey_combo,
-                                   label("закрепить/открепить все, даже из игры",
+                                   label(tr("Клавиша:"), size=9), self.lock_hotkey_combo,
+                                   label(tr("закрепить/открепить все, даже из игры"),
                                          role="muted", size=9), None))
 
         self.auto_rules_check = QCheckBox(
-            "Показывать блоки по ситуации (правила заданы в таблице выше)")
+            tr("Показывать блоки по ситуации (правила заданы в таблице выше)"))
         self.auto_rules_check.setChecked(bool(self.state.auto_rules))
         self.auto_rules_check.toggled.connect(lambda _c: self._call("auto_rules_changed"))
         self.layout_.addWidget(self.auto_rules_check)
 
-        self.attach_game_check = QCheckBox(
+        self.attach_game_check = QCheckBox(tr(
             "Привязать оверлей к окну Elite Dangerous (только поверх игры; "
-            "блоки с экраном «экран N» видны всегда)")
+            "блоки с экраном «экран N» видны всегда)"))
         self.attach_game_check.setChecked(bool(self.state.attach_game))
         self.attach_game_check.toggled.connect(lambda _c: self._call("attach_game_changed"))
         self.layout_.addWidget(self.attach_game_check)
 
         self.idle_combo = self._combo(self.state.idle_choices, self.state.idle, 110)
         self.idle_combo.currentTextChanged.connect(lambda _t: self._call("idle_changed"))
-        self.layout_.addWidget(row(label("Скрывать при простое:", size=9),
+        self.layout_.addWidget(row(label(tr("Скрывать при простое:"), size=9),
                                    self.idle_combo,
-                                   label("простой = нет новых событий в журнале",
+                                   label(tr("простой = нет новых событий в журнале"),
                                          role="muted", size=9), None))
 
     def _build_ship(self) -> None:
         self._divider(top=12, bottom=8)
-        self._section("Блоки корабля (SHIP):")
+        self._section(tr("Блоки корабля (SHIP):"))
         self.ship_widgets: Dict[str, QCheckBox] = {}
         holder = QWidget()
         grid = QGridLayout(holder)
@@ -1710,11 +1782,11 @@ class OverlayPage(QWidget):
             self.ship_widgets[key] = check
         self.layout_.addWidget(holder)
 
-        self._section("Список модулей в SHIP:")
+        self._section(tr("Список модулей в SHIP:"))
         self.ship_modules_buttons: Dict[str, QRadioButton] = {}
-        modes = (("important", "только важные (повреждённые, выключенные, ключевые)"),
-                 ("all", "все модули"),
-                 ("off", "только итог — без списка"))
+        modes = (("important", tr("только важные (повреждённые, выключенные, ключевые)")),
+                 ("all", tr("все модули")),
+                 ("off", tr("только итог — без списка")))
         holder = QWidget()
         holder_layout = QVBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
@@ -1730,7 +1802,7 @@ class OverlayPage(QWidget):
 
     def _build_content(self) -> None:
         self._divider()
-        self._section("Отображаемые данные по оверлеям")
+        self._section(tr("Отображаемые данные по оверлеям"))
         self.content_tabs = QTabWidget()
         self.content_widgets: Dict[str, QCheckBox] = {}
         for block_key, block_title, sections in self.state.content:
@@ -1746,8 +1818,8 @@ class OverlayPage(QWidget):
                 tab_layout.addWidget(check)
                 self.content_widgets[setting] = check
             if block_key == "ship":
-                tab_layout.addWidget(label(
-                    "Показатели и режим списка модулей настраиваются выше.",
+                tab_layout.addWidget(label(tr(
+                    "Показатели и режим списка модулей настраиваются выше."),
                     role="muted", size=9, wrap=True))
             if block_key == "carrier":
                 labels = [text for _mode, text in self.state.carrier_filters]
@@ -1755,7 +1827,7 @@ class OverlayPage(QWidget):
                 self.carrier_filter_combo.currentTextChanged.connect(
                     lambda _text: self._call("carrier_filter_changed"))
                 tab_layout.addWidget(self.carrier_filter_combo)
-                tab_layout.addWidget(label("Название товара (применить Enter или кнопкой):",
+                tab_layout.addWidget(label(tr("Название товара (применить Enter или кнопкой):"),
                                            size=9))
                 self.carrier_search_entry = QLineEdit(self.state.carrier_search)
                 self.carrier_search_entry.setMinimumHeight(28)
@@ -1763,23 +1835,24 @@ class OverlayPage(QWidget):
                     lambda: self._call("carrier_search_changed"))
                 tab_layout.addWidget(self.carrier_search_entry)
                 self.carrier_search_btn = action_button(
-                    "Применить поиск", lambda: self._call("carrier_search_changed"), height=28)
+                    tr("Применить поиск"), lambda: self._call("carrier_search_changed"),
+                    height=28)
                 tab_layout.addWidget(self.carrier_search_btn)
-                tab_layout.addWidget(label(
+                tab_layout.addWidget(label(tr(
                     "Фильтр меняет список, но не общие итоги. Без потребности стройки "
-                    "режимы материалов и недостачи пусты.", role="muted", size=9, wrap=True))
-            self.content_tabs.addTab(tab, block_title.upper())
+                    "режимы материалов и недостачи пусты."), role="muted", size=9, wrap=True))
+            self.content_tabs.addTab(tab, block_title)
         self.layout_.addWidget(self.content_tabs)
 
     def _build_layout(self) -> None:
         self._divider()
-        self._section("Раскладка и привязка")
-        self._hint(
+        self._section(tr("Раскладка и привязка"))
+        self._hint(tr(
             "Блоки прилипают к краям и углам области. Область — весь экран, либо экран с "
             "окном игры, если включена привязка к игре; у блока, отвязанного от игры, — его "
             "собственный экран. Профиль сохраняет всю раскладку (позиции, размеры, "
             "видимость, прозрачность, закрепление, экран) — например «Хаул», "
-            "«Экобиология», «Бой».")
+            "«Экобиология», «Бой»."))
 
         self.profile_combo = QComboBox()
         self.profile_combo.setEditable(True)
@@ -1787,13 +1860,14 @@ class OverlayPage(QWidget):
         self.profile_combo.addItems([str(name) for name in self.state.profiles])
         if self.state.profile:
             self.set_combo_text(self.profile_combo, self.state.profile)
-        self.profile_apply_btn = action_button("Применить", lambda: self._call("profile_apply"),
-                                               height=30)
-        self.profile_save_btn = action_button("Сохранить", lambda: self._call("profile_save"),
-                                              height=30)
-        self.profile_delete_btn = action_button("Удалить", lambda: self._call("profile_delete"),
+        self.profile_apply_btn = action_button(tr("Применить"),
+                                               lambda: self._call("profile_apply"), height=30)
+        self.profile_save_btn = action_button(tr("Сохранить"),
+                                              lambda: self._call("profile_save"), height=30)
+        self.profile_delete_btn = action_button(tr("Удалить"),
+                                                lambda: self._call("profile_delete"),
                                                 variant="danger", height=30)
-        self.layout_.addWidget(row(label("Профиль:", size=9), self.profile_combo,
+        self.layout_.addWidget(row(label(tr("Профиль:"), size=9), self.profile_combo,
                                    self.profile_apply_btn, self.profile_save_btn,
                                    self.profile_delete_btn, None))
 
@@ -1803,10 +1877,10 @@ class OverlayPage(QWidget):
         self.margin_slider.setValue(int(self.state.margin))
         self.margin_label = label(f"{int(self.state.margin)} px", size=9)
         self.margin_slider.valueChanged.connect(self._on_margin_slider)
-        self.layout_.addWidget(row(label("Отступ от края:", size=9),
+        self.layout_.addWidget(row(label(tr("Отступ от края:"), size=9),
                                    self.margin_slider, self.margin_label, None))
 
-        self._section("Привязка блоков:")
+        self._section(tr("Привязка блоков:"))
         self.anchor_widgets: Dict[str, QComboBox] = {}
         holder = QWidget()
         grid = QGridLayout(holder)
@@ -1825,11 +1899,11 @@ class OverlayPage(QWidget):
         grid.setColumnStretch(1, 1)
         self.layout_.addWidget(holder)
 
-        self.apply_anchors_btn = action_button("Пересчитать по якорям",
+        self.apply_anchors_btn = action_button(tr("Пересчитать по якорям"),
                                                lambda: self._call("apply_anchors"), height=30)
         self.layout_.addWidget(row(self.apply_anchors_btn, self.reset_btn_2(), None))
 
-        self.hide_without_game_check = QCheckBox("Скрывать оверлей, когда игра не запущена")
+        self.hide_without_game_check = QCheckBox(tr("Скрывать оверлей, когда игра не запущена"))
         self.hide_without_game_check.setChecked(bool(self.state.hide_without_game))
         self.hide_without_game_check.toggled.connect(
             lambda _c: self._call("hide_without_game_changed"))
@@ -1840,14 +1914,14 @@ class OverlayPage(QWidget):
 
     def reset_btn_2(self) -> QPushButton:
         """Second «сбросить позиции» button; the first one is in the header."""
-        return action_button("Сбросить позиции", self._reset_positions, height=30)
+        return action_button(tr("Сбросить позиции"), self._reset_positions, height=30)
 
     def _build_hotkeys(self) -> None:
         self._divider()
-        self._section("Горячие клавиши")
+        self._section(tr("Горячие клавиши"))
         self.hotkey_hint_label = label(self.state.hotkey_hint, role="muted", size=9, wrap=True)
         self.layout_.addWidget(self.hotkey_hint_label)
-        self.layout_.addWidget(label(
+        self.layout_.addWidget(label(tr(
             "Управление оверлеями:\n"
             "  • UL в шапке — блок откреплён: тяните за заголовок или «::», размер — за угол\n"
             "  • LK в шапке — блок закреплён: не двигается, клики мыши уходят в игру\n"
@@ -1856,7 +1930,7 @@ class OverlayPage(QWidget):
             "    прозрачность, шрифт\n"
             "  • Голубая полоса сверху — блок отвязан от игры и виден всегда\n"
             "  • Клавиши из таблицы выше — показать/скрыть конкретный блок\n"
-            "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей",
+            "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей"),
             role="muted", size=9, wrap=True))
 
     # ------------------------------------------------------------------ actions
@@ -2033,7 +2107,8 @@ class OverlayPage(QWidget):
         self.carrier_search_entry.setText(str(text or ""))
 
     def set_toggle_running(self, running: bool) -> None:
-        self.toggle_btn.setText(self.TOGGLE_OFF_TEXT if running else self.TOGGLE_ON_TEXT)
+        self.toggle_btn.setText(self.toggle_off_text() if running
+                                else self.toggle_on_text())
         self.toggle_btn.setProperty("variant", "danger" if running else "default")
         style = self.toggle_btn.style()
         style.unpolish(self.toggle_btn)
@@ -2176,10 +2251,12 @@ class SparklineWidget(QWidget):
     """Filled line chart of the current session (no external chart library)."""
 
     def __init__(self, color: str = "#65c78a", *, height: int = 64,
-                 empty_text: str = "накопление данных…", parent=None) -> None:
+                 empty_text: str = "", parent=None) -> None:
         super().__init__(parent)
         self.color = QColor(color)
-        self.empty_text = empty_text
+        # Ключ перевода подставляется при сборке: значение по умолчанию в
+        # подписи метода вычислилось бы один раз, при импорте модуля.
+        self.empty_text = empty_text or tr("накопление данных…")
         self.values: List[float] = []
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2220,10 +2297,10 @@ class BarsChart(QWidget):
     """Horizontal bars: "top systems by tons"."""
 
     def __init__(self, color: str = "#42b9d4", *, height: int = 110,
-                 empty_text: str = "данных пока нет", parent=None) -> None:
+                 empty_text: str = "", parent=None) -> None:
         super().__init__(parent)
         self.color = QColor(color)
-        self.empty_text = empty_text
+        self.empty_text = empty_text or tr("данных пока нет")
         self.rows: List[Tuple[str, float]] = []
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2575,6 +2652,8 @@ EXOBIO_COLUMNS = (
 class ExobioPageState:
     """Everything the Exobiology page needs for its first paint."""
 
+    #: Ключ перевода «система не определена»: подпись берётся при сборке
+    #: страницы, чтобы перевод не зависел от порядка импорта модулей.
     system: str = "не определена"
     summary: str = ""
     status: str = ""
@@ -2659,29 +2738,32 @@ class ExobioPage(QWidget):
             callback(*args)
 
     def _build_header(self) -> None:
-        self.layout_.addWidget(heading("Поиск органики и фильтры оверлея", size=14))
-        self._hint(
+        self.layout_.addWidget(heading(tr("Поиск органики и фильтры оверлея"), size=14))
+        self._hint(tr(
             "Тела текущей системы, биосигналы, образцы и фильтры для оверлея EXOBIO. "
             "Если система уже была отсканирована ранее, сканы подтягиваются автоматически "
-            "из истории журналов и кэша. Все изменения фильтров применяются сразу.")
+            "из истории журналов и кэша. Все изменения фильтров применяются сразу."))
 
         box = panel(QFrame(), "panel")
         box_layout = QVBoxLayout(box)
         box_layout.setContentsMargins(12, 10, 12, 10)
         box_layout.setSpacing(4)
 
-        self.system_label = label(f"Текущая система: {self.state.system}",
-                                  size=11, bold=True, color=CYAN)
-        self.rescan_btn = action_button("Сверить с журналами",
+        self.system_label = label(
+            tr("Текущая система: {system}",
+               system=tr(self.state.system) if self.state.system else tr("не определена")),
+            size=11, bold=True, color=CYAN)
+        self.rescan_btn = action_button(tr("Сверить с журналами"),
                                         lambda: self._call("rescan"), height=30)
-        self.scan_all_btn = action_button("Сканировать все журналы",
+        self.scan_all_btn = action_button(tr("Сканировать все журналы"),
                                           lambda: self._call("scan_all"), height=30)
         box_layout.addWidget(row(self.system_label, None, self.scan_all_btn,
                                  self.rescan_btn, None))
 
         self.summary_label = label(
-            self.state.summary or
-            "Тел отсканировано: 0 · С биосигналами: 0 · Всего биосигналов: 0",
+            self.state.summary or tr(
+                "Тел отсканировано: {bodies} · С биосигналами: {with_signals} · "
+                "Всего биосигналов: {signals}", bodies=0, with_signals=0, signals=0),
             role="muted", size=9)
         box_layout.addWidget(self.summary_label)
 
@@ -2691,10 +2773,10 @@ class ExobioPage(QWidget):
         self.layout_.addWidget(box)
 
     def _build_bodies(self) -> None:
-        self._section("Тела текущей системы")
-        self._hint(
+        self._section(tr("Тела текущей системы"))
+        self._hint(tr(
             "Отсканированные тела текущей системы: тип, атмосфера, посадка, число "
-            "биосигналов и совпадение с выбранными фильтрами поиска.")
+            "биосигналов и совпадение с выбранными фильтрами поиска."))
 
         self.table = QTableWidget(0, len(EXOBIO_COLUMNS))
         self.table.verticalHeader().setVisible(False)
@@ -2703,7 +2785,7 @@ class ExobioPage(QWidget):
         self.table.setAlternatingRowColors(False)
         self.table.setMinimumHeight(170)
         for column, (_key, title, width) in enumerate(EXOBIO_COLUMNS):
-            item = QTableWidgetItem(title)
+            item = QTableWidgetItem(column_title(title))
             item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self.table.setHorizontalHeaderItem(column, item)
             self.table.setColumnWidth(column, width)
@@ -2715,10 +2797,10 @@ class ExobioPage(QWidget):
 
     def _build_genera(self) -> None:
         self._divider()
-        self._section("Роды в прогнозе")
-        self._hint(
+        self._section(tr("Роды в прогнозе"))
+        self._hint(tr(
             "Отмеченные роды остаются в списке «Вероятные роды», остальные скрываются. "
-            "Если не отмечено ничего — фильтр выключен и показываются все роды.")
+            "Если не отмечено ничего — фильтр выключен и показываются все роды."))
 
         holder = QWidget()
         grid = QGridLayout(holder)
@@ -2736,40 +2818,40 @@ class ExobioPage(QWidget):
         grid.setColumnStretch(2, 1)
         self.layout_.addWidget(holder)
 
-        self.all_genera_btn = action_button("Отметить все",
+        self.all_genera_btn = action_button(tr("Отметить все"),
                                            lambda: self.set_all_genera(True), height=30)
-        self.none_genera_btn = action_button("Снять все",
+        self.none_genera_btn = action_button(tr("Снять все"),
                                             lambda: self.set_all_genera(False), height=30)
         self.layout_.addWidget(row(self.all_genera_btn, self.none_genera_btn,
-                                   label("«Снять все» = показать все роды",
+                                   label(tr("«Снять все» = показать все роды"),
                                          role="muted", size=9), None))
 
     def _build_planets(self) -> None:
         self._divider()
-        self._section("Поиск планет в системе")
-        self._hint(
+        self._section(tr("Поиск планет в системе"))
+        self._hint(tr(
             "Отмеченные наборы критериев применяются к отсканированным телам текущей "
             "системы. Подходящие планеты попадают в раздел «Поиск планет» оверлея — "
             "с типом, атмосферой, возможностью посадки и причиной, по которой планета "
-            "нашлась. Данные берутся из вашего журнала и кэша.")
+            "нашлась. Данные берутся из вашего журнала и кэша."))
 
-        self.show_planets_check = QCheckBox("Показывать раздел «Поиск планет» в оверлее")
+        self.show_planets_check = QCheckBox(tr("Показывать раздел «Поиск планет» в оверлее"))
         self.show_planets_check.setChecked(bool(self.state.show_planets))
         self.show_planets_check.toggled.connect(lambda _state: self._on_filters_changed())
         self.layout_.addWidget(self.show_planets_check)
 
         selected = {str(item) for item in self.state.selected_planets}
         for preset_id, preset_label in self.state.planet_choices:
-            check = QCheckBox(str(preset_label))
+            check = QCheckBox(tr(str(preset_label)))
             check.setChecked(str(preset_id) in selected)
             check.toggled.connect(lambda _state: self._on_filters_changed())
             self.layout_.addWidget(check)
             self.planet_widgets[str(preset_id)] = check
 
-        self.clear_planets_btn = action_button("Снять все", self.clear_planets, height=30)
+        self.clear_planets_btn = action_button(tr("Снять все"), self.clear_planets, height=30)
         self.layout_.addWidget(row(
             self.clear_planets_btn,
-            label("без отмеченных наборов раздел пишет, что критерии не выбраны",
+            label(tr("без отмеченных наборов раздел пишет, что критерии не выбраны"),
                   role="muted", size=9), None))
 
     # ----------------------------------------------------------------- events
@@ -2780,7 +2862,8 @@ class ExobioPage(QWidget):
 
     # --------------------------------------------------------------- accessors
     def set_system_text(self, system: str) -> None:
-        self.system_label.setText(f"Текущая система: {system or 'не определена'}")
+        self.system_label.setText(
+            tr("Текущая система: {system}", system=system or tr("не определена")))
 
     def set_summary_text(self, text: str) -> None:
         self.summary_label.setText(str(text))

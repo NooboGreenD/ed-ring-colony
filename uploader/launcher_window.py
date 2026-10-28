@@ -13,6 +13,7 @@ window behind.
 from __future__ import annotations
 
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -92,6 +93,8 @@ class LauncherWindow(FramelessWindow):
         self.last_error = ""
         self._busy = False
         self._news_busy = False
+        self._locale_job = None
+        self._feed_generation = 0
         # Состояние, из которого перерисовываются подписи: при смене языка
         # текст берётся отсюда, а не из старых виджетов.
         self._feed_state: Dict[str, Any] = {"kind": "idle", "news": 0, "galnet": 0}
@@ -347,7 +350,12 @@ class LauncherWindow(FramelessWindow):
             self._placeholder_text(len(articles)), role="muted", size=11, wrap=True),
             0, Qt.AlignmentFlag.AlignTop)
         for article in articles:
-            self.feed_layout.addWidget(self._article_card(self.current_tab, article), 0)
+            try:
+                card = self._article_card(self.current_tab, article)
+            except Exception:                      # одна карточка не лента целиком
+                self._log_problem("карточка новости: " + traceback.format_exc())
+                continue
+            self.feed_layout.addWidget(card, 0)
         self.feed_layout.addStretch(1)
 
     def _placeholder_text(self, count: int) -> str:
@@ -408,17 +416,25 @@ class LauncherWindow(FramelessWindow):
         self._render_feed()
 
     def refresh_news(self) -> None:
-        if self._news_busy:
-            return
+        # Каждый запрос помечен номером: ответ на прошлый язык, пришедший
+        # позже, не должен перерисовать уже переведённое окно. Раньше здесь
+        # стоял флаг «уже загружаем»: после смены языка он оставался поднятым,
+        # ответ на старый язык отбрасывался, и лента больше не обновлялась.
         self._news_busy = True
+        self._feed_generation += 1
+        generation = self._feed_generation
         self._feed_state = {"kind": "loading", "news": 0, "galnet": 0}
         self.feed_status.setText(self._feed_status_text())
         self.feed_status.setStyleSheet(f"color:{MUTED};")
         locale = self.site_locale
         run_async(self, lambda: self._fetch(locale=locale),
-                  self._news_loaded, self._news_failed)
+                  lambda data: self._news_loaded(data, generation),
+                  lambda error: self._news_failed(error, generation))
 
-    def _news_loaded(self, data: Dict[str, List[Dict[str, str]]]) -> None:
+    def _news_loaded(self, data: Dict[str, List[Dict[str, str]]],
+                     generation: Optional[int] = None) -> None:
+        if generation is not None and generation != self._feed_generation:
+            return
         self._news_busy = False
         self.feed_loaded = True
         self.feed_error = False
@@ -434,7 +450,9 @@ class LauncherWindow(FramelessWindow):
         self.connection_indicator.setStyleSheet(f"color:{GREEN};")
         self._render_feed()
 
-    def _news_failed(self, error: Any) -> None:
+    def _news_failed(self, error: Any, generation: Optional[int] = None) -> None:
+        if generation is not None and generation != self._feed_generation:
+            return
         self._news_busy = False
         self.feed_loaded = True
         self.feed_error = True
@@ -450,13 +468,48 @@ class LauncherWindow(FramelessWindow):
 
     # --------------------------------------------------------------- language
     def _on_locale_changed(self, _index: int = -1) -> None:
+        """Запомнить язык и перестроить окно — не внутри обработчика списка.
+
+        Разбор строки идёт сразу (это дешёвая операция без виджетов), а
+        перестройка окна откладывается на следующий проход цикла событий:
+        `currentIndexChanged` приходит, пока Qt ещё закрывает выпадающий список
+        и держит мышь у списка, а `_retranslate()` удаляет и создаёт виджеты.
+        Уничтожать дерево виджетов посреди обработки собственного события
+        списка — как раз то, из-за чего окно может исчезнуть на Windows.
+        """
         code = str(self.locale_combo.currentData() or DEFAULT_LOCALE)
-        self.site_locale = launcher_settings.save_site_locale(code, self.settings_path)
-        i18n.set_locale(self.site_locale)
-        self._retranslate()
+        try:
+            self.site_locale = launcher_settings.save_site_locale(code, self.settings_path)
+        except OSError as exc:                    # профиль только для чтения
+            self.site_locale = i18n.set_locale(code)
+            self._log_problem(f"не удалось сохранить язык: {exc}")
+        if self._locale_job is not None:
+            return                                  # перестройка уже в очереди
+        self._locale_job = True
+        QTimer.singleShot(0, self._apply_locale_change)
+
+    def _apply_locale_change(self) -> None:
+        """Применить выбранный язык ко всему окну."""
+        self._locale_job = None
+        try:
+            i18n.set_locale(self.site_locale)
+            self._retranslate()
+        except Exception:                          # окно не должно исчезнуть
+            self._log_problem("перестройка окна на другом языке: "
+                              + traceback.format_exc())
+            return
         self.feed_loaded = False
         self._feed_state = {"kind": "idle", "news": 0, "galnet": 0}
         self.refresh_news()
+
+    def _log_problem(self, message: str) -> None:
+        """Записать сбой в журнал лаунчера: его присылают вместе с отчётом."""
+        try:
+            import launcher as bootstrapper
+
+            bootstrapper.log(self.install_root, f"лаунчер: {message.strip()}")
+        except Exception:
+            print(f"лаунчер: {message}", file=sys.stderr)
 
     # ---------------------------------------------------------------- updates
     def _render_update_state(self) -> None:

@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+from i18n import tr
 
 import bundle
 
@@ -75,11 +76,14 @@ def create_shortcut(shortcut_path: Path, target_path: Path) -> None:
             completed = subprocess.run(command, **run_options)
         except subprocess.TimeoutExpired:
             raise RuntimeError(
-                f"Windows Script Host не создал ярлык {shortcut_path.name} за 12 секунд."
+                tr("Windows Script Host не создал ярлык {name} за 12 секунд.",
+                   name=shortcut_path.name)
             ) from None
         if completed.returncode:
-            detail = (completed.stderr or completed.stdout or "Windows Script Host вернул ошибку").strip()
-            raise RuntimeError(f"Не удалось создать ярлык {shortcut_path.name}: {detail[:300]}")
+            detail = (completed.stderr or completed.stdout
+                      or tr("Windows Script Host вернул ошибку")).strip()
+            raise RuntimeError(tr("Не удалось создать ярлык {name}: {detail}",
+                                  name=shortcut_path.name, detail=detail[:300]))
     finally:
         if script_path is not None:
             try:
@@ -123,7 +127,7 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
     """
     source = Path(source_exe)
     if not source.is_file() or source.stat().st_size <= 0:
-        raise FileNotFoundError(f"Не найден файл лаунчера: {source}")
+        raise FileNotFoundError(tr("Не найден файл лаунчера: {path}", path=source))
     root = Path(install_root or bundle.install_root()).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     target = root / EXECUTABLE
@@ -131,7 +135,7 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
     try:
         shutil.copyfile(source, temporary)
         if temporary.stat().st_size != source.stat().st_size:
-            raise OSError("Размер скопированного лаунчера не совпадает с оригиналом")
+            raise OSError(tr("Размер скопированного лаунчера не совпадает с оригиналом"))
         os.replace(temporary, target)
     finally:
         try:
@@ -174,7 +178,8 @@ def main(argv=None) -> int:
                              launch="--no-launch" not in args)
             return 0
         except Exception as exc:
-            print(f"Не удалось установить Colonial Helper: {exc}", file=sys.stderr)
+            print(tr("Не удалось установить Colonial Helper: {error}", error=exc),
+                  file=sys.stderr)
             return 1
     try:
         from installer_window import SetupWindow
@@ -188,7 +193,7 @@ def main(argv=None) -> int:
     except BaseException as exc:
         from ui_qt import report_startup_error
 
-        report_startup_error(exc, title="Не удалось открыть установщик Colonial Helper")
+        report_startup_error(exc, title=tr("Не удалось открыть установщик Colonial Helper"))
         return 1
 
 

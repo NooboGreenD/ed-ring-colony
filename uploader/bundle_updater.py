@@ -34,6 +34,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from i18n import tr
+
 import bundle
 
 try:  # site_config лежит рядом; в тестах модуль может быть недоступен
@@ -84,13 +86,13 @@ def _get_json(http, url: str, params: Optional[Dict[str, Any]] = None,
     response = http.get(url, params=params or {}, headers=_headers(current), timeout=TIMEOUT)
     if not getattr(response, "ok", False):
         status = getattr(response, "status_code", "?")
-        raise RuntimeError(f"HTTP {status} от {url}")
+        raise RuntimeError(tr("HTTP {status} от {url}", status=status, url=url))
     try:
         data = response.json()
     except ValueError as exc:
-        raise RuntimeError(f"Сервер вернул не JSON ({url})") from exc
+        raise RuntimeError(tr("Сервер вернул не JSON ({url})", url=url)) from exc
     if not isinstance(data, dict):
-        raise RuntimeError(f"Неожиданный формат ответа ({url})")
+        raise RuntimeError(tr("Неожиданный формат ответа ({url})", url=url))
     return data
 
 
@@ -100,7 +102,8 @@ def _get_bytes(http, url: str, expect_sha: str = "", limit: int = bundle.MAX_FIL
     with http.get(url, headers=_headers(current), timeout=TIMEOUT, stream=True) as response:
         if not getattr(response, "ok", False):
             status = getattr(response, "status_code", "?")
-            raise RuntimeError(f"HTTP {status} при скачивании {url}")
+            raise RuntimeError(tr("HTTP {status} при скачивании {url}",
+                                   status=status, url=url))
         buffer = io.BytesIO()
         for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK):
             if not chunk:
@@ -112,10 +115,11 @@ def _get_bytes(http, url: str, expect_sha: str = "", limit: int = bundle.MAX_FIL
                 except Exception:
                     pass
             if buffer.tell() > limit:
-                raise RuntimeError(f"Файл больше допустимого ({limit} байт): {url}")
+                raise RuntimeError(tr("Файл больше допустимого ({bytes} байт): {url}",
+                                       bytes=limit, url=url))
         data = buffer.getvalue()
     if expect_sha and bundle.sha256_bytes(data) != expect_sha:
-        raise RuntimeError(f"Хеш не совпал: {url}")
+        raise RuntimeError(tr("Хеш не совпал: {url}", url=url))
     return data
 
 
@@ -152,7 +156,7 @@ def check_for_update(current: str, channel: str = "stable", launcher_version: st
                             params={"channel": channel, "platform": PLATFORM},
                             current=current)
     except Exception as exc:
-        result["error"] = f"Сервер обновлений недоступен: {exc}"
+        result["error"] = tr("Сервер обновлений недоступен: {error}", error=exc)
         return result
 
     manifest = payload.get("manifest") if isinstance(payload.get("manifest"), dict) else payload
@@ -252,7 +256,7 @@ def _stage_from_sources(root, manifest: Dict[str, Any], fetch: Callable[[str, Di
             continue
         data = fetch(path, meta)
         if bundle.sha256_bytes(data) != meta["sha256"]:
-            raise bundle.BundleError(f"Файл {path} не совпал по sha256")
+            raise bundle.BundleError(tr("Файл {path} не совпал по sha256", path=path))
         target.write_bytes(data)
         done += len(data)
         if progress:
@@ -320,7 +324,7 @@ def apply_update(root, manifest: Dict[str, Any], progress=None, session=None,
         result["error"] = str(exc)
         return result
     except Exception as exc:
-        result["error"] = f"Обновление не скачалось: {exc}"
+        result["error"] = tr("Обновление не скачалось: {error}", error=exc)
         return result
 
     outcome = _install_stage(root, manifest, stage, keys)
@@ -338,7 +342,7 @@ def install_from_directory(root, source_dir, manifest: Dict[str, Any],
     def fetch(path: str, meta: Dict[str, Any]) -> bytes:
         candidate = folder / path
         if not candidate.is_file():
-            raise bundle.BundleError(f"В встроенном пакете нет файла {path}")
+            raise bundle.BundleError(tr("В встроенном пакете нет файла {path}", path=path))
         return candidate.read_bytes()
 
     problem = bundle.verify_manifest(manifest, keys, require_signature)
@@ -381,7 +385,7 @@ def repair(root, version: str = "", channel: str = "stable", session=None,
         archive = _get_bytes(http, f"{api}/bundle/{version}.zip",
                              limit=bundle.MAX_BUNDLE_BYTES)
     except Exception as exc:
-        result["error"] = f"Не удалось получить пакет: {exc}"
+        result["error"] = tr("Не удалось получить пакет: {error}", error=exc)
         return result
 
     try:
@@ -403,7 +407,7 @@ def repair(root, version: str = "", channel: str = "stable", session=None,
         result["error"] = str(exc)
         return result
     except OSError as exc:
-        result["error"] = f"Не удалось записать файлы: {exc}"
+        result["error"] = tr("Не удалось записать файлы: {error}", error=exc)
         return result
 
     outcome = _install_stage(root, manifest, stage, keys)
@@ -430,15 +434,15 @@ def extract_zip(data: bytes, manifest: Dict[str, Any]) -> Dict[str, bytes]:
                 try:
                     info = archive.getinfo(path)
                 except KeyError:
-                    raise bundle.BundleError(f"В архиве нет файла {path}")
+                    raise bundle.BundleError(tr("В архиве нет файла {path}", path=path))
                 if info.file_size > bundle.MAX_FILE_BYTES:
-                    raise bundle.BundleError(f"Файл {path} слишком велик")
+                    raise bundle.BundleError(tr("Файл {path} слишком велик", path=path))
                 blob = archive.read(info)
                 if bundle.sha256_bytes(blob) != meta["sha256"]:
-                    raise bundle.BundleError(f"Файл {path} не совпал по sha256")
+                    raise bundle.BundleError(tr("Файл {path} не совпал по sha256", path=path))
                 out[path] = blob
     except zipfile.BadZipFile as exc:
-        raise bundle.BundleError(f"Архив пакета повреждён: {exc}") from exc
+        raise bundle.BundleError(tr("Архив пакета повреждён: {error}", error=exc)) from exc
     return out
 
 
@@ -455,7 +459,7 @@ def check_launcher(launcher_version: str, session=None, base: str = "") -> Dict[
         payload = _get_json(http, f"{api}/launcher", params={"platform": PLATFORM},
                             current=launcher_version)
     except Exception as exc:
-        result["error"] = f"Сервер обновлений недоступен: {exc}"
+        result["error"] = tr("Сервер обновлений недоступен: {error}", error=exc)
         return result
     result["ok"] = True
     result["version"] = str(payload.get("version") or "")
@@ -463,7 +467,7 @@ def check_launcher(launcher_version: str, session=None, base: str = "") -> Dict[
     result["sha256"] = str(payload.get("sha256") or "").lower()
     result["size"] = int(payload.get("size") or 0)
     if not result["url"]:
-        result["error"] = "сервер не отдал ссылку на сборку"
+        result["error"] = tr("сервер не отдал ссылку на сборку")
         return result
     result["update_available"] = (
         bundle.version_tuple(result["version"]) > bundle.version_tuple(launcher_version))
@@ -475,13 +479,14 @@ def download_launcher(info: Dict[str, Any], dest_dir, progress=None, session=Non
     result: Dict[str, Any] = {"ok": False, "path": "", "size": 0, "error": None}
     url = str((info or {}).get("url") or "")
     if not url:
-        result["error"] = "нет ссылки на сборку"
+        result["error"] = tr("нет ссылки на сборку")
         return result
     folder = Path(dest_dir)
     try:
         folder.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        result["error"] = f"Не удалось создать папку {folder}: {exc}"
+        result["error"] = tr("Не удалось создать папку {path}: {error}",
+                                 path=folder, error=exc)
         return result
     name = url.rstrip("/").rsplit("/", 1)[-1] or "ColonialHelper.exe"
     if not name.lower().endswith((".exe", ".zip", ".msi")):
@@ -495,7 +500,8 @@ def download_launcher(info: Dict[str, Any], dest_dir, progress=None, session=Non
         with http.get(url, stream=True, timeout=TIMEOUT,
                       headers=_headers("launcher")) as response:
             if not getattr(response, "ok", False):
-                result["error"] = f"HTTP {getattr(response, 'status_code', '?')} при скачивании"
+                result["error"] = tr("HTTP {status} при скачивании",
+                                     status=getattr(response, "status_code", "?"))
                 return result
             total = int(response.headers.get("Content-Length") or (info or {}).get("size") or 0)
             with open(tmp, "wb") as handle:
@@ -511,7 +517,7 @@ def download_launcher(info: Dict[str, Any], dest_dir, progress=None, session=Non
                             pass
         if expect and bundle.sha256_file(tmp) != expect:
             tmp.unlink(missing_ok=True)
-            result["error"] = "хеш скачанной сборки не совпал"
+            result["error"] = tr("хеш скачанной сборки не совпал")
             return result
         tmp.replace(target)
     except Exception as exc:
@@ -519,7 +525,7 @@ def download_launcher(info: Dict[str, Any], dest_dir, progress=None, session=Non
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-        result["error"] = f"Скачивание прервано: {exc}"
+        result["error"] = tr("Скачивание прервано: {error}", error=exc)
         return result
     result.update({"ok": True, "path": str(target), "size": done})
     return result

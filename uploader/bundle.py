@@ -43,6 +43,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from i18n import tr
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
@@ -194,7 +195,7 @@ def _point_decompress(data: bytes):
 
 def _secret_expand(secret: bytes) -> Tuple[int, bytes]:
     if len(secret) != 32:
-        raise BundleError("Ed25519: приватный ключ должен быть ровно 32 байта")
+        raise BundleError(tr("Ed25519: приватный ключ должен быть ровно 32 байта"))
     digest = _sha512(secret)
     a = int.from_bytes(digest[:32], "little")
     a &= (1 << 254) - 8
@@ -264,16 +265,19 @@ def safe_member_path(value: str) -> str:
     """
     raw = str(value or "").strip()
     if not raw or len(raw) > 200:
-        raise BundleError(f"Недопустимое имя файла в пакете: {value!r}")
+        raise BundleError(tr("Недопустимое имя файла в пакете: {name}",
+                             name=repr(value)))
     if "\\" in raw or raw.startswith("/") or ":" in raw:
-        raise BundleError(f"Абсолютный путь в пакете запрещён: {raw!r}")
+        raise BundleError(tr("Абсолютный путь в пакете запрещён: {name}",
+                             name=repr(raw)))
     parts = [p for p in raw.split("/") if p not in ("",)]
     if not parts or any(p in (".", "..") or p.startswith(".") for p in parts):
-        raise BundleError(f"Небезопасный путь в пакете: {raw!r}")
+        raise BundleError(tr("Небезопасный путь в пакете: {name}", name=repr(raw)))
     if not re.fullmatch(r"[0-9A-Za-z._\-/]+", "/".join(parts)):
-        raise BundleError(f"Недопустимые символы в пути: {raw!r}")
+        raise BundleError(tr("Недопустимые символы в пути: {name}", name=repr(raw)))
     if not "/".join(parts).lower().endswith(ALLOWED_SUFFIXES):
-        raise BundleError(f"Файл такого типа в пакете не нужен: {raw!r}")
+        raise BundleError(tr("Файл такого типа в пакете не нужен: {name}",
+                             name=repr(raw)))
     return "/".join(parts)
 
 
@@ -294,50 +298,52 @@ def canonical_bytes(manifest: Dict[str, Any]) -> bytes:
 def check_manifest(manifest: Any) -> str:
     """Валидность манифеста без учёта подписи. Пустая строка — всё хорошо."""
     if not isinstance(manifest, dict):
-        return "манифест не является объектом JSON"
+        return tr("манифест не является объектом JSON")
     schema = manifest.get("schema")
     if schema != SCHEMA:
-        return f"схема манифеста {schema!r}, поддерживается {SCHEMA}"
+        return tr("схема манифеста {schema}, поддерживается {supported}",
+                   schema=repr(schema), supported=SCHEMA)
     version = str(manifest.get("version") or "")
     if not _VERSION_RE.match(version):
-        return f"некорректная версия {version!r}"
+        return tr("некорректная версия {version}", version=repr(version))
     channel = str(manifest.get("channel") or "")
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,20}", channel):
-        return f"некорректный канал {channel!r}"
+        return tr("некорректный канал {channel}", channel=repr(channel))
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
-        return "в манифесте нет списка файлов"
+        return tr("в манифесте нет списка файлов")
     if len(files) > MAX_FILES:
-        return f"слишком много файлов: {len(files)}"
+        return tr("слишком много файлов: {count}", count=len(files))
     seen = set()
     total = 0
     for item in files:
         if not isinstance(item, dict):
-            return "элемент files не является объектом"
+            return tr("элемент files не является объектом")
         try:
             path = safe_member_path(item.get("path", ""))
         except BundleError as exc:
             return str(exc)
         if path in seen:
-            return f"файл {path} указан дважды"
+            return tr("файл {path} указан дважды", path=path)
         seen.add(path)
         digest = str(item.get("sha256") or "").lower()
         if not _SHA256_RE.match(digest):
-            return f"у файла {path} нет корректного sha256"
+            return tr("у файла {path} нет корректного sha256", path=path)
         size = item.get("size")
         if not isinstance(size, int) or size < 0 or size > MAX_FILE_BYTES:
-            return f"у файла {path} недопустимый размер {size!r}"
+            return tr("у файла {path} недопустимый размер {size}",
+                      path=path, size=repr(size))
         total += size
     if total > MAX_BUNDLE_BYTES:
-        return f"пакет слишком велик: {total} байт"
+        return tr("пакет слишком велик: {bytes} байт", bytes=total)
     try:
         entry = safe_member_path(manifest.get("entry") or DEFAULT_ENTRY)
     except BundleError as exc:
         return str(exc)
     if entry not in seen:
-        return f"точка входа {entry} отсутствует в списке файлов"
+        return tr("точка входа {entry} отсутствует в списке файлов", entry=entry)
     if not entry.endswith(".py"):
-        return f"точка входа {entry} должна быть модулем .py"
+        return tr("точка входа {entry} должна быть модулем .py", entry=entry)
     return ""
 
 
@@ -387,28 +393,30 @@ def verify_manifest(manifest: Any, keys: Optional[Dict[str, str]] = None,
     if not require_signature and not isinstance(signature, dict):
         return ""
     if not isinstance(signature, dict):
-        return "манифест не подписан"
+        return tr("манифест не подписан")
     if str(signature.get("alg") or "") != "ed25519":
-        return f"неизвестный алгоритм подписи {signature.get('alg')!r}"
+        return tr("неизвестный алгоритм подписи {algorithm}",
+                   algorithm=repr(signature.get("alg")))
     key_id = str(signature.get("key_id") or "")
     available = trusted_keys(keys)
     if not available:
-        return ("канал обновлений не настроен: в сборке нет доверенного ключа "
-                "подписи (см. build_bundle.py --keygen)")
+        return tr("канал обновлений не настроен: в сборке нет доверенного ключа "
+                  "подписи (см. build_bundle.py --keygen)")
     public = available.get(key_id)
     if public is None:
         # Подсказка с идентификаторами своих ключей экономит один круг
         # «а что вообще случилось»: админ сразу видит, каким ключом сервер
         # подписал канал и чего не хватает этой сборке.
-        known = ", ".join(sorted(available)) or "нет"
-        return (f"подпись сделана неизвестным ключом {key_id!r} "
-                f"(эта сборка доверяет: {known})")
+        known = ", ".join(sorted(available)) or tr("нет")
+        return tr("подпись сделана неизвестным ключом {key_id} "
+                  "(эта сборка доверяет: {known})",
+                  key_id=repr(key_id), known=known)
     try:
         raw = base64.b64decode(str(signature.get("value") or ""), validate=True)
     except Exception:
-        return "подпись не читается (ожидался base64)"
+        return tr("подпись не читается (ожидался base64)")
     if not ed25519_verify(public, canonical_bytes(manifest), raw):
-        return "подпись манифеста не сходится — пакет отвергнут"
+        return tr("подпись манифеста не сходится — пакет отвергнут")
     return ""
 
 
@@ -438,7 +446,7 @@ def build_manifest(source_dir, version: str, channel: str = "stable",
     for name in names:
         path = root / name
         if not path.is_file():
-            raise BundleError(f"Нет файла {path}")
+            raise BundleError(tr("Нет файла {path}", path=path))
         records.append({
             "path": safe_member_path(name),
             "size": path.stat().st_size,
@@ -467,7 +475,7 @@ def build_manifest(source_dir, version: str, channel: str = "stable",
 def sign_manifest(manifest: Dict[str, Any], secret: bytes, key_id: str) -> Dict[str, Any]:
     """Подписать манифест приватным ключом (32 байта seed)."""
     if not _KEY_ID_RE.match(str(key_id or "")):
-        raise BundleError(f"Недопустимый key_id {key_id!r}")
+        raise BundleError(tr("Недопустимый key_id {key_id}", key_id=repr(key_id)))
     payload = {k: v for k, v in manifest.items() if k != "signature"}
     signature = ed25519_sign(secret, canonical_bytes(payload))
     payload["signature"] = {
@@ -503,13 +511,13 @@ def versions_dir(root) -> Path:
 
 def version_dir(root, version: str) -> Path:
     if not _VERSION_RE.match(str(version or "")):
-        raise BundleError(f"Некорректная версия {version!r}")
+        raise BundleError(tr("Некорректная версия {version}", version=repr(version)))
     return versions_dir(root) / str(version)
 
 
 def stage_dir(root, version: str) -> Path:
     if not _VERSION_RE.match(str(version or "")):
-        raise BundleError(f"Некорректная версия {version!r}")
+        raise BundleError(tr("Некорректная версия {version}", version=repr(version)))
     return versions_dir(root) / f".stage-{version}"
 
 
@@ -571,11 +579,11 @@ def verify_directory(folder, manifest: Dict[str, Any],
     for path, meta in manifest_files(manifest).items():
         target = path_root / path
         if not target.is_file():
-            return f"нет файла {path}"
+            return tr("нет файла {path}", path=path)
         if target.stat().st_size != meta["size"]:
-            return f"размер файла {path} не совпадает"
+            return tr("размер файла {path} не совпадает", path=path)
         if sha256_file(target) != meta["sha256"]:
-            return f"файл {path} изменён (sha256 не совпадает)"
+            return tr("файл {path} изменён (sha256 не совпадает)", path=path)
     return ""
 
 
@@ -590,9 +598,10 @@ def verify_installed(root, version: str, manifest: Optional[Dict[str, Any]] = No
     """
     data = manifest or read_manifest(root, version)
     if data is None:
-        return f"нет манифеста версии {version}"
+        return tr("нет манифеста версии {version}", version=version)
     if str(data.get("version")) != str(version):
-        return f"манифест от версии {data.get('version')}, а каталог {version}"
+        return tr("манифест от версии {manifest_version}, а каталог {version}",
+                  manifest_version=data.get("version"), version=version)
     return verify_directory(version_dir(root, version), data, keys, require_signature)
 
 
@@ -605,9 +614,9 @@ def write_bundle_files(target_dir, manifest: Dict[str, Any],
     for path, meta in wanted.items():
         data = contents.get(path)
         if data is None:
-            raise BundleError(f"В пакете нет файла {path}")
+            raise BundleError(tr("В пакете нет файла {path}", path=path))
         if sha256_bytes(data) != meta["sha256"]:
-            raise BundleError(f"Файл {path} не совпал по sha256")
+            raise BundleError(tr("Файл {path} не совпал по sha256", path=path))
         target = folder / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
@@ -620,7 +629,7 @@ def promote_stage(root, version: str) -> Path:
     stage = stage_dir(root, version)
     target = version_dir(root, version)
     if not stage.is_dir():
-        raise BundleError(f"Нет подготовленного каталога {stage}")
+        raise BundleError(tr("Нет подготовленного каталога {path}", path=stage))
     if target.exists():
         backup = target.with_name(f".old-{version}-{int(time.time())}")
         os.replace(target, backup)

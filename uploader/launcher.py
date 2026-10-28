@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import bundle
+import i18n
+from i18n import tr
 
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
@@ -299,9 +301,24 @@ def run_module(name: str) -> int:
     module = importlib.import_module(name)
     main = getattr(module, "main", None)
     if main is None:
-        raise RuntimeError(f"в модуле {name} нет функции main()")
+        raise RuntimeError(tr("в модуле {name} нет функции main()", name=name))
     result = main()
     return int(result or 0)
+
+
+def apply_saved_locale() -> None:
+    """Взять язык из общих настроек до первого сообщения пользователю.
+
+    Сообщения об ошибке запуска появляются раньше, чем окно лаунчера, поэтому
+    язык читаем здесь: иначе диалог всегда был бы русским. Ошибка чтения
+    настроек не должна мешать запуску — остаётся русский оригинал.
+    """
+    try:
+        from launcher_settings import read_site_locale
+
+        i18n.set_locale(read_site_locale())
+    except Exception:
+        pass
 
 
 def report_failure(root, message: str, details: str = "") -> None:
@@ -313,8 +330,10 @@ def report_failure(root, message: str, details: str = "") -> None:
         from ui_qt import ensure_app, show_error_dialog
 
         ensure_app()
-        show_error_dialog("Colonial Helper — не удалось запустить",
-                          f"{message}\n\nПодробности: {log_path(root)}")
+        show_error_dialog(
+            tr("Colonial Helper — не удалось запустить"),
+            tr("{message}\n\nПодробности: {path}", message=message,
+               path=log_path(root)))
     except Exception:
         pass
 
@@ -406,16 +425,17 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
             log(root, "запуск встроенной копии программы")
             return run_module(entry_module(embedded_manifest))
         except Exception as exc:
-            report_failure(root, f"Программа не запускается: {exc}",
+            report_failure(root, tr("Программа не запускается: {error}", error=exc),
                            traceback.format_exc())
             return 1
 
-    report_failure(root, "Не найден код программы: ни установленного пакета, "
-                         "ни встроенной копии")
+    report_failure(root, tr("Не найден код программы: ни установленного пакета, "
+                            "ни встроенной копии"))
     return 1
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    apply_saved_locale()
     args = list(sys.argv[1:] if argv is None else argv)
     direct_flags = {"--run-helper", "--repair", "--reinstall", "--launcher-version", "--bundle-info"}
     if any(flag in args for flag in direct_flags):

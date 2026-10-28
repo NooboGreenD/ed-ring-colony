@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from i18n import tr
+
 from colony_build_types import normalize_build_type
 
 # Адрес сайта Raven Colonial. Страница проекта открывается как
@@ -170,7 +172,7 @@ class RavenColonialAPI:
             )
         except Exception as exc:
             # Временный сбой: не кэшируем, следующая доставка спросит снова.
-            self.last_lookup_error = f"Raven Colonial не ответил ({exc})"
+            self.last_lookup_error = tr("Raven Colonial не ответил ({error})", error=exc)
             return None
 
         if resp.ok:
@@ -184,7 +186,7 @@ class RavenColonialAPI:
                 return project
             # Пустой ответ — не «проекта нет»: пробуем найти по системе.
             return self._fallback_by_system(cache_key, system_address, market_id,
-                                            "Raven Colonial вернул пустой ответ")
+                                            tr("Raven Colonial вернул пустой ответ"))
 
         status = int(getattr(resp, "status_code", 0) or 0)
         if status == 404:
@@ -224,7 +226,7 @@ class RavenColonialAPI:
                 timeout=15,
             )
         except Exception as exc:
-            self.last_lookup_error = f"Raven Colonial не ответил ({exc})"
+            self.last_lookup_error = tr("Raven Colonial не ответил ({error})", error=exc)
             self.last_lookup_source = ""
             return None
 
@@ -268,10 +270,11 @@ class RavenColonialAPI:
             return projects[0]
 
         if len(projects) > 1:
-            self.last_lookup_error = (
-                f"в системе {len(projects)} активных проектов и ни один не привязан к "
-                f"market_id {market}: привяжите площадку к проекту вручную "
-                "(вкладка «Колонизатор»)")
+            self.last_lookup_error = tr(
+                "в системе {count} активных проектов и ни один не привязан к "
+                "market_id {market}: привяжите площадку к проекту вручную "
+                "(вкладка «Колонизатор»)",
+                count=len(projects), market=market)
         else:
             self.last_lookup_error = miss_reason
         self.last_lookup_source = ""
@@ -289,17 +292,18 @@ class RavenColonialAPI:
         """
         build_id = str(build_id or "").strip()
         if not build_id:
-            self.last_lookup_error = "не задан buildId"
+            self.last_lookup_error = tr("не задан buildId")
             self.last_lookup_source = ""
             return None
         result = self.get_project_by_id(build_id)
         if not isinstance(result, dict) or not result.get("ok"):
-            self.last_lookup_error = str((result or {}).get("error") or "проект не получен")
+            self.last_lookup_error = str((result or {}).get("error")
+                                      or tr("проект не получен"))
             self.last_lookup_source = ""
             return None
         projects = projects_from(result.get("data"))
         if not projects:
-            self.last_lookup_error = "Raven Colonial вернул пустой проект"
+            self.last_lookup_error = tr("Raven Colonial вернул пустой проект")
             self.last_lookup_source = ""
             return None
         self.last_lookup_error = ""
@@ -358,7 +362,7 @@ class RavenColonialAPI:
         try:
             market_id = int(market_id)
         except (TypeError, ValueError):
-            return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
+            return {"ok": False, "data": None, "error": tr("MarketID авианосца не задан"), "status": 0}
         if market_id <= 0:
             return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
         return self._request("GET", f"/fc/{market_id}")
@@ -448,7 +452,7 @@ class RavenColonialAPI:
         """
         if not self.api_key:
             return {"ok": False, "data": None, "retryable": False,
-                    "error": "Ключ Raven Colonial (RCC) не задан"}
+                    "error": tr("Ключ Raven Colonial (RCC) не задан")}
         cleaned = {
             str(name): int(amount)
             for name, amount in (commodities or {}).items()
@@ -456,7 +460,7 @@ class RavenColonialAPI:
         }
         if not cleaned:
             return {"ok": False, "data": None, "retryable": False,
-                    "error": "нечего отправлять: пустой список товаров"}
+                    "error": tr("нечего отправлять: пустой список товаров")}
         url = (f"{self.base_url}/project/{self._esc(build_id)}"
                f"/contribute/{self._esc(cmdr) if cmdr else ''}")
         try:
@@ -550,7 +554,7 @@ class RavenColonialAPI:
         вызывает их из фонового потока и показывает `error` в логе.
         """
         if not self.api_key:
-            return {"ok": False, "data": None, "error": "Ключ Raven Colonial (RCC) не задан", "status": 0}
+            return {"ok": False, "data": None, "error": tr("Ключ Raven Colonial (RCC) не задан"), "status": 0}
         try:
             resp = self._session.request(
                 method.upper(),
@@ -585,6 +589,8 @@ class RavenColonialAPI:
         «неизвестная ошибка». Теперь статус расшифровывается, а тело ответа
         добавляется только если в нём действительно что-то есть.
         """
+        # Значения — ключи перевода: код ответа внутри текста, поэтому строка
+        # собирается здесь, а не в каталоге.
         reasons = {
             400: "неверный запрос — сервер не принял параметры",
             401: "ключ RCC не принят (401) — проверьте ключ на сайте Raven Colonial",
@@ -599,10 +605,10 @@ class RavenColonialAPI:
             503: "сервис временно недоступен (503)",
             504: "сервер не ответил вовремя (504)",
         }
-        reason = reasons.get(status)
+        reason = tr(reasons[status]) if status in reasons else None
         if reason is None:
-            reason = ("ошибка сервера Raven Colonial" if 500 <= status < 600
-                      else "сервер отказал")
+            reason = (tr("ошибка сервера Raven Colonial") if 500 <= status < 600
+                      else tr("сервер отказал"))
         # Код ответа показываем всегда: по нему Support Raven Colonial
         # понимает, о чём речь, даже если формулировка окажется неточной.
         if str(status) not in reason:
@@ -681,7 +687,7 @@ class RavenColonialAPI:
     def get_cmdr_active(self, cmdr: str) -> dict:
         """GET /api/cmdr/{cmdr}/active — активные проекты командира со связями."""
         if not cmdr:
-            return {"ok": False, "data": None, "error": "Не задан имя командира", "status": 0}
+            return {"ok": False, "data": None, "error": tr("Не задан имя командира"), "status": 0}
         return self._request("GET", f"/cmdr/{self._esc(cmdr)}/active")
 
     def get_system_projects(self, system: str) -> dict:
@@ -701,7 +707,7 @@ class RavenColonialAPI:
     def get_system_sites(self, system: str) -> dict:
         """GET /api/v2/system/{name|address}/sites — площадки системы (планы и стройки)."""
         if not system:
-            return {"ok": False, "data": None, "error": "Не задана система", "status": 0}
+            return {"ok": False, "data": None, "error": tr("Не задана система"), "status": 0}
         return self._request("GET", f"/v2/system/{self._esc(system)}/sites")
 
     def get_system_architect(self, system: str) -> dict:
@@ -741,7 +747,8 @@ class RavenColonialAPI:
                 "ok": False,
                 "data": None,
                 "status": 0,
-                "error": "Не заполнены обязательные поля: " + ", ".join(missing),
+                "error": tr("Не заполнены обязательные поля: {fields}",
+                            fields=", ".join(missing)),
             }
         body = {key: value for key, value in project.items() if value is not None}
         error = self._prepare_build_type(body)
@@ -770,8 +777,9 @@ class RavenColonialAPI:
         raw = body.get("buildType")
         code = normalize_build_type(raw)
         if code is None:
-            return (f"Неизвестный тип постройки «{raw}»: выберите его из списка. "
-                    "Иначе страница проекта на Raven Colonial не откроется.")
+            return tr("Неизвестный тип постройки «{type}»: выберите его из списка. "
+                      "Иначе страница проекта на Raven Colonial не откроется.",
+                      type=raw)
         body["buildType"] = code
         return ""
 
@@ -789,10 +797,10 @@ class RavenColonialAPI:
         """
         if not cmdr:
             return {"ok": False, "data": None, "status": 0,
-                    "error": "Не задано имя командира"}
+                    "error": tr("Не задано имя командира")}
         if not build_id:
             return {"ok": False, "data": None, "status": 0,
-                    "error": "Не выбран проект (пустой buildId)"}
+                    "error": tr("Не выбран проект (пустой buildId)")}
         return self._request(
             "PUT", f"/cmdr/{self._esc(cmdr)}/primary/{self._esc(build_id)}"
         )
