@@ -121,8 +121,11 @@ class RouteHintTests(unittest.TestCase):
         for name in ("building", "done", "idle", "compass", "search", "star"):
             path = hud_icons.icon_path(name)
             self.assertFalse(path.isEmpty(), name)
-        self.assertEqual(set(hud_icons.ICONS) - {"building", "done", "idle", "compass",
-                                                 "search", "star"}, set())
+        # Иконки ROUTE — из сетки сайта; рядом живут знаки HUD снаряжения.
+        site = {"building", "done", "idle", "compass", "search", "star"}
+        gear = {"suit", "weapon", "tool", "shield", "battery", "air", "pack",
+                "kinetic", "thermal", "plasma", "explosive", "mod", "loadout"}
+        self.assertEqual(set(hud_icons.ICONS) - site - gear, set())
         icon = hud_icons.HudIcon(None, name="compass", size=16)
         self.addCleanup(icon.close)
         icon.set_icon("star")

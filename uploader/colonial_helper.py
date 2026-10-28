@@ -76,6 +76,7 @@ from edsm_api import EDSMAPI
 from eddn_api import EddnClient
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
+from pilot_equipment import PilotEquipment
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
@@ -123,7 +124,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.18.34"
+VERSION = "2.18.35"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -231,6 +232,11 @@ class ColonialHelperApp:
         self.route = RouteTracker(
             self.config_path.with_name(".colonial_helper_route_hints.json"))
         self.ship = ShipTracker()
+        # Снаряжение на ногах: наборы, оружие, модификации и рюкзак. Кэш рядом
+        # с конфигом — снаряжение видно сразу после запуска, до чтения истории.
+        self.equipment = PilotEquipment(
+            self.config_path.with_name(".colonial_helper_equipment.json"))
+        self._equipment_refresh_pending = False
         self._latest_loadout_event = None
         self._ship_state_last_synced = None
         self._ship_state_sync_inflight = False
@@ -689,24 +695,40 @@ class ColonialHelperApp:
         self._pilot_journal_cache = ("", 0.0)
 
     def _build_tab_pilot(self):
-        """Инфографика пилота на чистом Qt (helper_pages.PilotPage)."""
-        from helper_pages import PilotPage
+        """Раздел «Пилот»: снаряжение на ногах и прежняя инфографика.
+
+        Прежняя инфографика никуда не делась — она вторая вкладка. Снаряжение
+        первое: это то, что командир ищет здесь чаще всего.
+        """
+        from helper_pages import PilotSection
 
         self._pilot_init_state()
         self.pilot_page = None
+        self.pilot_section = None
+        self.equipment_page = None
         try:
-            page = PilotPage(
-                compact=self._pilot_compact,
-                columns_provider=self._pilot_column_count,
-                on_compact_changed=self._on_pilot_compact_changed_from_page,
-                on_refresh=self._refresh_pilot_infographic,
-                on_columns_changed=self._on_pilot_columns_changed,
+            section = PilotSection(
+                infographic_kwargs=dict(
+                    compact=self._pilot_compact,
+                    columns_provider=self._pilot_column_count,
+                    on_compact_changed=self._on_pilot_compact_changed_from_page,
+                    on_refresh=self._refresh_pilot_infographic,
+                    on_columns_changed=self._on_pilot_columns_changed,
+                ),
+                on_equip_refresh=self._on_equipment_refresh,
+                on_equip_select=self._on_equipment_selected,
             )
-            self.tab_pilot._get_tk_layout("pack").addWidget(page)
-            self._show_page(page)
-            self.pilot_page = page
+            self.tab_pilot._get_tk_layout("pack").addWidget(section)
+            self._show_page(section)
+            self.pilot_section = section
+            self.pilot_page = section.infographic
+            self.equipment_page = section.equipment
+            # Рюкзак игра пишет отдельным файлом: читаем сразу, чтобы страница
+            # не ждала, пока журнал запишет Backpack.
+            self.equipment.read_backpack_file(self.journal_path)
+            section.set_equipment(self.equipment.state())
         except Exception as exc:
-            self.log(f"Не удалось открыть инфографику пилота: {exc}", "error")
+            self.log(f"Не удалось открыть раздел «Пилот»: {exc}", "error")
         if self.pilot_page is None:
             self._pilot_columns = 0
             return
@@ -940,6 +962,52 @@ class ColonialHelperApp:
                 and self.root.winfo_exists()):
             self._pilot_refresh_job = self.root.after(
                 self.PILOT_REFRESH_INTERVAL_MS, self._pilot_tick)
+
+    def _schedule_pilot_equipment_refresh(self):
+        """Перерисовать снаряжение один раз на пачку событий.
+
+        История журнала за первый проход даёт сотни событий рюкзака; ставить
+        `after` на каждое — значит перерисовать страницу сотни раз подряд.
+        Один отложенный вызов забирает уже накопленное состояние.
+        """
+        if getattr(self, "_equipment_refresh_pending", False):
+            return
+        self._equipment_refresh_pending = True
+
+        def flush():
+            self._equipment_refresh_pending = False
+            self._refresh_pilot_equipment()
+
+        try:
+            self.root.after(0, flush)
+        except Exception:
+            self._equipment_refresh_pending = False
+
+    def _refresh_pilot_equipment(self):
+        """Показать на странице то, что уже собрано из журнала."""
+        page = getattr(self, "equipment_page", None)
+        section = getattr(self, "pilot_section", None)
+        if page is None:
+            return
+        try:
+            if section is not None:
+                section.set_equipment(self.equipment.state())
+            else:
+                page.set_state(self.equipment.state())
+        except Exception:
+            # Снаряжение не должно мешать остальному окну: журнал мог прийти
+            # неполным (например, набор без модулей).
+            pass
+
+    def _on_equipment_refresh(self):
+        """Кнопка «Обновить» на странице снаряжения."""
+        self.equipment.read_backpack_file(self.journal_path)
+        self._refresh_pilot_equipment()
+
+    def _on_equipment_selected(self, loadout_id: str):
+        """Командир выбрал другой набор — показываем его, игру не переключаем."""
+        if self.equipment.select(loadout_id):
+            self._refresh_pilot_equipment()
 
     def _pilot_tick(self):
         """Обновлять плитки только на видимой странице и не чаще 0,4 Гц."""
@@ -7084,6 +7152,12 @@ class ColonialHelperApp:
         self._feed_construction_site(ev, live=live)
         # Карта системы: тела, станции, стройплощадки и где сейчас пилот.
         self._feed_system_map(ev, live=live)
+        # Снаряжение на ногах: костюм, оружие, рюкзак (только журнал).
+        try:
+            if self.equipment.handle(ev):
+                self._schedule_pilot_equipment_refresh()
+        except Exception as exc:
+            self.log(f"Снаряжение: {exc}", "error")
         # Отслеживание корабля
         self.ship.parse_event(ev)
         self._maybe_sync_ship_state(ev, live=live)

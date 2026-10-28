@@ -7,6 +7,7 @@ so both kinds coexist in one window during the migration.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hud_icons import HudIcon
 from i18n import tr
 from ui_qt import (
     CYAN,
@@ -44,12 +46,14 @@ from ui_qt import (
     ORANGE,
     PANEL,
     PANEL_ALT,
+    RED,
     TEXT,
     action_button,
     heading,
     label,
     panel,
     row,
+    separator,
 )
 
 #: Pastel-on-dark colours for log levels, matching the rest of the program.
@@ -2717,6 +2721,722 @@ class PilotPage(QWidget):
             self._rebuild_tiles(self.columns())
             if callable(self._on_columns_changed):
                 self._on_columns_changed()
+
+
+# ===========================================================================
+#  Страница «Пилот»: снаряжение на ногах
+# ===========================================================================
+#: Разряды урона, классы оружия и режимы стрельбы — ключи каталога
+#: (`pilot_equipment`), здесь только их подписи.
+EQUIP_DAMAGE_LABELS = {
+    "kinetic": "Кинетика", "thermal": "Термика",
+    "plasma": "Плазма", "explosive": "Взрывчатка",
+}
+EQUIP_DAMAGE_ICONS = {
+    "kinetic": "kinetic", "thermal": "thermal",
+    "plasma": "plasma", "explosive": "explosive",
+}
+EQUIP_CLASS_LABELS = {
+    "pistol": "Пистолет", "rifle": "Винтовка", "carbine": "Карабин",
+    "shotgun": "Дробовик", "sniper": "Снайперская", "launcher": "Ракетница",
+}
+EQUIP_FIRE_LABELS = {
+    "automatic": "автоматический", "semi-automatic": "полуавтоматический",
+    "burst": "очередями",
+}
+#: Порядок и подписи сопротивлений — как на экране снаряжения в игре.
+EQUIP_RESISTANCES = (("kinetic", "Кинетика"), ("thermal", "Термика"),
+                     ("plasma", "Плазма"), ("explosive", "Взрывчатка"))
+EQUIP_SLOT_LABELS = {
+    "PrimaryWeapon1": "Основное оружие", "PrimaryWeapon2": "Второе основное",
+    "SecondaryWeapon": "Вспомогательное",
+}
+EQUIP_BACKPACK_LABELS = (
+    ("items", "Предметы", "pack"),
+    ("components", "Компоненты", "mod"),
+    ("consumables", "Расходники", "battery"),
+    ("data", "Данные", "loadout"),
+)
+#: Параметры костюма в порядке экрана игры: ёмкости идут вместе с щитом.
+EQUIP_SUIT_ROWS = (
+    ("shield", "shield", "Мощность щита"),
+    ("regen", "shield", "Восстановление щита"),
+    ("goods", "pack", "Вместимость товаров"),
+    ("assets", "mod", "Вместимость активов"),
+    ("data", "loadout", "Вместимость данных"),
+    ("battery", "battery", "Батарея"),
+    ("oxygen", "air", "Резервный запас воздуха"),
+)
+
+
+def equip_grade_text(grade: int) -> str:
+    """Грейд так, как его называют игроки: ``G5``."""
+    return f"G{int(grade or 1)}"
+
+
+def equip_signed(value: int) -> str:
+    """Сопротивление со знаком: ``+15`` / ``−10`` (знак «%» — в заголовке)."""
+    number = int(value or 0)
+    if number > 0:
+        return f"+{number}"
+    if number < 0:
+        return f"\u2212{abs(number)}"
+    return "0"
+
+
+def equip_resistance_color(value: int) -> str:
+    """Плюс — защита (зелёный), минус — уязвимость (красный)."""
+    if int(value or 0) > 0:
+        return GREEN
+    if int(value or 0) < 0:
+        return RED
+    return MUTED
+
+
+#: Языки, в которых дробная часть отделяется запятой (как в игре на них).
+DECIMAL_COMMA_LOCALES = ("ru", "de", "it")
+
+
+def equip_number(value: float, digits: int = 1) -> str:
+    """Число в записи текущего языка: ``27,0`` по-русски, ``27.0`` по-английски."""
+    text = f"{float(value or 0):.{digits}f}"
+    try:
+        import i18n
+
+        if i18n.current_locale() in DECIMAL_COMMA_LOCALES:
+            return text.replace(".", ",")
+    except Exception:
+        pass
+    return text
+
+
+class EquipGradeBadge(QLabel):
+    """Кружок с грейдом слева от названия костюма или оружия."""
+
+    def __init__(self, grade: int = 1, *, color: str = ORANGE,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(30, 30)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_grade(grade, color=color)
+
+    def set_grade(self, grade: int, *, color: Optional[str] = None) -> None:
+        color = color or ORANGE
+        self.setText(equip_grade_text(grade))
+        self.setStyleSheet(
+            f"color: {color}; border: 1px solid {color}; border-radius: 15px;"
+            f" background: transparent; font-weight: 700;")
+
+
+class EquipChip(QFrame):
+    """Значок-плашка: иконка, подпись и значение — кирпичик инфографики."""
+
+    def __init__(self, icon: str, caption: str, value: str = "",
+                 *, color: str = TEXT, caption_color: str = MUTED,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("card")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(7)
+        self.icon = HudIcon(self, name=icon, size=15, color=color)
+        layout.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
+        texts = QVBoxLayout()
+        texts.setContentsMargins(0, 0, 0, 0)
+        texts.setSpacing(0)
+        self.caption = label(tr(caption), role="mono", size=8, color=caption_color)
+        self.value = label(str(value), role="mono", size=11, bold=True, color=color)
+        texts.addWidget(self.caption)
+        texts.addWidget(self.value)
+        layout.addLayout(texts, 1)
+
+    def set_value(self, value: str, color: Optional[str] = None) -> None:
+        self.value.setText(str(value))
+        if color:
+            self.value.setStyleSheet(f"color:{color}; background: transparent;")
+
+
+class EquipRow(QWidget):
+    """Строка параметра: иконка, подпись, значение справа."""
+
+    def __init__(self, icon: str, caption: str, value: str = "",
+                 *, caption_color: str = MUTED, value_color: str = TEXT,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(8)
+        self.icon = HudIcon(self, name=icon, size=14, color=caption_color)
+        layout.addWidget(self.icon)
+        self.caption = label(tr(caption), role="mono", size=9, color=caption_color)
+        layout.addWidget(self.caption)
+        layout.addStretch(1)
+        self.value = label(str(value), role="mono", size=10, bold=True, color=value_color)
+        layout.addWidget(self.value)
+
+    def set_value(self, value: str, color: Optional[str] = None) -> None:
+        self.value.setText(str(value))
+        if color:
+            self.value.setStyleSheet(f"color:{color}; background: transparent;")
+
+
+class EquipWeaponCard(QFrame):
+    """Карточка оружия: слот, грейд, название, класс, урон и магазин."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("card")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(9, 7, 9, 7)
+        layout.setSpacing(9)
+        self.badge = EquipGradeBadge(1, color=CYAN, parent=self)
+        layout.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignTop)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(1)
+        self.slot_label = label("", role="mono", size=8, color=MUTED)
+        self.name_label = label("", role="mono", size=11, bold=True, color=TEXT, wrap=True)
+        self.kind_label = label("", role="mono", size=8, color=MUTED, wrap=True)
+        self.mods_label = label("", role="mono", size=8, color=GREEN, wrap=True)
+        column.addWidget(self.slot_label)
+        column.addWidget(self.name_label)
+        column.addWidget(self.kind_label)
+        column.addWidget(self.mods_label)
+        layout.addLayout(column, 1)
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(1)
+        self.damage_label = label("", role="mono", size=12, bold=True, color=ORANGE)
+        self.damage_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        right.addWidget(self.damage_label)
+        self.magazine_label = label("", role="mono", size=8, color=MUTED)
+        self.magazine_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        right.addWidget(self.magazine_label)
+        layout.addLayout(right, 0)
+
+    def set_weapon(self, weapon: Dict[str, Any]) -> None:
+        slot = str(weapon.get("slot") or "")
+        self.slot_label.setText(tr(EQUIP_SLOT_LABELS.get(slot, "Оружие")))
+        self.name_label.setText(str(weapon.get("label") or weapon.get("name") or tr("Оружие")))
+        damage_type = str(weapon.get("damage_type") or "")
+        pieces = [
+            tr(EQUIP_CLASS_LABELS.get(str(weapon.get("class") or ""), "")),
+            tr(EQUIP_DAMAGE_LABELS.get(damage_type, "")),
+            tr(EQUIP_FIRE_LABELS.get(str(weapon.get("fire") or ""), "")),
+        ]
+        self.kind_label.setText(" · ".join(piece for piece in pieces if piece))
+        self.badge.set_grade(int(weapon.get("grade") or 1), color=CYAN)
+        mods = list(weapon.get("mods") or ())
+        self.mods_label.setText("  ·  ".join(str(name) for name in mods))
+        self.mods_label.setVisible(bool(mods))
+        damage = float(weapon.get("damage") or 0)
+        self.damage_label.setText(equip_number(damage, 2) if damage else "—")
+        self.damage_label.setToolTip(tr("Урон за выстрел"))
+        magazine = int(weapon.get("magazine") or 0)
+        reserve = int(weapon.get("reserve") or 0)
+        self.magazine_label.setText(
+            tr("маг. {magazine} · зап. {reserve}", magazine=magazine, reserve=reserve)
+            if magazine else "")
+        self.magazine_label.setToolTip(tr("магазин и запас патронов"))
+
+
+class EquipLoadoutCard(QFrame):
+    """Плитка набора снаряжения: как в игре — имя набора и костюм в нём."""
+
+    def __init__(self, on_click, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("card")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(72)
+        self._on_click = on_click
+        self._loadout_id = ""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(9, 7, 9, 7)
+        layout.setSpacing(9)
+        self.badge = EquipGradeBadge(1, color=ORANGE, parent=self)
+        layout.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignTop)
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(1)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(6)
+        self.name_label = label("", role="mono", size=10, bold=True, color=TEXT)
+        top.addWidget(self.name_label, 1)
+        self.badge_label = label("", role="mono", size=8, bold=True, color=GREEN)
+        top.addWidget(self.badge_label)
+        column.addLayout(top)
+        self.suit_label = label("", role="mono", size=9, color=TEXT)
+        column.addWidget(self.suit_label)
+        self.detail_label = label("", role="mono", size=8, color=MUTED)
+        column.addWidget(self.detail_label)
+        layout.addLayout(column, 1)
+
+    def set_loadout(self, item: Dict[str, Any]) -> None:
+        self._loadout_id = str(item.get("id") or "")
+        name = str(item.get("name") or "").strip() or tr("Без названия")
+        self.name_label.setText(name)
+        self.badge.set_grade(int(item.get("grade") or 1),
+                             color=ORANGE if item.get("shown") else MUTED)
+        self.badge_label.setText(tr("НАДЕТ") if item.get("active") else "")
+        self.suit_label.setText(str(item.get("model") or tr("Костюм")))
+        self.detail_label.setText(tr("Оружие: {weapons} · модификации: {mods}",
+                                     weapons=int(item.get("weapons") or 0),
+                                     mods=int(item.get("mods") or 0)))
+        # Показанный набор подсвечен рамкой, надетый — зелёным бейджем.
+        border = ORANGE if item.get("shown") else LINE
+        self.setStyleSheet(
+            f"QFrame#card {{ background: {PANEL_ALT}; border: 1px solid {border};"
+            f" border-radius: 8px; }}")
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if callable(self._on_click) and self._loadout_id:
+            self._on_click(self._loadout_id)
+        super().mouseReleaseEvent(event)
+
+
+class EquipmentPage(QWidget):
+    """Снаряжение пилота на ногах: костюм, оружие, модификации и рюкзак.
+
+    Раскладка повторяет экран снаряжения в игре: слева костюм, инструменты и
+    оружие, в центре параметры и ячейки модификаций, справа рюкзак, внизу —
+    наборы. Страница ничего не знает про журнал: приложение отдаёт ей готовое
+    состояние (`set_state`), поэтому её легко проверить без игры.
+    """
+
+    def __init__(self, *, on_refresh=None, on_select=None,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("equipmentPage")
+        self._on_refresh = on_refresh
+        self._on_select = on_select
+        self._signature: Optional[Tuple] = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        body = QWidget()
+        body.setObjectName("panelClear")
+        scroll.setWidget(body)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(self._build_header())
+
+        #: Подсказка вместо пустых панелей, пока снаряжение не приходило.
+        self.empty_hint = label(
+            tr("Снаряжение появится, когда журнал запишет набор (SuitLoadout). "
+               "Выйдите из корабля на ногах или переключите набор — и данные придут."),
+            role="muted", size=10, wrap=True)
+        self.empty_hint.setObjectName("equipEmptyHint")
+        layout.addWidget(self.empty_hint)
+
+        self.columns_row = QWidget()
+        columns = QHBoxLayout(self.columns_row)
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(12)
+        columns.addWidget(self._build_suit_column(), 5)
+        columns.addWidget(self._build_stats_column(), 5)
+        columns.addWidget(self._build_backpack_column(), 4)
+        layout.addWidget(self.columns_row, 1)
+
+        layout.addWidget(self._build_loadouts_row())
+        layout.addStretch(1)
+
+    # ------------------------------------------------------------------ сборка
+    def _build_header(self) -> QWidget:
+        holder = QWidget()
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.setSpacing(10)
+        top = QVBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(0)
+        top.addWidget(heading(tr("СНАРЯЖЕНИЕ ПИЛОТА"), size=13, color=ORANGE))
+        top.addWidget(label(
+            tr("Костюм, оружие и рюкзак из журнала игры. Характеристики — из каталога "
+               "снаряжения Odyssey с учётом установленных модификаций."),
+            role="muted", size=9, wrap=True))
+        holder_layout.addLayout(top, 1)
+        self.updated_label = label("", role="mono", size=9, color=MUTED)
+        self.updated_label.setObjectName("equipUpdated")
+        holder_layout.addWidget(self.updated_label, 0, Qt.AlignmentFlag.AlignTop)
+        self.refresh_button = action_button(tr("Обновить"), self._refresh_clicked, height=30)
+        holder_layout.addWidget(self.refresh_button, 0, Qt.AlignmentFlag.AlignTop)
+        return holder
+
+    def _refresh_clicked(self) -> None:
+        if callable(self._on_refresh):
+            self._on_refresh()
+
+    def _panel(self, title: str, icon: str, caption: str = "") -> Tuple[QFrame, QVBoxLayout]:
+        """Панель-раздел с шапкой: иконка, заголовок и необязательная сноска."""
+        frame = QFrame()
+        panel(frame, "card")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(6)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(8)
+        head.addWidget(HudIcon(frame, name=icon, size=16, color=ORANGE))
+        head.addWidget(label(tr(title), role="mono", size=10, bold=True, color=TEXT))
+        head.addStretch(1)
+        if caption:
+            head.addWidget(label(tr(caption), role="mono", size=8, color=MUTED))
+        layout.addLayout(head)
+        return frame, layout
+
+    def _section_caption(self, frame: QFrame, text: str) -> QLabel:
+        """Мелкий заголовок внутри панели («Инструменты», «Расходники»)."""
+        caption = label(tr(text), role="mono", size=8, bold=True, color=MUTED)
+        frame.layout().addWidget(caption)
+        return caption
+
+    def _build_suit_column(self) -> QWidget:
+        holder = QWidget()
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(10)
+
+        frame, layout = self._panel("Комбинезон", "suit")
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(9)
+        self.suit_badge = EquipGradeBadge(1, color=ORANGE, parent=frame)
+        head.addWidget(self.suit_badge)
+        names = QVBoxLayout()
+        names.setContentsMargins(0, 0, 0, 0)
+        names.setSpacing(0)
+        self.suit_name = label(tr("Костюм не определён"), role="mono", size=14,
+                               bold=True, color=TEXT, wrap=True)
+        self.suit_name.setObjectName("equipSuitName")
+        names.addWidget(self.suit_name)
+        self.suit_sub = label("", role="mono", size=9, color=MUTED, wrap=True)
+        self.suit_sub.setObjectName("equipSuitSub")
+        names.addWidget(self.suit_sub)
+        head.addLayout(names, 1)
+        layout.addLayout(head)
+
+        self.tools_header = self._section_caption(frame, "Инструменты")
+        self.tools_box = QVBoxLayout()
+        self.tools_box.setContentsMargins(0, 0, 0, 0)
+        self.tools_box.setSpacing(2)
+        layout.addLayout(self.tools_box)
+        self.tools_rows: List[QWidget] = []
+
+        self.consumables_header = self._section_caption(frame, "Ячейки расходников")
+        self.consumables_row = QHBoxLayout()
+        self.consumables_row.setContentsMargins(0, 0, 0, 0)
+        self.consumables_row.setSpacing(6)
+        layout.addLayout(self.consumables_row)
+        self.consumables_label = label(tr("расходников нет"), role="mono",
+                                       size=9, color=MUTED)
+        layout.addWidget(self.consumables_label)
+        self.consumable_chips: List[EquipChip] = []
+        column.addWidget(frame)
+
+        weapons_frame, weapons_layout = self._panel("Оружие", "weapon")
+        self.weapons_box = QVBoxLayout()
+        self.weapons_box.setContentsMargins(0, 0, 0, 0)
+        self.weapons_box.setSpacing(6)
+        weapons_layout.addLayout(self.weapons_box)
+        self.weapon_cards: List[EquipWeaponCard] = []
+        self.no_weapons_label = label(tr("Оружия в наборе нет"), role="mono",
+                                      size=9, color=MUTED)
+        weapons_layout.addWidget(self.no_weapons_label)
+        column.addWidget(weapons_frame)
+        column.addStretch(1)
+        return holder
+
+    def _build_stats_column(self) -> QWidget:
+        holder = QWidget()
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(10)
+
+        frame, layout = self._panel("Параметры комбинезона", "shield",
+                                    "сопротивление брони, %")
+        self.resist_row = QHBoxLayout()
+        self.resist_row.setContentsMargins(0, 0, 0, 0)
+        self.resist_row.setSpacing(6)
+        layout.addLayout(self.resist_row)
+        self.resist_chips: Dict[str, EquipChip] = {}
+        for key, caption in EQUIP_RESISTANCES:
+            chip = EquipChip(EQUIP_DAMAGE_ICONS.get(key, "shield"), caption, "—")
+            self.resist_chips[key] = chip
+            self.resist_row.addWidget(chip, 1)
+
+        layout.addWidget(separator())
+        self.stat_rows: Dict[str, EquipRow] = {}
+        for key, icon, caption in EQUIP_SUIT_ROWS:
+            row_widget = EquipRow(icon, caption, "—")
+            self.stat_rows[key] = row_widget
+            layout.addWidget(row_widget)
+        column.addWidget(frame)
+
+        mods_frame, mods_layout = self._panel("Ячейки инженерных модификаций", "mod")
+        self.mods_box = QVBoxLayout()
+        self.mods_box.setContentsMargins(0, 0, 0, 0)
+        self.mods_box.setSpacing(4)
+        mods_layout.addLayout(self.mods_box)
+        self.mods_rows: List[QWidget] = []
+        self.slots_hint = label("", role="mono", size=8, color=MUTED)
+        mods_layout.addWidget(self.slots_hint)
+        column.addWidget(mods_frame)
+        column.addStretch(1)
+        return holder
+
+    def _build_backpack_column(self) -> QWidget:
+        holder = QWidget()
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(10)
+
+        frame, layout = self._panel("Рюкзак", "pack", "самое крупное")
+        self.backpack_box = QVBoxLayout()
+        self.backpack_box.setContentsMargins(0, 0, 0, 0)
+        self.backpack_box.setSpacing(2)
+        layout.addLayout(self.backpack_box)
+        self.backpack_rows: Dict[str, QWidget] = {}
+        self.backpack_items: Dict[str, QWidget] = {}
+        column.addWidget(frame)
+        column.addStretch(1)
+        return holder
+
+    def _build_loadouts_row(self) -> QWidget:
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.loadouts_header = label(tr("НАБОРЫ СНАРЯЖЕНИЯ"), role="mono", size=8,
+                                     bold=True, color=MUTED)
+        layout.addWidget(self.loadouts_header)
+        #: Наборов в игре может быть много: плитки идут сеткой по три в ряд.
+        self.loadouts_row = QGridLayout()
+        self.loadouts_row.setContentsMargins(0, 0, 0, 0)
+        self.loadouts_row.setHorizontalSpacing(8)
+        self.loadouts_row.setVerticalSpacing(8)
+        layout.addLayout(self.loadouts_row)
+        self.loadout_cards: List[EquipLoadoutCard] = []
+        return holder
+
+    # ------------------------------------------------------------------- данные
+    def _select_clicked(self, loadout_id: str) -> None:
+        if callable(self._on_select):
+            self._on_select(str(loadout_id))
+
+    def _clear(self, layout: QVBoxLayout) -> None:
+        """Убрать виджеты из раскладки (сама раскладка остаётся)."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    @staticmethod
+    def signature_of(state: Dict[str, Any]) -> Tuple:
+        """Короткая подпись состояния: изменилось — перерисовываем."""
+        suit = state.get("suit") or {}
+        loadout = state.get("loadout") or {}
+        weapons = tuple(
+            (str(item.get("slot")), str(item.get("label")),
+             int(item.get("grade") or 0), tuple(item.get("mods") or ()))
+            for item in state.get("weapons") or ())
+        mods = tuple(str(mod.get("name")) for mod in state.get("suit_mods") or ())
+        backpack = tuple(
+            (key, tuple((str(item["name"]), int(item["count"]))
+                        for item in (state.get("backpack") or {}).get(key) or ()))
+            for key in ("items", "components", "consumables", "data"))
+        loadouts = tuple((str(item.get("id")), str(item.get("name")),
+                          bool(item.get("active")), bool(item.get("shown")))
+                         for item in state.get("loadouts") or ())
+        return (bool(state.get("known")), str(loadout.get("id")),
+                str(suit.get("family")), int(suit.get("grade") or 0),
+                weapons, mods, backpack, loadouts)
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Нарисовать снаряжение пилота; повтор того же состояния ничего не делает."""
+        state = state or {}
+        signature = self.signature_of(state)
+        if signature == self._signature:
+            return
+        self._signature = signature
+
+        known = bool(state.get("known"))
+        self.empty_hint.setVisible(not known)
+        self.columns_row.setVisible(known)
+        self.updated_label.setText(tr("обновлено {time}", time=self._time_text(state)))
+
+        suit = state.get("suit") or {}
+        if suit:
+            self.suit_badge.set_grade(int(suit.get("grade") or 1))
+            self.suit_name.setText(str(suit.get("model") or tr("Костюм")))
+            manufacturer = str(suit.get("manufacturer") or "")
+            loadout = state.get("loadout") or {}
+            pieces = [piece for piece in (manufacturer, str(loadout.get("name") or "")) if piece]
+            self.suit_sub.setText(tr("производство {maker}", maker=manufacturer)
+                                  if manufacturer else "")
+            if loadout.get("name"):
+                self.suit_sub.setText("  ·  ".join(pieces))
+            self.stat_rows["shield"].set_value(equip_number(suit.get("shield"), 1))
+            self.stat_rows["regen"].set_value(equip_number(suit.get("regen"), 2))
+            for key, _caption in (("goods", "Товары"), ("assets", "Активы"),
+                                  ("data", "Данные")):
+                self.stat_rows[key].set_value(str(int(suit.get(key) or 0)))
+            self.stat_rows["battery"].set_value(
+                tr("{value} МВт", value=equip_number(suit.get("battery"), 1)))
+            self.stat_rows["oxygen"].set_value(
+                tr("{value} с", value=f"{float(suit.get('oxygen') or 0):.0f}"))
+            resistances = suit.get("resistances") or {}
+            for key, chip in self.resist_chips.items():
+                value = int(resistances.get(key) or 0)
+                chip.set_value(equip_signed(value), equip_resistance_color(value))
+        else:
+            self.suit_badge.set_grade(1, color=MUTED)
+            self.suit_name.setText(tr("Костюм не определён"))
+            self.suit_sub.setText("")
+            for chip in self.resist_chips.values():
+                chip.set_value("—")
+            for row_widget in self.stat_rows.values():
+                row_widget.set_value("—")
+
+        # --- инструменты: те, что даёт модель костюма ------------------------
+        self._clear(self.tools_box)
+        self.tools_rows = []
+        tools = state.get("tools") or []
+        for tool in tools:
+            row_widget = EquipRow("tool", str(tool.get("name") or ""), "")
+            self.tools_box.addWidget(row_widget)
+            self.tools_rows.append(row_widget)
+        self.tools_header.setVisible(bool(tools))
+
+        # --- расходники: аптечки и энергоячейки из рюкзака -------------------
+        self._clear(self.consumables_row)
+        self.consumable_chips = []
+        backpack = state.get("backpack") or {}
+        consumables = backpack.get("consumables") or []
+        for item in consumables[:4]:
+            chip = EquipChip("battery", str(item.get("name") or ""), str(item.get("count") or 0))
+            self.consumables_row.addWidget(chip, 1)
+            self.consumable_chips.append(chip)
+        self.consumables_header.setVisible(bool(consumables))
+        self.consumables_label.setVisible(not consumables)
+
+        # --- оружие ---------------------------------------------------------
+        self._clear(self.weapons_box)
+        self.weapon_cards = []
+        weapons = state.get("weapons") or []
+        for weapon in weapons:
+            card = EquipWeaponCard()
+            card.set_weapon(weapon)
+            self.weapons_box.addWidget(card)
+            self.weapon_cards.append(card)
+        self.no_weapons_label.setVisible(not weapons)
+
+        # --- модификации ----------------------------------------------------
+        self._clear(self.mods_box)
+        self.mods_rows = []
+        mods = state.get("suit_mods") or []
+        for mod in mods:
+            row_widget = EquipRow("mod", str(mod.get("name") or ""), "")
+            row_widget.caption.setStyleSheet(f"color:{GREEN}; background: transparent;")
+            self.mods_box.addWidget(row_widget)
+            self.mods_rows.append(row_widget)
+        slots = int(suit.get("slots") or 0) if suit else 0
+        free = max(0, slots - len(mods))
+        if not mods and not slots:
+            self.slots_hint.setText(tr("модификаций нет"))
+        elif free:
+            self.slots_hint.setText(tr("установлено {used} из {slots} · свободно {free}",
+                                       used=len(mods), slots=slots, free=free))
+        else:
+            self.slots_hint.setText(tr("установлено {used} из {slots}", used=len(mods),
+                                       slots=slots))
+
+        # --- рюкзак: итог по разделу и самое крупное в нём -------------------
+        self._clear(self.backpack_box)
+        self.backpack_rows = {}
+        self.backpack_items = {}
+        totals = backpack.get("totals") or {}
+        for key, caption, icon in EQUIP_BACKPACK_LABELS:
+            items = backpack.get(key) or []
+            total = int(totals.get(key, sum(int(item.get("count") or 0) for item in items)) or 0)
+            row_widget = EquipRow(icon, caption, str(total))
+            self.backpack_box.addWidget(row_widget)
+            self.backpack_rows[key] = row_widget
+            for item in items[:3]:
+                line = label(f"   {item['name']} × {item['count']}", role="mono",
+                             size=8, color=MUTED, wrap=True)
+                self.backpack_box.addWidget(line)
+        if not any(self.backpack_rows[key].value.text() != "0" for key in self.backpack_rows):
+            self.backpack_box.addWidget(label(tr("рюкзак пуст"), role="mono",
+                                              size=9, color=MUTED))
+
+        # --- наборы ---------------------------------------------------------
+        for card in self.loadout_cards:
+            card.setParent(None)
+            card.deleteLater()
+        self.loadout_cards = []
+        for index, item in enumerate(state.get("loadouts") or []):
+            card = EquipLoadoutCard(self._select_clicked)
+            card.set_loadout(item)
+            self.loadouts_row.addWidget(card, index // 3, index % 3)
+            self.loadout_cards.append(card)
+        self.loadouts_header.setVisible(bool(self.loadout_cards))
+
+    @staticmethod
+    def _time_text(state: Dict[str, Any]) -> str:
+        """Время последнего события журнала в коротком виде ``ЧЧ:ММ:СС``."""
+        stamp = str((state.get("loadout") or {}).get("updated_at")
+                    or state.get("updated_at") or "")
+        match = re.search(r"T(\d{2}:\d{2}:\d{2})", stamp)
+        return match.group(1) if match else "—"
+
+
+class PilotSection(QWidget):
+    """Раздел «Пилот»: снаряжение на ногах и прежняя инфографика.
+
+    Снаряжение — первая вкладка: это то, что командир ищет в разделе чаще
+    всего (какой костюм и какое оружие сейчас в игре). Инфографика остаётся
+    второй вкладкой целиком, со всеми прежними плитками и графиками.
+    """
+
+    def __init__(self, *, infographic_kwargs: Optional[Dict[str, Any]] = None,
+                 on_equip_refresh=None, on_equip_select=None,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("pilotSection")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("pilotTabs")
+        layout.addWidget(self.tabs)
+
+        self.equipment = EquipmentPage(on_refresh=on_equip_refresh,
+                                       on_select=on_equip_select)
+        self.tabs.addTab(self.equipment, tr("Снаряжение"))
+
+        self.infographic = PilotPage(**(infographic_kwargs or {}))
+        self.tabs.addTab(self.infographic, tr("Инфографика"))
+
+    def set_equipment(self, state: Dict[str, Any]) -> None:
+        """Передать странице снаряжения готовое состояние трекера."""
+        self.equipment.set_state(state)
+
+    def show_equipment(self) -> None:
+        self.tabs.setCurrentWidget(self.equipment)
+
+    def show_infographic(self) -> None:
+        self.tabs.setCurrentWidget(self.infographic)
 
 
 # ===========================================================================
