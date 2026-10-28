@@ -409,7 +409,9 @@ bash deploy/start-update-agent.sh --no-migrations  # миграции — тол
   контейнер `auth` поднялся** (см. ниже), затем пересоздаёт `web` и
   проверяет сайт;
 - «Диагностика» — готовый `/api/admin/email-health`: флаг сайта, доступность
-  GoTrue, `mailer_autoconfirm`, `disable_signup` и провайдер email.
+  GoTrue, `mailer_autoconfirm`, `disable_signup` и провайдер email. У проверок,
+  которые чинятся из панели, есть кнопка «Включить и применить» (см.
+  «Регистрация отвечает „Новые регистрации временно закрыты“» ниже).
 
 Ключи — только allowlist (`SMTP_HOST/PORT/USER/PASS/ADMIN_EMAIL/
 SENDER_NAME`, `DISABLE_SIGNUP`, `ENABLE_EMAIL_AUTOCONFIRM`): панель не может
@@ -478,6 +480,59 @@ curl -fsS -H "apikey: $ANON_KEY" https://<домен>/api/supabase/auth/v1/healt
 Настройки проверки: `AUTH_TRIES` (по 2с, ожидание контейнера, default 45),
 `AUTH_HTTP_TRIES` (по 4с, публичный адрес, default 15),
 `SUPABASE_AUTH_CONTAINER` (имя контейнера, default `supabase-auth`).
+
+### Регистрация отвечает «Новые регистрации временно закрыты»
+
+Прод-случай: SMTP настроен, письма уходят, `mailer_autoconfirm` выключен, а
+гость получает «Новые регистрации временно закрыты». Диагностика показывает
+единственную красную строку — «Регистрация в GoTrue: `disable_signup=true`».
+
+Причина не в GoTrue, а в двух шагах, которые легко сделать наполовину:
+
+1. **Имя ключа.** В `.env` стека Supabase (`/opt/supabase/.env`) действует
+   `DISABLE_SIGNUP` — только его compose подставляет в переменную контейнера
+   `GOTRUE_DISABLE_SIGNUP` (шаблон
+   `deploy/selfhost/supabase-auth.override.yml`:
+   `GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}`). Строка
+   `GOTRUE_DISABLE_SIGNUP=false` в этом файле **не делает ничего**: compose
+   читает `.env` только как источник подстановок, а имя переменной внутри
+   контейнера уже занято подстановкой. Прежняя подсказка диагностики
+   советовала именно её — отсюда «выставил, а регистрация закрыта».
+   `deploy/apply-smtp.sh` теперь переносит значение: увидел
+   `GOTRUE_DISABLE_SIGNUP` — переименовал в `DISABLE_SIGNUP` (и написал об этом
+   в журнал задачи);
+2. **Пересоздание контейнера.** GoTrue читает окружение на старте: правка
+   `.env` без `up -d --force-recreate auth` ничего не меняет. Применение из
+   панели делает это само.
+
+Быстрый путь — **Админка → Авторизация → «Отправка писем» → «Диагностика»**:
+у красной строки появилась кнопка **«Включить и применить»** (пишет
+`DISABLE_SIGNUP=false` и запускает job `kind=smtp`). Вручную — те же два шага:
+
+```bash
+# 1) имя ключа, которое читает compose
+grep -n 'DISABLE_SIGNUP' /opt/supabase/.env        # GOTRUE_DISABLE_SIGNUP здесь не работает
+sed -i 's/^DISABLE_SIGNUP=.*/DISABLE_SIGNUP=false/' /opt/supabase/.env
+grep -q '^DISABLE_SIGNUP=' /opt/supabase/.env || echo 'DISABLE_SIGNUP=false' >> /opt/supabase/.env
+
+# 2) пересоздать auth с тем же набором -f, что у панели
+#    (docker-compose.override.yml подключайте только если файл существует)
+cd /opt/supabase
+docker compose -f docker-compose.yml -f docker-compose.smtp-override.yml \
+  up -d --no-deps --force-recreate auth
+
+# 3) проверить не по логам, а по ответу GoTrue
+docker exec supabase-auth wget -qO- http://127.0.0.1:9999/settings | grep -o '"disable_signup":[a-z]*'
+curl -fsS -H "apikey: $ANON_KEY" https://<домен>/api/supabase/auth/v1/settings
+```
+
+Последний шаг теперь делает и `deploy/apply-smtp.sh` (стадия `smtp_signup`):
+он спрашивает у GoTrue его `/settings` изнутри контейнера и, если
+`disable_signup` всё ещё `true`, **валит задачу** с объяснением — вместо
+«настройки почты применены» при закрытой регистрации. Не прочиталось
+(старый образ без `/settings`, нет `wget`/`curl` в контейнере) — стадия
+пишет предупреждение и не мешает работе: «неизвестно» никогда не выдаётся за
+«включено».
 
 ## Уборка диска после обновления
 

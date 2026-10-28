@@ -38,6 +38,9 @@ export async function GET(request: Request) {
       available: result.payload?.available === true,
       envExists: result.payload?.envExists === true,
       override: result.payload?.override ?? null,
+      // В .env стека лежит GOTRUE_DISABLE_SIGNUP — имя переменной контейнера,
+      // которое compose не подставляет: регистрация от него не откроется.
+      legacySignupKey: result.payload?.legacySignupKey === true,
       keys: Array.isArray(result.payload?.keys) ? result.payload.keys : [],
     }, NO_STORE);
   } catch {

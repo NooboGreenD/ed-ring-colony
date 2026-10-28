@@ -393,6 +393,12 @@ export type SmtpStatus = {
   writable?: boolean;
   /** Override стека: передаёт ли он SMTP в контейнер auth. */
   override?: { file: string; passesSmtp: boolean } | null;
+  /**
+   * В .env стека есть `GOTRUE_DISABLE_SIGNUP` — имя переменной контейнера,
+   * которое compose не подставляет. Регистрация от такой строки не откроется;
+   * рабочее имя — `DISABLE_SIGNUP` (apply-smtp.sh переименует ключ сам).
+   */
+  legacySignupKey?: boolean;
   keys?: SmtpKeyEntry[];
 };
 

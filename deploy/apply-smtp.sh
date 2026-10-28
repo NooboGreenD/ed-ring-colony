@@ -95,6 +95,18 @@ env_set() { # $1=file $2=key $3=value
   mv "$tmp" "$file"
 }
 
+# Убрать ключ из env-файла (все вхождения). Возврат: 0 — ключ был.
+env_del() { # $1=file $2=key
+  local file="$1" key="$2" tmp
+  [ -f "$file" ] || return 1
+  grep -qE "^$key=" "$file" || return 1
+  tmp="${file}.smtp.$$"
+  awk -v key="$key" 'index($0, key "=") != 1 { print }' "$file" > "$tmp"
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$file"
+  return 0
+}
+
 # ── HTTP-проверки ───────────────────────────────────────────────────
 # Два уровня: http_ok — «ответил успехом» (быстрый путь), http_code — какой
 # именно код пришёл. Код нужен, потому что «не 2xx» и «не ответил» — разные
@@ -224,6 +236,19 @@ command -v docker >/dev/null 2>&1 || die "docker не найден: примен
 [ -f "$SUPABASE_DIR/docker-compose.yml" ] || die "в $SUPABASE_DIR нет docker-compose.yml — это точно каталог стека Supabase?"
 [ -f "$SUPABASE_ENV" ] || die "нет .env стека Supabase ($SUPABASE_ENV): сначала сохраните SMTP-ключи в панели"
 [ -w "$SUPABASE_ENV" ] || die ".env стека Supabase недоступен на запись — проверьте монтирование каталога в update-agent"
+
+# Оператор (и подсказка диагностики) называет этот ключ GOTRUE_DISABLE_SIGNUP —
+# так он выглядит внутри контейнера GoTrue. Но compose подставляет в контейнер
+# ${DISABLE_SIGNUP:-true}, поэтому строка GOTRUE_DISABLE_SIGNUP=false в .env
+# стека не делала НИЧЕГО: регистрация оставалась закрытой, хотя админ всё
+# выставил. Переносим значение под правильное имя, чтобы оба написания
+# работали одинаково.
+SUPABASE_LEGACY_SIGNUP="$(supa_env_value GOTRUE_DISABLE_SIGNUP)"
+if [ -n "$SUPABASE_LEGACY_SIGNUP" ]; then
+  env_del "$SUPABASE_ENV" GOTRUE_DISABLE_SIGNUP || true
+  env_set "$SUPABASE_ENV" DISABLE_SIGNUP "$SUPABASE_LEGACY_SIGNUP"
+  say "ключ GOTRUE_DISABLE_SIGNUP → DISABLE_SIGNUP (compose передаёт в auth только второе имя)"
+fi
 
 for required in SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_ADMIN_EMAIL; do
   [ -n "$(supa_env_value "$required")" ] || die "в .env стека не заполнен $required: заполните SMTP в админке и сохраните"
@@ -423,6 +448,43 @@ elif [ "$AUTH_READY" = 1 ] && [ "$AUTH_PUBLIC_OK" != 1 ] && [ "$AUTH_GATEWAY_OK"
   say "  На отправку писем это не влияет. Если и вход в браузере не работает, проверьте:"
   say "  сертификат домена, доступность /api/supabase у web (SUPABASE_INTERNAL_URL),"
   say "  а также hairpin NAT — сервер может не видеть собственный публичный адрес."
+fi
+
+# ── 4b. регистрация действительно открыта? ──────────────────────────
+# «auth поднялся» ещё не значит «новые пилоты могут зарегистрироваться»:
+# ровно этот разрыв и давал молчаливое «Регистрация временно недоступна» на
+# сайте при полностью рабочем SMTP. Спрашиваем у самого GoTrue его
+# /settings и сверяем disable_signup. Проверка изнутри контейнера — не зависит
+# от шлюза с key-auth, TLS и публичного домена.
+auth_signup_state() { # $1=id $2=порт $3=инструмент → true|false|unknown
+  local id="$1" port="$2" tool="${3##*/}" body=""
+  if [ -z "$id" ] || [ -z "$tool" ]; then printf 'unknown'; return; fi
+  case "$tool" in
+    wget) body="$(docker exec "$id" wget -q -T 5 -O - "http://127.0.0.1:$port/settings" 2>/dev/null || true)" ;;
+    curl) body="$(docker exec "$id" curl -sf -m 5 "http://127.0.0.1:$port/settings" 2>/dev/null || true)" ;;
+    *) printf 'unknown'; return ;;
+  esac
+  case "$body" in
+    *'"disable_signup":true'*) printf 'true' ;;
+    *'"disable_signup":false'*) printf 'false' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+if [ -n "$AUTH_ID" ] && [ "$AUTH_READY" = 1 ]; then
+  report smtp_signup 60 "Проверяю, что GoTrue открыл регистрацию"
+  SIGNUP_STATE="$(auth_signup_state "$AUTH_ID" "$AUTH_PORT" "$AUTH_TOOL")"
+  case "$SIGNUP_STATE" in
+    false) say "✓ регистрация в GoTrue открыта (disable_signup=false)" ;;
+    true)
+      say "── состояние auth: ${AUTH_STATE_TEXT:-неизвестно} ──"
+      say "GoTrue читает уже применённую конфигурацию: disable_signup=true."
+      say "Проверьте, что DISABLE_SIGNUP=false в $SUPABASE_ENV и что auth пересоздан"
+      say "с docker-compose.smtp-override.yml (панель делает это сама)."
+      die "регистрация в GoTrue осталась закрытой (disable_signup=true) — новые пилоты не смогут создать аккаунт"
+      ;;
+    *) say "⚠ прочитать disable_signup из GoTrue не удалось — проверьте регистрацию кнопкой «Диагностика» в админке" ;;
+  esac
 fi
 
 # ── 5. пересоздание web: ключи сайта (AUTH_EMAIL_ENABLED и др.) ─────

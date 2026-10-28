@@ -759,9 +759,17 @@ export function readSupabaseSmtpState(config) {
       if (current.passesSmtp) break;
     } catch { /* нет такого файла — проверяем следующий */ }
   }
+  // Имя переменной контейнера вместо имени ключа .env: оператор (или старая
+  // подсказка диагностики) пишет GOTRUE_DISABLE_SIGNUP, compose такое имя не
+  // подставляет — регистрация остаётся закрытой. Панель показывает это
+  // отдельным предупреждением, а deploy/apply-smtp.sh переименовывает ключ.
+  let legacySignupKey = false;
   const keys = envExists
     ? [...parseEnvContent(readFileSync(config.supabaseEnvFile, 'utf8')).entries()]
-        .filter(([name]) => SMTP_ENV_KEYS.includes(name))
+        .filter(([name]) => {
+          if (name === 'GOTRUE_DISABLE_SIGNUP') legacySignupKey = true;
+          return SMTP_ENV_KEYS.includes(name);
+        })
         .map(([name, value]) => ({
           name,
           // Адрес сервера, логин и имя отправителя — не секреты: админу нужно
@@ -772,7 +780,7 @@ export function readSupabaseSmtpState(config) {
         }))
         .sort((a, b) => a.name.localeCompare(b.name))
     : [];
-  return { available: envExists && writable, envExists, writable, override, keys };
+  return { available: envExists && writable, envExists, writable, override, keys, legacySignupKey };
 }
 
 function send(response, status, payload) {

@@ -83,6 +83,7 @@ export const SMTP_STAGES = [
   { id: 'smtp_override', label: 'Проверка compose-override для auth', percent: 15 },
   { id: 'smtp_switch', label: 'Пересоздание контейнера auth (GoTrue)', percent: 35 },
   { id: 'smtp_verify', label: 'Проверка доступности auth', percent: 55 },
+  { id: 'smtp_signup', label: 'Проверка, что регистрация открыта', percent: 60 },
   { id: 'smtp_web', label: 'Пересоздание web с новыми ключами сайта', percent: 70 },
   { id: 'done', label: 'Готово', percent: 100 },
 ];

@@ -22,6 +22,7 @@ import {
 import {
   createUpdateManager,
   createUpdateServer,
+  readSupabaseSmtpState,
   tokenMatches,
   updateAgentConfig,
 } from '../update-agent.mjs';
@@ -1390,6 +1391,8 @@ function smtpStand(name, { authState = 'running|healthy|0|0', authCode = '401', 
     `  *"State.Status"*) printf '%s\\n' "${authState}"; exit 0 ;;`,
     '  *"Config.Env"*) printf "GOTRUE_API_PORT=9999\\nGOTRUE_SMTP_PASS=mail-secret\\n"; exit 0 ;;',
     '  "exec authcid sh -c"*) printf "/usr/bin/wget\\n"; exit 0 ;;',
+    // /settings изнутри контейнера: STUB_SETTINGS подставляет ответ GoTrue.
+    '  "exec authcid wget"*settings*) [ -z "${STUB_SETTINGS:-}" ] || printf "%s" "$STUB_SETTINGS"; exit 0 ;;',
     '  "exec authcid wget"*) exit "${STUB_LOCAL_HEALTH_RC:-0}" ;;',
     '  "logs --tail"*) printf "%s\\n" \'level=fatal msg="smtp: invalid port" GOTRUE_SMTP_PASS=mail-secret\'; exit 0 ;;',
     'esac',
@@ -1476,6 +1479,60 @@ test('apply-smtp.sh: контейнер не подтверждён и адре�
   const run = stand.run({ STUB_LOCAL_HEALTH_RC: '7', AUTH_TRIES: '1', AUTH_HTTP_TRIES: '1' });
   assert.equal(run.status, 1, 'если auth не ответил ни изнутри, ни снаружи — это ошибка');
   assert.match(run.stdout + run.stderr, /не подтвердил готовность/, 'сказано, что именно не подтвердилось');
+});
+
+test('агент: GOTRUE_DISABLE_SIGNUP в .env виден панели как предупреждение', () => {
+  // Панель показывает только allowlist ключей, поэтому «чужое» имя нужно
+  // отдать отдельным флагом — иначе админ не поймёт, почему его правка
+  // ничего не изменила.
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-smtp-legacy-'));
+  writeFileSync(join(dir, '.env'), ['DISABLE_SIGNUP=true', 'GOTRUE_DISABLE_SIGNUP=false'].join('\n'));
+  const state = readSupabaseSmtpState({ supabaseDir: dir, supabaseEnvFile: join(dir, '.env') });
+  assert.equal(state.legacySignupKey, true, 'двойник замечен');
+  assert.deepEqual(state.keys.map((item) => item.name), ['DISABLE_SIGNUP'], 'в списке ключей — только рабочие имена');
+
+  writeFileSync(join(dir, '.env'), 'DISABLE_SIGNUP=false\n');
+  assert.equal(readSupabaseSmtpState({ supabaseDir: dir, supabaseEnvFile: join(dir, '.env') }).legacySignupKey, false);
+});
+
+test('apply-smtp.sh: имя ключа GOTRUE_DISABLE_SIGNUP переводится в DISABLE_SIGNUP', { skip: needsBash }, () => {
+  const stand = smtpStand('edrc-apply-smtp-legacy-', { authState: 'running|healthy|0|0', authCode: '200' });
+  // Прод-случай: оператор (и прежняя подсказка диагностики) написал имя
+  // переменной контейнера — а compose подставляет в него DISABLE_SIGNUP.
+  // Такая строка в .env стека не делала ничего, и регистрация оставалась
+  // закрытой при полностью настроенном SMTP.
+  writeFileSync(join(stand.supaDir, '.env'), [
+    'SMTP_HOST=smtp.example.test', 'SMTP_PORT=587', 'SMTP_USER=no-reply@example.test',
+    'SMTP_PASS=mail-secret', 'SMTP_ADMIN_EMAIL=no-reply@example.test',
+    'GOTRUE_DISABLE_SIGNUP=true',
+  ].join('\n'));
+  const run = stand.run();
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+  const env = readFileSync(join(stand.supaDir, '.env'), 'utf8');
+  assert.match(env, /^DISABLE_SIGNUP=false$/m, 'значение живёт под именем, которое читает compose');
+  assert.doesNotMatch(env, /GOTRUE_DISABLE_SIGNUP/, 'двойник удалён — непонятно, какое из двух имён действует');
+  assert.match(run.stdout, /GOTRUE_DISABLE_SIGNUP → DISABLE_SIGNUP/, 'переименование видно в журнале задачи');
+});
+
+test('apply-smtp.sh: закрытая регистрация в GoTrue валит задачу с причиной', { skip: needsBash }, () => {
+  const stand = smtpStand('edrc-apply-smtp-signup-off-', { authCode: '200' });
+  const run = stand.run({
+    STUB_SETTINGS: '{"disable_signup":true,"mailer_autoconfirm":false,"external":{"email":true}}',
+  });
+  assert.equal(run.status, 1, 'нельзя отчитаться «настройки применены», оставив регистрацию закрытой');
+  const out = run.stdout + run.stderr;
+  assert.match(out, /disable_signup=true/, 'причина названа кодом, который видит диагностика');
+  assert.match(out, /DISABLE_SIGNUP=false/, 'подсказано, какой именно ключ править');
+  assert.doesNotMatch(run.stdout, /"stage":"done"/, '«Готово» не появляется');
+});
+
+test('apply-smtp.sh: открытая регистрация подтверждается самим GoTrue', { skip: needsBash }, () => {
+  const stand = smtpStand('edrc-apply-smtp-signup-on-', { authCode: '200' });
+  const run = stand.run({ STUB_SETTINGS: '{"disable_signup":false,"mailer_autoconfirm":false}' });
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+  assert.match(run.stdout, /регистрация в GoTrue открыта/, 'состояние прочитано из контейнера, а не предположено');
+  assert.match(run.stdout, /"stage":"smtp_signup"/, 'в панели видно отдельную стадию');
+  assert.match(run.stdout, /"stage":"done"/);
 });
 
 test('smtp обрамление: маршруты за requireAdmin, блок в разделе авторизации, агент видит стек', () => {
