@@ -126,6 +126,13 @@ class TrackerHintTests(unittest.TestCase):
     """Трекер маршрута: когда спрашивать сайт и кому отдавать ответ."""
 
     def setUp(self):
+        import tempfile
+
+        # Фоновые потоки могут дописывать кэш в момент уборки каталога:
+        # для теста это не ошибка.
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self._tmp.cleanup)
+        self.tmpdir = self._tmp.name
         self.tracker = RouteTracker()
         self.tracker.load_from_navroute({"Route": [
             {"StarSystem": "A", "StarPos": [0, 0, 0], "StarClass": "K"},
@@ -195,6 +202,116 @@ class TrackerHintTests(unittest.TestCase):
         self.assertTrue(self.tracker.hint_matches("A"))
         self.assertFalse(self.tracker.hint_matches("B"))
         self.assertFalse(self.tracker.hint_matches(""))
+
+    def test_known_system_is_shown_immediately_from_cache(self):
+        """Система уже встречалась — данные видны сразу, сеть идёт фоном.
+
+        Именно поэтому в блоке не висит «спрашиваем…»: подсказка берётся из
+        прогретого кэша и печатается до ответа сайта.
+        """
+        asked = []
+        self.tracker.prefetch_system_hints(
+            lambda name: asked.append(name) or payload(system=name), ahead=2)
+        self.assertTrue(self.wait(lambda: len(asked) >= 2))
+
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def slow(name):
+            release.wait(1.0)
+            return payload(system=name)
+
+        # Кэш «B» состарился (как после нескольких минут полёта) — значение
+        # всё равно печатается сразу, а сеть обновляет его фоном.
+        with self.tracker._hint_lock:
+            self.tracker._hint_cache["b"]["at"] -= self.tracker.HINT_TTL + 60
+
+        self.tracker.mark_visited("A")
+        self.tracker.refresh_system_hint(slow)
+        hint = self.tracker.get_system_hint()
+        self.assertEqual(hint["system"], "B")
+        self.assertEqual(hint["discoverer"], "CMDR Orin Vex", "данные видны сразу")
+        self.assertTrue(hint["loading"], "и одновременно идёт фоновое обновление")
+
+    def test_cache_survives_restart(self):
+        """Подсказка с диска поднимается в новом трекере без сети."""
+        path = Path(self.tmpdir) / "hints.json"
+        fetch = lambda name: payload(system=name)  # noqa: E731
+        first = RouteTracker(hint_cache_path=path)
+        first.load_from_navroute({"Route": [{"StarSystem": "A", "StarPos": [0, 0, 0]}]})
+        first.refresh_system_hint(fetch)
+        self.assertTrue(self.wait_first(first))
+
+        calls = []
+        second = RouteTracker(hint_cache_path=path)
+        second.load_from_navroute({"Route": [{"StarSystem": "A", "StarPos": [0, 0, 0]}]})
+        second.refresh_system_hint(lambda name: calls.append(name) or payload(system=name))
+        hint = second.get_system_hint()
+        self.assertEqual(hint["system"], "A")
+        self.assertEqual(hint["discoverer"], "CMDR Orin Vex",
+                         "данные с диска видны сразу, без ожидания сети")
+
+    def test_failed_fetch_backs_off_instead_of_hammering(self):
+        """После ошибки сайт не дёргаем каждый тик — ждём паузу."""
+        calls = []
+
+        def broken(name):
+            calls.append(name)
+            raise RuntimeError("нет сети")
+
+        self.tracker.refresh_system_hint(broken)
+        self.assertTrue(self.wait(lambda: self.tracker.get_system_hint()["error"]))
+        for _ in range(5):
+            self.tracker.refresh_system_hint(broken)
+        self.assertEqual(calls, ["A"], "в паузе между попытками запросов нет")
+
+    def test_failure_keeps_the_previous_known_data(self):
+        """Сеть отвалилась, но прошлые данные о системе лучше пустоты."""
+        self.tracker.refresh_system_hint(lambda name: payload(system=name))
+        self.assertTrue(self.wait(lambda: not self.tracker.get_system_hint()["loading"]))
+        self.tracker.refresh_system_hint(lambda name: {"ok": False, "error": "HTTP 503"},
+                                         force=True)
+        self.assertTrue(self.wait(lambda: not self.tracker.get_system_hint()["loading"]))
+        hint = self.tracker.get_system_hint()
+        self.assertEqual(hint["discoverer"], "CMDR Orin Vex")
+        self.assertEqual(hint["status"], route_hint.BUILDING)
+
+    def test_partial_answer_is_reasked_sooner(self):
+        """«Стройка неизвестна» от неполного ответа — перепрашиваем раньше TTL."""
+        self.tracker.refresh_system_hint(
+            lambda name: dict(payload(system=name), partial=True))
+        self.assertTrue(self.wait(lambda: not self.tracker.get_system_hint()["loading"]))
+        self.assertEqual(self.tracker.HINT_PARTIAL_TTL, 60)
+        calls = []
+
+        # Внутри окна partial-TTL повтор не нужен, за его пределами — нужен.
+        self.tracker.refresh_system_hint(lambda name: calls.append(name) or payload())
+        self.assertEqual(calls, [])
+        with self.tracker._hint_lock:
+            self.tracker._hint_cache["a"]["at"] -= self.tracker.HINT_PARTIAL_TTL + 5
+        self.tracker.refresh_system_hint(lambda name: calls.append(name) or payload())
+        self.assertEqual(calls, ["A"])
+
+    def test_prefetch_warms_the_next_systems(self):
+        """Пока летим до первой — подсказки для следующих уже готовы."""
+        asked = []
+
+        def fetch(name):
+            asked.append(name)
+            return payload(system=name)
+
+        self.tracker.prefetch_system_hints(fetch, ahead=3)
+        self.assertTrue(self.wait(lambda: len(asked) >= 3))
+        self.assertEqual(asked, ["A", "B", "C"], "по порядку маршрута, по одному")
+
+        before = list(asked)
+        self.tracker.mark_visited("A")
+        self.tracker.refresh_system_hint(fetch)
+        self.assertEqual(self.tracker.get_system_hint()["system"], "B")
+        self.assertEqual(asked, before, "B уже прогрета — сеть не нужна")
+
+    def wait_first(self, tracker, timeout=2.0):
+        return self.wait(lambda: not tracker.get_system_hint()["loading"], timeout)
 
     def test_concurrent_refresh_does_not_double_ask(self):
         asked = []
