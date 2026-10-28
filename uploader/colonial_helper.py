@@ -91,7 +91,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.13"
+VERSION = "2.18.14"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -3596,6 +3596,17 @@ class ColonialHelperApp:
     def _build_status_bar(self):
         """The status line is part of the native shell."""
         self.shell.set_status("Готов")
+        # Стартовое состояние видно сразу, не дожидаясь автопроверки: иначе до
+        # первого ответа сети строка «Подключено / Не подключено» пустая и
+        # непонятно, есть ли вообще токен.
+        api = getattr(self, "api", None)
+        if api is not None and getattr(api, "token", ""):
+            if api.is_connected:
+                self.set_connection_status(True, api.display_name)
+            else:
+                self.set_connection_status(False, "токен сохранён, проверяю подключение…")
+        else:
+            self.set_connection_status(False, "введите токен")
 
     def set_status(self, text: str) -> None:
         """Единственная точка записи в статусную строку."""
@@ -3960,8 +3971,14 @@ class ColonialHelperApp:
             else:
                 color, text = COLOR_RED, "Игра: не запущена"
 
-            self.game_dot.config(foreground=color)
-            self.game_label.config(text=text, foreground=color)
+            shell = getattr(self, "shell", None)
+            if shell is not None and hasattr(shell, "set_game_state"):
+                shell.set_game_state(text, color, "●" if state.running else "○")
+            else:
+                # Совместимость со старым окном: тех виджетов в Qt-оболочке
+                # больше нет, поэтому ветка только для внешних сборок.
+                self.game_dot.config(foreground=color)
+                self.game_label.config(text=text, foreground=color)
 
             if state.running:
                 details = [state.process_name or "Elite Dangerous"]
@@ -3969,11 +3986,16 @@ class ColonialHelperApp:
                     details.append(f"{state.width}x{state.height}")
                 if state.title:
                     details.append(state.title)
-                self.game_hint.config(text="  |  ".join(details))
+                hint = "  |  ".join(details)
             else:
-                self.game_hint.config(text="оверлей скрыт, пока игры нет"
-                                      if self.overlay_manager.settings.get("hide_when_game_off", True)
-                                      else "")
+                hint = ("оверлей скрыт, пока игры нет"
+                        if self.overlay_manager.settings.get("hide_when_game_off", True)
+                        else "")
+            setter = getattr(shell, "set_game_hint", None)
+            if callable(setter):
+                setter(hint)
+            else:
+                self.game_hint.config(text=hint)
 
             # Логируем только смену состояния, чтобы не засорять лог.
             if state.running != self._game_was_running:
@@ -4024,17 +4046,34 @@ class ColonialHelperApp:
     #  Статус подключения
     # ============================================================
     def set_connection_status(self, online: bool, detail: str = ""):
+        """Состояние связи с сайтом: строка оболочки + подпись на странице.
+
+        Раньше здесь писались Tk-виджеты через `config(foreground=…)`, а в
+        Qt-оболочке таких виджетов нет: вызов падал с `AttributeError`, и
+        строка подключения не обновлялась ни при автопроверке, ни по кнопке
+        «Проверить токен». Теперь запись идёт через оболочку (`set_connection`)
+        и через подпись `auth_result` на странице «Подключение».
+        """
+        shell = getattr(self, "shell", None)
+        setter = getattr(shell, "set_connection", None)
+        if callable(setter):
+            setter(online, detail or ("Готов к работе" if online else "Введите API токен"))
+
+        auth = getattr(self, "auth_result", None)
+        if auth is None:
+            return
         if online:
-            self.status_dot.config(foreground=COLOR_GREEN)
-            self.status_text.config(text="● Подключено", foreground=COLOR_GREEN)
-            self.status_detail.config(text=detail or "Готов к работе")
-            self.auth_result.set_status(f"✓ Подключено как {detail}", COLOR_GREEN)
+            auth.set_status(f"✓ Подключено как {detail}".rstrip(), COLOR_GREEN)
+            return
+        # «Не подключено» — это не всегда ошибка: пустое поле, сохранённый, но
+        # ещё не проверенный токен. Красным помечаем только настоящие отказы.
+        failed = any(marker in str(detail).lower() for marker in
+                     ("ошиб", "невер", "недоступ", "сбой", "не удалось", "занят"))
+        if failed:
+            auth.set_status(f"✗ {detail}", COLOR_RED)
         else:
-            self.status_dot.config(foreground=COLOR_RED)
-            self.status_text.config(text="○ Не подключено", foreground=COLOR_RED)
-            self.status_detail.config(text=detail or "Введите API токен")
-            if detail and "ошибка" in detail.lower():
-                self.auth_result.set_status(f"✗ {detail}", COLOR_RED)
+            auth.set_status(f"○ Не подключено · {detail}" if detail
+                            else "○ Не подключено — введите токен", COLOR_ORANGE)
 
     # ============================================================
     #  Конфиг
@@ -4396,6 +4435,9 @@ class ColonialHelperApp:
 
         self.log("Проверка токена...", "info")
         self.set_status("Проверка токена...")
+        auth = getattr(self, "auth_result", None)
+        if auth is not None:
+            auth.set_status("Проверка токена…", COLOR_ORANGE)
 
         def worker():
             try:
@@ -4407,7 +4449,18 @@ class ColonialHelperApp:
         threading.Thread(target=worker, daemon=True, name="validate-token").start()
 
     def _on_token_validated(self, result: dict):
-        """Результат проверки токена — уже в потоке Tk."""
+        """Результат проверки токена — уже в потоке окна.
+
+        Флаг `_token_check_busy` снимается в `finally`: если обработка
+        результата падала, кнопка «Проверить токен» молча перестала бы
+        работать до перезапуска программы.
+        """
+        try:
+            self._apply_token_result(result or {})
+        finally:
+            self._token_check_busy = False
+
+    def _apply_token_result(self, result: dict):
         self._token_check_busy = False
         if result.get("ok"):
             self.set_connection_status(True, self.api.display_name)
@@ -4470,7 +4523,10 @@ class ColonialHelperApp:
         корневому `/api` с запасным вариантом `/api/system/0/0`, и имя
         приходилось вводить руками.
         """
-        result = self.raven_api.get_cmdr_by_key(key)
+        try:
+            result = self.raven_api.get_cmdr_by_key(key) or {}
+        except Exception as exc:     # сеть/TLS не должны оставлять «проверка…»
+            result = {"ok": False, "status": 0, "error": str(exc)}
         if result.get("ok"):
             cmdr = self.raven_api.cmdr_display_name(result)
             self.root.after(0, lambda: self.raven_status_label.set_status(

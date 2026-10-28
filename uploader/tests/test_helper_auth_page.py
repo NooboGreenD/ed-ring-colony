@@ -104,7 +104,7 @@ class AuthPageTests(unittest.TestCase):
         click("Вставить из буфера")
         click("Открыть Frontier CAPI на сайте")
         click("Обновить досье")
-        click("Обзор…")
+        click("Обзор...")
         click("Сохранить EDSM настройки")
         click("Сохранить Inara настройки")
         click("Проверить ключ")

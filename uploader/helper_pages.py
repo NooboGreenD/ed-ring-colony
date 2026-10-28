@@ -309,7 +309,7 @@ class AuthPage(QWidget):
         self.layout_.addWidget(self.server_label)
         self._row(
             self._button("Открыть API-токены на сайте", self.actions.open_tokens),
-            self._button("Другой сервер…", self.actions.change_server),
+            self._button("Другой сервер...", self.actions.change_server),
         )
         self.site_error_label = label(self.state.site_error, size=9, color="#e27676", wrap=True)
         self.site_error_label.setVisible(bool(self.state.site_error))
@@ -354,7 +354,7 @@ class AuthPage(QWidget):
         holder_layout.setSpacing(8)
         self.path_entry = self._field(self.state.journal_path)
         holder_layout.addWidget(self.path_entry, 1)
-        holder_layout.addWidget(self._button("Обзор…", self.actions.browse_journal))
+        holder_layout.addWidget(self._button("Обзор...", self.actions.browse_journal))
         self.layout_.addWidget(holder)
         self._hint("По умолчанию: Saved Games\\Frontier Developments\\Elite Dangerous")
 

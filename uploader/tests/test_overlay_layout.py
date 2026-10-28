@@ -49,23 +49,27 @@ class _FakeMaster:
 
 
 class _FakeWindow:
-    """Окно Tk-заглушка: отдаёт сохранённую геометрию."""
+    """Заглушка блока-окна: отдаёт «фактическую» геометрию.
+
+    Блок HUD — это сам Qt-виджет, поэтому `capture_layout` спрашивает у него
+    `x()/y()/width()/height()`, как у настоящего окна.
+    """
 
     def __init__(self, x=0, y=0, width=100, height=100):
-        self.x, self.y = x, y
-        self.width, self.height = width, height
+        self._x, self._y = x, y
+        self._width, self._height = width, height
 
-    def winfo_x(self):
-        return self.x
+    def x(self):
+        return self._x
 
-    def winfo_y(self):
-        return self.y
+    def y(self):
+        return self._y
 
-    def winfo_width(self):
-        return self.width
+    def width(self):
+        return self._width
 
-    def winfo_height(self):
-        return self.height
+    def height(self):
+        return self._height
 
 
 class _FakeOverlay:
@@ -75,17 +79,17 @@ class _FakeOverlay:
         self.window = _FakeWindow(x, y, width, height)
         self._anchor = anchor
 
-    def winfo_x(self):
-        return self.x
+    def x(self):
+        return self.window.x()
 
-    def winfo_y(self):
-        return self.y
+    def y(self):
+        return self.window.y()
 
-    def winfo_width(self):
-        return self.width
+    def width(self):
+        return self.window.width()
 
-    def winfo_height(self):
-        return self.height
+    def height(self):
+        return self.window.height()
 
 
 class AnchorMathTests(unittest.TestCase):
