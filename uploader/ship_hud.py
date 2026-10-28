@@ -28,7 +28,11 @@ from i18n import tr
 #: ``HeatDamage (оценка)`` — ключ источника значения корпуса (на него ссылается
 #: ``ship_tracker``), а не текст для командира: подпись берётся из значения
 #: :data:`HULL_SOURCES`.
-NON_UI_LITERALS = frozenset({"HeatDamage (оценка)"})
+NON_UI_LITERALS = frozenset({
+    # ключи источника значения корпуса, а не подписи: подпись берётся из
+    # значения `HULL_SOURCES` ниже
+    "HeatDamage (оценка)", "Repair (корпус)",
+})
 
 #: Разрезы HUD — те же ключи, что в настройках блока (``show_<разрез>``).
 SECTIONS = ("flags", "pips", "hull", "shield", "power", "fuel",
@@ -62,6 +66,9 @@ HULL_SOURCES = {
     "RepairAll": "ремонт", "Resurrect": "воскрешение",
     "Collision": "столкновение", "Touchdown": "посадка",
     "HeatDamage (оценка)": "перегрев", "Damage": "урон",
+    # ``Repair`` чинит корпус целиком, ``Repair (корпус)`` — тот же источник
+    # из ship_tracker: без записи в подписи в HUD уезжал бы технический ключ.
+    "Repair (корпус)": "ремонт",
 }
 
 def hull_source_text(source: str) -> str:

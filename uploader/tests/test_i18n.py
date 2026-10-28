@@ -509,6 +509,25 @@ class TranslationTests(unittest.TestCase):
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "без перевода: " + "; ".join(missing))
 
+    def test_launcher_package_and_installer_strings_are_in_the_catalog(self):
+        """Диалоги обновления и установки: пакет, загрузка, ярлыки."""
+        modules = ("bundle.py", "bundle_updater.py", "installer.py")
+        missing = [f"{name}:{line}: {text!r}"
+                   for name in modules
+                   for line, text in russian_literals(UPLOADER / name)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "пакет и установщик: " + "; ".join(missing))
+
+    def test_ship_tracker_notes_are_in_the_catalog(self):
+        """Лента событий корабля в блоке SHIP."""
+        import ship_tracker
+
+        missing = [f"ship_tracker.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "ship_tracker.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in ship_tracker.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "лента корабля: " + "; ".join(missing))
+
 
 if __name__ == "__main__":
     unittest.main()
