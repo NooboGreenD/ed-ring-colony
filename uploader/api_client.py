@@ -502,6 +502,31 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def get_route_hint(self, system_name: str) -> dict:
+        """Подсказка о системе для оверлея ROUTE (`/api/systems/route-hint`).
+
+        Ответ открыт всем: ни токена, ни профиля зрителя в нём нет — только
+        стройка (процент) и первооткрыватель. Поэтому подсказку можно тянуть
+        без подключённого аккаунта, и она не зависит от прав зрителя.
+        """
+        name = str(system_name or "").strip()
+        if not name:
+            return {"ok": False, "error": tr("Пустое имя системы")}
+        try:
+            resp = self._session.get(
+                f"{self.api_base}/systems/route-hint",
+                params={"name": name},
+                allow_redirects=False,
+                timeout=10,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False,
+                    "error": data.get("error") or f"HTTP {resp.status_code}"}
+        except Exception as exc:
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
+
     def upload_station_reports(self, reports: list) -> dict:
         """Complete per-service station snapshots. The collector owns durable retries."""
         if not self.token or not reports:

@@ -12,7 +12,7 @@ from collections import deque
 from typing import Any, Dict, List, Optional, Sequence
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -25,8 +25,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import route_hint
 import ship_hud
 from exobiology import estimate_value, format_credits
+from hud_icons import HudIcon
 from hud_window import (
     COLOR_ACCENT,
     COLOR_BORDER,
@@ -39,6 +41,7 @@ from hud_window import (
     COLOR_RED_TEXT,
     COLOR_SURFACE,
     COLOR_TEXT,
+    COLOR_TEXT_DIM,
     COLOR_TEXT_MUTED,
     COLOR_YELLOW,
     HudBar,
@@ -162,10 +165,25 @@ class RouteOverlay(HudWindow):
         super().__init__(
             master, "ROUTE",
             settings.get("route_x", 50), settings.get("route_y", 50),
-            settings.get("route_width", 280), settings.get("route_height", 160),
+            settings.get("route_width", 380), settings.get("route_height", 210),
             settings, "route",
         )
-        wrap = max(120, int(settings.get("route_width", 280)) - 26)
+        #: Последняя подсказка о следующей системе (стройка и первооткрыватель).
+        self._hint: Dict[str, Any] = route_hint.empty_hint()
+
+        # Слева — сам маршрут, справа — подсказка о следующей системе: стройка
+        # и первооткрыватель. Колонка подсказки узкая и появляется только
+        # тогда, когда ей есть что сказать.
+        self.main_row = QHBoxLayout()
+        self.main_row.setContentsMargins(0, 0, 0, 0)
+        self.main_row.setSpacing(6)
+
+        self.left_column = QWidget(self.content)
+        left_layout = QVBoxLayout(self.left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+        self.main_row.addWidget(self.left_column, 1)
+
         for name, text, color, delta, bold in (
             ("current_label", tr("Сейчас: —"), COLOR_TEXT_MUTED, -1, False),
             ("next_label", "→ —", COLOR_CYAN, 0, True),
@@ -174,12 +192,12 @@ class RouteOverlay(HudWindow):
             ("remaining_label", tr("Осталось: —"), COLOR_TEXT, -1, False),
             ("destination_label", tr("Цель: —"), COLOR_ACCENT, -1, False),
         ):
-            label = self.make_label(self.content, text, color=color, bold=bold,
-                                    dp=delta, wrap=wrap)
-            self.body.addWidget(label)
+            label = self.make_label(self.left_column, text, color=color, bold=bold,
+                                    dp=delta, wrap=self._text_width())
+            left_layout.addWidget(label)
             setattr(self, name, label)
 
-        self.progress_frame = QWidget(self.content)
+        self.progress_frame = QWidget(self.left_column)
         progress_layout = QVBoxLayout(self.progress_frame)
         progress_layout.setContentsMargins(0, 2, 0, 0)
         progress_layout.setSpacing(2)
@@ -188,12 +206,200 @@ class RouteOverlay(HudWindow):
                                               color=COLOR_TEXT_MUTED, dp=-3)
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_label)
-        self.body.addWidget(self.progress_frame)
+        left_layout.addWidget(self.progress_frame)
+        left_layout.addStretch(1)
+
+        # Подсказка: значки — те же геометрии, что у иконок сайта (`hud_icons`),
+        # поэтому строка читается боковым зрением и не спорит с остальным HUD.
+        self.hint_frame = QFrame(self.content)
+        self.hint_frame.setAttribute(Qt.WA_StyledBackground, True)
+        self.hint_frame.setStyleSheet(f"background:{COLOR_PANEL_ALT};border:0;")
+        # Ширина колонки считается по самому длинному слову подсказки: иначе
+        # «Первооткрыватель» в русском клипается по буквам, а в английском
+        # колонка стояла бы шире нужного.
+        self._hint_width = self._hint_column_width()
+        self.hint_frame.setFixedWidth(self._hint_width)
+        hint_layout = QVBoxLayout(self.hint_frame)
+        hint_layout.setContentsMargins(6, 4, 6, 4)
+        hint_layout.setSpacing(4)
+
+        self.hint_build_icon = HudIcon(self.hint_frame, name="idle", size=14,
+                                       color=COLOR_TEXT_MUTED)
+        self.hint_build_label = self.make_label(self.hint_frame, tr("Стройка: нет данных"),
+                                                color=COLOR_TEXT_MUTED, dp=-1,
+                                                wrap=self._hint_width - 12)
+        hint_layout.addWidget(self.hint_build_icon)
+        hint_layout.addWidget(self.hint_build_label)
+        self.hint_build_bar = HudBar(self.hint_frame, color=COLOR_ACCENT, height=3)
+        self.hint_build_bar.hide()
+        hint_layout.addWidget(self.hint_build_bar)
+
+        hint_layout.addWidget(hud_separator(self.hint_frame))
+
+        self.hint_author_icon = HudIcon(self.hint_frame, name="search", size=14,
+                                        color=COLOR_TEXT_MUTED)
+        self.hint_author_label = self.make_label(self.hint_frame, tr("Система не исследована"),
+                                                 color=COLOR_TEXT_MUTED, dp=-1,
+                                                 wrap=self._hint_width - 12)
+        hint_layout.addWidget(self.hint_author_icon)
+        hint_layout.addWidget(self.hint_author_label)
+        self.main_row.addWidget(self.hint_frame, 0, Qt.AlignTop)
+
+        self.body.addLayout(self.main_row)
         self.body.addStretch(1)
         self.apply_data_options()
 
+    # -- раскладка колонок ---------------------------------------------------
+    #: Колонка подсказки справа: узкая намеренно — значок и одна-две короткие
+    #: строки, а не второй абзац текста.
+    HINT_COLUMN_MIN = 118
+    HINT_COLUMN_MAX = 176
+
+    def _hint_column_width(self) -> int:
+        """Ширина по самому длинному слову подсказки в текущем языке."""
+        from PySide6.QtGui import QFontMetrics
+
+        font = hud_font(self._font_family, max(6, int(self._font_size) - 1))
+        metrics = QFontMetrics(font)
+        widest = 0
+        for text in (tr("Стройка: нет данных"), tr("Стройка: сайт недоступен"),
+                     tr("Стройка: завершена"), tr("Стройка: запланирована"),
+                     tr("Стройка: {percent}%", percent=100),
+                     tr("Система не исследована"), tr("Первооткрыватель неизвестен"),
+                     tr("Система: спрашиваем…")):
+            for word in str(text).replace("\n", " ").split(" "):
+                widest = max(widest, metrics.horizontalAdvance(word))
+        return max(self.HINT_COLUMN_MIN, min(self.HINT_COLUMN_MAX, widest + 16))
+
+    def _settings_width(self) -> int:
+        try:
+            return max(200, int(self.settings.get("route_width", 380)))
+        except (TypeError, ValueError):
+            return 300
+
+    def _text_width(self) -> int:
+        """Сколько пикселей остаётся тексту маршрута слева."""
+        width = self.width() if self.width() > 1 else self._settings_width()
+        spare = getattr(self, "_hint_width", self.HINT_COLUMN_MIN) + 6
+        if not self._hint_visible():
+            spare = 0
+        return max(120, int(width) - 26 - spare)
+
+    def _hint_visible(self) -> bool:
+        from overlay_options import CONTENT_DEFAULTS, option_key
+
+        key = option_key("route", "hint")
+        return bool(self.settings.get(key, CONTENT_DEFAULTS.get(key, True)))
+
+    def _apply_text_wrap(self) -> None:
+        """Подогнать перенос строк маршрута под ширину левой колонки."""
+        width = self._text_width()
+        for name in ("current_label", "next_label", "star_label", "distance_label",
+                     "remaining_label", "destination_label"):
+            label = getattr(self, name, None)
+            if label is None:
+                continue
+            label.setMinimumWidth(min(width, 80))
+            label.setMaximumWidth(width)
+
+    def apply_data_options(self) -> None:
+        """Скрыть выключенные разделы и пересчитать ширину текста маршрута."""
+        super().apply_data_options()
+        self._apply_text_wrap()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        super().resizeEvent(event)
+        if getattr(self, "left_column", None) is not None:
+            self._apply_text_wrap()
+
+    # -- подсказка о следующей системе ---------------------------------------
+    #: Значок и цвет по состоянию стройки: дом — строят, галочка — готово,
+    #: часы — запланировано, часы серые — о стройке ничего не известно.
+    BUILD_LOOKS = {
+        route_hint.BUILDING: ("building", COLOR_ACCENT),
+        route_hint.DONE: ("done", COLOR_GREEN_TEXT),
+        route_hint.PLANNED: ("idle", COLOR_YELLOW),
+        route_hint.UNKNOWN: ("idle", COLOR_TEXT_MUTED),
+    }
+
+    def _render_hint(self, hint: Optional[Dict[str, Any]]) -> None:
+        """Нарисовать подсказку: стройка с процентом и первооткрыватель системы."""
+        hint = hint or route_hint.empty_hint()
+        status = str(hint.get("status") or route_hint.UNKNOWN)
+        icon, color = self.BUILD_LOOKS.get(status, self.BUILD_LOOKS[route_hint.UNKNOWN])
+        percent = hint.get("progress")
+        known = bool(hint.get("known"))
+        loading = bool(hint.get("loading"))
+        error = str(hint.get("error") or "")
+
+        if error:
+            self.hint_build_icon.set_icon("idle")
+            self.hint_build_icon.set_color(COLOR_RED_TEXT)
+            self.hint_build_label.setText(tr("Стройка: сайт недоступен"))
+            paint(self.hint_build_label, color=COLOR_RED_TEXT)
+            self.hint_build_bar.hide()
+        elif status == route_hint.BUILDING and percent is not None:
+            self.hint_build_icon.set_icon(icon)
+            self.hint_build_icon.set_color(color)
+            self.hint_build_label.setText(tr("Стройка: {percent}%", percent=percent))
+            paint(self.hint_build_label, color=color)
+            self.hint_build_bar.set_color(COLOR_ACCENT)
+            self.hint_build_bar.set_fraction(float(percent) / 100.0)
+            self.hint_build_bar.show()
+        elif status == route_hint.DONE:
+            self.hint_build_icon.set_icon(icon)
+            self.hint_build_icon.set_color(color)
+            self.hint_build_label.setText(tr("Стройка: завершена"))
+            paint(self.hint_build_label, color=color)
+            self.hint_build_bar.set_color(COLOR_GREEN_TEXT)
+            self.hint_build_bar.set_fraction(1.0)
+            self.hint_build_bar.show()
+        elif status == route_hint.PLANNED:
+            self.hint_build_icon.set_icon(icon)
+            self.hint_build_icon.set_color(color)
+            self.hint_build_label.setText(tr("Стройка: запланирована"))
+            paint(self.hint_build_label, color=color)
+            self.hint_build_bar.hide()
+        else:
+            self.hint_build_icon.set_icon("idle")
+            self.hint_build_icon.set_color(COLOR_TEXT_MUTED)
+            self.hint_build_label.setText(tr("Стройка: нет данных") if not loading
+                                          else tr("Стройка: спрашиваем…"))
+            paint(self.hint_build_label, color=COLOR_TEXT_MUTED)
+            self.hint_build_bar.hide()
+
+        author = str(hint.get("discoverer") or "")
+        if loading and not known:
+            self.hint_author_icon.set_icon("search")
+            self.hint_author_icon.set_color(COLOR_TEXT_MUTED)
+            self.hint_author_label.setText(tr("Система: спрашиваем…"))
+            paint(self.hint_author_label, color=COLOR_TEXT_MUTED)
+        elif not known:
+            # Системы нет в базе проекта — это и есть «ещё не исследована».
+            self.hint_author_icon.set_icon("search")
+            self.hint_author_icon.set_color(COLOR_YELLOW)
+            self.hint_author_label.setText(tr("Система не исследована"))
+            paint(self.hint_author_label, color=COLOR_YELLOW)
+        elif author:
+            self.hint_author_icon.set_icon("compass")
+            self.hint_author_icon.set_color(COLOR_CYAN)
+            self.hint_author_label.setText(tr("Открыл: {name}", name=author))
+            paint(self.hint_author_label, color=COLOR_CYAN)
+        else:
+            self.hint_author_icon.set_icon("star")
+            self.hint_author_icon.set_color(COLOR_TEXT_DIM)
+            bodies = int(hint.get("bodies") or 0)
+            self.hint_author_label.setText(
+                tr("Первооткрыватель неизвестен\nтел\u00a0{count}", count=bodies)
+                if bodies else tr("Первооткрыватель неизвестен"))
+            paint(self.hint_author_label, color=COLOR_TEXT_DIM)
+
+    def get_hint(self) -> Dict[str, Any]:
+        """Последняя нарисованная подсказка — тестам и отладочной печати."""
+        return dict(self._hint)
+
     def update_route(self, current, next_system, visited, total, remaining=None,
-                     next_info=None, summary=None) -> None:
+                     next_info=None, summary=None, hint=None) -> None:
         summary = summary or {}
         self.current_label.setText(tr("Сейчас: {system}", system=current))
         self.next_label.setText(
@@ -221,6 +427,16 @@ class RouteOverlay(HudWindow):
                                           destination=summary.get("destination") or "—"))
         self.progress_label.setText(f"{visited} / {total}" if total else "")
         self.progress_bar.set_fraction(visited / total if total else 0)
+        # Подсказка относится к конкретной системе: если сайт ответил про
+        # предыдущую (маршрут только что сменился), показываем не её, а
+        # честное «спрашиваем» — путать системы нельзя.
+        shown = hint if isinstance(hint, dict) else {}
+        if not total:
+            shown = route_hint.empty_hint()
+        elif shown.get("system") and str(shown["system"]) != str(next_system):
+            shown = route_hint.mark_loading(shown, str(next_system))
+        self._hint = shown
+        self._render_hint(shown)
         self.apply_data_options()
 
 
@@ -416,14 +632,24 @@ class ShipOverlay(HudWindow):
         self._last_data: Dict[str, Any] = {}
         self._last_signature = ""
         self._last_rows = 0
+        #: Ключ последней отрисовки: подпись данных + геометрия + шрифт.
+        #: Пока он тот же, строки не пересобираются (обновление раз в секунду).
+        self._render_key: Optional[tuple] = None
+        self._rows: List[Dict[str, Any]] = []
+        #: Идёт подгонка под размер блока: `resizeEvent` не перерисовывает сам.
+        self._fitting = False
         self._hud: Dict[str, Any] = {}
         self._paints = 0
 
-        self.body.addWidget(hud_section(self.content, "Vessel telemetry",
-                                       size=self._fs - 2))
+        self._section_label = hud_section(self.content, "Vessel telemetry",
+                                          size=self._fs - 2)
+        self.body.addWidget(self._section_label)
         self.ship_name_label = self.make_label(
             self.content, tr("КОРАБЛЬ НЕ ОПРЕДЕЛЁН"), color=COLOR_ACCENT,
             background=COLOR_PANEL_ALT, dp=1, bold=True, wrap=self._wrap)
+        # Заголовок тоже одна строка: длинное имя корабля укорачивается
+        # многоточием, а не переносится и не съедает высоту строк.
+        self.ship_name_label.setWordWrap(False)
         self.body.addWidget(self.ship_name_label)
 
         self.chips_frame = QWidget(self.content)
@@ -445,6 +671,10 @@ class ShipOverlay(HudWindow):
         """i-я строка HUD: создать при необходимости, иначе переиспользовать."""
         while len(self._row_labels) <= index:
             label = self.make_label(self.rows_host, "", dp=0, wrap=self._wrap)
+            # Одна строка HUD — одна строка текста. Перенос в QLabel выглядел
+            # хуже обрезки: высота строки фиксирована раскладкой, поэтому вторая
+            # половина строки (шкала, процент) просто не рисовалась.
+            label.setWordWrap(False)
             label.setContentsMargins(5, 1, 5, 1)
             self.rows_host.add(label)
             self._row_labels.append(label)
@@ -485,29 +715,183 @@ class ShipOverlay(HudWindow):
         hud = ship_hud.build_ship_hud(data, settings=self.settings)
         self._hud = hud
         self._last_data = dict(data or {})
-        self.ship_name_label.setText(hud["title"])
+        self.ship_name_label.setText(self._fit_text(hud["title"], self._title_metrics()))
         self._render_chips(hud.get("chips") or [])
 
-        rows = ship_hud.hud_rows(hud)
-        if (not force and hud.get("signature") == self._last_signature
-                and len(rows) == self._last_rows):
+        key = (hud.get("signature"), self.width(), self.height(),
+               int(self._fs), str(self._ff))
+        if not force and key == self._render_key:
             return
+        self._render_key = key
         self._last_signature = str(hud.get("signature", ""))
-        self._last_rows = len(rows)
         self._paints += 1
 
+        rows = self._render_rows(self._fit_rows_to_block(hud))
+        self._rows = rows
+        self._last_rows = len(rows)
+
+    def _render_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Разложить строки по подписям: текст, кегль, цвет, видимость."""
+        width = self._row_text_width()
         for index, row in enumerate(rows):
             label = self._row_widget(index)
             delta = ship_hud.ROW_FONT_DELTA.get(row["kind"], 0)
             color = self.TONE_COLORS.get(row.get("tone", "text"), COLOR_TEXT)
-            label.setText(row["text"])
             label.setFont(hud_font(self._ff, max(7, int(self._fs) + delta)))
+            label.setText(self._fit_text(row["text"], label.fontMetrics(), width))
             background = COLOR_PANEL_ALT if index % 2 else COLOR_PANEL
             paint(label, color=color, background=background)
             label.setAttribute(Qt.WA_StyledBackground, True)
             label.show()
         for label in self._row_labels[len(rows):]:
             label.hide()
+        return rows
+
+    # -- подгонка строк под настоящий размер блока --------------------------
+    #: Поля строки слева и справа: столько отнимает `setContentsMargins`.
+    ROW_SIDE_MARGIN = 5
+    def _metrics(self, delta: int = 0) -> QFontMetricsF:
+        """Метрики шрифта строки: кегль тот же, что выставит `update_ship`."""
+        return QFontMetricsF(hud_font(self._ff, max(7, int(self._fs) + int(delta))))
+
+    def _title_metrics(self) -> QFontMetricsF:
+        return QFontMetricsF(hud_font(self._ff, max(7, int(self._fs) + 1), bold=True))
+
+    def _row_text_width(self) -> int:
+        """Сколько пикселей реально отведено под текст строки."""
+        width = self.rows_host.width()
+        if width <= 1 or not self.isVisible():
+            # Раскладка ещё не считалась или окно скрыто: берём ширину из
+            # настроек блока — ровно её получит строка, когда окно покажется.
+            width = max(150, int(self._wrap))
+        return max(60, int(width) - 2 * self.ROW_SIDE_MARGIN - 1)
+
+    def _fit_text(self, text: str, metrics: QFontMetricsF,
+                  width: Optional[int] = None) -> str:
+        """Обрезать строку по пикселям, а не по «среднему символу».
+
+        Бюджет в символах считает `ship_hud.line_budget` — он не знает ни
+        настоящего шрифта, ни ширины полей. Если глифы шире ожидаемого (крупный
+        кегль, не Consolas, а системный шрифт), строка вылезала за край и Qt
+        рисовал её обрезанной на середине шкалы.
+        """
+        text = str(text)
+        width = self._row_text_width() if width is None else int(width)
+        if not text or metrics.horizontalAdvance(text) <= width:
+            return text
+        return metrics.elidedText(text, Qt.TextElideMode.ElideRight, width)
+
+    def _rows_height(self) -> int:
+        """Сколько высоты заняли разложенные строки: их собственные sizeHint."""
+        labels = [label for label in self._row_labels if not label.isHidden()]
+        if not labels:
+            return 0
+        return (sum(max(label.sizeHint().height(), label.height()) for label in labels)
+                + max(0, len(labels) - 1))                       # spacing = 1
+
+    #: «Места сколько угодно» — пока окно не разложено, урезать список не за что.
+    NO_LIMIT = 1 << 20
+
+    def _rows_space(self) -> int:
+        """Сколько пикселей высоты отведено под строки в этом окне."""
+        content = self.content.height()
+        top = self.rows_host.y()
+        if not self.isVisible() or content <= 1 or top <= 0:
+            # Настоящей раскладки ещё нет (окно скрыто, первый кадр): считаем,
+            # что места хватает, и ничего не урезаем — иначе список модулей
+            # пропадал бы ещё до первого показа блока.
+            return self.NO_LIMIT
+        return max(0, int(content) - int(top) - 7)                # нижнее поле body
+
+    def _fit_rows_to_block(self, hud: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Строки HUD, ужатые по ширине и по высоте блока.
+
+        Ширина: бюджет в символах уточняется по настоящим метрикам шрифта —
+        строка обязана влезть целиком, шкала не должна рваться.
+        Высота: если строк больше, чем помещается, список модулей укорачивается
+        (лишние уходят в «ещё N»), а не сжимается: сжатые строки Qt режет по
+        высоте, и вместо шкалы видна только её верхняя половина.
+        """
+        total = len((hud.get("modules") or {}).get("rows") or [])
+        keep = total
+        space = self._rows_space()
+        rows = self._render_rows(self._fit_rows_width(hud))
+        while keep > 0 and self._rows_height() > space:
+            keep -= 1
+            hud = ship_hud.limit_module_rows(hud, keep)
+            rows = self._render_rows(self._fit_rows_width(hud))
+        self._fit_block_height(space)
+        self._hud = hud
+        return rows
+
+    def _fit_block_height(self, space: int) -> None:
+        """Блоку мало высоты — поднять нижнюю границу, но не резать строки.
+
+        Строки уже не переносятся и не ужимаются содержимым, но если окно ниже
+        даже свёрнутого списка, Qt всё равно сожмёт подписи, и от глифов
+        останется верхняя половина. Тогда окно подрастает до нужного размера:
+        читаемое содержимое важнее точного размера блока.
+        """
+        needed = self._rows_height()
+        if needed > space:
+            current = int(self.height())
+            required = max(self.MIN_HEIGHT, current - space + needed + 1)
+            self._apply_min_height(required, grow_to=required)
+        elif self.minimumHeight() > self.MIN_HEIGHT:
+            self._apply_min_height(self.MIN_HEIGHT)
+
+    def _apply_min_height(self, minimum: int, grow_to: int = 0) -> None:
+        """Поставить нижнюю границу высоты, не вызывая лишней перерисовки."""
+        if int(minimum) == self.minimumHeight():
+            return
+        self._fitting = True
+        try:
+            self.setMinimumHeight(int(minimum))
+            if grow_to and int(self.height()) < int(grow_to):
+                self.resize(int(self.width()), int(grow_to))
+        finally:
+            self._fitting = False
+
+    #: Строка-проба для средней ширины глифа: цифры, шкала, знаки строк HUD.
+    WIDTH_PROBE = "0123456789 ▓░%()/·MWt"
+
+    def _char_width(self) -> float:
+        """Средняя ширина глифа в пикселях — в ней и меряем бюджет строки.
+
+        `ship_hud.CHAR_WIDTH_EM` — модель «0.62 em у моноширинного шрифта».
+        Она верна для Consolas, но HUD рисуют и системным шрифтом, где глифы
+        шире: строка вылезала за край, и Qt обрезал её на середине шкалы.
+        """
+        metrics = self._metrics(0)
+        probe = self.WIDTH_PROBE
+        return max(1.0, metrics.horizontalAdvance(probe) / len(probe))
+
+    def _fit_rows_width(self, hud: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Строки HUD по бюджету, посчитанному по настоящему шрифту."""
+        width = self._row_text_width()
+        budget = max(12, int(width / self._char_width()))
+        return ship_hud.hud_rows(hud, max_chars=budget)
+
+    def get_rows(self) -> List[Dict[str, Any]]:
+        """Строки последней отрисовки — ровно то, что на экране."""
+        return [dict(row) for row in self._rows]
+
+    def showEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        """Блок показали — строки подгоняются под настоящую раскладку окна."""
+        super().showEvent(event)
+        if self._fitting:
+            return
+        if getattr(self, "_last_data", None) and getattr(self, "_row_labels", None) is not None:
+            self.update_ship(self._last_data, force=True)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        """Блок потянули за угол — строки пересобираются под новый размер."""
+        super().resizeEvent(event)
+        if self._fitting:
+            return
+        # За время вызова из `HudWindow.__init__` полей ещё нет — молча выходим.
+        if getattr(self, "_last_data", None) and getattr(self, "_row_labels", None) is not None:
+            self.update_ship(self._last_data)
 
     def get_hud(self) -> Dict[str, Any]:
         """Последняя модель HUD — тестам и отладочной печати."""

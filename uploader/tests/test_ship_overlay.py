@@ -25,6 +25,7 @@ from test_overlay_management import _ensure_gui_stubs  # noqa: E402
 _ensure_gui_stubs()
 
 from overlay import ShipOverlay, ship_hud  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 from test_overlay_management import _ManagerTestCase  # noqa: E402
 from test_ship_tracker_status import LOADOUT  # noqa: E402
 import ship_tracker as st  # noqa: E402
@@ -59,8 +60,13 @@ class _OverlayTestCase(unittest.TestCase):
         return [_text(label) for label in self.overlay._row_labels]
 
     def visible_rows(self, hud=None):
-        hud = hud or self.overlay.get_hud()
-        return [row["text"] for row in ship_hud.hud_rows(hud)]
+        """Строки, которые оверлей действительно нарисовал в этом блоке.
+
+        Модель (`ship_hud.hud_rows`) считает бюджет по «среднему глифу»; блок
+        уточняет его по настоящему шрифту и по высоте окна, поэтому на экране
+        ровно то, что вернул `get_rows()`, — это и есть проверяемый инвариант.
+        """
+        return [row["text"] for row in self.overlay.get_rows()]
 
 
 class ShipOverlayRenderTests(_OverlayTestCase):
@@ -86,7 +92,17 @@ class ShipOverlayRenderTests(_OverlayTestCase):
         after = self.row_texts()[0]
         self.assertNotEqual(before, after)
         self.assertIn("62%", after)
-        self.assertIn("попадание", after)
+        # Источник значения называет модель; на узком блоке он может не влезть
+        # в строку и уступить место шкале — проверяем саму модель.
+        hull = next(row for row in overlay.get_hud()["lines"] if row["label"] == "КОРПУС")
+        self.assertIn("попадание", hull["hint"])
+
+    def test_wide_block_prints_the_source_of_the_hull_value(self):
+        """Широкий блок печатает источник и возраст значения целиком."""
+        overlay = self.make_overlay({"ship_width": 640})
+        overlay.update_ship(state_of({"timestamp": "2026-09-17T12:22:00Z", "event": "HullDamage",
+                                      "Health": 0.62, "PlayerPilot": True}))
+        self.assertIn("попадание", self.row_texts()[0])
 
     def test_chips_are_repainted_in_their_own_row(self):
         overlay = self.make_overlay()
@@ -124,8 +140,7 @@ class ShipOverlayNoFlickerTests(_OverlayTestCase):
         wide = list(overlay._row_labels)
         overlay.settings["ship_modules_view"] = "off"
         overlay.update_ship(state_of(), force=True)
-        hud = overlay.get_hud()
-        kept = len(ship_hud.hud_rows(hud))
+        kept = len(overlay.get_rows())
         self.assertLess(kept, len(wide), "режим «без списка» обязан укоротить блок")
         self.assertEqual(overlay._row_labels, wide, "виджеты переиспользуются, новых нет")
         for label in wide[kept:]:
@@ -148,6 +163,100 @@ class ShipOverlayNoFlickerTests(_OverlayTestCase):
         overlay.update_ship(state_of())
         overlay.apply_font("Consolas", 10)      # тот же размер — ничего не делаем
         self.assertEqual(overlay._chips_signature, "")
+
+
+@unittest.skipIf(ShipOverlay is None, "Qt runtime unavailable")
+class ShipOverlayFittingTests(_OverlayTestCase):
+    """Блок не режет то, что напечатал: ни шкалу, ни строку по высоте."""
+
+    MODULES = [
+        {"slot": "MainEngines", "name": "thrusters", "health": 0.62, "on": True,
+         "priority": 0},
+        {"slot": "PowerPlant", "name": "power plant", "health": 0.44, "on": True,
+         "priority": 1},
+        {"slot": "Slot04_Size4", "name": "shield generator", "health": 0.87, "on": False,
+         "priority": 2},
+        {"slot": "Slot03_Size5", "name": "frame shift drive", "health": 1.0, "on": True,
+         "priority": 0},
+        {"slot": "LargeHardpoint1", "name": "beam laser", "health": 0.31, "on": True,
+         "priority": 3},
+        {"slot": "Slot02_Size3", "name": "cargo rack", "health": 0.95, "on": True,
+         "priority": 0},
+    ]
+
+    def state(self):
+        return {
+            "ship_type": "krait_mkii", "ship_name": "ISV Blackbird", "ship_ident": "AB-1",
+            "hull_percent": 0.77, "hull_source": "HullDamage", "shield_state": "up",
+            "power_used": 21.4, "power_capacity": 32.5, "power_percent": 0.66,
+            "fuel_level": 12.5, "fuel_capacity": 32.0, "fuel_reservoir": 0.6,
+            "fuel_percent": 0.39, "cargo_count": 12, "cargo_capacity": 64,
+            "modules": [dict(module) for module in self.MODULES],
+        }
+
+    def shown(self, settings=None):
+        """Показать блок: только у раскладки окна есть настоящая геометрия."""
+        overlay = self.make_overlay(dict({"ship_modules_view": "all"}, **(settings or {})))
+        overlay.show()
+        overlay.update_ship(self.state(), force=True)
+        QApplication.processEvents()
+        return overlay
+
+    def visible(self, overlay):
+        return [label for label in overlay._row_labels if not label.isHidden()]
+
+    def test_module_bars_are_never_cut_in_half(self):
+        """Шкала в строке модуля — либо целая, либо её нет; процент — всегда."""
+        for width in (260, 300, 360, 460):
+            overlay = self.shown({"ship_width": width})
+            rows = [row["text"] for row in overlay.get_rows() if row["kind"] == "mod"]
+            self.assertTrue(rows, f"{width}px: список модулей пропал")
+            for text in rows:
+                self.assertIn("%", text, f"{width}px: у строки нет процента — {text}")
+                cells = text.count(ship_hud.FILLED) + text.count(ship_hud.EMPTY)
+                if ship_hud.FILLED in text or ship_hud.EMPTY in text:
+                    self.assertGreater(cells, 1, f"{width}px: шкала обрезана — {text}")
+                    self.assertNotIn("…", text.split(ship_hud.EMPTY)[-1],
+                                     f"{width}px: шкала упирается в многоточие — {text}")
+
+    def test_no_row_wraps_into_a_second_line(self):
+        overlay = self.shown()
+        for label in self.visible(overlay):
+            self.assertFalse(label.wordWrap(),
+                             f"строка переносится и обрезается по высоте: {label.text()}")
+
+    def test_rows_fit_the_block_width(self):
+        overlay = self.shown()
+        for label in self.visible(overlay):
+            need = label.fontMetrics().horizontalAdvance(label.text())
+            self.assertLessEqual(need, label.width(),
+                                 f"строка шире блока и будет обрезана: {label.text()}")
+
+    def test_rows_fit_the_block_height(self):
+        overlay = self.shown()
+        needed = overlay._rows_height()
+        self.assertLessEqual(needed, overlay._rows_space(),
+                             "строки не помещаются в блок — Qt сожмёт их по высоте")
+        for label in self.visible(overlay):
+            self.assertGreaterEqual(label.height(), label.fontMetrics().height(),
+                                    f"строка сжата по высоте: {label.text()}")
+
+    def test_short_block_folds_the_module_list_instead_of_cutting_it(self):
+        overlay = self.shown({"ship_height": 190})
+        texts = [row["text"] for row in overlay.get_rows()]
+        self.assertTrue(any("ещё" in text for text in texts),
+                        f"список модулей не свёрнут: {texts}")
+        for label in self.visible(overlay):
+            self.assertGreaterEqual(label.height(), label.fontMetrics().height(),
+                                    f"строка сжата по высоте: {label.text()}")
+
+    def test_taller_block_shows_more_modules(self):
+        short = self.shown({"ship_height": 200})
+        tall = self.shown({"ship_height": 520})
+        short_rows = [row["text"] for row in short.get_rows() if row["kind"] == "mod"]
+        tall_rows = [row["text"] for row in tall.get_rows() if row["kind"] == "mod"]
+        self.assertGreater(len(tall_rows), len(short_rows),
+                           "высокий блок обязан показать больше модулей, а не резать их")
 
 
 class ShipModulesViewManagerTests(_ManagerTestCase):

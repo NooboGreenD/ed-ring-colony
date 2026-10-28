@@ -861,6 +861,10 @@ class OverlayManager:
         parts.append(str(data.get("construction_cargo_tons", 0)))
         parts.append(str(data.get("progress", "")))
         parts.append(str(data.get("next_system_info", {})))
+        # Подсказка о следующей системе: стройка и первооткрыватель. Без неё
+        # строка не перерисовывалась, пока журнал молчит.
+        hint = data.get("next_system_hint") or {}
+        parts.append(str(hint))
         # Состояние игры: HUD должен отреагировать на запуск/выход из игры.
         parts.append(str(data.get("game_running", False)))
         parts.append(str(data.get("game_focused", False)))
@@ -906,6 +910,7 @@ class OverlayManager:
                 data.get("current", "-"), data.get("next", "-"),
                 data.get("visited", 0), data.get("total", 0), data.get("remaining"),
                 data.get("next_system_info"), data.get("route_summary"),
+                data.get("next_system_hint"),
             )
         if self.status_overlay:
             self.status_overlay.set_status(data.get("online", False), data.get("status_detail", ""))
@@ -1531,7 +1536,7 @@ class OverlayManager:
 #: у уже существующего ключа: сохранённый конфиг перекрывает DEFAULT_SETTINGS,
 #: поэтому без миграции прежний пользователь навсегда остался бы на старом
 #: значении и не увидел бы исправления.
-SETTINGS_SCHEMA_VERSION = 5
+SETTINGS_SCHEMA_VERSION = 6
 
 #: Миграции: версия схемы -> {ключ: прежнее значение по умолчанию}.
 #: Ключ получает новый дефолт только если пользователь его не менял, то есть
@@ -1543,6 +1548,10 @@ SETTINGS_DEFAULT_CHANGES = {
     # 2.10.23: SHIP пересобран в компактный текстовый HUD — прежние 420 px
     # оставляли под списком модулей пустоту, а 330 px хватает с лентой.
     4: {"ship_height": 420},
+    # 2.18.33: в ROUTE появилась подсказка о следующей системе (стройка и
+    # первооткрыватель) — две строки значка и шкала. На 160 px они выдавливали
+    # «Цель», поэтому блок становится выше.
+    6: {"route_height": 160, "route_width": 280},
 }
 
 #: Миграции позиций: версия схемы -> {блок: (прежний x, прежний y)}.
@@ -1560,6 +1569,12 @@ SETTINGS_POSITION_CHANGES = {
         "events": (730, 50),
         "exobio": (1060, 50),
         "carrier": (1060, 430),
+    },
+    # 2.18.33: ROUTE вырос под подсказку о следующей системе, и STATUS с SHIP
+    # сдвигаются вниз — иначе новый ROUTE ложится на STATUS.
+    6: {
+        "status": (50, 220),
+        "ship": (50, 440),
     },
 }
 
