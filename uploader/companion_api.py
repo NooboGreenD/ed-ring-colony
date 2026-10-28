@@ -20,6 +20,8 @@ import secrets
 import socket
 import threading
 import time
+
+from i18n import tr
 import webbrowser
 from typing import Callable, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -58,7 +60,8 @@ KNOWN_AUDIENCES = ("frontier", "steam", "epic", "xbox", "psn")
 #: нужный способ входа, и токен получит та учётка, которая владеет игрой.
 DEFAULT_AUDIENCE = "frontier,steam,epic"
 
-#: Человеческие названия для UI (ключ → подпись).
+#: Человеческие названия для UI (ключ → подпись). Подписи — ключи перевода:
+#: ``tr()`` зовётся там, где список показывается, а не при импорте модуля.
 AUDIENCE_LABELS = (
     ("auto", "Авто (Frontier / Steam / Epic Games Store)"),
     ("frontier", "Только Frontier Store"),
@@ -194,10 +197,12 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             "<html><head><meta charset='utf-8'><title>Colonial Helper</title></head>"
             "<body style='font-family:system-ui;background:#101314;color:#eee;"
             "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
-            "<div style='text-align:center'><h2>Код авторизации получен</h2>"
-            "<p>Окно можно закрыть. Colonial Helper сейчас проверит связь "
-            "с Companion API — результат появится в приложении.</p></div>"
+            "<div style='text-align:center'><h2>{title}</h2><p>{text}</p></div>"
             "</body></html>"
+        ).format(
+            title=tr("Код авторизации получен"),
+            text=tr("Окно можно закрыть. Colonial Helper сейчас проверит связь "
+                    "с Companion API — результат появится в приложении."),
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -263,18 +268,25 @@ def assess_capi_entitlement(requested_platform, actual_platform) -> dict:
     if mismatch:
         return {
             "reason": "platform_not_entitled", "needsReauth": True, "platform": actual,
-            "hint": f"Запрошена платформа: {requested}. Frontier выдал токен платформы «{actual}». "
-                    "Выйдите из аккаунта на auth.frontierstore.net (или откройте ссылку "
-                    "подключения в приватном окне) "
-                    + ("и войдите кнопкой выбранного магазина Steam/Epic, а не почтой."
-                       if normalize_platform(requested) in ("steam", "epic") else
-                       "и выберите способ входа, соответствующий платформе покупки игры."),
+            "hint": (
+                tr("Запрошена платформа: {requested}. Frontier выдал токен платформы "
+                   "«{actual}». Выйдите из аккаунта на auth.frontierstore.net (или "
+                   "откройте ссылку подключения в приватном окне) и войдите кнопкой "
+                   "выбранного магазина Steam/Epic, а не почтой.",
+                   requested=requested, actual=actual)
+                if normalize_platform(requested) in ("steam", "epic") else
+                tr("Запрошена платформа: {requested}. Frontier выдал токен платформы "
+                   "«{actual}». Выйдите из аккаунта на auth.frontierstore.net (или "
+                   "откройте ссылку подключения в приватном окне) и выберите способ "
+                   "входа, соответствующий платформе покупки игры.",
+                   requested=requested, actual=actual)),
         }
     return {
         "reason": "entitlement_unavailable", "needsReauth": False, "platform": actual,
-        "hint": (f"Frontier подтвердил платформу «{actual}». " if actual else
-                 "Frontier не сообщил платформу токена — это не доказательство входа почтой. ")
-                + ENTITLEMENT_RECOVERY_HINT,
+        "hint": (tr("Frontier подтвердил платформу «{platform}». {hint}",
+                    platform=actual, hint=tr(ENTITLEMENT_RECOVERY_HINT)) if actual else
+                 tr("Frontier не сообщил платформу токена — это не доказательство "
+                    "входа почтой. {hint}", hint=tr(ENTITLEMENT_RECOVERY_HINT))),
     }
 
 
@@ -290,51 +302,57 @@ def describe_capi_error(status: int, body: str = "", endpoint: str = "") -> Tupl
 
     if status == 400:
         if is_no_entitlement_response(text):
-            return (f"{NO_ENTITLEMENT_MESSAGE} (HTTP 400{where})", ENTITLEMENT_RECOVERY_HINT)
+            return (tr("CAPI Frontier не подтвердил доступ к Elite Dangerous "
+                       "(HTTP 400{where})", where=where), tr(ENTITLEMENT_RECOVERY_HINT))
+        message = (tr("Companion API отклонил запрос: HTTP 400{where}: {detail}",
+                      where=where, detail=text[:300]) if text else
+                   tr("Companion API отклонил запрос: HTTP 400{where}", where=where))
         return (
-            f"Companion API отклонил запрос: HTTP 400{where}" + (f": {text[:300]}" if text else ""),
-            "Этот ответ сам по себе не означает отсутствие игры или неверный вход через Epic/Steam. "
-            "Авторизация сохранена — повторите запрос позже; при повторении передайте "
-            "код и ответ CAPI в поддержку.",
+            message,
+            tr("Этот ответ сам по себе не означает отсутствие игры или неверный вход "
+               "через Epic/Steam. Авторизация сохранена — повторите запрос позже; "
+               "при повторении передайте код и ответ CAPI в поддержку."),
         )
     if status in (401, 403):
         return (
-            f"Frontier отклонил токен доступа (HTTP {status}{where})",
-            "Подключите Frontier заново: доступ отозван или выдан не на те "
-            "права (scope).",
+            tr("Frontier отклонил токен доступа (HTTP {status}{where})",
+               status=status, where=where),
+            tr("Подключите Frontier заново: доступ отозван или выдан не на те "
+               "права (scope)."),
         )
     if status == 422:
         return (
-            f"Токен доступа истёк (HTTP 422{where})",
-            "Обновление токена не удалось — подключите Frontier заново.",
+            tr("Токен доступа истёк (HTTP 422{where})", where=where),
+            tr("Обновление токена не удалось — подключите Frontier заново."),
         )
     if status == 404:
         return (
-            f"Companion API не знает такого адреса (HTTP 404{where})",
-            "Скорее всего, Frontier снова поменял API — обновите Colonial Helper.",
+            tr("Companion API не знает такого адреса (HTTP 404{where})", where=where),
+            tr("Скорее всего, Frontier снова поменял API — обновите Colonial Helper."),
         )
     if status == 418:
         return (
-            "Companion API на техобслуживании (HTTP 418)",
-            "Это временно и не ломает привязку — повторите через несколько минут.",
+            tr("Companion API на техобслуживании (HTTP 418)"),
+            tr("Это временно и не ломает привязку — повторите через несколько минут."),
         )
     if status == 429:
         return (
-            "Frontier ограничил частоту запросов (HTTP 429)",
-            "CAPI разрешает примерно один запрос в минуту — подождите минуту.",
+            tr("Frontier ограничил частоту запросов (HTTP 429)"),
+            tr("CAPI разрешает примерно один запрос в минуту — подождите минуту."),
         )
     if status == 204:
         return (
-            f"Frontier не вернул данных{where}",
-            "Так бывает, пока командир ни разу не заходил в игру после "
-            "привязки. Зайдите в игру и повторите.",
+            tr("Frontier не вернул данных{where}", where=where),
+            tr("Так бывает, пока командир ни разу не заходил в игру после "
+               "привязки. Зайдите в игру и повторите."),
         )
     if 500 <= status < 600:
         return (
-            f"Companion API временно недоступен (HTTP {status}{where})",
-            "Сервис Frontier сбоит — повторите позже, привязку рвать не нужно.",
+            tr("Companion API временно недоступен (HTTP {status}{where})",
+               status=status, where=where),
+            tr("Сервис Frontier сбоит — повторите позже, привязку рвать не нужно."),
         )
-    return (f"Companion API ответил HTTP {status}{where}", "")
+    return (tr("Companion API ответил HTTP {status}{where}", status=status, where=where), "")
 
 
 class CompanionAuth:
@@ -421,7 +439,7 @@ class CompanionAuth:
             on_url: колбэк с ссылкой (чтобы показать её в логе приложения).
         """
         if requests is None:
-            raise CompanionAuthError("Нет библиотеки requests: pip install requests")
+            raise CompanionAuthError(tr("Нет библиотеки requests: pip install requests"))
 
         verifier = create_code_verifier()
         state = _b64url(secrets.token_bytes(16), pad=False)
@@ -450,12 +468,14 @@ class CompanionAuth:
 
         result = handler.result or {}
         if result.get("error"):
-            raise CompanionAuthError(f"Frontier отклонил доступ: {result['error']}")
+            raise CompanionAuthError(tr("Frontier отклонил доступ: {error}",
+                                         error=result["error"]))
         code = result.get("code") or ""
         if not code:
-            raise CompanionAuthError("Код авторизации не получен (таймаут или закрыт браузер)")
+            raise CompanionAuthError(
+                tr("Код авторизации не получен (таймаут или закрыт браузер)"))
         if result.get("state") and result["state"] != state:
-            raise CompanionAuthError("Несовпал state: возможен перехват редиректа")
+            raise CompanionAuthError(tr("Несовпал state: возможен перехват редиректа"))
 
         tokens = self.exchange_code(code, verifier, redirect_uri)
         # Платформу запоминаем вместе с токенами: по ней видно, какой учёткой
@@ -495,7 +515,7 @@ class CompanionAuth:
 
     def _token_request(self, payload: dict) -> dict:
         if requests is None:
-            raise CompanionAuthError("Нет библиотеки requests: pip install requests")
+            raise CompanionAuthError(tr("Нет библиотеки requests: pip install requests"))
         try:
             resp = requests.post(
                 TOKEN_URL,
@@ -506,7 +526,7 @@ class CompanionAuth:
                 timeout=30,
             )
         except requests.RequestException as exc:
-            raise CompanionAuthError(f"Сетевая ошибка авторизации: {exc}") from exc
+            raise CompanionAuthError(tr("Сетевая ошибка авторизации: {error}", error=exc)) from exc
         try:
             data = resp.json()
         except ValueError:
@@ -514,7 +534,8 @@ class CompanionAuth:
         if resp.status_code != 200 or not data.get("access_token"):
             message = data.get("message") or data.get("error") or resp.text[:200]
             raise CompanionAuthError(
-                f"Frontier не выдал токен (HTTP {resp.status_code}): {message}",
+                tr("Frontier не выдал токен (HTTP {status}): {message}",
+                   status=resp.status_code, message=message),
                 status=resp.status_code, endpoint="/token",
             )
         data["obtained_at"] = time.time()
@@ -570,17 +591,19 @@ class CompanionClient:
                 timeout=30,
             )
         except requests.RequestException as exc:
-            raise CompanionAuthError(f"Сетевая ошибка CAPI: {exc}", endpoint=endpoint,
+            raise CompanionAuthError(tr("Сетевая ошибка CAPI: {error}", error=exc),
+                                     endpoint=endpoint,
                                      host=base) from exc
 
     def _get(self, endpoint: str, base: str = "", allow_legacy: bool = True) -> dict:
         if requests is None:
-            raise CompanionAuthError("Нет библиотеки requests: pip install requests")
+            raise CompanionAuthError(tr("Нет библиотеки requests: pip install requests"))
         token = self.auth.access_token()
         if not token:
             raise CompanionAuthError(
-                "Нет активной авторизации Frontier", endpoint=endpoint,
-                hint="Нажмите «Подключить Frontier» — сохранённый токен истёк или не получен.",
+                tr("Нет активной авторизации Frontier"), endpoint=endpoint,
+                hint=tr("Нажмите «Подключить Frontier» — сохранённый токен истёк "
+                        "или не получен."),
             )
 
         base = base or CAPI_BASE
@@ -594,9 +617,10 @@ class CompanionClient:
                 token = self.auth.access_token(force_refresh=True)
                 if not token:
                     raise CompanionAuthError(
-                        "Требуется повторная авторизация Frontier", status=status,
+                        tr("Требуется повторная авторизация Frontier"), status=status,
                         endpoint=endpoint, host=base,
-                        hint="Refresh-токен больше не принимается: подключите Frontier заново.",
+                        hint=tr("Refresh-токен больше не принимается: подключите "
+                                "Frontier заново."),
                     )
                 continue
 
@@ -606,9 +630,10 @@ class CompanionClient:
                     return resp.json()
                 except ValueError as exc:
                     raise CompanionAuthError(
-                        f"CAPI {endpoint}: некорректный JSON", status=status,
-                        endpoint=endpoint, host=base,
-                        hint="Ответ Frontier не разобрать — вероятно, идёт обслуживание.",
+                        tr("CAPI {endpoint}: некорректный JSON", endpoint=endpoint),
+                        status=status, endpoint=endpoint, host=base,
+                        hint=tr("Ответ Frontier не разобрать — вероятно, идёт "
+                                "обслуживание."),
                     ) from exc
 
             body = str(getattr(resp, "text", "") or "").replace(token, "[redacted]")
@@ -627,7 +652,8 @@ class CompanionClient:
                                      hint=hint, detail=body, host=base,
                                      kind="no_entitlement" if status == 400 and is_no_entitlement_response(body) else "")
 
-        raise CompanionAuthError("CAPI: не удалось получить данные", endpoint=endpoint)
+        raise CompanionAuthError(tr("CAPI: не удалось получить данные"),
+                                 endpoint=endpoint)
 
     def get_profile(self) -> dict:
         return self._get("/profile")
@@ -679,9 +705,9 @@ class CompanionClient:
         stats = profile_to_stats(profile)
         cmdr = str(stats.get("cmdr") or "")
         if not stats:
-            error = "Frontier вернул пустой профиль"
-            hint = ("Командир ещё не заходил в игру после привязки — зайдите в "
-                    "игру и нажмите «Обновить досье».")
+            error = tr("Frontier вернул пустой профиль")
+            hint = tr("Командир ещё не заходил в игру после привязки — зайдите в "
+                      "игру и нажмите «Обновить досье».")
             self.auth.mark_failed(error, hint)
             return {"ok": False, "error": error, "hint": hint, "status": 200,
                     "host": self.last_host, "stats": {}, "cmdr": cmdr}

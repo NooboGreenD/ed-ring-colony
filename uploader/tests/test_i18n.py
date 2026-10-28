@@ -502,7 +502,8 @@ class TranslationTests(unittest.TestCase):
         """Справочники и служебные модули: подписи только через каталог."""
         modules = ("colony_build_types.py", "site_config.py", "screens.py",
                    "hotkeys.py", "http_errors.py", "colonisation.py",
-                   "qt_factions.py", "api_client.py", "raven_colonial_api.py")
+                   "qt_factions.py", "api_client.py", "raven_colonial_api.py",
+                   "companion_api.py")
         missing = [f"{name}:{line}: {text!r}"
                    for name in modules
                    for line, text in russian_literals(UPLOADER / name)
