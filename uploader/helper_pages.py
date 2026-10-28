@@ -468,6 +468,7 @@ class UploadPage(QWidget):
     and buttons are switched with ``set_upload_enabled()``.
     """
 
+    #: Строки-источники: показываются в текущем языке через ``tr()``.
     WATCHER_IDLE_TEXT = "▶ Следить за игрой"
     WATCHER_RUNNING_TEXT = "⏹ Остановить"
     #: Подпись под прогрессом, пока файлы не выбраны.
@@ -493,23 +494,24 @@ class UploadPage(QWidget):
         self.scroll.setWidget(self.content)
         outer.addWidget(self.scroll)
 
-        self.layout_.addWidget(heading("Загрузка журналов", size=14))
-        self.layout_.addWidget(label(
+        self.layout_.addWidget(heading(tr("Загрузка журналов"), size=14))
+        self.layout_.addWidget(label(tr(
             "Файлы журнала Elite Dangerous читаются локально и отправляются "
-            "только на ваш сервер проекта.", role="muted", size=9, wrap=True))
+            "только на ваш сервер проекта."), role="muted", size=9, wrap=True))
 
         # -- Кнопки действий ------------------------------------------------
-        self.select_btn = action_button("Выбрать файлы .log", self._select_files,
+        self.select_btn = action_button(tr("Выбрать файлы .log"), self._select_files,
                                         height=34)
-        self.upload_btn = action_button("Загрузить", self._upload,
+        self.upload_btn = action_button(tr("Загрузить"), self._upload,
                                         variant="primary", height=34)
         self.upload_btn.setEnabled(False)
-        self.watcher_btn = action_button(self.WATCHER_IDLE_TEXT, self._toggle_watcher,
+        self._watcher_running = False
+        self.watcher_btn = action_button(tr(self.WATCHER_IDLE_TEXT), self._toggle_watcher,
                                          height=34)
         self.layout_.addWidget(row(self.select_btn, self.upload_btn,
                                    self.watcher_btn, None))
 
-        self.files_label = label(self.FILES_EMPTY_TEXT, role="muted", size=9, wrap=True)
+        self.files_label = label(tr(self.FILES_EMPTY_TEXT), role="muted", size=9, wrap=True)
         self.layout_.addWidget(self.files_label)
 
         self.progress = QProgressBar()
@@ -532,30 +534,30 @@ class UploadPage(QWidget):
 
         # -- Первичная загрузка ---------------------------------------------
         self._divider()
-        self.layout_.addWidget(label("Первичная загрузка (вся история журналов)",
+        self.layout_.addWidget(label(tr("Первичная загрузка (вся история журналов)"),
                                      size=11, bold=True))
 
-        self.skip_imported_var = QCheckBox(
-            "Пропускать файлы, загруженные ранее (быстрый повторный импорт)")
+        self.skip_imported_var = QCheckBox(tr(
+            "Пропускать файлы, загруженные ранее (быстрый повторный импорт)"))
         self.skip_imported_var.setChecked(bool(skip_imported))
         self.skip_imported_var.toggled.connect(self._on_skip_imported_toggled)
         self.layout_.addWidget(self.skip_imported_var)
 
-        self.backfill_third_party_var = QCheckBox(
-            "Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)")
+        self.backfill_third_party_var = QCheckBox(tr(
+            "Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)"))
         self.backfill_third_party_var.setChecked(bool(backfill_enabled))
         self.backfill_third_party_var.toggled.connect(self._on_backfill_toggled)
         self.layout_.addWidget(self.backfill_third_party_var)
 
-        self.layout_.addWidget(label(
+        self.layout_.addWidget(label(tr(
             "По умолчанию история отправляется только на ED Ring Colony: внешние "
             "сервисы получают лишь live-события watcher'а. Отправка тысяч "
             "исторических событий в EDSM/Inara/Raven — это часы ожидания и риск "
-            "блокировки по rate limit.", role="muted", size=9, wrap=True))
+            "блокировки по rate limit."), role="muted", size=9, wrap=True))
 
-        self.reset_cache_btn = action_button("Сбросить кэш импорта",
+        self.reset_cache_btn = action_button(tr("Сбросить кэш импорта"),
                                              self._reset_import_cache, height=32)
-        self.reset_server_btn = action_button("Очистить логи на сервере",
+        self.reset_server_btn = action_button(tr("Очистить логи на сервере"),
                                               self._reset_server_journals,
                                               variant="danger", height=32)
         self.layout_.addWidget(row(self.reset_cache_btn, self.reset_server_btn, None))
@@ -631,18 +633,20 @@ class UploadPage(QWidget):
 
     def set_watcher_running(self, running: bool) -> None:
         """Switch the watcher button between «следить» and «остановить»."""
+        self._watcher_running = bool(running)
         if running:
-            self.watcher_btn.setText(self.WATCHER_RUNNING_TEXT)
+            self.watcher_btn.setText(tr(self.WATCHER_RUNNING_TEXT))
             self.watcher_btn.setProperty("variant", "danger")
         else:
-            self.watcher_btn.setText(self.WATCHER_IDLE_TEXT)
+            self.watcher_btn.setText(tr(self.WATCHER_IDLE_TEXT))
             self.watcher_btn.setProperty("variant", "default")
         style = self.watcher_btn.style()
         style.unpolish(self.watcher_btn)
         style.polish(self.watcher_btn)
 
     def watcher_running(self) -> bool:
-        return self.watcher_btn.text() == self.WATCHER_RUNNING_TEXT
+        """Состояние берётся из флага: подпись кнопки переводится."""
+        return bool(getattr(self, "_watcher_running", False))
 
     def set_skip_imported(self, enabled: bool) -> None:
         """Set the checkbox without re-triggering the save callback."""

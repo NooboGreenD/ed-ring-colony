@@ -2026,6 +2026,163 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "zh": "待机",
         "ja": "待機",
     },
+    # --------------------------------------------- вкладка «Загрузка логов»
+    "Загрузка журналов": {
+        "en": "Journal upload",
+        "de": "Journal-Upload",
+        "it": "Caricamento dei journal",
+        "ko": "저널 업로드",
+        "zh": "上传日志",
+        "ja": "ジャーナル送信",
+    },
+    "Файлы журнала Elite Dangerous читаются локально и отправляются только на ваш "
+    "сервер проекта.": {
+        "en": "Elite Dangerous journal files are read locally and sent only to your "
+              "project server.",
+        "de": "Journaldateien von Elite Dangerous werden lokal gelesen und nur an deinen "
+              "Projektserver gesendet.",
+        "it": "I file journal di Elite Dangerous vengono letti in locale e inviati solo al "
+              "tuo server di progetto.",
+        "ko": "Elite Dangerous 저널 파일은 로컬에서 읽고 프로젝트 서버로만 전송합니다.",
+        "zh": "Elite Dangerous 日志文件在本地读取，只发送到你的项目服务器。",
+        "ja": "Elite Dangerous のジャーナルはローカルで読み込み、プロジェクトのサーバーにのみ"
+              "送信します。",
+    },
+    "Выбрать файлы .log": {
+        "en": "Choose .log files",
+        "de": ".log-Dateien wählen",
+        "it": "Scegli i file .log",
+        "ko": ".log 파일 선택",
+        "zh": "选择 .log 文件",
+        "ja": ".log ファイルを選択",
+    },
+    "Загрузить": {
+        "en": "Upload",
+        "de": "Hochladen",
+        "it": "Carica",
+        "ko": "업로드",
+        "zh": "上传",
+        "ja": "送信",
+    },
+    "▶ Следить за игрой": {
+        "en": "▶ Watch the game",
+        "de": "▶ Spiel überwachen",
+        "it": "▶ Osserva il gioco",
+        "ko": "▶ 게임 감시",
+        "zh": "▶ 监视游戏",
+        "ja": "▶ ゲームを監視",
+    },
+    "⏹ Остановить": {
+        "en": "⏹ Stop",
+        "de": "⏹ Stoppen",
+        "it": "⏹ Ferma",
+        "ko": "⏹ 중지",
+        "zh": "⏹ 停止",
+        "ja": "⏹ 停止",
+    },
+    "Файлы не выбраны": {
+        "en": "No files selected",
+        "de": "Keine Dateien gewählt",
+        "it": "Nessun file selezionato",
+        "ko": "선택된 파일 없음",
+        "zh": "未选择文件",
+        "ja": "ファイルが未選択です",
+    },
+    "Первичная загрузка (вся история журналов)": {
+        "en": "Initial upload (the whole journal history)",
+        "de": "Erstupload (der gesamte Journalverlauf)",
+        "it": "Caricamento iniziale (tutta la cronologia dei journal)",
+        "ko": "최초 업로드 (저널 전체 기록)",
+        "zh": "首次上传（全部日志历史）",
+        "ja": "初回送信 (ジャーナル全履歴)",
+    },
+    "Пропускать файлы, загруженные ранее (быстрый повторный импорт)": {
+        "en": "Skip files uploaded earlier (fast re-import)",
+        "de": "Bereits hochgeladene Dateien überspringen (schneller Neuimport)",
+        "it": "Salta i file già caricati (reimportazione rapida)",
+        "ko": "이전에 업로드한 파일 건너뛰기 (빠른 재가져오기)",
+        "zh": "跳过已上传的文件（快速重新导入）",
+        "ja": "送信済みファイルを飛ばす (高速な再取り込み)",
+    },
+    "Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)": {
+        "en": "Send the history to EDSM / Inara / Raven Colonial (very slow)",
+        "de": "Verlauf an EDSM / Inara / Raven Colonial senden (sehr langsam)",
+        "it": "Invia la cronologia a EDSM / Inara / Raven Colonial (molto lento)",
+        "ko": "기록을 EDSM / Inara / Raven Colonial로 전송 (매우 느림)",
+        "zh": "将历史记录发送到 EDSM / Inara / Raven Colonial（非常慢）",
+        "ja": "履歴を EDSM / Inara / Raven Colonial に送信 (非常に遅い)",
+    },
+    "По умолчанию история отправляется только на ED Ring Colony: внешние сервисы "
+    "получают лишь live-события watcher'а. Отправка тысяч исторических событий в "
+    "EDSM/Inara/Raven — это часы ожидания и риск блокировки по rate limit.": {
+        "en": "By default the history goes only to ED Ring Colony: third-party services "
+              "receive live watcher events only. Sending thousands of historical events to "
+              "EDSM/Inara/Raven means hours of waiting and a risk of rate-limit blocking.",
+        "de": "Standardmäßig geht der Verlauf nur an ED Ring Colony: externe Dienste erhalten "
+              "nur Live-Ereignisse des Watchers. Tausende historische Ereignisse an "
+              "EDSM/Inara/Raven zu senden bedeutet Stunden Wartezeit und das Risiko einer "
+              "Rate-Limit-Sperre.",
+        "it": "Per impostazione predefinita la cronologia va solo a ED Ring Colony: i servizi "
+              "esterni ricevono solo gli eventi live del watcher. Inviare migliaia di eventi "
+              "storici a EDSM/Inara/Raven significa ore di attesa e il rischio di blocco per "
+              "rate limit.",
+        "ko": "기본적으로 기록은 ED Ring Colony로만 전송됩니다. 외부 서비스는 watcher의 실시간 "
+              "이벤트만 받습니다. 수천 건의 과거 이벤트를 EDSM/Inara/Raven으로 보내면 몇 시간이 "
+              "걸리고 요청 한도로 차단될 위험이 있습니다.",
+        "zh": "默认情况下历史记录只发送到 ED Ring Colony：第三方服务仅接收 watcher 的实时事件。"
+              "将数千条历史事件发送到 EDSM/Inara/Raven 需要等待数小时，并有触发速率限制封禁的风险。",
+        "ja": "既定では履歴は ED Ring Colony にのみ送信されます。外部サービスは watcher の"
+              "ライブイベントだけを受け取ります。数千件の過去イベントを EDSM/Inara/Raven に"
+              "送ると、数時間の待ち時間とレート制限によるブロックの危険があります。",
+    },
+    "Сбросить кэш импорта": {
+        "en": "Reset the import cache",
+        "de": "Import-Cache zurücksetzen",
+        "it": "Azzera la cache di importazione",
+        "ko": "가져오기 캐시 초기화",
+        "zh": "重置导入缓存",
+        "ja": "取り込みキャッシュをリセット",
+    },
+    "Очистить логи на сервере": {
+        "en": "Clear the logs on the server",
+        "de": "Protokolle auf dem Server löschen",
+        "it": "Cancella i log sul server",
+        "ko": "서버의 로그 지우기",
+        "zh": "清除服务器上的日志",
+        "ja": "サーバーのログを消去",
+    },
+    "Выбрано файлов: {count}": {
+        "en": "Files selected: {count}",
+        "de": "Gewählte Dateien: {count}",
+        "it": "File selezionati: {count}",
+        "ko": "선택한 파일: {count}개",
+        "zh": "已选择文件：{count}",
+        "ja": "選択したファイル: {count}",
+    },
+    "Обработка...": {
+        "en": "Processing...",
+        "de": "Verarbeitung...",
+        "it": "Elaborazione...",
+        "ko": "처리 중...",
+        "zh": "处理中...",
+        "ja": "処理中...",
+    },
+    "Загружено: {count} записей ({tons}t на маршрут)": {
+        "en": "Uploaded: {count} records ({tons}t on the route)",
+        "de": "Hochgeladen: {count} Einträge ({tons}t auf der Route)",
+        "it": "Caricati: {count} record ({tons}t sulla rotta)",
+        "ko": "업로드됨: {count}건 (경로 {tons}t)",
+        "zh": "已上传：{count} 条记录（航线上 {tons}t）",
+        "ja": "送信済み: {count} 件 (ルート {tons}t)",
+    },
+    "Ошибка: {error}": {
+        "en": "Error: {error}",
+        "de": "Fehler: {error}",
+        "it": "Errore: {error}",
+        "ko": "오류: {error}",
+        "zh": "错误：{error}",
+        "ja": "エラー: {error}",
+    },
 }
 
 

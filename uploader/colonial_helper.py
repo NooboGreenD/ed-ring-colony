@@ -4735,7 +4735,8 @@ class ColonialHelperApp:
             # журнала ED (Journal.YYYY-MM-DDThhmmss.NN.log) сортируются
             # лексикографически так же, как и хронологически.
             self.selected_files = sorted((Path(f) for f in files), key=lambda p: p.name)
-            self.upload_page.set_files_text(f"Выбрано файлов: {len(self.selected_files)}")
+            self.upload_page.set_files_text(
+                tr("Выбрано файлов: {count}", count=len(self.selected_files)))
             self.upload_page.set_upload_enabled(True)
             self.log(f"Выбрано {len(self.selected_files)} файлов", "info")
 
@@ -4748,7 +4749,7 @@ class ColonialHelperApp:
 
         self.upload_page.set_upload_enabled(False)
         self.upload_page.set_progress(0)
-        self.upload_page.set_progress_text("Обработка...")
+        self.upload_page.set_progress_text(tr("Обработка..."))
         self.root.update_idletasks()
 
         threading.Thread(target=self._do_upload_thread, daemon=True).start()
@@ -5247,7 +5248,8 @@ class ColonialHelperApp:
             self.root.after(
                 0,
                 lambda ins=inserted, rt=route_tons: self.upload_page.set_progress_text(
-                    f"Загружено: {ins} записей ({rt:.0f}t на маршрут)"
+                    tr("Загружено: {count} записей ({tons}t на маршрут)",
+                       count=ins, tons=f"{rt:.0f}")
                 ),
             )
             if construction_ok and community_goal_reports_ok:
@@ -5274,7 +5276,8 @@ class ColonialHelperApp:
             # вкладку "Лог". Показываем хотя бы начало реального текста ошибки.
             self.root.after(
                 0,
-                lambda e=error_text: self.upload_page.set_progress_text(f"Ошибка: {e[:100]}"),
+                lambda e=error_text: self.upload_page.set_progress_text(
+                    tr("Ошибка: {error}", error=str(e)[:100])),
             )
         self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
 

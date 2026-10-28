@@ -9,7 +9,7 @@ sys.path.insert(0, str(HERE.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtWidgets import QCheckBox, QProgressBar, QPushButton
+    from PySide6.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton
 
     import helper_pages
     from ui_qt import ensure_app
@@ -59,6 +59,35 @@ class UploadPageTests(unittest.TestCase):
 
     def setUp(self):
         self.page, self.calls = make_page()
+
+    def tearDown(self):
+        import i18n
+
+        i18n.set_locale("ru")
+
+    def test_page_follows_the_language_chosen_in_the_launcher(self):
+        """Страница загрузки журналов не должна остаться русской."""
+        import re
+
+        import i18n
+
+        for code in ("en", "ko"):
+            i18n.set_locale(code)
+            page, _calls = make_page()
+            try:
+                page.set_watcher_running(True)
+                texts = [item.text() for item in page.findChildren(QLabel)]
+                texts += [item.text() for item in page.findChildren(QPushButton)]
+                texts += [item.text() for item in page.findChildren(QCheckBox)]
+                russian = [text for text in texts
+                           if text and re.search("[А-Яа-яЁё]", text)]
+                self.assertEqual(russian, [], f"{code}: остались русские подписи")
+                # Флаг состояния не должен зависеть от переведённой подписи.
+                self.assertTrue(page.watcher_running())
+                page.set_watcher_running(False)
+                self.assertFalse(page.watcher_running())
+            finally:
+                page.deleteLater()
 
     # ------------------------------------------------------------- structure
     def test_keeps_the_attribute_names_the_app_uses(self):

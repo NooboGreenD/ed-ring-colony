@@ -30,6 +30,7 @@ TRANSLATED_MODULES = ("launcher_window.py", "installer_window.py",
 #: Уже переведённые части Helper: страница «Подключение» и её обработчики.
 AUTH_PAGE_CLASSES = ("AuthPageState", "AuthPage")
 PILOT_PAGE_CLASSES = ("PilotPage",)
+UPLOAD_PAGE_CLASSES = ("UploadPage",)
 #: Метки внутри пришедшего текста ошибки, по которым выбирается цвет строки.
 #: Это не подпись для пользователя, а разбор ответа сервера — они не переводятся.
 ERROR_MARKER_LITERALS = {"ошиб", "невер", "недоступ", "сбой", "не удалось", "занят"}
@@ -174,6 +175,13 @@ class CatalogTests(unittest.TestCase):
                                                     functions=PILOT_HELPER_FUNCTIONS)
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "значения инфографики: " + "; ".join(missing))
+
+    def test_upload_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=UPLOAD_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "страница «Загрузка логов»: " + "; ".join(missing))
 
     def test_translations_differ_from_the_source(self):
         for key, translations in i18n_catalogs._STRINGS.items():
