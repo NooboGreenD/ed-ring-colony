@@ -24,10 +24,18 @@ export const runtime = 'nodejs';
  *      (`supabase.<домен>`), и тогда ломается и обычный вход по паролю.
  *
  * Маршрут ничего не чинит и не раскрывает значения ключей: только говорит,
- * какая из проверок не прошла и что делать.
+ * какая из проверок не прошла, что делать и (`action`) какую починку панель
+ * умеет выполнить сама.
  */
 
 const headers = { 'Cache-Control': 'no-store' };
+
+/**
+ * `action` — машинная причина, по которой панель умеет починить проверку
+ * одним нажатием. `fix` остаётся текстовой инструкцией для тех, кто чинит
+ * руками (и для отчёта, который копируют в переписку).
+ */
+type CheckAction = 'enable-signup' | 'enable-site-forms' | 'configure-smtp';
 
 interface Check {
   id: string;
@@ -35,6 +43,7 @@ interface Check {
   title: string;
   detail: string;
   fix?: string;
+  action?: CheckAction;
 }
 
 function supabaseUrl(): string {
@@ -97,7 +106,10 @@ export async function GET(req: Request) {
       detail: emailEnabled
         ? 'Сайт разрешает регистрацию и восстановление по почте.'
         : 'Сайт отвечает «Отправка писем временно недоступна»: переменная не равна true.',
-      fix: emailEnabled ? undefined : 'Выставьте AUTH_EMAIL_ENABLED=true в окружении web и перезапустите контейнер.',
+      fix: emailEnabled
+        ? undefined
+        : 'Включите галочку «формы регистрации/восстановления на сайте» ниже и нажмите «Применить и перезапустить» — панель запишет AUTH_EMAIL_ENABLED=true и пересоздаст web. Вручную: AUTH_EMAIL_ENABLED=true в .env.production сайта, затем перезапуск web.',
+      action: emailEnabled ? undefined : 'enable-site-forms',
     });
 
     checks.push({
@@ -139,15 +151,31 @@ export async function GET(req: Request) {
         detail: autoconfirm === false
           ? 'mailer_autoconfirm выключен — письма отправляются.'
           : 'mailer_autoconfirm включён: GoTrue подтверждает адреса сам и писем не шлёт. Сайт такую конфигурацию отклоняет намеренно.',
-        fix: autoconfirm === false ? undefined : 'Настройте SMTP (GOTRUE_SMTP_HOST/PORT/USER/PASS/SENDER) и выставьте GOTRUE_MAILER_AUTOCONFIRM=false.',
+        fix: autoconfirm === false
+          ? undefined
+          : 'Заполните SMTP-поля ниже и нажмите «Применить и перезапустить»: контейнер auth пересоздаётся с GOTRUE_MAILER_AUTOCONFIRM=false, письма начнут уходить.',
+        action: autoconfirm === false ? undefined : 'configure-smtp',
       });
 
+      // disable_signup=true — ровно то состояние, в котором сайт отвечает
+      // «Новые регистрации временно закрыты», хотя SMTP настроен и письма
+      // уходят. Правка не там, где кажется: GoTrue читает
+      // GOTRUE_DISABLE_SIGNUP, но compose подставляет в него значение
+      // DISABLE_SIGNUP из /opt/supabase/.env — строка GOTRUE_DISABLE_SIGNUP в
+      // этом файле не делает ничего. Поэтому в подсказке нет «просто
+      // выставьте GOTRUE_…»: сначала правильное имя ключа, затем пересоздание
+      // контейнера (без него GoTrue продолжает работать со старым окружением).
       checks.push({
         id: 'signup',
         ok: disableSignup === false,
         title: 'Регистрация в GoTrue',
-        detail: disableSignup === false ? 'Регистрация разрешена.' : 'disable_signup=true — новые пользователи не создаются.',
-        fix: disableSignup === false ? undefined : 'Выставьте GOTRUE_DISABLE_SIGNUP=false.',
+        detail: disableSignup === false
+          ? 'Регистрация разрешена.'
+          : disableSignup === undefined
+            ? 'GoTrue не сообщил disable_signup — проверить нельзя, новые аккаунты могут не создаваться.'
+            : 'disable_signup=true — новые пользователи не создаются.',
+        fix: disableSignup === false ? undefined : 'Включите галочку «регистрация новых пилотов открыта» ниже и нажмите «Применить и перезапустить»: панель запишет DISABLE_SIGNUP=false в /opt/supabase/.env и пересоздаст контейнер auth. Вручную — те же два шага: DISABLE_SIGNUP=false в .env стека Supabase и пересоздание auth (docker compose -f docker-compose.yml -f docker-compose.smtp-override.yml up -d --no-deps --force-recreate auth). Ключ именно DISABLE_SIGNUP: GOTRUE_DISABLE_SIGNUP в .env игнорируется.',
+        action: disableSignup === false ? undefined : 'enable-signup',
       });
 
       checks.push({

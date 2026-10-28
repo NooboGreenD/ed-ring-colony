@@ -20,9 +20,11 @@ type SmtpStatus = {
   webEmailEnabled?: boolean;
   available?: boolean;
   override?: { file: string; passesSmtp: boolean } | null;
+  legacySignupKey?: boolean;
   keys?: SmtpKey[];
 };
-type MailCheck = { id: string; ok: boolean; title: string; detail: string; fix?: string };
+type MailAction = 'enable-signup' | 'enable-site-forms' | 'configure-smtp';
+type MailCheck = { id: string; ok: boolean; title: string; detail: string; fix?: string; action?: MailAction };
 type MailDiagnostics = { ok?: boolean; summary?: string; checks?: MailCheck[] };
 
 type Draft = {
@@ -55,7 +57,7 @@ export default function MailSettingsCard() {
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [signupOpen, setSignupOpen] = useState<boolean | null>(null);
   const [siteEmail, setSiteEmail] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState<'save' | 'apply' | 'check' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'apply' | 'check' | 'repair' | null>(null);
   const [msg, setMsg] = useState('');
   const [msgOk, setMsgOk] = useState(false);
   const [diag, setDiag] = useState<MailDiagnostics | null>(null);
@@ -169,6 +171,50 @@ export default function MailSettingsCard() {
     } finally { setBusy(null); }
   }, []);
 
+  /**
+   * Починка из диагностики: те же два шага, что делает админ руками, но в
+   * один клик — и без шанса поправить не то имя ключа. Для disable_signup в
+   * стеке Supabase работает только DISABLE_SIGNUP (compose подставляет его в
+   * GOTRUE_DISABLE_SIGNUP), поэтому пишем именно его и затем пересоздаём auth:
+   * без пересоздания GoTrue продолжает жить со старым окружением.
+   */
+  const repair = useCallback(async (action: MailAction) => {
+    setBusy('repair'); setMsg(''); setMsgOk(false);
+    try {
+      if (action === 'enable-signup') {
+        const res = await authFetch('/api/admin/smtp', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'DISABLE_SIGNUP', value: 'false' }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Не сохранён DISABLE_SIGNUP');
+        setSignupOpen(true);
+      } else if (action === 'enable-site-forms') {
+        const res = await authFetch('/api/admin/env', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'AUTH_EMAIL_ENABLED', value: 'true' }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Не сохранён AUTH_EMAIL_ENABLED');
+        setSiteEmail(true);
+      } else {
+        // SMTP заполняется только вручную: подставить за админа сервер и пароль нельзя.
+        setMsg('Заполните SMTP-сервер, логин и пароль ниже, сохраните и нажмите «Применить и перезапустить».');
+        return;
+      }
+      const applied = await authFetch('/api/admin/smtp/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const json = await applied.json();
+      if (!applied.ok) throw new Error(json.error || 'Не удалось запустить применение');
+      setMsgOk(true);
+      setMsg('Включено и отправлено на применение. Контейнер auth пересоздаётся — через минуту нажмите «Диагностика», чтобы проверить.');
+      await load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Не удалось включить');
+    } finally { setBusy(null); }
+  }, [load]);
+
   const passSaved = (valueOf('SMTP_PASS')?.length ?? 0) > 0;
   const ready = Boolean(draft.SMTP_HOST.trim()) || Boolean(valueOf('SMTP_HOST')?.value);
 
@@ -205,6 +251,15 @@ export default function MailSettingsCard() {
       «Применить и перезапустить» создаст отдельный управляемый docker-compose.smtp-override.yml,
       сохранив существующие настройки стека.
     </div>}
+
+    {status?.legacySignupKey && (
+      <div style={{ border: '1px solid #e67e22', background: 'rgba(230,126,34,0.08)', padding: '8px 10px', fontSize: 13, color: '#fdba74', borderRadius: 2, marginBottom: 10 }}>
+        В <code>.env</code> стека Supabase лежит <code>GOTRUE_DISABLE_SIGNUP</code> — это имя переменной
+        внутри контейнера, compose его не подставляет, поэтому регистрация от такой строки не
+        откроется. Рабочий ключ — <code>DISABLE_SIGNUP</code>: «Применить и перезапустить»
+        переименует строку само.
+      </div>
+    )}
 
     <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', marginBottom: 10 }}>
       {FIELDS.map((field) => {
@@ -264,6 +319,12 @@ export default function MailSettingsCard() {
             <li key={check.id} style={{ color: check.ok ? '#9ca3af' : '#fca5a5' }}>
               {check.ok ? '✓' : '✗'} <strong style={{ color: '#d1d5db' }}>{check.title}</strong> — {check.detail}
               {check.fix && <div style={{ color: '#fdba74', marginLeft: 14 }}>как починить: {check.fix}</div>}
+              {!check.ok && check.action && check.action !== 'configure-smtp' && (
+                <button type="button" className="btn btn-cyan" style={{ marginLeft: 14, marginTop: 4, fontSize: 12 }}
+                  disabled={busy !== null} onClick={() => void repair(check.action as MailAction)}>
+                  {busy === 'repair' ? 'Включаю…' : 'Включить и применить'}
+                </button>
+              )}
             </li>
           ))}
         </ul>

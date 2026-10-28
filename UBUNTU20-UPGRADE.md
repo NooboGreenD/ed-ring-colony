@@ -98,8 +98,11 @@ docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 Без SMTP или при пропуске проверки:
 
 - прежний email/password-вход и существующие OAuth-аккаунты продолжают работать;
-- `AUTH_EMAIL_ENABLED=false`, `GOTRUE_DISABLE_SIGNUP=true`: **новые регистрации,
-  в том числе новые OAuth-аккаунты, закрыты**;
+- `AUTH_EMAIL_ENABLED=false`, `DISABLE_SIGNUP=true`: **новые регистрации,
+  в том числе новые OAuth-аккаунты, закрыты** (в `.env` стека ключ называется
+  `DISABLE_SIGNUP`; `GOTRUE_DISABLE_SIGNUP` — уже имя переменной внутри
+  контейнера `auth`, и compose подставляет в него первое, поэтому строка
+  `GOTRUE_DISABLE_SIGNUP=…` в `.env` ни на что не влияет);
 - нельзя «починить» это автоподтверждением адресов. Настройте SMTP.
 
 Позже настроить/исправить SMTP **без пересборки**:
