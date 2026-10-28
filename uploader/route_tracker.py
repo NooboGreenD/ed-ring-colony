@@ -226,27 +226,25 @@ class RouteTracker:
             if self._hint_loading:
                 return
             cached = self._cached_hint(name)
-            if cached is not None and self._hint_name != name:
-                # Показываем известное сразу, ещё до похода в сеть.
-                self.system_hint = route_hint.mark_loading(cached, name)
-                self._hint_name = name
-                self._hint_at = now - self.HINT_TTL + 1   # данные не «свежие»: обновим фоном
             age = self._hint_age(name)
-            ttl = self.HINT_TTL
-            if cached is not None and cached.get("partial"):
-                ttl = self.HINT_PARTIAL_TTL
-            if not force and age < ttl:
-                # Ответ свежий — ждать нечего, поэтому и «спрашиваем…» не нужно.
-                if self.system_hint.get("system") != name and cached is not None:
-                    self.system_hint = dict(cached)
-                    self.system_hint["loading"] = False
-                    self._hint_name = name
-                    self._hint_at = now
+            ttl = self.HINT_PARTIAL_TTL if (cached and cached.get("partial")) else self.HINT_TTL
+            fresh = cached is not None and age < ttl
+
+            if cached is not None:
+                # Известное значение печатаем сразу; «спрашиваем…» остаётся
+                # только если данные несвежие и мы идём за ними в сеть.
+                shown = dict(cached)
+                shown["loading"] = bool(force) or not fresh
+                self.system_hint = shown
+                self._hint_name = name
+                self._hint_at = now
+            elif self.system_hint.get("system") != name:
+                self.system_hint = route_hint.mark_loading(self.system_hint, name)
+
+            if fresh and not force:
                 return
             if not force and now < self._hint_next_try:
                 # Недавно не получилось — ждём паузу, а не стучимся каждый тик.
-                if self.system_hint.get("system") != name and cached is not None:
-                    self.system_hint = route_hint.mark_loading(cached, name)
                 return
             self._hint_loading = True
             self.system_hint = route_hint.mark_loading(
