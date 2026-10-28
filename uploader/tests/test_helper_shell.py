@@ -36,6 +36,9 @@ class HelperShellTests(unittest.TestCase):
             self.root, on_change=lambda: self.changes.append(1), version="2.18.12")
 
     def tearDown(self):
+        import i18n
+
+        i18n.set_locale("ru")
         self.root.deleteLater()
 
     def _page(self, text="page"):
@@ -96,6 +99,29 @@ class HelperShellTests(unittest.TestCase):
         self.assertEqual(self.shell.status(), "Готов")
         self.shell.set_status("Watcher: активен")
         self.assertEqual(self.shell.bottom_status.text(), "Watcher: активен")
+
+    def test_shell_speaks_the_language_chosen_in_the_launcher(self):
+        import i18n
+
+        i18n.set_locale("ja")
+        root = QWidget()
+        shell = helper_shell.build_shell(root, version="2.18.15")
+        try:
+            self.assertEqual(shell.status_text.text(), "未接続")
+            self.assertEqual(shell.bottom_status.text(), "準備完了")
+            self.assertEqual(shell.game_label.text(), "ゲーム: データなし")
+            self.assertEqual(shell.sidebar_hint.text(), i18n.tr(
+                "Журналы анализируются\nлокально\nF12 — оверлей"))
+        finally:
+            root.deleteLater()
+
+    def test_connection_state_survives_translation(self):
+        self.shell.set_connection(True, "edringcolony.ru")
+        connected, detail = self.shell.connection()
+        self.assertTrue(connected)
+        self.assertEqual(detail, "edringcolony.ru")
+        self.shell.set_connection(False)
+        self.assertFalse(self.shell.connection()[0])
 
     def test_build_shell_returns_the_native_shell(self):
         self.assertIsInstance(self.shell, helper_shell.HelperShell)

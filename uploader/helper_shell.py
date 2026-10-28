@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from i18n import tr
 from ui_qt import (
     panel,
     CYAN,
@@ -86,6 +87,7 @@ class HelperShell(QWidget):
         self._buttons: Dict[QWidget, QPushButton] = {}
         self._markers: Dict[QWidget, QFrame] = {}
         self._selected: Optional[QWidget] = None
+        self._online = False
         self.setStyleSheet(WINDOW_STYLE)
         self.setObjectName("shell")
         self._build()
@@ -126,7 +128,7 @@ class HelperShell(QWidget):
         titles_layout.setSpacing(2)
         titles_layout.addWidget(label("◆  ED RING COLONY", size=15, bold=True, color=ORANGE))
         titles_layout.addWidget(label(
-            "ПАНЕЛЬ УПРАВЛЕНИЯ  ·  F12 — показать или скрыть оверлей",
+            tr("ПАНЕЛЬ УПРАВЛЕНИЯ  ·  F12 — показать или скрыть оверлей"),
             role="muted", size=9))
         layout.addWidget(titles)
         layout.addStretch(1)
@@ -161,7 +163,7 @@ class HelperShell(QWidget):
         brand_layout.addWidget(brand_text)
         layout.addWidget(brand)
         layout.addSpacing(6)
-        layout.addWidget(label("РАЗДЕЛЫ", role="muted", size=8, bold=True))
+        layout.addWidget(label(tr("РАЗДЕЛЫ"), role="muted", size=8, bold=True))
 
         self.nav_items = QWidget()
         self.nav_layout = QVBoxLayout(self.nav_items)
@@ -170,7 +172,7 @@ class HelperShell(QWidget):
         layout.addWidget(self.nav_items)
         layout.addStretch(1)
 
-        self.sidebar_hint = label("Журналы анализируются\nлокально\nF12 — оверлей",
+        self.sidebar_hint = label(tr("Журналы анализируются\nлокально\nF12 — оверлей"),
                                   role="muted", size=8, wrap=True)
         layout.addWidget(self.sidebar_hint)
         self.sidebar_hint.setMaximumWidth(SIDEBAR_WIDTH - 24)
@@ -195,7 +197,7 @@ class HelperShell(QWidget):
         row_layout.addStretch(1)
         row_layout.addWidget(label("LIVE  /  COMMAND DECK", role="mono", size=8, color=CYAN))
         heading_layout.addWidget(row)
-        heading_layout.addWidget(label("ED RING COLONY   /   ПАНЕЛЬ УПРАВЛЕНИЯ",
+        heading_layout.addWidget(label(tr("ED RING COLONY   /   ПАНЕЛЬ УПРАВЛЕНИЯ"),
                                        role="mono", size=8, color=MUTED))
         layout.addWidget(heading)
 
@@ -235,10 +237,10 @@ class HelperShell(QWidget):
         row_layout.setSpacing(8)
 
         self.status_dot = label("○", size=11, bold=True, color=RED)
-        self.status_text = label("Не подключено", size=9, bold=True, color=RED)
+        self.status_text = label(tr("Не подключено"), size=9, bold=True, color=RED)
         self.status_detail = label("", role="muted", size=9)
         self.status_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.bottom_status = label("Готов", role="mono", size=9, color=MUTED)
+        self.bottom_status = label(tr("Готов"), role="mono", size=9, color=MUTED)
         self.bottom_status.setObjectName("statusLine")
 
         # Индикатор игры: раньше он жил в Tk-шапке (`game_dot`/`game_label`/
@@ -248,7 +250,7 @@ class HelperShell(QWidget):
         # обновляться груз авианосца и проекты колонизатора: они идут в том
         # же тике, ниже упавшей строки.
         self.game_dot = label("○", size=9, color=MUTED)
-        self.game_label = label("Игра: нет данных", size=9, color=MUTED)
+        self.game_label = label(tr("Игра: нет данных"), size=9, color=MUTED)
         self.game_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.game_hint = label("", role="muted", size=9)
 
@@ -279,16 +281,21 @@ class HelperShell(QWidget):
 
     def set_connection(self, online: bool, detail: str = "") -> None:
         """Показать состояние связи с сайтом: точка, слово и подробность."""
+        self._online = bool(online)
         color = GREEN if online else RED
         self.status_dot.setText("●" if online else "○")
         for widget in (self.status_dot, self.status_text):
             widget.setStyleSheet(f"color:{color}; background: transparent;")
-        self.status_text.setText("Подключено" if online else "Не подключено")
+        self.status_text.setText(tr("Подключено") if online else tr("Не подключено"))
         self.status_detail.setText(str(detail or ""))
 
     def connection(self) -> tuple:
-        """(подключено, подробность) — для проверок и тестов."""
-        return (self.status_text.text() == "Подключено", self.status_detail.text())
+        """(подключено, подробность) — для проверок и тестов.
+
+        Состояние берётся из флага, а не из подписи: подпись переводится, и
+        сравнение с русским словом сломалось бы на любом другом языке.
+        """
+        return (bool(getattr(self, "_online", False)), self.status_detail.text())
 
     def _pack_into_root(self) -> None:
         """Attach the shell to the window created by the bootstrapper."""

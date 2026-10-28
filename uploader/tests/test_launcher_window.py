@@ -6,6 +6,7 @@ libraries are unavailable on the machine running the tests.
 """
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -57,6 +58,11 @@ class LauncherWindowTests(unittest.TestCase):
         self.fetch_calls = []
 
     def tearDown(self):
+        # Язык процесса общий для всех окон: тест не должен оставлять его
+        # включённым для следующих проверок.
+        import i18n
+
+        i18n.set_locale("ru")
         self.temp.cleanup()
 
     def _window(self, *, fetcher=None, autostart=False):
@@ -100,6 +106,30 @@ class LauncherWindowTests(unittest.TestCase):
         self.assertEqual(saved["token"], "secret")
         self.assertEqual(saved["update_channel"], "beta")
         self.assertEqual(stat.S_IMODE(self.settings.stat().st_mode), 0o600)
+        window.close()
+
+    def test_switching_language_retranslates_the_window_at_once(self):
+        import i18n
+
+        launcher_settings.save_site_locale("en", self.settings)
+        window = self._window()
+        self.assertEqual(window.launch_button.text(), "▶   Launch Colonial Helper")
+        self.assertEqual(window.titlebar.title.text(), window.windowTitle())
+        self.assertIn("INTERFACE", window.locale_label.text())
+
+        window.locale_combo.setCurrentIndex(window.locale_combo.findData("de"))
+        self.app.processEvents()
+
+        self.assertEqual(i18n.current_locale(), "de")
+        self.assertEqual(window.launch_button.text(), "▶   Colonial Helper starten")
+        self.assertIn("SPRACHE VON OBERFLÄCHE", window.locale_label.text())
+        self.assertIn("signiert", window.update_detail.text())
+        # В окне не должно остаться ни одной русской подписи: язык меняется
+        # целиком, а не только там, где о нём вспомнили.
+        russian = [item.text() for item in window.findChildren(QLabel)
+                   if item.text() and re.search("[А-Яа-яЁё]", item.text())]
+        self.assertEqual(russian, [])
+        self.assertIn("SEITE", window.connection_indicator.text())
         window.close()
 
     def test_saved_language_is_restored_on_the_next_start(self):

@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from i18n import tr
+
 BG = "#1e2022"
 PANEL = "#2a2d30"
 PANEL_ALT = "#25282b"
@@ -348,9 +350,9 @@ class _TitleBar(QWidget):
         self.title.setObjectName("titlebarTitle")
         layout.addWidget(self.title)
         layout.addStretch(1)
-        self.minimize = _title_button("—", name="titleButton", tooltip="Свернуть")
-        self.maximize = _title_button("□", name="titleButton", tooltip="Развернуть")
-        self.close_button = _title_button("×", name="titleButtonClose", tooltip="Закрыть")
+        self.minimize = _title_button("—", name="titleButton", tooltip=tr("Свернуть"))
+        self.maximize = _title_button("□", name="titleButton", tooltip=tr("Развернуть"))
+        self.close_button = _title_button("×", name="titleButtonClose", tooltip=tr("Закрыть"))
         self.close_button.setObjectName("titleButton")
         self.close_button.setProperty("close", True)
         for button in (self.minimize, self.maximize, self.close_button):
@@ -599,7 +601,7 @@ def ask_directory(*, initialdir: str = "", title: str = "Выбор папки",
     from PySide6.QtWidgets import QFileDialog
 
     ensure_app()
-    return QFileDialog.getExistingDirectory(_dialog_parent(parent), str(title),
+    return QFileDialog.getExistingDirectory(_dialog_parent(parent), tr(title),
                                             str(initialdir or ""))
 
 
@@ -610,7 +612,7 @@ def ask_open_files(*, initialdir: str = "", filetypes=(), title: str = "Выбо
     from PySide6.QtWidgets import QFileDialog
 
     ensure_app()
-    files, _selected = QFileDialog.getOpenFileNames(_dialog_parent(parent), str(title),
+    files, _selected = QFileDialog.getOpenFileNames(_dialog_parent(parent), tr(title),
                                                     str(initialdir or ""), _qt_filter(filetypes))
     return list(files)
 
@@ -622,7 +624,7 @@ def ask_open_file(*, initialdir: str = "", filetypes=(), title: str = "Выбо�
     from PySide6.QtWidgets import QFileDialog
 
     ensure_app()
-    path, _selected = QFileDialog.getOpenFileName(_dialog_parent(parent), str(title),
+    path, _selected = QFileDialog.getOpenFileName(_dialog_parent(parent), tr(title),
                                                   str(initialdir or ""), _qt_filter(filetypes))
     return str(path)
 
@@ -634,7 +636,7 @@ def ask_save_file(*, initialfile: str = "", defaultextension: str = "", filetype
     from PySide6.QtWidgets import QFileDialog
 
     ensure_app()
-    dialog = QFileDialog(_dialog_parent(parent), str(title))
+    dialog = QFileDialog(_dialog_parent(parent), tr(title))
     dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
     dialog.setNameFilter(_qt_filter(filetypes) or "All files (*.*)")
     if initialfile:
