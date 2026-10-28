@@ -26,19 +26,13 @@ _ensure_gui_stubs()
 
 from overlay import ShipOverlay, ship_hud  # noqa: E402
 from test_overlay_management import _ManagerTestCase  # noqa: E402
-from test_ship_hud import NOW  # noqa: E402
 from test_ship_tracker_status import LOADOUT  # noqa: E402
 import ship_tracker as st  # noqa: E402
 
 
 def _text(widget):
-    """Текст виджета: последнее `config(text=...)`, иначе текст из конструктора."""
-    if widget is None:
-        return ""
-    calls = [c for c in widget.config.call_args_list if "text" in (c.kwargs or {})]
-    if calls:
-        return str(calls[-1].kwargs["text"])
-    return ""
+    """Текст подписи: у Qt он хранится в самом виджете."""
+    return "" if widget is None else str(widget.text())
 
 
 def state_of(*events):
@@ -50,20 +44,15 @@ def state_of(*events):
 
 
 class _OverlayTestCase(unittest.TestCase):
-    """База: каждый `tk.Label` — отдельный мок, иначе все строки сливаются в одну."""
+    """База: настоящее окно SHIP на Qt — каждая строка это своя подпись."""
 
     def make_overlay(self, settings=None):
-        tk_module = ShipOverlay.__init__.__globals__["tk"]
-        self.label_factory = mock.MagicMock(name="Label",
-                                            side_effect=lambda *a, **k: mock.MagicMock(name="Label"))
-        patcher = mock.patch.object(tk_module, "Label", self.label_factory)
-        patcher.start()
-        self.addCleanup(patcher.stop)
         base = {"font_family": "Consolas", "font_size": 10, "ship_width": 360,
                 "ship_height": 330}
         base.update(settings or {})
         self.settings = base
-        self.overlay = ShipOverlay(mock.MagicMock(name="master"), base)
+        self.overlay = ShipOverlay(None, base)
+        self.addCleanup(self.overlay.destroy)
         return self.overlay
 
     def row_texts(self):
@@ -123,14 +112,11 @@ class ShipOverlayNoFlickerTests(_OverlayTestCase):
         overlay.update_ship(data)
         rows = list(overlay._row_labels)
         self.assertTrue(rows, "строки должны быть созданы")
-        for label in rows:
-            label.config.reset_mock()
-            label.pack.reset_mock()
+        paints = overlay._paints
+        texts = [_text(label) for label in rows]
         overlay.update_ship(data)
-        for label in rows:
-            label.config.assert_not_called()
-            label.pack.assert_not_called()
-        self.assertFalse(overlay.chips_frame.destroy.called)
+        self.assertEqual(overlay._paints, paints, "одинаковые данные — без перерисовки")
+        self.assertEqual([_text(label) for label in rows], texts)
 
     def test_row_widgets_are_reused_and_surplus_hidden(self):
         overlay = self.make_overlay()
@@ -143,17 +129,18 @@ class ShipOverlayNoFlickerTests(_OverlayTestCase):
         self.assertLess(kept, len(wide), "режим «без списка» обязан укоротить блок")
         self.assertEqual(overlay._row_labels, wide, "виджеты переиспользуются, новых нет")
         for label in wide[kept:]:
-            self.assertTrue(label.pack_forget.called, "лишние строки скрыты, но не удалены")
+            self.assertTrue(label.isHidden(), "лишние строки скрыты, но не удалены")
         self.assertEqual(len(overlay._row_labels), len(wide), "новый пул не создаётся")
 
     def test_font_size_change_repaints_rows(self):
         overlay = self.make_overlay()
         overlay.update_ship(state_of())
         first = overlay._row_labels[0]
+        before = first.font().pixelSize()
         overlay.apply_font("Consolas", 13)
-        fonts = [c.kwargs.get("font") for c in first.config.call_args_list if c.kwargs.get("font")]
-        self.assertTrue(fonts, "шрифт строки должен быть переустановлен")
-        self.assertEqual(fonts[-1][1], 13)
+        self.assertNotEqual(first.font().pixelSize(), before,
+                            "шрифт строки должен быть переустановлен")
+        self.assertEqual(first.font().pixelSize(), 13 + 4, "кегль Qt = размер HUD + 4")
         self.assertEqual(overlay._fs, 13)
 
     def test_apply_font_is_idempotent(self):

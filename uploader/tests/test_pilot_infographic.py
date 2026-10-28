@@ -24,7 +24,13 @@ sys.path.insert(0, str(HERE.parent))
 
 
 def _text(widget, default=""):
-    """Последний текст, переданный в label.configure(text=...)."""
+    """Текст плитки: у нативной страницы это настоящий QLabel."""
+    getter = getattr(widget, "text", None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            return default
     for call in reversed(widget.configure.call_args_list):
         kwargs = call.kwargs or {}
         if "text" in kwargs:
@@ -121,8 +127,10 @@ class PilotInfographicTests(unittest.TestCase):
             self.assertEqual(app._pilot_column_count(), 1)
 
     # -- структура вкладки -------------------------------------------------
-    def test_tab_builds_kpi_tiles_bars_and_canvases(self):
+    def test_tab_builds_kpi_tiles_bars_and_charts(self):
         self.assertIsNone(self.app._pilot_refresh_job, "скрытая страница не должна стартовать таймер")
+        page = self.app.pilot_page
+        self.assertIsNotNone(page, "страница пилота должна собраться")
         tiles = self.app._pilot_tiles
         for key in ("kpi_tons", "kpi_deliveries", "kpi_cargo", "kpi_systems"):
             self.assertIn(key, tiles, f"нет крупного показателя {key}")
@@ -131,8 +139,8 @@ class PilotInfographicTests(unittest.TestCase):
             self.assertIn(key, tiles, f"нет строки {key}")
         for key in ("hull_bar", "shield_bar", "fuel_bar", "power_bar", "route_progress"):
             self.assertIn(key, self.app._pilot_bars, f"нет полосы {key}")
-        for key in ("spark_tons", "bars_systems"):
-            self.assertIn(key, self.app._pilot_canvases, f"нет графика {key}")
+        self.assertIsNotNone(page.spark, "нет спарклайна сессии")
+        self.assertIsNotNone(page.systems_chart, "нет диаграммы систем")
 
     def test_compact_toggle_saves_config_and_rebuilds(self):
         app = self.app
@@ -140,8 +148,7 @@ class PilotInfographicTests(unittest.TestCase):
             app._rebuild_pilot_layout()
             self.assertEqual(app._pilot_columns, 3)
 
-            app._pilot_compact_var.set(True)
-            app._on_pilot_compact_changed()
+            app._pilot_compact_var.setChecked(True)
 
             self.assertTrue(app.config["pilot_compact"])
             self.assertTrue(app._pilot_compact)
@@ -178,24 +185,24 @@ class PilotInfographicTests(unittest.TestCase):
             app._pilot_tick()
         refresh.assert_not_called()
 
-        app.root.after.reset_mock()
-        app._refresh_pilot_infographic()
+        with mock.patch.object(app.root, "after", wraps=app.root.after) as after:
+            app._refresh_pilot_infographic()
         self.assertFalse(any(
             call.args and call.args[0] == app.PILOT_REFRESH_INTERVAL_MS
-            for call in app.root.after.call_args_list
+            for call in after.call_args_list
         ))
 
     def test_refresh_uses_single_timer(self):
         """Повторные вызовы не должны плодить цепочки root.after()."""
         app = self.app
-        app.root.after.reset_mock()
         app._pilot_refresh_job = None
-        with mock.patch.object(app, "_pilot_is_visible", return_value=True):
+        with mock.patch.object(app, "_pilot_is_visible", return_value=True), \
+             mock.patch.object(app.root, "after", wraps=app.root.after) as after:
             app._refresh_pilot_infographic()
             app._refresh_pilot_infographic()
             app._refresh_pilot_infographic()
 
-        timers = [call for call in app.root.after.call_args_list
+        timers = [call for call in after.call_args_list
                   if call.args and call.args[0] == app.PILOT_REFRESH_INTERVAL_MS]
         self.assertEqual(len(timers), 1)
 
@@ -269,32 +276,28 @@ class PilotInfographicTests(unittest.TestCase):
         self.assertEqual(app._session_tons_by_system, {})
 
     # -- графика ------------------------------------------------------------
-    def _canvas(self, width=240, height=60):
-        canvas = mock.MagicMock()
-        canvas.winfo_width.return_value = width
-        canvas.winfo_height.return_value = height
-        return canvas
+    def test_refresh_pushes_series_and_systems_into_the_native_page(self):
+        app = self.app
+        app._pilot_series["tons"].clear()
+        app._pilot_series["tons"].extend((0.0, 5.0, 10.0))
+        app._session_tons_by_system.clear()
+        app._session_tons_by_system.update({"Sol": 120.0, "Alpha": 60.0})
+        # Отбор точки серии идёт по времени — в этом тесте он не нужен.
+        with mock.patch.object(app, "_pilot_sample_series"):
+            app._refresh_pilot_infographic()
+        self.assertEqual(app.pilot_page.spark.values, [0.0, 5.0, 10.0])
+        self.assertEqual(app.pilot_page.systems_chart.rows,
+                         [("Sol", 120.0), ("Alpha", 60.0)])
 
-    def test_sparkline_draws_line_for_series(self):
-        canvas = self._canvas()
-        self.app._pilot_draw_sparkline(canvas, [0, 5, 10, 7], "#2ecc71")
-        self.assertTrue(canvas.create_line.called)
-        self.assertTrue(canvas.create_polygon.called)
+    def test_refresh_reports_the_update_time(self):
+        self.app._refresh_pilot_infographic()
+        self.assertRegex(self.app.pilot_page.updated_label.text(), r"^\d{2}:\d{2}:\d{2}$")
 
-    def test_sparkline_shows_hint_without_data(self):
-        canvas = self._canvas()
-        self.app._pilot_draw_sparkline(canvas, [1], "#2ecc71")
-        self.assertFalse(canvas.create_line.called)
-        self.assertTrue(canvas.create_text.called)
-
-    def test_bars_chart_shows_top_systems(self):
-        canvas = self._canvas(width=240, height=110)
-        self.app._pilot_draw_bars(canvas, [("Sol", 120.0), ("Alpha", 60.0)], "#3498db")
-        self.assertEqual(canvas.create_rectangle.call_count, 2)
-        canvas.create_rectangle.reset_mock()
-        self.app._pilot_draw_bars(canvas, [], "#3498db")
-        self.assertFalse(canvas.create_rectangle.called)
-        self.assertTrue(canvas.create_text.called)
+    def test_progress_bars_clamp_values_to_percent_range(self):
+        self.app.ship.get_state_dict = lambda: {"hull_percent": 150, "shield_percent": -10}
+        self.app._refresh_pilot_infographic()
+        self.assertEqual(self.app.pilot_page.bars["hull_bar"].value(), 100)
+        self.assertEqual(self.app.pilot_page.bars["shield_bar"].value(), 0)
 
 
 if __name__ == "__main__":

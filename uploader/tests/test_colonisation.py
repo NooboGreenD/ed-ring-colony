@@ -348,43 +348,47 @@ class ColonyTabIntegrationTests(unittest.TestCase):
         self._dock_at_site()
         self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
 
-        fields = self.app.colony_fields
-        self.assertEqual(fields["systemName"].get(), "Kuma")
-        self.assertEqual(fields["marketId"].get(), "3951663874")
-        self.assertEqual(fields["systemAddress"].get(), "123456789")
-        self.assertEqual(fields["buildName"].get(), "Hestia Depot")
-        self.assertEqual(fields["bodyName"].get(), "Kuma 3 a")
-        self.assertEqual(fields["bodyNum"].get(), "12")
-        self.assertEqual(fields["maxNeed"].get(), "9025")
-        self.assertIn("steel:5960", self.app.colony_commodities_var.get())
-        self.assertIn("liquidoxygen:1865", self.app.colony_commodities_var.get())
+        page = self.app.colony_page
+
+        def field(key):
+            """Текст поля формы — неважно, поле ввода это или список."""
+            return page.value(key)
+        self.assertEqual(field("systemName"), "Kuma")
+        self.assertEqual(field("marketId"), "3951663874")
+        self.assertEqual(field("systemAddress"), "123456789")
+        self.assertEqual(field("buildName"), "Hestia Depot")
+        self.assertEqual(field("bodyName"), "Kuma 3 a")
+        self.assertEqual(field("bodyNum"), "12")
+        self.assertEqual(field("maxNeed"), "9025")
+        self.assertIn("steel:5960", self.app.colony_commodities_entry.text())
+        self.assertIn("liquidoxygen:1865", self.app.colony_commodities_entry.text())
         # Aluminium закрыт полностью — в остатке его нет.
-        self.assertNotIn("aluminium", self.app.colony_commodities_var.get())
-        self.assertEqual(self.app.colony_starpos_var.get(), "10.5000, -20.2500, 30.1250")
-        self.assertFalse(self.app.colony_primary_port_var.get())
+        self.assertNotIn("aluminium", self.app.colony_commodities_entry.text())
+        self.assertEqual(self.app.colony_starpos_entry.text(), "10.5000, -20.2500, 30.1250")
+        self.assertFalse(self.app.colony_primary_port_check.isChecked())
 
     def test_manual_edits_are_not_overwritten_by_autofill(self):
-        self.app.colony_fields["buildName"].set("Ручное название")
+        self.app.colony_page.set_value("buildName", "Ручное название")
         self._dock_at_site()
         self.app._colony_form_baseline = {}   # форма «до» была другой
         self.assertTrue(self.app._colony_form_dirty())
         self.app._on_construction_site_changed()
-        self.assertEqual(self.app.colony_fields["buildName"].get(), "Ручное название")
+        self.assertEqual(self.app.colony_page.value("buildName"), "Ручное название")
 
     def test_autofill_runs_once_per_site(self):
         self._dock_at_site()
         self.app._on_construction_site_changed()
-        self.assertEqual(self.app.colony_fields["buildName"].get(), "Hestia Depot")
+        self.assertEqual(self.app.colony_page.value("buildName"), "Hestia Depot")
         # Повторное событие той же площадки форму не перетирает.
-        self.app.colony_fields["buildName"].set("Переименовал")
+        self.app.colony_page.set_value("buildName", "Переименовал")
         self.app._on_construction_site_changed()
-        self.assertEqual(self.app.colony_fields["buildName"].get(), "Переименовал")
+        self.assertEqual(self.app.colony_page.value("buildName"), "Переименовал")
 
     def test_create_payload_has_required_fields_and_opens_page(self):
         self._dock_at_site()
         self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
-        self.app.colony_fields["buildType"].set("hestia")
-        self.app.colony_cmdr_var.set("CMDR Test")
+        self.app.colony_page.set_value("buildType", "hestia")
+        self.app.colony_cmdr_entry.setText("CMDR Test")
 
         captured = {}
         opened = []
@@ -411,8 +415,8 @@ class ColonyTabIntegrationTests(unittest.TestCase):
         """Чужой snapshot депота не должен уезжать в Raven."""
         self._dock_at_site()
         self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
-        self.app.colony_fields["marketId"].set("999999")   # командир поправил руками
-        self.app.colony_fields["buildType"].set("hestia")  # тип выбран из справочника
+        self.app.colony_page.set_value("marketId", "999999")   # командир поправил руками
+        self.app.colony_page.set_value("buildType", "hestia")  # тип выбран из справочника
 
         captured = {}
         self.app.raven_api.create_project = lambda project: captured.update(project=project) or {
@@ -434,24 +438,24 @@ class ColonyTabIntegrationTests(unittest.TestCase):
             "Sol A": MapBody(name="Sol A", system="Sol", body_id=0),
             "Sol 3": MapBody(name="Sol 3", system="Sol", body_id=3),
         }
-        self.app.colony_fields["systemName"].set("Sol")
+        self.app.colony_page.set_value("systemName", "Sol")
         self.assertEqual(self.app._colony_body_choices(), {"Sol A": 0, "Sol 3": 3})
-        self.app.colony_fields["bodyName"].set("Sol 3")
+        self.app.colony_page.set_value("bodyName", "Sol 3")
         self.app._colony_sync_body_num()
-        self.assertEqual(self.app.colony_fields["bodyNum"].get(), "3")
+        self.assertEqual(self.app.colony_page.value("bodyNum"), "3")
 
     def test_build_type_comes_from_reference_list(self):
         from colony_build_types import build_type_label
 
-        self.app.colony_fields["buildType"].set(build_type_label("zeus"))
+        self.app.colony_page.set_value("buildType", build_type_label("zeus"))
         self.assertEqual(self.app._colony_build_type_code(), "zeus")
-        self.app.colony_fields["buildType"].set("свободный текст")
+        self.app.colony_page.set_value("buildType", "свободный текст")
         self.assertEqual(self.app._colony_build_type_code(), "")
 
     def test_create_is_blocked_without_build_type(self):
         self._dock_at_site()
         self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
-        self.app.colony_fields["buildType"].set("")
+        self.app.colony_page.set_value("buildType", "")
         self.app.raven_api.create_project = mock.MagicMock()
         with self._run_threads_inline():
             self.app._on_colony_create()
@@ -464,10 +468,10 @@ class ColonyTabIntegrationTests(unittest.TestCase):
         self.app.raven_api.create_project.assert_not_called()
 
     def test_autofill_can_be_switched_off(self):
-        self.app.colony_autofill_var.set(False)
+        self.app.colony_autofill_check.setChecked(False)
         self._dock_at_site()
         self.app._on_construction_site_changed()
-        self.assertEqual(self.app.colony_fields["systemName"].get(), "")
+        self.assertEqual(self.app.colony_page.value("systemName"), "")
 
     def test_journal_feed_reaches_tracker_from_parser_hook(self):
         """Хук разбора журнала доводит события до трекера стройплощадок."""

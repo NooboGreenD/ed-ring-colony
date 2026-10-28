@@ -41,11 +41,19 @@ COLLECT_PACKAGES = ()
 #: Данные certifi нужны Requests для проверки TLS и должны быть в onefile exe.
 COLLECT_DATA_PACKAGES = ("certifi",)
 
+#: Модули лаунчера: PyInstaller не находит свои же файлы, импортированные лениво.
+LAUNCHER_MODULES = (
+    "bundle", "launcher_ui", "launcher_content", "launcher_settings",
+    "launcher_window", "ui_qt", "bundle_updater", "site_config", "locale_config",
+)
+
+#: Проверка настоящего импорта Qt перед упаковкой (отдельный процесс).
+GUI_PREFLIGHT = ("ui_qt", "launcher_window")
+
 #: Библиотеки, которые обязаны быть в сборке, даже если импортируются лениво.
 ALWAYS_INCLUDE = (
     "requests", "certifi", "pyperclip", "PySide6.QtCore", "PySide6.QtGui",
-    "PySide6.QtWidgets", "shiboken6", "qt_compat", "qt_lazy", "qt_factions",
-    "theme_tokens", "locale_config",
+    "PySide6.QtWidgets", "shiboken6",
     # Standard-library modules that may be missed by static analysis of the launcher.
     "webbrowser", "ctypes", "ctypes.wintypes", "csv", "sqlite3", "queue",
     "secrets", "hmac", "base64", "zipfile", "shutil", "tempfile", "difflib",
@@ -96,7 +104,7 @@ def main() -> int:
     # Validate real GUI imports with the exact interpreter used for freezing.
     # Hidden-import warnings alone do not make PyInstaller fail the build.
     check = subprocess.run(
-        [sys.executable, "-c", "import qt_compat"],
+        [sys.executable, "-c", "import " + ", ".join(GUI_PREFLIGHT)],
         cwd=str(HERE), capture_output=True, text=True,
     )
     if check.returncode:
@@ -136,12 +144,10 @@ def main() -> int:
         # Встроенная копия пакета: из неё программа стартует до первого
         # обновления (и к ней же откатывается, если всё сломалось).
         "--add-data", f"{EMBED_DIR}{os.pathsep}app_bundle",
-        # Лаунчерные модули живут в базовой сборке, отдельно от обновляемого пакета.
-        "--hidden-import", "bundle",
-        "--hidden-import", "launcher_ui",
-        "--hidden-import", "bundle_updater",
-        "--hidden-import", "site_config",
     ]
+    # Лаунчерные модули живут в базовой сборке, отдельно от обновляемого пакета.
+    for module in LAUNCHER_MODULES:
+        args += ["--hidden-import", module]
     for name in hidden:
         args += ["--hidden-import", name]
     args.extend(collect_package_args())

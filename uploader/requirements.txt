@@ -1,5 +1,8 @@
 requests>=2.31.0
-PySide6-Essentials>=6.7,<7
+# 6.12.0 в этом окружении роняет процесс при перерисовке
+# QTextEdit/QTextDocument (Fatal Python error: none_dealloc ...).
+# Воспроизводится 12 строками без кода проекта; на 6.9–6.11 — нет.
+PySide6-Essentials>=6.7,<6.12
 pyperclip>=1.8.2
 PyInstaller>=6.9
 

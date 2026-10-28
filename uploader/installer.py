@@ -1,4 +1,9 @@
-"""First-run Windows installer for the Colonial Helper launcher."""
+"""First-run Windows installer for the Colonial Helper launcher.
+
+The window itself lives in :mod:`installer_window` and is written in plain
+PySide6; this module keeps the install logic, which is fully testable without a
+display.
+"""
 from __future__ import annotations
 
 import os
@@ -160,133 +165,6 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
             "process": process, "install_root": root}
 
 
-class SetupWindow:
-    def __init__(self, root, source: Path):
-        from qt_lazy import tk
-
-        self.tk = tk
-        self.root = root
-        self.source = source
-        self.result = None
-        self.desktop = tk.BooleanVar(value=False)
-        self.install_root = bundle.install_root()
-        self.existing_install = has_existing_install(self.install_root)
-        self.window_width = 600 if self.existing_install else 560
-        self.window_height = 455 if self.existing_install else 410
-
-        self.root.title("ED Ring Colony — Установка Colonial Helper")
-        self.root.geometry(f"{self.window_width}x{self.window_height}")
-        self.root.resizable(False, False)
-        self.root.configure(bg="#1e2022")
-        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
-        self._center()
-
-        panel = tk.Frame(root, bg="#2a2d30")
-        panel.pack(fill="both", expand=True, padx=20, pady=18)
-        tk.Frame(panel, bg="#e57b28", height=4).pack(fill="x")
-        tk.Label(panel, text="ED RING COLONY", bg="#2a2d30", fg="#42b9d4",
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=26, pady=(18, 3))
-        tk.Label(panel, text="Colonial Helper", bg="#2a2d30", fg="#f2f3f4",
-                 font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=26)
-        tk.Label(panel, text="Лаунчер новостей проекта и инструментов командира",
-                 bg="#2a2d30", fg="#a1a8ad", font=("Segoe UI", 10)).pack(anchor="w", padx=27, pady=(2, 14))
-        if self.existing_install:
-            intro = "Найдена установленная программа. Восстановление скачает пакет с сервера (при сбое — из Setup), переустановка использует версию из Setup."
-        else:
-            intro = "Установка для текущего пользователя"
-        tk.Label(panel, text=intro, bg="#2a2d30", fg="#f2f3f4",
-                 font=("Segoe UI", 10, "bold"), wraplength=490,
-                 justify="left").pack(anchor="w", padx=27)
-        tk.Label(panel, text=str(self.install_root), bg="#25282b", fg="#a1a8ad",
-                 anchor="w", padx=11, pady=9, font=("Consolas", 9)).pack(fill="x", padx=26, pady=(7, 10))
-        tk.Checkbutton(panel, text="Создать ярлык на рабочем столе", variable=self.desktop,
-                       bg="#2a2d30", fg="#f2f3f4", selectcolor="#25282b",
-                       activebackground="#2a2d30", activeforeground="#f2f3f4",
-                       font=("Segoe UI", 9)).pack(anchor="w", padx=25, pady=(0, 9))
-        if self.existing_install:
-            status_text = "Настройки и пользовательские данные сохранятся при обоих действиях."
-        else:
-            status_text = "Лаунчер будет установлен и запущен после завершения."
-        self.status = tk.Label(panel, text=status_text, bg="#2a2d30", fg="#a1a8ad",
-                               anchor="w", justify="left", wraplength=500,
-                               font=("Segoe UI", 8))
-        self.status.pack(fill="x", padx=27, pady=(0, 10))
-
-        actions = tk.Frame(panel, bg="#2a2d30")
-        actions.pack(fill="x", padx=26, side="bottom", pady=(0, 14))
-        if self.existing_install:
-            self.repair_button = tk.Button(
-                actions, text="ВОССТАНОВИТЬ", command=lambda: self.install(repair=True),
-                bg="#267f98", fg="#ffffff", activebackground="#3199b4",
-                activeforeground="#ffffff", relief="flat", bd=0,
-                cursor="hand2", font=("Segoe UI", 9, "bold"), pady=12,
-            )
-            self.repair_button.pack(side="left", fill="x", expand=True, padx=(0, 6))
-            self.install_button = tk.Button(
-                actions, text="ПЕРЕУСТАНОВИТЬ", command=lambda: self.install(reinstall=True),
-                bg="#e57b28", fg="#ffffff", activebackground="#f18b35",
-                activeforeground="#ffffff", relief="flat", bd=0,
-                cursor="hand2", font=("Segoe UI", 9, "bold"), pady=12,
-            )
-            self.install_button.pack(side="left", fill="x", expand=True, padx=(6, 0))
-        else:
-            self.install_button = tk.Button(
-                actions, text="УСТАНОВИТЬ И ЗАПУСТИТЬ", command=self.install,
-                bg="#e57b28", fg="#ffffff", activebackground="#f18b35",
-                activeforeground="#ffffff", relief="flat", bd=0,
-                cursor="hand2", font=("Segoe UI", 10, "bold"), pady=12,
-            )
-            self.install_button.pack(fill="x")
-
-    def _center(self):
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - self.window_width) // 2
-        y = (self.root.winfo_screenheight() - self.window_height) // 2
-        self.root.geometry(
-            f"{self.window_width}x{self.window_height}+{max(0, x)}+{max(0, y)}"
-        )
-
-    def install(self, repair=False, reinstall=False):
-        buttons = [getattr(self, "repair_button", None), self.install_button]
-        for button in buttons:
-            if button is not None:
-                button.configure(state="disabled")
-        action = "ВОССТАНОВЛЕНИЕ…" if repair else (
-            "ПЕРЕУСТАНОВКА…" if reinstall else "УСТАНОВКА…"
-        )
-        self.status.configure(text="Копируем лаунчер и создаём ярлыки…", fg="#42b9d4")
-        self.install_button.configure(text=action)
-        self.root.update_idletasks()
-        try:
-            result = install_launcher(
-                self.source, install_root=self.install_root,
-                desktop_shortcut=self.desktop.get(), launch=True,
-                repair=repair, reinstall=reinstall,
-            )
-        except Exception as exc:
-            for button in buttons:
-                if button is not None:
-                    button.configure(state="normal")
-            self.install_button.configure(
-                text="ПЕРЕУСТАНОВИТЬ" if self.existing_install else "ПОВТОРИТЬ УСТАНОВКУ"
-            )
-            detail = str(exc)
-            if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32):
-                detail += " Закройте Colonial Helper, затем повторите установку."
-            self.status.configure(text=f"Не удалось установить лаунчер: {detail}", fg="#e27676")
-            return
-        self.result = result
-        if result["warnings"]:
-            warning = "; ".join(str(item) for item in result["warnings"])
-            self.status.configure(
-                text=f"Программа установлена и запускается, но ярлык не создан: {warning}",
-                fg="#e2bc65",
-            )
-            self.root.after(3500, self.root.destroy)
-        else:
-            self.status.configure(text="Готово. Colonial Helper запускается…", fg="#65c78a")
-            self.root.after(800, self.root.destroy)
-
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     source = payload_executable()
@@ -299,14 +177,18 @@ def main(argv=None) -> int:
             print(f"Не удалось установить Colonial Helper: {exc}", file=sys.stderr)
             return 1
     try:
-        from qt_lazy import ensure_app, tk
-        ensure_app()
-        root = tk.Tk()
-        SetupWindow(root, source)
-        root.mainloop()
+        from installer_window import SetupWindow
+        from ui_qt import ensure_app
+
+        app = ensure_app()
+        window = SetupWindow(source)
+        window.show()
+        app.exec()
         return 0
-    except Exception as exc:
-        print(f"Не удалось открыть установщик Colonial Helper: {exc}", file=sys.stderr)
+    except BaseException as exc:
+        from ui_qt import report_startup_error
+
+        report_startup_error(exc, title="Не удалось открыть установщик Colonial Helper")
         return 1
 
 

@@ -13,6 +13,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 LAUNCHER_EXE = HERE / "dist" / "ColonialHelper.exe"
 
+#: Модули установщика, которые PyInstaller должен забрать явно.
+SETUP_MODULES = ("ui_qt", "installer_window", "installer", "bundle")
+
+#: Проверка настоящего импорта Qt перед упаковкой (отдельный процесс).
+GUI_PREFLIGHT = ("ui_qt", "installer_window")
+
 
 def main() -> int:
     if not sys.platform.startswith("win"):
@@ -23,7 +29,7 @@ def main() -> int:
     # Validate real GUI imports with the exact interpreter used for freezing.
     # Hidden-import warnings alone do not make PyInstaller fail the build.
     check = subprocess.run(
-        [sys.executable, "-c", "import qt_compat"],
+        [sys.executable, "-c", "import " + ", ".join(GUI_PREFLIGHT)],
         cwd=str(HERE), capture_output=True, text=True,
     )
     if check.returncode:
@@ -45,14 +51,13 @@ def main() -> int:
         "--workpath", str(HERE / "build" / "installer-pyinstaller"),
         "--specpath", str(HERE / "build"),
         "--add-data", f"{LAUNCHER_EXE}{os.pathsep}payload",
-        "--hidden-import", "bundle",
-        "--hidden-import", "qt_compat",
-        "--hidden-import", "qt_lazy",
         "--hidden-import", "PySide6.QtCore",
         "--hidden-import", "PySide6.QtGui",
         "--hidden-import", "PySide6.QtWidgets",
         "--hidden-import", "shiboken6",
     ]
+    for module in SETUP_MODULES:
+        args += ["--hidden-import", module]
     if icon.is_file():
         args.append(f"--icon={icon}")
     PyInstaller.__main__.run(args)

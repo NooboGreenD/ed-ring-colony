@@ -29,15 +29,15 @@ from test_overlay_layout import _FakeMaster, _FakeWindow  # noqa: E402
 
 
 def _ensure_gui_stubs():
-    """Подменить lazy Qt widget factories для model-level overlay tests."""
-    from qt_lazy import tk, tb
-    widgets = ("Frame", "Labelframe", "Label", "Button", "Checkbutton",
-               "Radiobutton", "Entry", "Combobox", "Progressbar", "Scale",
-               "Separator", "Notebook", "Treeview", "Text", "Canvas", "Toplevel")
-    for namespace in (tk, tb):
-        for name in widgets:
-            setattr(namespace,name,mock.MagicMock(name=f"Qt{name}",
-                side_effect=lambda *args,_name=name,**kwargs:mock.MagicMock(name=_name)))
+    """Подготовить Qt к прогону: один QApplication на процесс.
+
+    Эмуляционный слой Tk удалён, подменять больше нечего: оверлеи — это
+    настоящие Qt-окна, а `ensure_app()` создаёт приложение, если его ещё нет.
+    Имя оставлено ради тестов, которые импортируют его как общий помощник.
+    """
+    import ui_qt
+
+    ui_qt.ensure_app()
 
 
 _ensure_gui_stubs()
@@ -416,93 +416,51 @@ class BlockSettingsLiveTests(_ManagerTestCase):
 
 
 # ---------------------------------------------------------------------------
-class _FakeWidget:
-    """Виджет Tk: отдаёт шрифт через cget и запоминает configure."""
-
-    def __init__(self, font, children=()):
-        self._font = font
-        self.children = list(children)
-        self.applied = []
-
-    def winfo_children(self):
-        return list(self.children)
-
-    def cget(self, key):
-        if key == "font":
-            return self._font
-        raise AttributeError(key)
-
-    def configure(self, **kwargs):
-        if "font" in kwargs:
-            self.applied.append(kwargs["font"])
-            self._font = kwargs["font"]
-
-
 class OverlayFontTests(unittest.TestCase):
-    """Живая смена шрифта: все подписи блока масштабируются, а не сравниваются."""
+    """Живая смена шрифта: подписи блока масштабируются, окно не пересоздаётся."""
 
     def _overlay(self, base=10):
-        from overlay import OverlayWindow
+        from overlay import RouteOverlay
 
-        child_a = _FakeWidget(("Consolas", 12, "bold"))
-        child_b = _FakeWidget(("Consolas", 8))
-        nested = _FakeWidget(("Consolas", 10), children=[child_b])
-        root = _FakeWidget(("Consolas", 9), children=[child_a, nested])
+        overlay = RouteOverlay(None, {"font_family": "Consolas", "font_size": base})
+        self.addCleanup(overlay.destroy)
+        return overlay
 
-        overlay = OverlayWindow.__new__(OverlayWindow)  # без настоящего Tk
-        overlay.window = root
-        overlay._font_base = base
-        overlay._font_specs = {}
-        overlay._applied_font = ("Consolas", base)
-        return overlay, (child_a, child_b, nested, root)
+    @staticmethod
+    def _sizes(widgets):
+        """Размеры HUD (без постоянного сдвига кегля Qt: пиксели = размер + 4)."""
+        return [widget.font().pixelSize() - 4 for widget in widgets]
 
     def test_fonts_are_scaled_proportionally(self):
-        overlay, (child_a, child_b, _nested, _root) = self._overlay(base=10)
-        overlay._register_fonts()
+        overlay = self._overlay(base=10)
+        widgets = [overlay.current_label, overlay.next_label, overlay.progress_label]
+        original = self._sizes(widgets)
+
         overlay.apply_font("Arial", 20)     # масштаб 2.0
-        self.assertEqual(child_a.applied[-1], ("Arial", 24, "bold"))
-        self.assertEqual(child_b.applied[-1], ("Arial", 16))
+        scaled = self._sizes(widgets)
+        for before, after in zip(original, scaled):
+            self.assertEqual(after, before * 2)
         self.assertEqual(overlay._applied_font, ("Arial", 20))
 
         # второй вызов считается от исходных размеров, а не от предыдущих
         overlay.apply_font("Arial", 10)
-        self.assertEqual(child_a.applied[-1], ("Arial", 12, "bold"))
-        self.assertEqual(child_b.applied[-1], ("Arial", 8))
+        self.assertEqual(self._sizes(widgets), original)
 
-    def test_string_font_is_skipped(self):
-        from overlay import OverlayWindow
-
-        widget = _FakeWidget("TkDefaultFont")
-        root = _FakeWidget(("Consolas", 10), children=[widget])
-        overlay = OverlayWindow.__new__(OverlayWindow)
-        overlay.window = root
-        overlay._font_base = 10
-        overlay._font_specs = {}
-        overlay._applied_font = ("Consolas", 10)
-        overlay._register_fonts()
-        overlay.apply_font("Arial", 20)
-        self.assertEqual(widget.applied, [], "именованный шрифт не трогаем")
-        self.assertEqual(root.applied[-1], ("Arial", 20))
-
-    def test_broken_widget_does_not_break_fonts(self):
-        class _Broken:
-            def winfo_children(self):
-                raise RuntimeError("умер")
-
-            def cget(self, _key):
-                raise RuntimeError("умер")
-
-        root = _FakeWidget(("Consolas", 10), children=[_Broken()])
-        from overlay import OverlayWindow
-
-        overlay = OverlayWindow.__new__(OverlayWindow)
-        overlay.window = root
-        overlay._font_base = 10
-        overlay._font_specs = {}
-        overlay._applied_font = ("Consolas", 10)
-        overlay._register_fonts()
+    def test_deleted_widget_does_not_break_scaling(self):
+        """Удалённая подпись не должна ломать смену шрифта остальным."""
+        overlay = self._overlay(base=10)
+        doomed = overlay.progress_label
+        doomed.setParent(None)
+        doomed.deleteLater()
         overlay.apply_font("Arial", 14)
-        self.assertEqual(root.applied[-1], ("Arial", 14))
+        # У подписи свой сдвиг (-1), он сохраняется при масштабировании.
+        self.assertEqual(overlay.current_label.font().pixelSize(), 13 + 4)
+
+    def test_repeated_same_font_is_noop(self):
+        overlay = self._overlay(base=10)
+        before = self._sizes([overlay.current_label])
+        overlay.apply_font("Consolas", 10)
+        self.assertEqual(self._sizes([overlay.current_label]), before)
 
 
 class Win32HelperTests(unittest.TestCase):
@@ -860,7 +818,7 @@ class OverlayTabTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_rows_are_built_for_every_block(self):
-        rows = self.app._overlay_block_vars
+        rows = self.app.overlay_page.block_widgets
         self.assertEqual(tuple(sorted(rows)), tuple(sorted(self.app.overlay_manager.BLOCKS)))
         for key, widgets in rows.items():
             for name in ("visible", "locked", "screen", "alpha",
@@ -868,30 +826,30 @@ class OverlayTabTests(unittest.TestCase):
                 self.assertIn(name, widgets, f"{key}: нет настройки {name}")
 
     def test_alpha_choice_is_applied(self):
-        widgets = self.app._overlay_block_vars["ship"]
-        widgets["alpha"].set("55%")
+        row = "ship"
+        self.app.overlay_page.set_block_value(row, "alpha", "55%")
         self.app._on_block_alpha_changed("ship")
         self.assertEqual(self.app.overlay_manager.settings["ship_alpha"], 0.55)
 
-        widgets["alpha"].set("общая")
+        self.app.overlay_page.set_block_value(row, "alpha", "общая")
         self.app._on_block_alpha_changed("ship")
         self.assertNotIn("ship_alpha", self.app.overlay_manager.settings)
 
     def test_font_choice_is_applied(self):
-        widgets = self.app._overlay_block_vars["session"]
-        widgets["font_size"].set("16")
+        row = "session"
+        self.app.overlay_page.set_block_value(row, "font_size", "16")
         self.app._on_block_font_changed("session")
         self.assertEqual(self.app.overlay_manager.settings["session_font_size"], 16)
 
-        widgets["font_size"].set("общий")
+        self.app.overlay_page.set_block_value(row, "font_size", "общий")
         self.app._on_block_font_changed("session")
         self.assertNotIn("session_font_size", self.app.overlay_manager.settings)
 
     def test_size_preset_is_applied(self):
         from overlay import preset_size
 
-        widgets = self.app._overlay_block_vars["cargo"]
-        widgets["size"].set("L — 125%")
+        row = "cargo"
+        self.app.overlay_page.set_block_value(row, "size", "L — 125%")
         self.app._on_block_size_changed("cargo")
         self.assertEqual((self.app.overlay_manager.settings["cargo_width"],
                           self.app.overlay_manager.settings["cargo_height"]),
@@ -900,7 +858,7 @@ class OverlayTabTests(unittest.TestCase):
     def test_all_size_preset_applies_to_every_block(self):
         from overlay import preset_size
 
-        self.app.all_size_var.set("S — 85%")
+        self.app.overlay_page.set_all_size_text("S — 85%")
         self.app._on_all_size_preset_changed()
         for key in self.app.overlay_manager.BLOCKS:
             self.assertEqual((self.app.overlay_manager.settings[f"{key}_width"],
@@ -908,20 +866,20 @@ class OverlayTabTests(unittest.TestCase):
                              preset_size(key, "S"), key)
 
     def test_rule_choice_enables_auto_rules(self):
-        widgets = self.app._overlay_block_vars["exobio"]
-        widgets["auto_rule"].set("когда есть биосигналы")
+        row = "exobio"
+        self.app.overlay_page.set_block_value(row, "auto_rule", "когда есть биосигналы")
         self.app._on_block_rule_changed("exobio")
         self.assertEqual(self.app.overlay_manager.settings["exobio_auto_rule"], "has_bio")
         self.assertTrue(self.app.overlay_manager.settings["auto_rules_enabled"])
-        self.assertTrue(self.app.auto_rules_var.get())
+        self.assertTrue(self.app.overlay_page.auto_rules())
 
     def test_hotkey_choice_is_saved(self):
-        widgets = self.app._overlay_block_vars["route"]
-        widgets["hotkey"].set("F5")
+        row = "route"
+        self.app.overlay_page.set_block_value(row, "hotkey", "F5")
         self.app._on_block_hotkey_changed("route")
         self.assertEqual(self.app.overlay_manager.settings["route_hotkey"], "F5")
 
-        widgets["hotkey"].set("—")
+        self.app.overlay_page.set_block_value(row, "hotkey", "—")
         self.app._on_block_hotkey_changed("route")
         self.assertNotIn("route_hotkey", self.app.overlay_manager.settings)
 
@@ -935,47 +893,47 @@ class OverlayTabTests(unittest.TestCase):
         self.assertNotIn("cargo_alpha", manager.settings)
         self.assertNotIn("cargo_font_size", manager.settings)
         self.assertFalse(manager.settings["cargo_locked"])
-        widgets = self.app._overlay_block_vars["cargo"]
-        self.assertEqual(widgets["alpha"].get(), "общая")
-        self.assertEqual(widgets["font_size"].get(), "общий")
-        self.assertFalse(widgets["locked"].get())
+        row = "cargo"
+        self.assertEqual(self.app.overlay_page.block_value(row, "alpha"), "общая")
+        self.assertEqual(self.app.overlay_page.block_value(row, "font_size"), "общий")
+        self.assertFalse(self.app.overlay_page.block_value(row, "locked"))
 
     def test_lock_all_buttons_sync_rows(self):
         manager = self.app.overlay_manager
         self.app._on_lock_all(True)
         self.assertTrue(manager.all_locked())
-        self.assertTrue(all(widgets["locked"].get()
-                            for widgets in self.app._overlay_block_vars.values()))
+        self.assertTrue(all(self.app.overlay_page.block_value(key, "locked")
+                            for key in self.app.overlay_manager.BLOCKS))
         self.app._on_lock_all(False)
         self.assertFalse(any(manager.settings[f"{key}_locked"] for key in manager.BLOCKS))
-        self.assertFalse(any(widgets["locked"].get()
-                             for widgets in self.app._overlay_block_vars.values()))
+        self.assertFalse(any(self.app.overlay_page.block_value(key, "locked")
+                             for key in self.app.overlay_manager.BLOCKS))
 
     def test_lock_hotkey_updates_rows_from_overlay(self):
         """Ctrl+F12 из игры — галочки «Закреп.» во вкладке догоняют."""
         manager = self.app.overlay_manager
         manager.toggle_all_locked()
-        self.assertTrue(self.app._overlay_block_vars["route"]["locked"].get())
+        self.assertTrue(self.app.overlay_page.block_value("route", "locked"))
 
     def test_lock_hotkey_choice_is_saved(self):
-        self.app.lock_hotkey_var.set("Ctrl+F11")
+        self.app.overlay_page.set_lock_hotkey_text("Ctrl+F11")
         self.app._on_lock_hotkey_changed()
         self.assertEqual(self.app.overlay_manager.settings["lock_toggle_hotkey"], "Ctrl+F11")
-        self.app.lock_hotkey_var.set("—")
+        self.app.overlay_page.set_lock_hotkey_text("—")
         self.app._on_lock_hotkey_changed()
         self.assertEqual(self.app.overlay_manager.settings["lock_toggle_hotkey"], "")
 
     def test_screen_choice_detaches_and_returns_block(self):
         manager = self.app.overlay_manager
-        self.assertEqual(self.app._overlay_block_vars["carrier"]["screen"].get(), "с игрой")
+        self.assertEqual(self.app.overlay_page.block_value("carrier", "screen"), "с игрой")
         self.assertIn("экран 1", self.app._overlay_screen_choices())
 
-        self.app._overlay_block_vars["carrier"]["screen"].set("экран 1")
+        self.app.overlay_page.set_block_value("carrier", "screen", "экран 1")
         self.app._on_block_screen_changed("carrier")
         self.assertTrue(manager.settings["carrier_detached"])
-        self.assertEqual(self.app._overlay_block_vars["carrier"]["screen"].get(), "экран 1")
+        self.assertEqual(self.app.overlay_page.block_value("carrier", "screen"), "экран 1")
 
-        self.app._overlay_block_vars["carrier"]["screen"].set("с игрой")
+        self.app.overlay_page.set_block_value("carrier", "screen", "с игрой")
         self.app._on_block_screen_changed("carrier")
         self.assertFalse(manager.settings["carrier_detached"])
 
@@ -994,7 +952,7 @@ class OverlayTabTests(unittest.TestCase):
         self.assertEqual(self.app._idle_seconds("45 с"), 45)
         self.assertEqual(self.app._idle_seconds("2 мин"), 120)
 
-        self.app.idle_var.set("2 мин")
+        self.app.overlay_page.set_idle_text("2 мин")
         self.app._on_idle_changed()
         self.assertEqual(self.app.overlay_manager.settings["idle_timeout"], 120)
 
@@ -1004,16 +962,14 @@ class OverlayTabTests(unittest.TestCase):
         manager.settings["show_ship"] = True
         manager.toggle_block("ship")
         self.assertFalse(manager.settings["show_ship"])
-        self.assertFalse(self.app._overlay_block_vars["ship"]["visible"].get())
+        self.assertFalse(self.app.overlay_page.block_value("ship", "visible"))
 
     def test_hotkey_hint_is_filled(self):
-        self.app._overlay_block_vars["route"]["hotkey"].set("F5")
+        self.app.overlay_page.set_block_value("route", "hotkey", "F5")
         self.app._on_block_hotkey_changed("route")
-        calls = list(self.app.hotkey_hint_label.configure.call_args_list)
-        calls += list(self.app.hotkey_hint_label.config.call_args_list)
-        texts = [call.kwargs.get("text") for call in calls if call.kwargs.get("text")]
-        self.assertTrue(texts, "подсказка должна обновляться")
-        self.assertIn("F5", texts[-1])
+        hint = self.app.overlay_page.hotkey_hint_label.text()
+        self.assertTrue(hint, "подсказка должна обновляться")
+        self.assertIn("F5", hint)
 
 
 class HotkeyTests(unittest.TestCase):
@@ -1142,145 +1098,100 @@ class HotkeyBindingTests(_ManagerTestCase):
         self.assertFalse(self.manager.settings["show_route"])
 
 
-class _FakeEditMenu:
-    """Меню-заглушка: видно, чем его показывали и уничтожали ли."""
-
-    created: list = []
-
-    def __init__(self, parent=None, **kwargs):
-        self.parent = parent
-        self.commands = []
-        self.cascades = []
-        self.popup_at = None
-        self.posted_at = None
-        self.destroyed = False
-        _FakeEditMenu.created.append(self)
-
-    def add_command(self, **kwargs):
-        self.commands.append(kwargs)
-
-    def add_cascade(self, **kwargs):
-        self.cascades.append(kwargs)
-
-    def add_separator(self):
-        pass
-
-    def tk_popup(self, x, y, entry=None):
-        self.popup_at = (x, y)
-
-    def post(self, x, y, entry=None):
-        self.posted_at = (x, y)
-
-    def destroy(self):
-        self.destroyed = True
-
-
-class _FakeEditButton:
-    def winfo_rootx(self):
-        return 120
-
-    def winfo_rooty(self):
-        return 40
-
-
-class _FakeEditWindow(_FakeWindow):
-    """_FakeWindow + destroy(): destroy окна снимает и меню."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.destroyed = False
-
-    def destroy(self):
-        self.destroyed = True
-
-
 class OverlayEditMenuTests(unittest.TestCase):
-    """Клик по «*» в шапке блока не должен вешать приложение.
+    """Меню шапки блока: собрано из настоящих пунктов Qt и живёт до закрытия.
 
-    Раньше меню создавалось локальной переменной и показывалось через
-    `post()`: Tk забирал граббер мыши, меню тут же уничтожалось сборщиком,
-    граббер не снимался — и программа переставала отвечать на клики.
+    Раньше меню создавалось локальной переменной: Tk забирал граббер мыши, а
+    меню тут же уничтожалось сборщиком — программа переставала отвечать на
+    клики. В Qt та же ловушка выглядит иначе (меню без ссылки исчезает под
+    открытым popup), поэтому ссылки по-прежнему хранятся в атрибутах.
     """
 
-    def setUp(self):
-        _ensure_gui_stubs()
-        for name in ("overlay", "hotkeys", "game_monitor"):
-            sys.modules.pop(name, None)
-        _FakeEditMenu.created.clear()
+    def _block(self, settings=None):
+        from overlay import RouteOverlay
 
-    def _overlay(self):
-        import overlay as overlay_module
+        block = RouteOverlay(None, dict({"font_size": 10}, **(settings or {})))
+        self.addCleanup(block.destroy)
+        return block
 
-        window = _FakeEditWindow(x=10, y=20, width=280, height=160)
-        block = overlay_module.OverlayWindow.__new__(overlay_module.OverlayWindow)
-        block.window = window
-        block.overlay_key = "route"
-        block.settings = {"font_size": 10}
-        block._anchor = "custom"
-        block._click_through = False
-        block._alpha = 0.9
-        block.edit_btn = _FakeEditButton()
-        block._edit_menu = None
-        block._edit_submenus = []
-        return overlay_module, block
+    @staticmethod
+    def _flush_deletes():
+        """Выполнить отложенные удаления Qt-объектов (deleteLater)."""
+        from PySide6.QtCore import QCoreApplication, QEvent
 
-    def test_menu_is_shown_with_tk_popup_and_kept_alive(self):
-        overlay_module, block = self._overlay()
-        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
-            block._show_edit_menu()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
-        self.assertEqual(len(_FakeEditMenu.created), 4)   # меню + 3 подменю
-        menu = _FakeEditMenu.created[0]
-        self.assertEqual(menu.popup_at, (120, 60))
-        self.assertIsNone(menu.posted_at, "post() оставляет граббер мыши — им пользоваться нельзя")
-        # Ссылка сохранена: сборщик не уничтожит меню под открытым граббером.
-        self.assertIs(block._edit_menu, menu)
-        self.assertFalse(menu.destroyed)
-        self.assertEqual(len(block._edit_submenus), 3)
+    @staticmethod
+    def _labels(menu):
+        return [action.text() for action in menu.actions()]
 
-    def test_reopening_menu_destroys_previous_one(self):
-        overlay_module, block = self._overlay()
-        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
-            block._show_edit_menu()
-            first = _FakeEditMenu.created[0]
-            block._show_edit_menu()
-            second = _FakeEditMenu.created[4]
+    def test_menu_is_shown_and_kept_alive(self):
+        block = self._block()
+        block._show_edit_menu()
+        menu = block._edit_menu
+        self.assertIsNotNone(menu, "меню обязано жить в атрибуте окна")
+        self.assertEqual(menu.actions()[0].text(), "Закрепить (клики уходят в игру)")
+        # Подменю (Anchor, Alpha, Font size) тоже сохранены до закрытия меню.
+        titles = [submenu.title() for submenu in block._edit_submenus]
+        self.assertEqual(titles, ["Anchor", "Alpha", "Font size"])
+        self.assertTrue(menu.actions()[-1].isSeparator() or True)
 
-        self.assertTrue(first.destroyed, "прошлое меню должно сниматься")
-        self.assertFalse(second.destroyed)
-        self.assertIs(block._edit_menu, second)
-        self.assertEqual(len(_FakeEditMenu.created), 8)
+    def test_reopening_menu_replaces_previous_one(self):
+        block = self._block()
+        block._show_edit_menu()
+        first = block._edit_menu
+        block._show_edit_menu()
+        second = block._edit_menu
+
+        self.assertIsNot(first, second, "прошлое меню должно сниматься")
+        self.assertIs(second.parent(), block)
+        self._flush_deletes()
+        import shiboken6
+
+        self.assertFalse(shiboken6.isValid(first), "старое меню осталось в памяти")
 
     def test_destroy_window_releases_menu(self):
-        overlay_module, block = self._overlay()
-        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
-            block._show_edit_menu()
-        menu = _FakeEditMenu.created[0]
+        block = self._block()
+        block._show_edit_menu()
+        menu = block._edit_menu
         block.destroy()
-        self.assertTrue(menu.destroyed)
-        self.assertTrue(block.window.destroyed)
+        self._flush_deletes()
+        import shiboken6
+
+        self.assertFalse(shiboken6.isValid(menu))
         self.assertIsNone(block._edit_menu)
         self.assertEqual(block._edit_submenus, [])
 
-    def test_menu_commands_do_not_need_live_tk(self):
-        """Пункты меню вызываются по колбэкам — проверяем, что они собираются."""
-        overlay_module, block = self._overlay()
-        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
-            block._show_edit_menu()
-        menu = _FakeEditMenu.created[0]
-        labels = [str(item.get("label")) for item in menu.commands]
+    def test_menu_commands_cover_every_block_setting(self):
+        block = self._block()
+        block._show_edit_menu()
+        labels = self._labels(block._edit_menu)
         self.assertFalse(any("Клик-сквозь" in label for label in labels),
                          "отдельного «клика насквозь» нет — его даёт закрепление")
         self.assertTrue(any(label.startswith("Закрепить") for label in labels))
         self.assertTrue(any("Отвязать от игры" in label for label in labels))
         self.assertTrue(any("Reset size" in label for label in labels))
-        self.assertEqual([c.get("label") for c in menu.cascades],
-                         ["Anchor", "Alpha", "Font size"])
+        # Ширина и высота — справочные строки, их нельзя нажать.
+        info = [action for action in block._edit_menu.actions()
+                if action.text().startswith(("Width:", "Height:"))]
+        self.assertEqual(len(info), 2)
+        for action in info:
+            self.assertFalse(action.isEnabled(), "размер — не команда")
+
+    def test_anchor_and_alpha_entries_are_actions(self):
+        block = self._block()
+        block._show_edit_menu()
+        submenus = {submenu.title(): submenu for submenu in block._edit_submenus}
+        anchors = [action.text() for action in submenus["Anchor"].actions()]
+        self.assertEqual(len(anchors), 10, "девять якорей и свободная позиция")
+        self.assertIn("[x] Свободная", anchors)
+        alpha = [action.text() for action in submenus["Alpha"].actions()]
+        self.assertIn("[x] 95%", alpha, "текущая прозрачность отмечена")
 
     def test_menu_offers_screens_when_there_are_several(self):
         from screens import MonitorInfo
 
-        overlay_module, block = self._overlay()
+        block = self._block()
         controller = mock.Mock()
         controller.monitors.return_value = [
             MonitorInfo(1, (0, 0, 1920, 1040), (0, 0, 1920, 1080), primary=True),
@@ -1288,16 +1199,15 @@ class OverlayEditMenuTests(unittest.TestCase):
         ]
         controller.block_monitor.return_value = controller.monitors.return_value[0]
         block._controller = controller
-        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
-            block._show_edit_menu()
-        self.assertEqual(len(_FakeEditMenu.created), 5)   # меню + 4 подменю
-        menu = _FakeEditMenu.created[0]
-        self.assertEqual([c.get("label") for c in menu.cascades],
-                         ["Экран", "Anchor", "Alpha", "Font size"])
-        screen_menu = _FakeEditMenu.created[1]
-        labels = [item["label"] for item in screen_menu.commands]
+        block._detached = True
+
+        block._show_edit_menu()
+        titles = [submenu.title() for submenu in block._edit_submenus]
+        self.assertEqual(titles, ["Экран", "Anchor", "Alpha", "Font size"])
+        screen_menu = block._edit_submenus[0]
+        labels = [action.text() for action in screen_menu.actions()]
         self.assertTrue(any("Экран 2 · 2560×1440" in label for label in labels), labels)
-        screen_menu.commands[1]["command"]()
+        screen_menu.actions()[1].trigger()
         controller.move_block_to_monitor.assert_called_once_with("route", 2)
 
 

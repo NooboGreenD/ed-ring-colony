@@ -37,7 +37,7 @@ import bundle
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.1.0"
+LAUNCHER_VERSION = "1.2.0"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
@@ -310,15 +310,11 @@ def report_failure(root, message: str, details: str = "") -> None:
     if details:
         log(root, details)
     try:
-        from qt_lazy import ensure_app, tk, messagebox
+        from ui_qt import ensure_app, show_error_dialog
 
         ensure_app()
-        window = tk.Tk()
-        window.withdraw()
-        messagebox.showerror(
-            "Colonial Helper — не удалось запустить",
-            f"{message}\n\nПодробности: {log_path(root)}")
-        window.destroy()
+        show_error_dialog("Colonial Helper — не удалось запустить",
+                          f"{message}\n\nПодробности: {log_path(root)}")
     except Exception:
         pass
 
