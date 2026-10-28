@@ -21,6 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 import bundle
+import i18n
+import launcher_settings
+from i18n import tr
 from installer import has_existing_install, install_launcher
 from ui_qt import (
     GREEN,
@@ -45,7 +48,11 @@ class SetupWindow(FramelessWindow):
     def __init__(self, source: Path, *, install_root: Optional[Path] = None,
                  installer: Optional[Callable[..., Dict[str, Any]]] = None,
                  parent: Optional[QWidget] = None) -> None:
-        super().__init__("ED Ring Colony — Установка Colonial Helper", resizable=False, parent=parent)
+        # Язык берём из общего файла настроек: его выбирает лаунчер, и Setup
+        # должен говорить на том же языке, что и остальные окна.
+        i18n.set_locale(launcher_settings.read_site_locale())
+        super().__init__(tr("ED Ring Colony — Установка Colonial Helper"),
+                         resizable=False, parent=parent)
         self.source = Path(source)
         self.install_root = Path(install_root or bundle.install_root())
         self.existing_install = has_existing_install(self.install_root)
@@ -74,17 +81,17 @@ class SetupWindow(FramelessWindow):
         layout.addSpacing(14)
         layout.addWidget(label("ED RING COLONY", role="accent", size=10, bold=True))
         layout.addWidget(heading("Colonial Helper", size=24))
-        layout.addWidget(label("Лаунчер новостей проекта и инструментов командира",
+        layout.addWidget(label(tr("Лаунчер новостей проекта и инструментов командира"),
                                role="muted", size=10))
         layout.addSpacing(10)
 
         if self.existing_install:
-            intro = ("Найдена установленная программа. Восстановление скачает пакет "
-                     "с сервера (при сбое — из Setup), переустановка использует версию из Setup.")
-            status_text = "Настройки и пользовательские данные сохранятся при обоих действиях."
+            intro = tr("Найдена установленная программа. Восстановление скачает пакет "
+                       "с сервера (при сбое — из Setup), переустановка использует версию из Setup.")
+            status_text = tr("Настройки и пользовательские данные сохранятся при обоих действиях.")
         else:
-            intro = "Установка для текущего пользователя"
-            status_text = "Лаунчер будет установлен и запущен после завершения."
+            intro = tr("Установка для текущего пользователя")
+            status_text = tr("Лаунчер будет установлен и запущен после завершения.")
         layout.addWidget(label(intro, size=10, bold=True, wrap=True))
 
         path_label = QLabel(str(self.install_root))
@@ -98,7 +105,7 @@ class SetupWindow(FramelessWindow):
         layout.addWidget(path_label)
         layout.addSpacing(4)
 
-        self.desktop_check = QCheckBox("Создать ярлык на рабочем столе")
+        self.desktop_check = QCheckBox(tr("Создать ярлык на рабочем столе"))
         self.desktop_check.setChecked(False)
         layout.addWidget(self.desktop_check)
 
@@ -115,16 +122,16 @@ class SetupWindow(FramelessWindow):
         layout.setSpacing(6)
         if self.existing_install:
             self.repair_button: Optional[QPushButton] = action_button(
-                "ВОССТАНОВИТЬ", lambda: self.install(repair=True), height=44)
+                tr("ВОССТАНОВИТЬ"), lambda: self.install(repair=True), height=44)
             self.install_button = action_button(
-                "ПЕРЕУСТАНОВИТЬ", lambda: self.install(reinstall=True),
+                tr("ПЕРЕУСТАНОВИТЬ"), lambda: self.install(reinstall=True),
                 primary=True, height=44)
             layout.addWidget(self.repair_button, 1)
             layout.addWidget(self.install_button, 1)
         else:
             self.repair_button = None
             self.install_button = action_button(
-                "УСТАНОВИТЬ И ЗАПУСТИТЬ", self.install, primary=True, height=44)
+                tr("УСТАНОВИТЬ И ЗАПУСТИТЬ"), self.install, primary=True, height=44)
             layout.addWidget(self.install_button, 1)
         return actions
 
@@ -138,9 +145,10 @@ class SetupWindow(FramelessWindow):
             return
         for button in self._buttons():
             button.setEnabled(False)
-        action = "ВОССТАНОВЛЕНИЕ…" if repair else ("ПЕРЕУСТАНОВКА…" if reinstall else "УСТАНОВКА…")
+        action = tr("ВОССТАНОВЛЕНИЕ…") if repair else (
+            tr("ПЕРЕУСТАНОВКА…") if reinstall else tr("УСТАНОВКА…"))
         self.install_button.setText(action)
-        self.status.setText("Копируем лаунчер и создаём ярлыки…")
+        self.status.setText(tr("Копируем лаунчер и создаём ярлыки…"))
         self.status.setStyleSheet("color:#42b9d4;")
 
         def work() -> Dict[str, Any]:
@@ -165,12 +173,13 @@ class SetupWindow(FramelessWindow):
         warnings = list(result.get("warnings") or [])
         if warnings:
             detail = "; ".join(str(item) for item in warnings)
-            self.status.setText(
-                f"Программа установлена и запускается, но ярлык не создан: {detail}")
+            self.status.setText(tr(
+                "Программа установлена и запускается, но ярлык не создан: {detail}",
+                detail=detail))
             self.status.setStyleSheet(f"color:{YELLOW};")
             QTimer.singleShot(3500, self.close)
             return
-        self.status.setText("Готово. Colonial Helper запускается…")
+        self.status.setText(tr("Готово. Colonial Helper запускается…"))
         self.status.setStyleSheet(f"color:{GREEN};")
         QTimer.singleShot(800, self.close)
 
@@ -178,9 +187,9 @@ class SetupWindow(FramelessWindow):
         self._release_buttons()
         self.last_error = describe_error(error)
         self.install_button.setText(
-            "ПЕРЕУСТАНОВИТЬ" if self.existing_install else "ПОВТОРИТЬ УСТАНОВКУ")
+            tr("ПЕРЕУСТАНОВИТЬ") if self.existing_install else tr("ПОВТОРИТЬ УСТАНОВКУ"))
         detail = self.last_error
         if isinstance(error, PermissionError) or getattr(error, "winerror", None) in (5, 32):
-            detail += ACCESS_DENIED_HINT
-        self.status.setText(f"Не удалось установить лаунчер: {detail}")
+            detail += tr(ACCESS_DENIED_HINT)
+        self.status.setText(tr("Не удалось установить лаунчер: {detail}", detail=detail))
         self.status.setStyleSheet(f"color:{RED};")

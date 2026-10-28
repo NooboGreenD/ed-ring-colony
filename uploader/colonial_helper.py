@@ -45,6 +45,8 @@ except ImportError:
 from api_client import ApiClient
 from community_goals import CommunityGoalReportCollector, community_goal_reports_from_event
 from site_config import normalize_site_url, saved_connection
+import i18n
+from i18n import tr
 from locale_config import normalize_locale, localized_url
 from journal_parser import (
     parse_events,
@@ -91,7 +93,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.14"
+VERSION = "2.18.15"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -467,42 +469,42 @@ class ColonialHelperApp:
         page_host = self.notebook.content_area
 
         self.tab_auth = PageHost(page_host)
-        self.notebook.add(self.tab_auth, text="Подключение")
+        self.notebook.add(self.tab_auth, text=tr("Подключение"))
         self._build_tab_auth()
 
         self.tab_pilot = PageHost(page_host)
-        self.notebook.add(self.tab_pilot, text="Пилот")
+        self.notebook.add(self.tab_pilot, text=tr("Пилот"))
         self._build_tab_pilot()
 
         self.tab_upload = PageHost(page_host)
-        self.notebook.add(self.tab_upload, text="Загрузка логов")
+        self.notebook.add(self.tab_upload, text=tr("Загрузка логов"))
         self._build_tab_upload()
 
         self.tab_route = PageHost(page_host)
-        self.notebook.add(self.tab_route, text="Маршрут")
+        self.notebook.add(self.tab_route, text=tr("Маршрут"))
         self._build_tab_route()
 
         self.tab_colony = PageHost(page_host)
-        self.notebook.add(self.tab_colony, text="Колонизатор")
+        self.notebook.add(self.tab_colony, text=tr("Колонизатор"))
         self._build_tab_colony()
 
         self.tab_factions = PageHost(page_host)
-        self.notebook.add(self.tab_factions, text="Фракции")
+        self.notebook.add(self.tab_factions, text=tr("Фракции"))
         self._build_tab_factions()
         # Backward-compatible field for old internal map callbacks; no map page
         # is registered in navigation or rendered in the Qt interface.
         self.tab_map = None
 
         self.tab_overlay = PageHost(page_host)
-        self.notebook.add(self.tab_overlay, text="Оверлей")
+        self.notebook.add(self.tab_overlay, text=tr("Оверлей"))
         self._build_tab_overlay()
 
         self.tab_exobio = PageHost(page_host)
-        self.notebook.add(self.tab_exobio, text="Экзобиология")
+        self.notebook.add(self.tab_exobio, text=tr("Экзобиология"))
         self._build_tab_exobio()
 
         self.tab_log = PageHost(page_host)
-        self.notebook.add(self.tab_log, text="Лог")
+        self.notebook.add(self.tab_log, text=tr("Лог"))
         self._build_tab_log()
 
         # Инициализируем активную страницу уже после создания всех функций и
@@ -3964,12 +3966,12 @@ class ColonialHelperApp:
         try:
             state = self.overlay_manager.game_state()
             if state.error:
-                color, text = COLOR_MUTED, f"Игра: нет данных ({state.error})"
+                color, text = COLOR_MUTED, tr("Игра: нет данных ({error})", error=state.error)
             elif state.running:
                 color = COLOR_GREEN if state.focused else COLOR_ORANGE
-                text = "Игра: в фокусе" if state.focused else "Игра: запущена (не в фокусе)"
+                text = tr("Игра: в фокусе") if state.focused else tr("Игра: запущена (не в фокусе)")
             else:
-                color, text = COLOR_RED, "Игра: не запущена"
+                color, text = COLOR_RED, tr("Игра: не запущена")
 
             shell = getattr(self, "shell", None)
             if shell is not None and hasattr(shell, "set_game_state"):
@@ -3988,7 +3990,7 @@ class ColonialHelperApp:
                     details.append(state.title)
                 hint = "  |  ".join(details)
             else:
-                hint = ("оверлей скрыт, пока игры нет"
+                hint = (tr("оверлей скрыт, пока игры нет")
                         if self.overlay_manager.settings.get("hide_when_game_off", True)
                         else "")
             setter = getattr(shell, "set_game_hint", None)
@@ -4127,16 +4129,21 @@ class ColonialHelperApp:
         try:
             site, token = saved_connection(self.config, credentials if isinstance(credentials, dict) else {})
             self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
+            # Язык интерфейса — тот же, что выбран в лаунчере: он лежит в общем
+            # файле настроек, и Helper обязан говорить на нём с первого окна.
+            i18n.set_locale(self.config["site_locale"])
             self.api = ApiClient(token=token, site_url=site, locale=self.config["site_locale"])
             self.config["site_url"] = site
         except ValueError as exc:
             # Never silently send a saved token to a fallback host after a typo.
             self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
+            i18n.set_locale(self.config["site_locale"])
             self.api = ApiClient(locale=self.config["site_locale"])
             self._site_config_error = f"Ошибка адреса сервера: {exc}. Токен не загружен."
 
     def save_config(self):
         self.config["site_locale"] = normalize_locale(self.config.get("site_locale"))
+        i18n.set_locale(self.config["site_locale"])
         locale_setter=getattr(getattr(self,"api",None),"set_locale",None)
         if callable(locale_setter):locale_setter(self.config["site_locale"])
         site = getattr(self, "_next_site_url", self.api.site_url)
@@ -8047,7 +8054,7 @@ def main():
             from ui_qt import show_error_dialog
 
             show_error_dialog(
-                "Colonial Helper — Ошибка запуска",
+                tr("Colonial Helper — Ошибка запуска"),
                 f"{type(e).__name__}: {e}\n\n"
                 f"Подробности сохранены в:\n{error_file}",
             )
