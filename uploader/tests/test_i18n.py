@@ -33,9 +33,30 @@ AUTH_PAGE_CLASSES = ("AuthPageState", "AuthPage")
 PILOT_PAGE_CLASSES = ("PilotPage",)
 UPLOAD_PAGE_CLASSES = ("UploadPage",)
 ROUTE_PAGE_CLASSES = ("RoutePage",)
+COLONY_PAGE_CLASSES = ("ColonyPage",)
 
 #: Уже переведённые обработчики страницы «Маршрут».
 ROUTE_HELPER_FUNCTIONS = ("_refresh_route_tree",)
+
+#: Уже переведённые обработчики «Колонизатора». ``_colony_reconcile_done``
+#: сюда не входит: он собирает многострочный отчёт в журнал (``self.log``),
+#: а не подписи окна — это диагностика, её не переводят.
+COLONY_HELPER_FUNCTIONS = (
+    "_build_tab_colony", "_update_colony_key_label", "_selected_colony_project",
+    "_on_colony_select", "_set_colony_busy", "_on_colony_refresh",
+    "_colony_refresh_thread", "_colony_refresh_done", "_extract_colony_projects",
+    "_fill_colony_tree", "_sync_colony_primary_project", "_colony_build_type_code",
+    "_colony_body_choices", "_colony_refresh_body_choices", "_colony_sync_body_num",
+    "_on_colony_bind_site", "_on_colony_unbind_site", "_on_colony_set_primary",
+    "_on_colony_clear_primary", "_on_colony_complete", "_colony_action_done",
+    "_on_colony_copy_id", "_on_colony_open_project", "_colony_open_url",
+    "_on_colony_options_changed", "_update_colony_site_label", "_colony_form_snapshot",
+    "_colony_form_dirty", "_on_colony_fill_current", "_colony_autofill_from_site",
+    "_fetch_colony_site_context", "_colony_site_context_done", "_on_colony_plan_selected",
+    "_on_colony_clear_form", "_on_colony_check_system", "_colony_check_system_thread",
+    "_colony_check_system_done", "_on_colony_create", "_colony_create_thread",
+    "_colony_create_done", "_on_colony_reconcile", "_colony_reconcile_thread",
+)
 #: Метки внутри пришедшего текста ошибки, по которым выбирается цвет строки.
 #: Это не подпись для пользователя, а разбор ответа сервера — они не переводятся.
 ERROR_MARKER_LITERALS = {"ошиб", "невер", "недоступ", "сбой", "не удалось", "занят"}
@@ -53,14 +74,25 @@ def placeholders(text: str) -> set:
     return set(PLACEHOLDER.findall(str(text)))
 
 
+#: Что считается стоком диагностики: ``self.log(...)`` и запись в launcher.log.
+LOG_SINKS = ("log", "_log_problem")
+
+
 def _log_literal_ids(node) -> set:
-    """Строки, ушедшие в ``self.log(...)``: это диагностика, не интерфейс."""
+    """Строки, ушедшие в журнал: это диагностика, а не подписи для командира."""
     found = set()
+    defs = [sub for sub in ast.walk(node)
+            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and sub.name in LOG_SINKS]
+    for sink in defs:                     # всё тело самого стока — диагностика
+        for inner in ast.walk(sink):
+            if isinstance(inner, ast.Constant):
+                found.add(id(inner))
     for sub in ast.walk(node):
         if not isinstance(sub, ast.Call):
             continue
         name = getattr(sub.func, "attr", None) or getattr(sub.func, "id", None)
-        if name != "log":
+        if name not in LOG_SINKS:
             continue
         for argument in sub.args:
             for inner in ast.walk(argument):
@@ -106,10 +138,13 @@ def russian_literals(path: Path) -> list:
             text = ast.get_docstring(node, clean=False)
             if text:
                 docstrings.add(text)
+    diagnostic = _log_literal_ids(tree)
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if node.value in docstrings or not CYRILLIC.search(node.value):
+                continue
+            if id(node) in diagnostic:      # строки журнала, а не интерфейса
                 continue
             found.append((node.lineno, node.value))
     return found
@@ -202,6 +237,35 @@ class CatalogTests(unittest.TestCase):
                                                     functions=ROUTE_HELPER_FUNCTIONS)
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "обработчики «Маршрута»: " + "; ".join(missing))
+
+    def test_colony_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=COLONY_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in helper_pages.KEEP_COLUMN_TITLES]
+        self.assertEqual(missing, [], "страница «Колонизатор»: " + "; ".join(missing))
+
+    def test_colony_tables_and_form_titles_are_in_the_catalog(self):
+        """Заголовки таблицы и подписи формы — тоже ключи, их не обойти в обход."""
+        missing = []
+        for _key, title, _width in helper_pages.COLONY_COLUMNS:
+            if (title not in helper_pages.KEEP_COLUMN_TITLES
+                    and CYRILLIC.search(title) and title not in i18n_catalogs._STRINGS):
+                missing.append(f"колонка: {title!r}")
+        for _key, title, _kind in helper_pages.COLONY_FORM_FIELDS:
+            # «Market ID *» и «System address *» — имена полей Raven Colonial,
+            # они одинаковы на всех языках и перевода не требуют.
+            if CYRILLIC.search(title) and title not in i18n_catalogs._STRINGS:
+                missing.append(f"поле формы: {title!r}")
+        self.assertEqual(missing, [], "нет в каталоге: " + "; ".join(missing))
+
+    def test_colony_handler_strings_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=COLONY_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "обработчики «Колонизатора»: " + "; ".join(missing))
 
     def test_translations_differ_from_the_source(self):
         for key, translations in i18n_catalogs._STRINGS.items():

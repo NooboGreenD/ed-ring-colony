@@ -665,15 +665,17 @@ class UploadPage(QWidget):
 # ===========================================================================
 #: Заголовки колонок и стартовая ширина в пикселях.
 ROUTE_COLUMNS = (("#", 46), ("Система", 300), ("Статус", 130), ("Посещена", 170))
-#: Заголовки таблиц, которые не переводятся: номер строки и техническое имя поля.
-KEEP_COLUMN_TITLES = frozenset({"#", "buildId"})
+#: Заголовки таблиц, которые не переводятся: номер строки, звёздочка основного
+#: проекта и техническое имя поля.
+KEEP_COLUMN_TITLES = frozenset({"#", "★", "buildId"})
 
 
 def column_title(title: str) -> str:
     """Подпись заголовка колонки на текущем языке.
 
-    Переводится только то, что видит командир: «#» и «buildId» — это номер
-    строки и имя поля API, их перевод сделал бы таблицу непонятной.
+    Переводится только то, что видит командир: «#», «★» и «buildId» — это
+    номер строки, значок и имя поля API, их перевод сделал бы таблицу
+    непонятной.
     """
     text = str(title)
     return text if text in KEEP_COLUMN_TITLES else tr(text)
@@ -924,11 +926,11 @@ class ColonyPage(QWidget):
         self.scroll.setWidget(self.content)
         outer.addWidget(self.scroll)
 
-        self.layout_.addWidget(heading("Колонизатор — проекты Raven Colonial", size=14))
-        self.layout_.addWidget(label(
+        self.layout_.addWidget(heading(tr("Колонизатор — проекты Raven Colonial"), size=14))
+        self.layout_.addWidget(label(tr(
             "Просмотр своих проектов, назначение основного, завершение стройки и "
             "создание нового проекта. Запись (создание/изменение/завершение) "
-            "требует ключа RCC — его выдают на сайте Raven Colonial.",
+            "требует ключа RCC — его выдают на сайте Raven Colonial."),
             role="muted", size=9, wrap=True))
 
         self._build_top(cmdr)
@@ -955,16 +957,16 @@ class ColonyPage(QWidget):
 
     def _build_top(self, cmdr: str) -> None:
         self.cmdr_entry = QLineEdit(str(cmdr or ""))
-        self.cmdr_entry.setPlaceholderText("Имя командира")
+        self.cmdr_entry.setPlaceholderText(tr("Имя командира"))
         self.cmdr_entry.setMinimumHeight(30)
         self.cmdr_entry.setMaximumWidth(280)
-        self.refresh_btn = action_button("Обновить список", self._refresh, height=32)
+        self.refresh_btn = action_button(tr("Обновить список"), self._refresh, height=32)
         self.key_label = label("", role="muted", size=9)
         holder = QWidget()
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(8)
-        holder_layout.addWidget(label("Командир:", size=9))
+        holder_layout.addWidget(label(tr("Командир:"), size=9))
         holder_layout.addWidget(self.cmdr_entry)
         holder_layout.addWidget(self.refresh_btn)
         holder_layout.addWidget(self.key_label)
@@ -975,7 +977,7 @@ class ColonyPage(QWidget):
         self.table = QTableWidget(0, len(COLONY_COLUMNS))
         self.table.setObjectName("colonyTable")
         for index, (_key, title, _width) in enumerate(COLONY_COLUMNS):
-            item = QTableWidgetItem(title)
+            item = QTableWidgetItem(column_title(title))
             item.setTextAlignment(
                 Qt.AlignmentFlag.AlignVCenter |
                 (Qt.AlignmentFlag.AlignCenter if index in (0, 4)
@@ -1010,13 +1012,13 @@ class ColonyPage(QWidget):
     def _build_actions(self) -> None:
         self.action_buttons: List[QPushButton] = []
         items = (
-            ("★ Сделать основным", "set_primary"),
-            ("Снять основной", "clear_primary"),
-            ("Завершить проект", "complete"),
-            ("Копировать buildId", "copy_id"),
-            ("Открыть в Raven Colonial", "open_project"),
-            ("Привязать площадку к проекту", "bind_site"),
-            ("Снять привязку площадки", "unbind_site"),
+            (tr("★ Сделать основным"), "set_primary"),
+            (tr("Снять основной"), "clear_primary"),
+            (tr("Завершить проект"), "complete"),
+            (tr("Копировать buildId"), "copy_id"),
+            (tr("Открыть в Raven Colonial"), "open_project"),
+            (tr("Привязать площадку к проекту"), "bind_site"),
+            (tr("Снять привязку площадки"), "unbind_site"),
         )
         holder = QWidget()
         grid = QGridLayout(holder)
@@ -1050,25 +1052,25 @@ class ColonyPage(QWidget):
 
     def _build_create_form(self, autofill: bool, open_page_after_create: bool) -> None:
         self._divider()
-        self.layout_.addWidget(label("Создать проект", size=11, bold=True))
+        self.layout_.addWidget(label(tr("Создать проект"), size=11, bold=True))
 
-        self.fill_btn = action_button("Заполнить из журнала", self._fill_current,
+        self.fill_btn = action_button(tr("Заполнить из журнала"), self._fill_current,
                                       variant="primary", height=32)
-        self.reconcile_btn = action_button("Сверить стройплощадку с Raven",
+        self.reconcile_btn = action_button(tr("Сверить стройплощадку с Raven"),
                                            self._reconcile, height=32)
-        self.autofill_check = QCheckBox(
-            "Заполнять автоматически при посадке на стройплощадку")
+        self.autofill_check = QCheckBox(tr(
+            "Заполнять автоматически при посадке на стройплощадку"))
         self.autofill_check.setChecked(bool(autofill))
         self.autofill_check.toggled.connect(lambda _checked: self._call("options_changed"))
-        self.open_page_check = QCheckBox("Открывать страницу проекта после создания")
+        self.open_page_check = QCheckBox(tr("Открывать страницу проекта после создания"))
         self.open_page_check.setChecked(bool(open_page_after_create))
         self.open_page_check.toggled.connect(lambda _checked: self._call("options_changed"))
         self.layout_.addWidget(row(self.fill_btn, self.reconcile_btn, None))
         self.layout_.addWidget(self.autofill_check)
         self.layout_.addWidget(self.open_page_check)
 
-        self.site_label = label(
-            "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+        self.site_label = label(tr(
+            "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке."),
             role="muted", size=9, wrap=True)
         self.layout_.addWidget(self.site_label)
 
@@ -1081,7 +1083,7 @@ class ColonyPage(QWidget):
         self.entries: Dict[str, QWidget] = self.fields
         for index, (key, title, kind) in enumerate(COLONY_FORM_FIELDS):
             row_index, column = divmod(index, 2)
-            form.addWidget(label(title, size=9, wrap=True), row_index, column * 2)
+            form.addWidget(label(tr(title), size=9, wrap=True), row_index, column * 2)
             if kind == "combo":
                 widget = QComboBox()
                 widget.setMinimumWidth(150)
@@ -1112,14 +1114,14 @@ class ColonyPage(QWidget):
         plan_layout.setContentsMargins(0, 0, 0, 0)
         plan_layout.setHorizontalSpacing(10)
         plan_layout.setVerticalSpacing(6)
-        plan_layout.addWidget(label("План площадки", size=9), 0, 0)
+        plan_layout.addWidget(label(tr("План площадки"), size=9), 0, 0)
         self.plan_combo = QComboBox()
         self.plan_combo.setMinimumWidth(150)
-        self.plan_combo.addItem(self.PLAN_NONE_LABEL)
+        self.plan_combo.addItem(self.plan_none_label())
         self.plan_combo.currentIndexChanged.connect(
             lambda _index: self._call("plan_selected"))
         plan_layout.addWidget(self.plan_combo, 0, 1)
-        self.primary_port_check = QCheckBox("Основной порт системы")
+        self.primary_port_check = QCheckBox(tr("Основной порт системы"))
         plan_layout.addWidget(self.primary_port_check, 0, 2, 1, 2)
         plan_layout.setColumnStretch(3, 1)
         self.layout_.addWidget(plan_holder)
@@ -1129,7 +1131,7 @@ class ColonyPage(QWidget):
         notes.setContentsMargins(0, 0, 0, 0)
         notes.setHorizontalSpacing(10)
         notes.setVerticalSpacing(6)
-        notes.addWidget(label("Заметки", size=9), 0, 0)
+        notes.addWidget(label(tr("Заметки"), size=9), 0, 0)
         self.fields["notes"] = notes_entry = QLineEdit()
         notes_entry.setMinimumHeight(28)
         notes.addWidget(notes_entry, 0, 1, 1, 3)
@@ -1138,8 +1140,8 @@ class ColonyPage(QWidget):
         self.starpos_entry.setReadOnly(True)
         self.starpos_entry.setMinimumHeight(28)
         notes.addWidget(self.starpos_entry, 1, 1, 1, 3)
-        commodities_hint = label("Товары (остаток потребности), "
-                                 "формат: aluminium:1200, steel:900",
+        commodities_hint = label(tr("Товары (остаток потребности), "
+                                    "формат: aluminium:1200, steel:900"),
                                  size=9, wrap=True)
         commodities_hint.setMaximumWidth(200)
         notes.addWidget(commodities_hint, 2, 0)
@@ -1150,17 +1152,25 @@ class ColonyPage(QWidget):
         notes.setColumnStretch(3, 1)
         self.layout_.addWidget(notes_row)
 
-        self.create_btn = action_button("Создать проект", self._create,
+        self.create_btn = action_button(tr("Создать проект"), self._create,
                                          variant="primary", height=34)
-        self.clear_form_btn = action_button("Очистить форму", self._clear_form, height=34)
-        self.check_system_btn = action_button("Проверить площадку в системе",
+        self.clear_form_btn = action_button(tr("Очистить форму"), self._clear_form, height=34)
+        self.check_system_btn = action_button(tr("Проверить площадку в системе"),
                                               self._check_system, height=34)
         self.layout_.addWidget(row(self.create_btn, self.clear_form_btn,
                                    self.check_system_btn, None))
 
     # ----------------------------------------------------------- form plumbing
     #: Первый пункт списка планов площадки: «создать новый».
+    #: Это ключ перевода, а не текст для показа: подпись берётся из
+    #: :meth:`plan_none_label`, потому что сравнивать подпись с текстом на
+    #: языке интерфейса значило бы сломать выбор плана при смене языка.
     PLAN_NONE_LABEL = "Нет (создать новый план)"
+
+    @classmethod
+    def plan_none_label(cls) -> str:
+        """Подпись пункта «создать новый план» на текущем языке."""
+        return tr(cls.PLAN_NONE_LABEL)
 
     def _fill_current(self) -> None:
         self._call("fill_current")
@@ -1301,14 +1311,19 @@ class ColonyPage(QWidget):
                 for index in range(self.plan_combo.count())]
 
     def set_plan_labels(self, labels: Sequence[str]) -> None:
-        """Refill the site-plan dropdown, keeping the current choice if it survives."""
-        current = self.plan_combo.currentText()
+        """Refill the site-plan dropdown, keeping the current choice if it survives.
+
+        Первый пункт — «создать новый план»; его подпись приходит ключом на
+        русском и переводится здесь, чтобы вызывающий код не зависел от языка.
+        """
+        current = self.plan_combo.currentIndex()
+        texts = [self.plan_none_label() if str(value) == self.PLAN_NONE_LABEL
+                 else str(value) for value in labels]
         self.plan_combo.blockSignals(True)
         self.plan_combo.clear()
-        self.plan_combo.addItems([str(value) for value in labels] or [self.PLAN_NONE_LABEL])
+        self.plan_combo.addItems(texts or [self.plan_none_label()])
         self.plan_combo.blockSignals(False)
-        position = self.plan_combo.findText(current)
-        self.plan_combo.setCurrentIndex(position if position >= 0 else 0)
+        self.plan_combo.setCurrentIndex(current if 0 <= current < self.plan_combo.count() else 0)
 
     def plan_index(self) -> int:
         return self.plan_combo.currentIndex()
@@ -1317,11 +1332,24 @@ class ColonyPage(QWidget):
         return self.plan_combo.currentText()
 
     def set_plan_text(self, text: str) -> None:
+        if str(text) == self.PLAN_NONE_LABEL:
+            self.plan_combo.setCurrentIndex(0)
+            return
         position = self.plan_combo.findText(str(text))
         if position < 0:
             self.plan_combo.addItem(str(text))
             position = self.plan_combo.count() - 1
         self.plan_combo.setCurrentIndex(position)
+
+    def plan_none_selected(self) -> bool:
+        """Выбран ли пункт «создать новый план» (сравнение по индексу, не по тексту)."""
+        return self.plan_combo.currentIndex() <= 0
+
+    def set_plan_none(self) -> None:
+        """Вернуть список планов к пункту «создать новый план»."""
+        if self.plan_combo.count() == 0:
+            self.plan_combo.addItem(self.plan_none_label())
+        self.plan_combo.setCurrentIndex(0)
 
 
 # ===========================================================================

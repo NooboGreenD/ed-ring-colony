@@ -93,7 +93,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.17"
+VERSION = "2.18.18"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -1108,9 +1108,9 @@ class ColonialHelperApp:
         if not hasattr(self, "colony_key_label"):
             return
         if self.raven_api.is_connected:
-            self.colony_page.set_key_status("RCC ключ задан", COLOR_GREEN)
+            self.colony_page.set_key_status(tr("RCC ключ задан"), COLOR_GREEN)
         else:
-            self.colony_page.set_key_status("RCC ключ не задан — только просмотр",
+            self.colony_page.set_key_status(tr("RCC ключ не задан — только просмотр"),
                                             COLOR_ORANGE)
 
     def _selected_colony_project(self) -> Optional[dict]:
@@ -1154,7 +1154,7 @@ class ColonialHelperApp:
         if not cmdr:
             self.log("Укажите имя командира для поиска проектов.", "warn")
             return
-        self._set_colony_busy(True, "Загружаю проекты Raven Colonial…")
+        self._set_colony_busy(True, tr("Загружаю проекты Raven Colonial…"))
         threading.Thread(target=self._colony_refresh_thread, args=(cmdr,), daemon=True).start()
 
     def _colony_refresh_thread(self, cmdr: str):
@@ -1165,7 +1165,8 @@ class ColonialHelperApp:
     def _colony_refresh_done(self, result: dict, primary: dict):
         self._set_colony_busy(False)
         if not result.get("ok"):
-            self.colony_page.set_status(f"Не удалось загрузить проекты: {result.get('error')}")
+            self.colony_page.set_status(
+                tr("Не удалось загрузить проекты: {error}", error=result.get("error")))
             self.log(f"Raven Colonial: не удалось получить проекты — {result.get('error')}", "error")
             return
 
@@ -1173,7 +1174,7 @@ class ColonialHelperApp:
         projects = self._extract_colony_projects(data)
         primary_id = self._extract_primary_id(primary)
         self._fill_colony_tree(projects, primary_id)
-        self.colony_page.set_status(f"Проектов: {len(projects)}")
+        self.colony_page.set_status(tr("Проектов: {count}", count=len(projects)))
         self.log(f"Raven Colonial: загружено проектов — {len(projects)}", "success")
 
     @staticmethod
@@ -1360,7 +1361,8 @@ class ColonialHelperApp:
         self.save_config()
         self.log(f"Площадка {market_id} привязана к проекту «{name}» ({build_id}): "
                  "доставки будут зачисляться ему.", "success")
-        self.colony_page.set_status(f"Площадка {market_id} → проект «{name}»")
+        self.colony_page.set_status(
+            tr("Площадка {site} → проект «{project}»", site=market_id, project=name))
 
         # Привязка меняет ответ на «какой это проект»: сбрасываем кэш поиска,
         # счётчики промахов и сразу досылаем то, что ждало в очереди.
@@ -1404,7 +1406,7 @@ class ColonialHelperApp:
         self.save_config()
         self.log(f"Привязка площадки {market_id} снята (была к проекту "
                  f"{record.get('build_id')}).", "info")
-        self.colony_page.set_status(f"Привязка площадки {market_id} снята")
+        self.colony_page.set_status(tr("Привязка площадки {site} снята", site=market_id))
         self._raven_bound_projects.pop(str(record.get("build_id") or ""), None)
         invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
         if callable(invalidate):
@@ -1421,39 +1423,41 @@ class ColonialHelperApp:
         if not cmdr:
             self.log("Укажите имя командира.", "warn")
             return
-        self._set_colony_busy(True, "Назначаю основной проект…")
+        self._set_colony_busy(True, tr("Назначаю основной проект…"))
         # Запоминаем сразу: блок CARRIER должен показать материалы этого
         # проекта, не дожидаясь ответа сервера и обновления списка.
         cached = (getattr(self, "_colony_projects_cache", {}) or {}).get(project["buildId"])
         self.colony_primary_project = dict(cached or project)
         threading.Thread(target=self._colony_simple_call_thread,
                          args=("set_primary", (cmdr, project["buildId"]),
-                               f"Основной проект: {project['buildName']}"), daemon=True).start()
+                               tr("Основной проект: {name}", name=project["buildName"])),
+                         daemon=True).start()
 
     def _on_colony_clear_primary(self):
         cmdr = self.colony_page.cmdr_text().strip()
         if not cmdr:
             self.log("Укажите имя командира.", "warn")
             return
-        self._set_colony_busy(True, "Снимаю основной проект…")
+        self._set_colony_busy(True, tr("Снимаю основной проект…"))
         self.colony_primary_project = {}
         threading.Thread(target=self._colony_simple_call_thread,
-                         args=("clear_primary", (cmdr,), "Основной проект снят"), daemon=True).start()
+                         args=("clear_primary", (cmdr,), tr("Основной проект снят")),
+                         daemon=True).start()
 
     def _on_colony_complete(self):
         project = self._selected_colony_project()
         if not project:
             return
         if not ask_yes_no(
-            "Завершить проект",
-            f"Отметить «{project['buildName']}» ({project['systemName']}) завершённым?\n"
-            "Это действие необратимо.",
+            tr("Завершить проект"),
+            tr("Отметить «{name}» ({system}) завершённым?\nЭто действие необратимо.",
+               name=project["buildName"], system=project["systemName"]),
             parent=self.root,
         ):
             return
-        self._set_colony_busy(True, "Завершаю проект…")
+        self._set_colony_busy(True, tr("Завершаю проект…"))
         threading.Thread(target=self._colony_simple_call_thread,
-                         args=("mark_complete", (project["buildId"],), "Проект завершён"),
+                         args=("mark_complete", (project["buildId"],), tr("Проект завершён")),
                          daemon=True).start()
 
     def _colony_simple_call_thread(self, method_name: str, args: tuple, success_text: str):
@@ -1472,8 +1476,8 @@ class ColonialHelperApp:
                 self._set_colony_busy(False)
         else:
             self._set_colony_busy(False)
-            error = result.get("error") or "неизвестная ошибка"
-            self.colony_page.set_status(f"Ошибка: {error}")
+            error = result.get("error") or tr("неизвестная ошибка")
+            self.colony_page.set_status(tr("Ошибка: {error}", error=error))
             self.log(f"Raven Colonial: {error}", "error")
 
     def _on_colony_copy_id(self):
@@ -1498,7 +1502,7 @@ class ColonialHelperApp:
             self.log("Выберите проект в списке.", "warn")
             return
         self._colony_open_url(project_url(project["buildId"]),
-                              f"Проект {project['buildName']}")
+                              tr("Проект {name}", name=project["buildName"]))
 
     def _colony_open_url(self, url: str, what: str = ""):
         """Открыть ссылку в системном браузере (не блокируя UI)."""
@@ -1534,10 +1538,10 @@ class ColonialHelperApp:
         site = self.construction.site
         if site is None or not site.market_id:
             page.set_site_text(
-                "Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+                tr("Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке."),
                 COLOR_MUTED)
             return
-        docked = "вы на площадке" if site.docked else "последняя посещённая площадка"
+        docked = tr("вы на площадке") if site.docked else tr("последняя посещённая площадка")
         color = COLOR_GREEN if site.has_depot else COLOR_ORANGE
         page.set_site_text(f"{site.summary()} · {docked}", color)
 
@@ -1627,7 +1631,7 @@ class ColonialHelperApp:
         self._colony_draft_site = site
         self._colony_form_baseline = self._colony_form_snapshot()
         self._update_colony_site_label()
-        prefix = "Автозаполнение" if auto else "Форма заполнена"
+        prefix = tr("Автозаполнение") if auto else tr("Форма заполнена")
         self.log(f"{prefix}: {site.summary()}", "success" if site.has_depot else "info")
         self.colony_page.set_status(site.summary())
         # Планы площадок и архитектора системы берём из Raven Colonial — в
@@ -1662,7 +1666,7 @@ class ColonialHelperApp:
             return
         plans = self._extract_site_plans(sites.get("data"))
         self._colony_site_plans = plans
-        labels = ["Нет (создать новый план)"] + [
+        labels = [self.colony_page.plan_none_label()] + [
             self._site_plan_label(plan) for plan in plans
         ]
         try:
@@ -1673,8 +1677,7 @@ class ColonialHelperApp:
             self.log(
                 f"Raven Colonial: в системе {system} запланировано площадок — {len(plans)}", "info")
             # Один план — выбираем его сами: тип и тело возьмутся из плана.
-            if len(plans) == 1 and not self.colony_page.plan_text().strip(
-                    self.colony_page.PLAN_NONE_LABEL):
+            if len(plans) == 1 and self.colony_page.plan_none_selected():
                 self.colony_page.set_plan_text(labels[1])
                 self._on_colony_plan_selected()
 
@@ -1746,12 +1749,12 @@ class ColonialHelperApp:
         self.colony_starpos_entry.setText("")
         self.colony_commodities_entry.setText("")
         self.colony_primary_port_check.setChecked(False)
-        self.colony_page.set_plan_text(self.colony_page.PLAN_NONE_LABEL)
+        self.colony_page.set_plan_none()
         self._colony_selected_site_id = ""
         self._colony_draft_site = None
         self._colony_autofilled_name = ""
         self._colony_form_baseline = self._colony_form_snapshot()
-        self.colony_page.set_status("Форма очищена")
+        self.colony_page.set_status(tr("Форма очищена"))
         self._update_colony_site_label()
 
     def _on_colony_check_system(self):
@@ -1766,7 +1769,7 @@ class ColonialHelperApp:
         if not (system or address or market_id):
             self.log("Заполните систему, Market ID или System address.", "warn")
             return
-        self.colony_page.set_status("Проверяю площадку в Raven Colonial…")
+        self.colony_page.set_status(tr("Проверяю площадку в Raven Colonial…"))
         threading.Thread(target=self._colony_check_system_thread,
                          args=(system, address, market_id), daemon=True).start()
 
@@ -1783,17 +1786,19 @@ class ColonialHelperApp:
 
     def _colony_check_system_done(self, result):
         if not isinstance(result, dict) or not result.get("ok"):
-            error = (result or {}).get("error") if isinstance(result, dict) else "нет ответа"
-            self.colony_page.set_status(f"Проверить не удалось: {error}")
+            error = (result or {}).get("error") if isinstance(result, dict) else tr("нет ответа")
+            self.colony_page.set_status(tr("Проверить не удалось: {error}", error=error))
             self.log(f"Raven Colonial: проверка площадки — {error}", "warn")
             return
         projects = self._extract_colony_projects(result.get("data"))
         if not projects:
-            self.colony_page.set_status("Проекта на этой площадке нет — можно создавать.")
+            self.colony_page.set_status(
+                tr("Проекта на этой площадке нет — можно создавать."))
             self.log("Raven Colonial: активного проекта на площадке нет", "success")
             return
         names = ", ".join(f"{p.get('buildName')} ({p.get('buildId')})" for p in projects[:3])
-        self.colony_page.set_status(f"Внимание: в системе уже есть проект — {names}")
+        self.colony_page.set_status(
+            tr("Внимание: в системе уже есть проект — {names}", names=names))
         self.log(f"Raven Colonial: найден существующий проект — {names}", "warn")
 
     # ---------- Колонизатор: создание проекта ----------
@@ -1823,23 +1828,26 @@ class ColonialHelperApp:
         build_name = self.colony_page.value("buildName").strip()
         system = self.colony_page.value("systemName").strip()
         missing = [
-            label for key, label in (("marketId", "Market ID"), ("systemAddress", "System address"),
-                                     ("buildName", "Название"))
+            title for key, title in (("marketId", "Market ID"),
+                                     ("systemAddress", "System address"),
+                                     ("buildName", "Название *"))
             if not self.colony_page.value(key).strip()
         ]
         if missing:
             hint = ""
             if site is None and {"Market ID", "System address"} & set(missing):
-                hint = " Пристыкуйтесь к стройплощадке и нажмите «Заполнить из журнала»."
-            self.log(f"Raven Colonial требует заполнить: {', '.join(missing)}.{hint}", "warn")
-            self.colony_page.set_status(f"Не заполнены обязательные поля: {', '.join(missing)}")
+                hint = tr("Пристыкуйтесь к стройплощадке и нажмите «Заполнить из журнала».")
+            self.log(f"Raven Colonial требует заполнить: {', '.join(missing)}. {hint}", "warn")
+            self.colony_page.set_status(tr(
+                "Не заполнены обязательные поля: {fields}",
+                fields=", ".join(tr(title) for title in missing)))
             return
 
         build_code = self._colony_build_type_code()
         if not build_code:
             self.log("Выберите тип постройки из списка: только такие коды открываются "
                      "на Raven Colonial.", "warn")
-            self.colony_page.set_status("Не выбран тип постройки")
+            self.colony_page.set_status(tr("Не выбран тип постройки"))
             return
         self._colony_sync_body_num()
 
@@ -1897,7 +1905,7 @@ class ColonialHelperApp:
 
         cmdr = self.colony_page.cmdr_text().strip()
         open_page = bool(self.colony_open_page_check.isChecked())
-        self._set_colony_busy(True, "Создаю проект…")
+        self._set_colony_busy(True, tr("Создаю проект…"))
         threading.Thread(target=self._colony_create_thread,
                          args=(project, cmdr, open_page), daemon=True).start()
 
@@ -1931,7 +1939,7 @@ class ColonialHelperApp:
             self.site_project = {}
             system = self.colony_page.value("systemName")
             name = f"{system}: {self.colony_page.value('buildName')}".strip(": ")
-            message = f"Raven Colonial: проект создан — {name}"
+            message = tr("Raven Colonial: проект создан — {name}", name=name)
             if build_id:
                 message += f" (buildId {build_id})"
             self.log(message, "success")
@@ -1940,14 +1948,16 @@ class ColonialHelperApp:
                     f"Raven Colonial: проект создан, но не привязан к командиру — "
                     f"{result['link_error']}", "warn",
                 )
-            self.colony_page.set_status(f"Проект создан, buildId: {build_id or '—'}")
+            self.colony_page.set_status(
+                tr("Проект создан, buildId: {build_id}", build_id=build_id or "—"))
             if build_id and open_page:
-                self._colony_open_url(project_url(build_id), f"Проект {name}")
+                self._colony_open_url(project_url(build_id), tr("Проект {name}", name=name))
             if cmdr:
                 self._on_colony_refresh()
         else:
-            error = result.get("error") or "неизвестная ошибка"
-            self.colony_page.set_status(f"Создать проект не удалось: {error}")
+            error = result.get("error") or tr("неизвестная ошибка")
+            self.colony_page.set_status(
+                tr("Создать проект не удалось: {error}", error=error))
             self.log(f"Raven Colonial: проект не создан — {error}", "error")
 
 
@@ -7550,7 +7560,7 @@ class ColonialHelperApp:
         if getattr(self, "_colony_reconcile_busy", False):
             return
         self._colony_reconcile_busy = True
-        self.colony_page.set_status("Сверяю стройплощадку с Raven Colonial…")
+        self.colony_page.set_status(tr("Сверяю стройплощадку с Raven Colonial…"))
         threading.Thread(
             target=self._colony_reconcile_thread,
             args=(int(site.market_id), int(site.system_address or 0)),
@@ -7615,11 +7625,11 @@ class ColonialHelperApp:
 
         if not isinstance(project, dict) or not project.get("buildId"):
             self.site_project = {}
-            reason = error or "проекта пока нет в Raven Colonial"
+            reason = error or tr("проекта пока нет в Raven Colonial")
             self.log(f"{head}: {reason}. По журналу вы завезли {journal['total']:,} t "
                      f"({journal['count']} дост.) — тонны не зачтутся, пока проект не создан."
                      .replace(",", " "), "warn")
-            self.colony_page.set_status("Проект на Raven Colonial не найден")
+            self.colony_page.set_status(tr("Проект на Raven Colonial не найден"))
             return
 
         self.site_project = dict(project)
@@ -7631,7 +7641,8 @@ class ColonialHelperApp:
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
         left = sum(remaining.values())
-        name = str(project.get("buildName") or site.station_name or "площадка").strip()
+        name = str(project.get("buildName") or site.station_name
+                   or tr("площадка")).strip()
 
         def fmt(number: int) -> str:
             return f"{number:,}".replace(",", " ")
@@ -7659,13 +7670,16 @@ class ColonialHelperApp:
         if carrier_market:
             state = self.carrier.state
             on_board = state.tracked_total
-            source = "Raven Colonial" if state.remote_seen else "локальный учёт по журналу"
+            source = ("Raven Colonial" if state.remote_seen
+                      else tr("локальный учёт по журналу"))
             lines.append(f"  Авианосец {carrier_market}: на борту {fmt(on_board)} t "
                          f"({source})"
                          + (f" — {top({row['key']: row['amount'] for row in state.get_state_dict()['commodities'] if row['amount'] > 0})}"
                             if on_board else ""))
         self.log("\n".join(lines), "info")
-        self.colony_page.set_status(f"Осталось завезти {fmt(left)} t · по журналу вы завезли {fmt(journal['total'])} t")
+        self.colony_page.set_status(tr(
+            "Осталось завезти {left} t · по журналу вы завезли {total} t",
+            left=fmt(left), total=fmt(journal["total"])))
 
         # Состояние рынка авианосца тоже освежаем: груз туда возят и другие
         # командиры, а журнал знает только наши переводы.
@@ -7690,12 +7704,12 @@ class ColonialHelperApp:
             return
         tons = sum(int(d.get("amount", 0) or 0) for d in unsent)
         if not ask_yes_no(
-            "Дослать доставки в Raven Colonial",
-            f"По журналу на эту площадку завезено {fmt(tons)} t ({len(unsent)} доставок), "
-            "которые это приложение в Raven Colonial не отправляло.\n\n"
-            "Отправить их сейчас?\n"
-            "Если вы пользуетесь SrvSurvey или другим плагином, тоннаж может быть "
-            "зачтён проекту дважды.",
+            tr("Дослать доставки в Raven Colonial"),
+            tr("По журналу на эту площадку завезено {tons} t ({count} доставок), "
+               "которые это приложение в Raven Colonial не отправляло.\n\n"
+               "Отправить их сейчас?\n"
+               "Если вы пользуетесь SrvSurvey или другим плагином, тоннаж может быть "
+               "зачтён проекту дважды.", tons=fmt(tons), count=len(unsent)),
             parent=self.root,
         ):
             return
