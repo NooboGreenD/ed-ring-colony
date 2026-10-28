@@ -33,7 +33,8 @@ TRANSLATED_MODULES = ("launcher_window.py", "installer_window.py",
 
 #: Уже переведённые части Helper: страница «Подключение» и её обработчики.
 AUTH_PAGE_CLASSES = ("AuthPageState", "AuthPage")
-PILOT_PAGE_CLASSES = ("PilotPage",)
+PILOT_PAGE_CLASSES = ("PilotPage", "PilotSection", "EquipmentPage",
+                      "EquipChip", "EquipRow", "EquipWeaponCard", "EquipLoadoutCard")
 UPLOAD_PAGE_CLASSES = ("UploadPage",)
 ROUTE_PAGE_CLASSES = ("RoutePage",)
 COLONY_PAGE_CLASSES = ("ColonyPage",)
@@ -91,7 +92,9 @@ AUTH_HELPER_FUNCTIONS = ("_build_tab_auth", "_save_edsm_settings", "_save_inara_
                          "_on_check_raven", "_check_raven_key_async")
 
 #: Уже переведённые части инфографики пилота.
-PILOT_HELPER_FUNCTIONS = ("_refresh_pilot_infographic", "_pilot_journal_state")
+PILOT_HELPER_FUNCTIONS = ("_refresh_pilot_infographic", "_pilot_journal_state",
+                           "_refresh_pilot_equipment", "_on_equipment_selected",
+                           "_on_equipment_refresh")
 
 
 def placeholders(text: str) -> set:
