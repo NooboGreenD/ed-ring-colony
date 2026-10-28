@@ -24,6 +24,7 @@ EDSM и Inara стоят за Cloudflare. Когда сервис недосту
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from i18n import tr
 
 #: Статусы, при которых запрос стоит повторить позже.
 RETRYABLE_STATUS = frozenset({
@@ -91,13 +92,13 @@ def describe_bad_response(service: str, response,
     elif status in (401, 403):
         reason = "доступ запрещён — проверьте ключ API и имя командира"
     elif status == 404:
-        reason = "адрес API не найден (404)"
+        reason = tr("адрес API не найден (404)")
     elif status == 429:
-        reason = "слишком много запросов (429), нужно притормозить"
+        reason = tr("слишком много запросов (429), нужно притормозить")
     elif 500 <= status < 600:
-        reason = f"ошибка сервера (HTTP {status})"
+        reason = tr("ошибка сервера (HTTP {status})", status=status)
     else:
-        reason = f"неожиданный ответ (HTTP {status})"
+        reason = tr("неожиданный ответ (HTTP {status})", status=status)
 
     message = f"{service}: {detail + ' — ' if detail else ''}{reason}"
     if retryable:
@@ -115,7 +116,7 @@ def short_body(response, limit: int = 160) -> str:
     """Фрагмент тела для диагностики — HTML при этом не печатаем."""
     body = _body_of(response, limit * 2)
     if looks_like_html(body):
-        return "HTML-страница"
+        return tr("HTML-страница")
     return body[:limit].replace("\n", " ").strip()
 
 

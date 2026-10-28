@@ -18,6 +18,7 @@ Raven Colonial при открытии проекта ищет тип постр
 """
 import re
 from typing import Dict, List, Optional, Tuple
+from i18n import tr
 
 # (код Raven, название RU, название EN) — порядок как в каталоге «Архитектора».
 BUILD_TYPES: List[Tuple[str, str, str]] = [
@@ -103,10 +104,14 @@ _CLASS_SUFFIXES = ("starport", "settlement", "installation", "outpost", "hub", "
 
 
 def build_type_label(code: str) -> str:
-    """`zeus` → «Планетарный порт [zeus]» — подпись в списке выбора."""
+    """`zeus` → «Планетарный порт [zeus]» — подпись в списке выбора.
+
+    Код в квадратных скобках остаётся как есть: по нему форма находит тип
+    постройки, а переводится только название.
+    """
     code = str(code or "")
     name = _NAMES.get(code, "")
-    return f"{name} [{code}]" if name else code
+    return f"{tr(name)} [{code}]" if name else code
 
 
 def _lookup(key: str) -> Optional[str]:

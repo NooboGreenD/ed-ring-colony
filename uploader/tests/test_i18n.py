@@ -498,6 +498,17 @@ class TranslationTests(unittest.TestCase):
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "сводка стройплощадки: " + "; ".join(missing))
 
+    def test_shared_modules_have_no_untranslated_ui_strings(self):
+        """Справочники и служебные модули: подписи только через каталог."""
+        modules = ("colony_build_types.py", "site_config.py", "screens.py",
+                   "hotkeys.py", "http_errors.py", "colonisation.py",
+                   "qt_factions.py")
+        missing = [f"{name}:{line}: {text!r}"
+                   for name in modules
+                   for line, text in russian_literals(UPLOADER / name)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "без перевода: " + "; ".join(missing))
+
 
 if __name__ == "__main__":
     unittest.main()
