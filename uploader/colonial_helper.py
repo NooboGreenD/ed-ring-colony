@@ -93,7 +93,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.19"
+VERSION = "2.18.20"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -3263,7 +3263,7 @@ class ColonialHelperApp:
         if page is None or not hasattr(self, "exobiology"):
             return
         tracker = self.exobiology
-        system = str(tracker.current_system or "").strip() or "не определена"
+        system = str(tracker.current_system or "").strip() or tr("не определена")
         page.set_system_text(system)
 
         scanned = tracker.system_scanned_count()
@@ -3271,11 +3271,12 @@ class ColonialHelperApp:
         bio_bodies = tracker.system_bio_bodies_count()
         bio_total = tracker.system_bio_signals_total()
 
-        body_text = f"Тел отсканировано: {scanned}" + (
-            f" из {known}" if known and known > scanned else "")
+        body_text = tr("Тел отсканировано: {count}", count=scanned) + (
+            tr(" из {known}", known=known) if known and known > scanned else "")
         page.set_summary_text(
-            f"{body_text}  ·  Тел с биосигналами: {bio_bodies}  ·  "
-            f"Всего биосигналов: {bio_total}")
+            tr("{bodies}  ·  Тел с биосигналами: {with_signals}  ·  "
+               "Всего биосигналов: {signals}",
+               bodies=body_text, with_signals=bio_bodies, signals=bio_total))
 
         if not tracker.current_system:
             page.set_rows([])
@@ -3312,10 +3313,11 @@ class ColonialHelperApp:
             rows.append({
                 "body": disp_name,
                 "class": str(body.get("planet_class") or "—"),
-                "atmosphere": str(body.get("atmosphere") or body.get("atmosphere_type") or "нет"),
-                "landable": "Да" if body.get("landable") else "Нет",
+                "atmosphere": str(body.get("atmosphere") or body.get("atmosphere_type")
+                                  or tr("нет")),
+                "landable": tr("Да") if body.get("landable") else tr("Нет"),
                 "signals": str(signals) if signals else "—",
-                "mapped": "Да" if body.get("mapped") else "—",
+                "mapped": tr("Да") if body.get("mapped") else "—",
                 "matched": matched_str,
             })
         page.set_rows(rows)
@@ -3465,7 +3467,7 @@ class ColonialHelperApp:
         if getattr(self, "_exobio_full_scanning", False):
             return
         self._exobio_full_scanning = True
-        self._set_exobio_status("Сканирование журналов...", COLOR_ORANGE)
+        self._set_exobio_status(tr("Сканирование журналов..."), COLOR_ORANGE)
 
         def worker():
             from exobiology import scan_all_journals_for_exobio
@@ -3474,7 +3476,8 @@ class ColonialHelperApp:
                 if hasattr(self, "root") and self.root:
                     try:
                         self.root.after(0, lambda c=cur, t=total: self._set_exobio_status(
-                            f"Сканирование: файл {c} из {t}...", COLOR_ORANGE))
+                            tr("Сканирование: файл {current} из {total}...",
+                               current=c, total=t), COLOR_ORANGE))
                     except Exception:
                         pass
 
@@ -3491,7 +3494,8 @@ class ColonialHelperApp:
                 if cache:
                     tracker.save_to_cache(cache)
                 self._set_exobio_status(
-                    f"Сканирование завершено: учтено {count} новых событий", COLOR_GREEN)
+                    tr("Сканирование завершено: учтено {count} новых событий",
+                       count=count), COLOR_GREEN)
                 self.log(f"Полное сканирование экзобиологии: {count} событий обработано", "info")
                 if hasattr(self, "overlay_manager") and self.overlay_manager:
                     self.overlay_manager.refresh_exobio()

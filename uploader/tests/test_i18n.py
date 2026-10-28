@@ -35,9 +35,15 @@ UPLOAD_PAGE_CLASSES = ("UploadPage",)
 ROUTE_PAGE_CLASSES = ("RoutePage",)
 COLONY_PAGE_CLASSES = ("ColonyPage",)
 OVERLAY_PAGE_CLASSES = ("OverlayPage", "OverlayPageState")
+EXOBIO_PAGE_CLASSES = ("ExobioPage", "ExobioPageState")
+LOG_PAGE_CLASSES = ("LogPage",)
 
 #: Уже переведённые обработчики страницы «Маршрут».
 ROUTE_HELPER_FUNCTIONS = ("_refresh_route_tree",)
+
+#: Уже переведённые обработчики «Экзобиологии» и «Информационного окна».
+EXOBIO_HELPER_FUNCTIONS = ("_build_tab_exobio", "_update_tab_exobio",
+                           "_scan_all_journals_for_exobio")
 
 #: Уже переведённые обработчики вкладки «Оверлей». ``_exobiology_overlay_state``
 #: сюда не входит: его строки — содержимое блока HUD, а оно переводится
@@ -320,6 +326,29 @@ class CatalogTests(unittest.TestCase):
                    for line, text in russian_literals(UPLOADER / "hud_window.py")
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "меню блока HUD: " + "; ".join(missing))
+
+    def test_exobio_and_log_pages_are_in_the_catalog(self):
+        missing = []
+        for name, classes in (("helper_pages.py", EXOBIO_PAGE_CLASSES),
+                              ("helper_pages.py", LOG_PAGE_CLASSES)):
+            missing += [f"{name}:{line}: {text!r}"
+                        for line, text in slice_literals(UPLOADER / name, classes=classes)
+                        if text not in i18n_catalogs._STRINGS
+                        and text not in helper_pages.UNTRANSLATED_TEXTS
+                        and text not in helper_pages.KEEP_COLUMN_TITLES]
+        self.assertEqual(missing, [], "«Экзобиология» и лог: " + "; ".join(missing))
+
+    def test_exobio_table_titles_are_in_the_catalog(self):
+        missing = [title for _key, title, _width in helper_pages.EXOBIO_COLUMNS
+                   if CYRILLIC.search(title) and title not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "колонки «Экзобиологии»: " + "; ".join(missing))
+
+    def test_exobio_handler_strings_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=EXOBIO_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "обработчики «Экзобиологии»: " + "; ".join(missing))
 
     def test_translations_differ_from_the_source(self):
         for key, translations in i18n_catalogs._STRINGS.items():

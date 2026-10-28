@@ -75,7 +75,7 @@ class LogPage(QWidget):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
 
-        layout.addWidget(heading("Информационное окно", size=12))
+        layout.addWidget(heading(tr("Информационное окно"), size=12))
         self.view = QPlainTextEdit()
         self.view.setObjectName("logView")
         self.view.setReadOnly(True)
@@ -96,7 +96,7 @@ class LogPage(QWidget):
         actions_layout = QHBoxLayout(actions)
         actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(8)
-        self.clear_button = action_button("Очистить лог", self.clear)
+        self.clear_button = action_button(tr("Очистить лог"), self.clear)
         actions_layout.addWidget(self.clear_button)
         self.counter = label("", role="mono", size=8, color=MUTED)
         actions_layout.addWidget(self.counter)
@@ -144,7 +144,7 @@ class LogPage(QWidget):
 
     def update_count(self) -> None:
         count = self.entry_count()
-        self.counter.setText(f"записей: {count}" if count else "")
+        self.counter.setText(tr("записей: {count}", count=count) if count else "")
 
     def is_read_only(self) -> bool:
         return self.view.isReadOnly()
@@ -2650,6 +2650,8 @@ EXOBIO_COLUMNS = (
 class ExobioPageState:
     """Everything the Exobiology page needs for its first paint."""
 
+    #: Ключ перевода «система не определена»: подпись берётся при сборке
+    #: страницы, чтобы перевод не зависел от порядка импорта модулей.
     system: str = "не определена"
     summary: str = ""
     status: str = ""
@@ -2734,29 +2736,32 @@ class ExobioPage(QWidget):
             callback(*args)
 
     def _build_header(self) -> None:
-        self.layout_.addWidget(heading("Поиск органики и фильтры оверлея", size=14))
-        self._hint(
+        self.layout_.addWidget(heading(tr("Поиск органики и фильтры оверлея"), size=14))
+        self._hint(tr(
             "Тела текущей системы, биосигналы, образцы и фильтры для оверлея EXOBIO. "
             "Если система уже была отсканирована ранее, сканы подтягиваются автоматически "
-            "из истории журналов и кэша. Все изменения фильтров применяются сразу.")
+            "из истории журналов и кэша. Все изменения фильтров применяются сразу."))
 
         box = panel(QFrame(), "panel")
         box_layout = QVBoxLayout(box)
         box_layout.setContentsMargins(12, 10, 12, 10)
         box_layout.setSpacing(4)
 
-        self.system_label = label(f"Текущая система: {self.state.system}",
-                                  size=11, bold=True, color=CYAN)
-        self.rescan_btn = action_button("Сверить с журналами",
+        self.system_label = label(
+            tr("Текущая система: {system}",
+               system=tr(self.state.system) if self.state.system else tr("не определена")),
+            size=11, bold=True, color=CYAN)
+        self.rescan_btn = action_button(tr("Сверить с журналами"),
                                         lambda: self._call("rescan"), height=30)
-        self.scan_all_btn = action_button("Сканировать все журналы",
+        self.scan_all_btn = action_button(tr("Сканировать все журналы"),
                                           lambda: self._call("scan_all"), height=30)
         box_layout.addWidget(row(self.system_label, None, self.scan_all_btn,
                                  self.rescan_btn, None))
 
         self.summary_label = label(
-            self.state.summary or
-            "Тел отсканировано: 0 · С биосигналами: 0 · Всего биосигналов: 0",
+            self.state.summary or tr(
+                "Тел отсканировано: {bodies} · С биосигналами: {with_signals} · "
+                "Всего биосигналов: {signals}", bodies=0, with_signals=0, signals=0),
             role="muted", size=9)
         box_layout.addWidget(self.summary_label)
 
@@ -2766,10 +2771,10 @@ class ExobioPage(QWidget):
         self.layout_.addWidget(box)
 
     def _build_bodies(self) -> None:
-        self._section("Тела текущей системы")
-        self._hint(
+        self._section(tr("Тела текущей системы"))
+        self._hint(tr(
             "Отсканированные тела текущей системы: тип, атмосфера, посадка, число "
-            "биосигналов и совпадение с выбранными фильтрами поиска.")
+            "биосигналов и совпадение с выбранными фильтрами поиска."))
 
         self.table = QTableWidget(0, len(EXOBIO_COLUMNS))
         self.table.verticalHeader().setVisible(False)
@@ -2778,7 +2783,7 @@ class ExobioPage(QWidget):
         self.table.setAlternatingRowColors(False)
         self.table.setMinimumHeight(170)
         for column, (_key, title, width) in enumerate(EXOBIO_COLUMNS):
-            item = QTableWidgetItem(title)
+            item = QTableWidgetItem(column_title(title))
             item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self.table.setHorizontalHeaderItem(column, item)
             self.table.setColumnWidth(column, width)
@@ -2790,10 +2795,10 @@ class ExobioPage(QWidget):
 
     def _build_genera(self) -> None:
         self._divider()
-        self._section("Роды в прогнозе")
-        self._hint(
+        self._section(tr("Роды в прогнозе"))
+        self._hint(tr(
             "Отмеченные роды остаются в списке «Вероятные роды», остальные скрываются. "
-            "Если не отмечено ничего — фильтр выключен и показываются все роды.")
+            "Если не отмечено ничего — фильтр выключен и показываются все роды."))
 
         holder = QWidget()
         grid = QGridLayout(holder)
@@ -2811,24 +2816,24 @@ class ExobioPage(QWidget):
         grid.setColumnStretch(2, 1)
         self.layout_.addWidget(holder)
 
-        self.all_genera_btn = action_button("Отметить все",
+        self.all_genera_btn = action_button(tr("Отметить все"),
                                            lambda: self.set_all_genera(True), height=30)
-        self.none_genera_btn = action_button("Снять все",
+        self.none_genera_btn = action_button(tr("Снять все"),
                                             lambda: self.set_all_genera(False), height=30)
         self.layout_.addWidget(row(self.all_genera_btn, self.none_genera_btn,
-                                   label("«Снять все» = показать все роды",
+                                   label(tr("«Снять все» = показать все роды"),
                                          role="muted", size=9), None))
 
     def _build_planets(self) -> None:
         self._divider()
-        self._section("Поиск планет в системе")
-        self._hint(
+        self._section(tr("Поиск планет в системе"))
+        self._hint(tr(
             "Отмеченные наборы критериев применяются к отсканированным телам текущей "
             "системы. Подходящие планеты попадают в раздел «Поиск планет» оверлея — "
             "с типом, атмосферой, возможностью посадки и причиной, по которой планета "
-            "нашлась. Данные берутся из вашего журнала и кэша.")
+            "нашлась. Данные берутся из вашего журнала и кэша."))
 
-        self.show_planets_check = QCheckBox("Показывать раздел «Поиск планет» в оверлее")
+        self.show_planets_check = QCheckBox(tr("Показывать раздел «Поиск планет» в оверлее"))
         self.show_planets_check.setChecked(bool(self.state.show_planets))
         self.show_planets_check.toggled.connect(lambda _state: self._on_filters_changed())
         self.layout_.addWidget(self.show_planets_check)
@@ -2841,10 +2846,10 @@ class ExobioPage(QWidget):
             self.layout_.addWidget(check)
             self.planet_widgets[str(preset_id)] = check
 
-        self.clear_planets_btn = action_button("Снять все", self.clear_planets, height=30)
+        self.clear_planets_btn = action_button(tr("Снять все"), self.clear_planets, height=30)
         self.layout_.addWidget(row(
             self.clear_planets_btn,
-            label("без отмеченных наборов раздел пишет, что критерии не выбраны",
+            label(tr("без отмеченных наборов раздел пишет, что критерии не выбраны"),
                   role="muted", size=9), None))
 
     # ----------------------------------------------------------------- events
@@ -2855,7 +2860,8 @@ class ExobioPage(QWidget):
 
     # --------------------------------------------------------------- accessors
     def set_system_text(self, system: str) -> None:
-        self.system_label.setText(f"Текущая система: {system or 'не определена'}")
+        self.system_label.setText(
+            tr("Текущая система: {system}", system=system or tr("не определена")))
 
     def set_summary_text(self, text: str) -> None:
         self.summary_label.setText(str(text))
