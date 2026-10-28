@@ -823,6 +823,674 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "zh": "Colonial Helper — 启动错误",
         "ja": "Colonial Helper — 起動エラー",
     },
+    # ------------------------------------------------ вкладка «Подключение»
+    "Основной API ED Ring Colony": {
+        "en": "Main ED Ring Colony API",
+        "de": "Haupt-API von ED Ring Colony",
+        "it": "API principale di ED Ring Colony",
+        "ko": "기본 ED Ring Colony API",
+        "zh": "ED Ring Colony 主 API",
+        "ja": "ED Ring Colony メイン API",
+    },
+    "Досье пилота (Frontier CAPI)": {
+        "en": "Pilot record (Frontier CAPI)",
+        "de": "Pilotendossier (Frontier CAPI)",
+        "it": "Dossier pilota (Frontier CAPI)",
+        "ko": "파일럿 기록 (Frontier CAPI)",
+        "zh": "飞行员档案（Frontier CAPI）",
+        "ja": "パイロット記録 (Frontier CAPI)",
+    },
+    "Папка журналов Elite Dangerous": {
+        "en": "Elite Dangerous journal folder",
+        "de": "Elite-Dangerous-Journalordner",
+        "it": "Cartella dei journal di Elite Dangerous",
+        "ko": "Elite Dangerous 저널 폴더",
+        "zh": "Elite Dangerous 日志文件夹",
+        "ja": "Elite Dangerous ジャーナルフォルダー",
+    },
+    "Сервер: {url}": {
+        "en": "Server: {url}",
+        "de": "Server: {url}",
+        "it": "Server: {url}",
+        "ko": "서버: {url}",
+        "zh": "服务器：{url}",
+        "ja": "サーバー: {url}",
+    },
+    "Открыть API-токены на сайте": {
+        "en": "Open API tokens on the site",
+        "de": "API-Token auf der Seite öffnen",
+        "it": "Apri i token API sul sito",
+        "ko": "사이트에서 API 토큰 열기",
+        "zh": "在网站打开 API 令牌",
+        "ja": "サイトで API トークンを開く",
+    },
+    "Другой сервер...": {
+        "en": "Another server...",
+        "de": "Anderer Server...",
+        "it": "Un altro server...",
+        "ko": "다른 서버...",
+        "zh": "其他服务器...",
+        "ja": "別のサーバー...",
+    },
+    "API-токен сайта": {
+        "en": "Site API token",
+        "de": "API-Token der Seite",
+        "it": "Token API del sito",
+        "ko": "사이트 API 토큰",
+        "zh": "网站 API 令牌",
+        "ja": "サイトの API トークン",
+    },
+    "Поле для API-токена ED Ring Colony из профиля сайта. Используется для загрузки журналов.": {
+        "en": "Field for the ED Ring Colony API token from your site profile. "
+              "It is used to upload journals.",
+        "de": "Feld für das ED-Ring-Colony-API-Token aus deinem Seitenprofil. "
+              "Es wird für den Journal-Upload verwendet.",
+        "it": "Campo per il token API di ED Ring Colony dal profilo del sito. "
+              "Serve per caricare i journal.",
+        "ko": "사이트 프로필의 ED Ring Colony API 토큰 입력란입니다. 저널 업로드에 사용됩니다.",
+        "zh": "网站个人资料中的 ED Ring Colony API 令牌填写栏，用于上传日志。",
+        "ja": "サイトのプロフィールにある ED Ring Colony の API トークン欄です。"
+              "ジャーナルの送信に使います。",
+    },
+    "Токен ED Ring Colony": {
+        "en": "ED Ring Colony token",
+        "de": "ED-Ring-Colony-Token",
+        "it": "Token di ED Ring Colony",
+        "ko": "ED Ring Colony 토큰",
+        "zh": "ED Ring Colony 令牌",
+        "ja": "ED Ring Colony トークン",
+    },
+    "Показать": {
+        "en": "Show",
+        "de": "Anzeigen",
+        "it": "Mostra",
+        "ko": "표시",
+        "zh": "显示",
+        "ja": "表示",
+    },
+    "Скрыть": {
+        "en": "Hide",
+        "de": "Verbergen",
+        "it": "Nascondi",
+        "ko": "숨기기",
+        "zh": "隐藏",
+        "ja": "隠す",
+    },
+    "Проверить токен": {
+        "en": "Check the token",
+        "de": "Token prüfen",
+        "it": "Verifica il token",
+        "ko": "토큰 확인",
+        "zh": "检查令牌",
+        "ja": "トークンを確認",
+    },
+    "Вставить из буфера": {
+        "en": "Paste from clipboard",
+        "de": "Aus der Zwischenablage einfügen",
+        "it": "Incolla dagli appunti",
+        "ko": "클립보드에서 붙여넣기",
+        "zh": "从剪贴板粘贴",
+        "ja": "クリップボードから貼り付け",
+    },
+    "Подключение и данные CAPI принадлежат вашему аккаунту на сайте. Сначала привяжите "
+    "Frontier в личном кабинете сайта; Colonial Helper не хранит Frontier-токены и "
+    "запрашивает синхронизацию только через ваш токен проекта. Сайт сам получает, "
+    "разбирает и сохраняет данные.": {
+        "en": "The CAPI link and its data belong to your account on the site. Link Frontier "
+              "in your site profile first; Colonial Helper keeps no Frontier tokens and only "
+              "asks for a sync through your project token. The site fetches, parses and "
+              "stores the data itself.",
+        "de": "CAPI-Verknüpfung und Daten gehören zu deinem Konto auf der Seite. Verknüpfe "
+              "Frontier zuerst im Profil der Seite; Colonial Helper speichert keine "
+              "Frontier-Token und fordert die Synchronisierung nur über dein Projekt-Token an. "
+              "Die Seite ruft die Daten selbst ab, wertet sie aus und speichert sie.",
+        "it": "Il collegamento CAPI e i suoi dati appartengono al tuo account sul sito. "
+              "Collega prima Frontier nel profilo del sito; Colonial Helper non conserva "
+              "token Frontier e chiede la sincronizzazione solo tramite il token di progetto. "
+              "Il sito scarica, analizza e salva i dati da solo.",
+        "ko": "CAPI 연결과 데이터는 사이트 계정에 속합니다. 먼저 사이트 프로필에서 Frontier를 "
+              "연결하세요. Colonial Helper는 Frontier 토큰을 저장하지 않으며 프로젝트 토큰으로만 "
+              "동기화를 요청합니다. 데이터 수집·해석·저장은 사이트가 직접 합니다.",
+        "zh": "CAPI 关联及其数据属于你的网站账号。请先在网站个人资料中关联 Frontier；"
+              "Colonial Helper 不保存 Frontier 令牌，只通过你的项目令牌请求同步。"
+              "数据的获取、解析与保存均由网站完成。",
+        "ja": "CAPI の連携とデータはサイトのアカウントに属します。まずサイトのプロフィールで "
+              "Frontier を連携してください。Colonial Helper は Frontier のトークンを保存せず、"
+              "プロジェクトのトークン経由で同期を依頼するだけです。取得・解析・保存はサイトが行います。",
+    },
+    "Открыть Frontier CAPI на сайте": {
+        "en": "Open Frontier CAPI on the site",
+        "de": "Frontier CAPI auf der Seite öffnen",
+        "it": "Apri Frontier CAPI sul sito",
+        "ko": "사이트에서 Frontier CAPI 열기",
+        "zh": "在网站打开 Frontier CAPI",
+        "ja": "サイトで Frontier CAPI を開く",
+    },
+    "Обновить досье": {
+        "en": "Refresh the record",
+        "de": "Dossier aktualisieren",
+        "it": "Aggiorna il dossier",
+        "ko": "기록 새로고침",
+        "zh": "刷新档案",
+        "ja": "記録を更新",
+    },
+    "Проверка привязки сайта…": {
+        "en": "Checking the site link…",
+        "de": "Verknüpfung der Seite wird geprüft…",
+        "it": "Verifica del collegamento al sito…",
+        "ko": "사이트 연결 확인 중…",
+        "zh": "正在检查网站关联…",
+        "ja": "サイトの連携を確認しています…",
+    },
+    "Подключите токен проекта, затем привяжите Frontier на сайте": {
+        "en": "Connect the project token, then link Frontier on the site",
+        "de": "Verbinde das Projekt-Token und verknüpfe dann Frontier auf der Seite",
+        "it": "Collega il token di progetto, poi collega Frontier sul sito",
+        "ko": "프로젝트 토큰을 연결한 뒤 사이트에서 Frontier를 연결하세요",
+        "zh": "请先连接项目令牌，然后在网站上关联 Frontier",
+        "ja": "プロジェクトのトークンを接続し、サイトで Frontier を連携してください",
+    },
+    "Проверяю привязку Frontier на сайте…": {
+        "en": "Checking the Frontier link on the site…",
+        "de": "Frontier-Verknüpfung auf der Seite wird geprüft…",
+        "it": "Verifica del collegamento Frontier sul sito…",
+        "ko": "사이트의 Frontier 연결 확인 중…",
+        "zh": "正在检查网站上的 Frontier 关联…",
+        "ja": "サイトの Frontier 連携を確認しています…",
+    },
+    "Не удалось проверить CAPI сайта: {error}": {
+        "en": "Could not check the site CAPI: {error}",
+        "de": "CAPI der Seite konnte nicht geprüft werden: {error}",
+        "it": "Impossibile verificare il CAPI del sito: {error}",
+        "ko": "사이트 CAPI를 확인하지 못했습니다: {error}",
+        "zh": "无法检查网站 CAPI：{error}",
+        "ja": "サイトの CAPI を確認できませんでした: {error}",
+    },
+    "Frontier не привязан на сайте. Нажмите «Открыть Frontier CAPI на сайте».": {
+        "en": "Frontier is not linked on the site. Use “Open Frontier CAPI on the site”.",
+        "de": "Frontier ist auf der Seite nicht verknüpft. Nutze „Frontier CAPI auf der Seite öffnen“.",
+        "it": "Frontier non è collegato sul sito. Usa «Apri Frontier CAPI sul sito».",
+        "ko": "사이트에 Frontier가 연결되어 있지 않습니다. «사이트에서 Frontier CAPI 열기»를 누르세요.",
+        "zh": "网站上尚未关联 Frontier。请点击“在网站打开 Frontier CAPI”。",
+        "ja": "サイトで Frontier が連携されていません。「サイトで Frontier CAPI を開く」を押してください。",
+    },
+    "Привязка Frontier сохранена, но требует внимания. Откройте CAPI на сайте.": {
+        "en": "The Frontier link is saved but needs attention. Open CAPI on the site.",
+        "de": "Die Frontier-Verknüpfung ist gespeichert, braucht aber Aufmerksamkeit. "
+              "Öffne CAPI auf der Seite.",
+        "it": "Il collegamento Frontier è salvato ma richiede attenzione. Apri CAPI sul sito.",
+        "ko": "Frontier 연결은 저장되었지만 확인이 필요합니다. 사이트에서 CAPI를 여세요.",
+        "zh": "Frontier 关联已保存，但需要处理。请在网站打开 CAPI。",
+        "ja": "Frontier の連携は保存されていますが、確認が必要です。サイトで CAPI を開いてください。",
+    },
+    "Frontier привязан на сайте": {
+        "en": "Frontier is linked on the site",
+        "de": "Frontier ist auf der Seite verknüpft",
+        "it": "Frontier è collegato sul sito",
+        "ko": "사이트에 Frontier가 연결되어 있습니다",
+        "zh": "网站上已关联 Frontier",
+        "ja": "サイトで Frontier が連携されています",
+    },
+    "Frontier привязан на сайте (CMDR {cmdr})": {
+        "en": "Frontier is linked on the site (CMDR {cmdr})",
+        "de": "Frontier ist auf der Seite verknüpft (CMDR {cmdr})",
+        "it": "Frontier è collegato sul sito (CMDR {cmdr})",
+        "ko": "사이트에 Frontier가 연결되어 있습니다 (CMDR {cmdr})",
+        "zh": "网站上已关联 Frontier（CMDR {cmdr}）",
+        "ja": "サイトで Frontier が連携されています (CMDR {cmdr})",
+    },
+    "Frontier привязан на сайте; синхронизация: {synced}": {
+        "en": "Frontier is linked on the site; last sync: {synced}",
+        "de": "Frontier ist auf der Seite verknüpft; letzte Synchronisierung: {synced}",
+        "it": "Frontier è collegato sul sito; ultima sincronizzazione: {synced}",
+        "ko": "사이트에 Frontier가 연결되어 있습니다; 동기화: {synced}",
+        "zh": "网站上已关联 Frontier；同步时间：{synced}",
+        "ja": "サイトで Frontier が連携されています; 同期: {synced}",
+    },
+    "Frontier привязан на сайте (CMDR {cmdr}); синхронизация: {synced}": {
+        "en": "Frontier is linked on the site (CMDR {cmdr}); last sync: {synced}",
+        "de": "Frontier ist auf der Seite verknüpft (CMDR {cmdr}); letzte Synchronisierung: {synced}",
+        "it": "Frontier è collegato sul sito (CMDR {cmdr}); ultima sincronizzazione: {synced}",
+        "ko": "사이트에 Frontier가 연결되어 있습니다 (CMDR {cmdr}); 동기화: {synced}",
+        "zh": "网站上已关联 Frontier（CMDR {cmdr}）；同步时间：{synced}",
+        "ja": "サイトで Frontier が連携されています (CMDR {cmdr}); 同期: {synced}",
+    },
+    "Сайт синхронизирует данные Frontier…": {
+        "en": "The site is syncing Frontier data…",
+        "de": "Die Seite synchronisiert die Frontier-Daten…",
+        "it": "Il sito sta sincronizzando i dati Frontier…",
+        "ko": "사이트가 Frontier 데이터를 동기화하는 중…",
+        "zh": "网站正在同步 Frontier 数据…",
+        "ja": "サイトが Frontier のデータを同期しています…",
+    },
+    "Сначала подключите токен проекта": {
+        "en": "Connect the project token first",
+        "de": "Verbinde zuerst das Projekt-Token",
+        "it": "Collega prima il token di progetto",
+        "ko": "먼저 프로젝트 토큰을 연결하세요",
+        "zh": "请先连接项目令牌",
+        "ja": "先にプロジェクトのトークンを接続してください",
+    },
+    "Досье Frontier синхронизировано сайтом": {
+        "en": "The site synced the Frontier record",
+        "de": "Die Seite hat das Frontier-Dossier synchronisiert",
+        "it": "Il sito ha sincronizzato il dossier Frontier",
+        "ko": "사이트가 Frontier 기록을 동기화했습니다",
+        "zh": "网站已同步 Frontier 档案",
+        "ja": "サイトが Frontier の記録を同期しました",
+    },
+    "Досье обновлено сайтом из Frontier (CMDR {cmdr})": {
+        "en": "The site refreshed the record from Frontier (CMDR {cmdr})",
+        "de": "Die Seite hat das Dossier aus Frontier aktualisiert (CMDR {cmdr})",
+        "it": "Il sito ha aggiornato il dossier da Frontier (CMDR {cmdr})",
+        "ko": "사이트가 Frontier에서 기록을 갱신했습니다 (CMDR {cmdr})",
+        "zh": "网站已从 Frontier 刷新档案（CMDR {cmdr}）",
+        "ja": "サイトが Frontier から記録を更新しました (CMDR {cmdr})",
+    },
+    "Досье обновлено сайтом из Frontier": {
+        "en": "The site refreshed the record from Frontier",
+        "de": "Die Seite hat das Dossier aus Frontier aktualisiert",
+        "it": "Il sito ha aggiornato il dossier da Frontier",
+        "ko": "사이트가 Frontier에서 기록을 갱신했습니다",
+        "zh": "网站已从 Frontier 刷新档案",
+        "ja": "サイトが Frontier から記録を更新しました",
+    },
+    "Синхронизация не удалась": {
+        "en": "Sync failed",
+        "de": "Synchronisierung fehlgeschlagen",
+        "it": "Sincronizzazione non riuscita",
+        "ko": "동기화 실패",
+        "zh": "同步失败",
+        "ja": "同期に失敗しました",
+    },
+    "событий колонизации добавлено: {count}": {
+        "en": "colonisation events added: {count}",
+        "de": "Kolonisierungsereignisse hinzugefügt: {count}",
+        "it": "eventi di colonizzazione aggiunti: {count}",
+        "ko": "콜로니화 이벤트 추가됨: {count}",
+        "zh": "新增殖民事件：{count}",
+        "ja": "コロニー化イベント追加: {count}",
+    },
+    "предупреждений: {count}": {
+        "en": "warnings: {count}",
+        "de": "Warnungen: {count}",
+        "it": "avvisi: {count}",
+        "ko": "경고: {count}",
+        "zh": "警告：{count}",
+        "ja": "警告: {count}",
+    },
+    "Обзор...": {
+        "en": "Browse...",
+        "de": "Durchsuchen...",
+        "it": "Sfoglia...",
+        "ko": "찾아보기...",
+        "zh": "浏览...",
+        "ja": "参照...",
+    },
+    "По умолчанию: Saved Games\\Frontier Developments\\Elite Dangerous": {
+        "en": "Default: Saved Games\\Frontier Developments\\Elite Dangerous",
+        "de": "Standard: Saved Games\\Frontier Developments\\Elite Dangerous",
+        "it": "Predefinito: Saved Games\\Frontier Developments\\Elite Dangerous",
+        "ko": "기본값: Saved Games\\Frontier Developments\\Elite Dangerous",
+        "zh": "默认路径：Saved Games\\Frontier Developments\\Elite Dangerous",
+        "ja": "既定: Saved Games\\Frontier Developments\\Elite Dangerous",
+    },
+    "API-ключ Raven Colonial": {
+        "en": "Raven Colonial API key",
+        "de": "Raven-Colonial-API-Schlüssel",
+        "it": "Chiave API Raven Colonial",
+        "ko": "Raven Colonial API 키",
+        "zh": "Raven Colonial API 密钥",
+        "ja": "Raven Colonial API キー",
+    },
+    "Вставьте сюда ключ из профиля ravencolonial.com. Нажмите «Проверить ключ» и сохраните настройки.": {
+        "en": "Paste the key from your ravencolonial.com profile. Press “Check the key” and "
+              "save the settings.",
+        "de": "Füge hier den Schlüssel aus deinem ravencolonial.com-Profil ein. Drücke "
+              "„Schlüssel prüfen“ und speichere die Einstellungen.",
+        "it": "Incolla qui la chiave dal profilo ravencolonial.com. Premi «Verifica la chiave» "
+              "e salva le impostazioni.",
+        "ko": "ravencolonial.com 프로필의 키를 붙여넣으세요. «키 확인»을 누르고 설정을 저장하세요.",
+        "zh": "请粘贴 ravencolonial.com 个人资料中的密钥，点击“检查密钥”并保存设置。",
+        "ja": "ravencolonial.com のプロフィールにあるキーを貼り付け、「キーを確認」を押して"
+              "設定を保存してください。",
+    },
+    "Проверить ключ": {
+        "en": "Check the key",
+        "de": "Schlüssel prüfen",
+        "it": "Verifica la chiave",
+        "ko": "키 확인",
+        "zh": "检查密钥",
+        "ja": "キーを確認",
+    },
+    "Raven Colonial: не подключено": {
+        "en": "Raven Colonial: not connected",
+        "de": "Raven Colonial: nicht verbunden",
+        "it": "Raven Colonial: non connesso",
+        "ko": "Raven Colonial: 연결 안 됨",
+        "zh": "Raven Colonial：未连接",
+        "ja": "Raven Colonial: 未接続",
+    },
+    "Raven Colonial: ключ пустой": {
+        "en": "Raven Colonial: the key is empty",
+        "de": "Raven Colonial: der Schlüssel ist leer",
+        "it": "Raven Colonial: la chiave è vuota",
+        "ko": "Raven Colonial: 키가 비어 있습니다",
+        "zh": "Raven Colonial：密钥为空",
+        "ja": "Raven Colonial: キーが空です",
+    },
+    "Raven Colonial: проверка…": {
+        "en": "Raven Colonial: checking…",
+        "de": "Raven Colonial: wird geprüft…",
+        "it": "Raven Colonial: verifica…",
+        "ko": "Raven Colonial: 확인 중…",
+        "zh": "Raven Colonial：正在检查…",
+        "ja": "Raven Colonial: 確認中…",
+    },
+    "Raven Colonial: ключ неверный": {
+        "en": "Raven Colonial: the key is wrong",
+        "de": "Raven Colonial: der Schlüssel ist falsch",
+        "it": "Raven Colonial: la chiave non è valida",
+        "ko": "Raven Colonial: 키가 올바르지 않습니다",
+        "zh": "Raven Colonial：密钥不正确",
+        "ja": "Raven Colonial: キーが正しくありません",
+    },
+    "Raven Colonial: ключ неверный (401)": {
+        "en": "Raven Colonial: the key is wrong (401)",
+        "de": "Raven Colonial: der Schlüssel ist falsch (401)",
+        "it": "Raven Colonial: la chiave non è valida (401)",
+        "ko": "Raven Colonial: 키가 올바르지 않습니다 (401)",
+        "zh": "Raven Colonial：密钥不正确（401）",
+        "ja": "Raven Colonial: キーが正しくありません (401)",
+    },
+    "Raven Colonial: сетевая ошибка": {
+        "en": "Raven Colonial: network error",
+        "de": "Raven Colonial: Netzwerkfehler",
+        "it": "Raven Colonial: errore di rete",
+        "ko": "Raven Colonial: 네트워크 오류",
+        "zh": "Raven Colonial：网络错误",
+        "ja": "Raven Colonial: ネットワークエラー",
+    },
+    "Raven Colonial: подключено": {
+        "en": "Raven Colonial: connected",
+        "de": "Raven Colonial: verbunden",
+        "it": "Raven Colonial: connesso",
+        "ko": "Raven Colonial: 연결됨",
+        "zh": "Raven Colonial：已连接",
+        "ja": "Raven Colonial: 接続済み",
+    },
+    "Raven Colonial: ключ действителен": {
+        "en": "Raven Colonial: the key is valid",
+        "de": "Raven Colonial: der Schlüssel ist gültig",
+        "it": "Raven Colonial: la chiave è valida",
+        "ko": "Raven Colonial: 키가 유효합니다",
+        "zh": "Raven Colonial：密钥有效",
+        "ja": "Raven Colonial: キーは有効です",
+    },
+    "Raven Colonial: ошибка {error}": {
+        "en": "Raven Colonial: error {error}",
+        "de": "Raven Colonial: Fehler {error}",
+        "it": "Raven Colonial: errore {error}",
+        "ko": "Raven Colonial: 오류 {error}",
+        "zh": "Raven Colonial：错误 {error}",
+        "ja": "Raven Colonial: エラー {error}",
+    },
+    "неизвестная ошибка": {
+        "en": "unknown error",
+        "de": "unbekannter Fehler",
+        "it": "errore sconosciuto",
+        "ko": "알 수 없는 오류",
+        "zh": "未知错误",
+        "ja": "不明なエラー",
+    },
+    "Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM.": {
+        "en": "Optional: send FSDJump, Location, Docked and Scan events to EDSM.",
+        "de": "Optional: FSDJump-, Location-, Docked- und Scan-Ereignisse an EDSM senden.",
+        "it": "Opzionale: invia a EDSM gli eventi FSDJump, Location, Docked e Scan.",
+        "ko": "선택 사항: FSDJump, Location, Docked, Scan 이벤트를 EDSM으로 보냅니다.",
+        "zh": "可选：将 FSDJump、Location、Docked 和 Scan 事件发送到 EDSM。",
+        "ja": "任意: FSDJump、Location、Docked、Scan イベントを EDSM に送信します。",
+    },
+    "Имя командира в EDSM (точное имя CMDR, зарегистрированное в EDSM)": {
+        "en": "Commander name in EDSM (the exact CMDR name registered in EDSM)",
+        "de": "Kommandantenname in EDSM (der genaue, in EDSM registrierte CMDR-Name)",
+        "it": "Nome del comandante in EDSM (il nome CMDR esatto registrato in EDSM)",
+        "ko": "EDSM 커맨더 이름 (EDSM에 등록된 정확한 CMDR 이름)",
+        "zh": "EDSM 中的指挥官名称（在 EDSM 注册的准确 CMDR 名称）",
+        "ja": "EDSM のコマンダー名 (EDSM に登録された正確な CMDR 名)",
+    },
+    "Сохранить EDSM настройки": {
+        "en": "Save EDSM settings",
+        "de": "EDSM-Einstellungen speichern",
+        "it": "Salva le impostazioni EDSM",
+        "ko": "EDSM 설정 저장",
+        "zh": "保存 EDSM 设置",
+        "ja": "EDSM 設定を保存",
+    },
+    "EDSM: не настроен": {
+        "en": "EDSM: not configured",
+        "de": "EDSM: nicht eingerichtet",
+        "it": "EDSM: non configurato",
+        "ko": "EDSM: 설정 안 됨",
+        "zh": "EDSM：未配置",
+        "ja": "EDSM: 未設定",
+    },
+    "EDSM: включён": {
+        "en": "EDSM: enabled",
+        "de": "EDSM: aktiv",
+        "it": "EDSM: attivo",
+        "ko": "EDSM: 사용 중",
+        "zh": "EDSM：已启用",
+        "ja": "EDSM: 有効",
+    },
+    "Исследовательские события журнала (Location, FSDJump, CarrierJump, Scan, "
+    "SAASignalsFound, Docked) уходят в открытую ленту EDDN, из которой берёт данные "
+    "Spansh. Публикация необратима и видна всем. Колонизация, вклады и грузы сюда не "
+    "попадают.": {
+        "en": "Exploration journal events (Location, FSDJump, CarrierJump, Scan, "
+              "SAASignalsFound, Docked) go to the public EDDN feed, which Spansh reads from. "
+              "Publishing is irreversible and visible to everyone. Colonisation, "
+              "contributions and cargo are not sent.",
+        "de": "Explorationsereignisse aus dem Journal (Location, FSDJump, CarrierJump, Scan, "
+              "SAASignalsFound, Docked) gehen an den offenen EDDN-Feed, aus dem Spansh liest. "
+              "Die Veröffentlichung ist unwiderruflich und für alle sichtbar. Kolonisierung, "
+              "Beiträge und Fracht werden nicht gesendet.",
+        "it": "Gli eventi di esplorazione del journal (Location, FSDJump, CarrierJump, Scan, "
+              "SAASignalsFound, Docked) finiscono nel feed pubblico EDDN, da cui legge Spansh. "
+              "La pubblicazione è irreversibile e visibile a tutti. Colonizzazione, "
+              "contributi e carichi non vengono inviati.",
+        "ko": "탐사 저널 이벤트(Location, FSDJump, CarrierJump, Scan, SAASignalsFound, Docked)는 "
+              "공개 EDDN 피드로 전송되며 Spansh가 이를 사용합니다. 게시는 되돌릴 수 없고 "
+              "누구나 볼 수 있습니다. 콜로니화, 기여, 화물은 전송되지 않습니다.",
+        "zh": "探索类日志事件（Location、FSDJump、CarrierJump、Scan、SAASignalsFound、Docked）"
+              "会发送到公开的 EDDN 数据流，Spansh 从中获取数据。发布不可撤销且所有人可见。"
+              "殖民建设、贡献与货物不会发送。",
+        "ja": "探索系のジャーナルイベント (Location、FSDJump、CarrierJump、Scan、"
+              "SAASignalsFound、Docked) は公開の EDDN フィードに送られ、Spansh がそこから"
+              "データを取得します。公開は取り消せず、誰でも閲覧できます。コロニー化、"
+              "貢献、貨物は送信されません。",
+    },
+    "Публиковать исследовательские события в EDDN": {
+        "en": "Publish exploration events to EDDN",
+        "de": "Explorationsereignisse an EDDN senden",
+        "it": "Pubblica gli eventi di esplorazione su EDDN",
+        "ko": "탐사 이벤트를 EDDN에 게시",
+        "zh": "将探索事件发布到 EDDN",
+        "ja": "探索イベントを EDDN に公開する",
+    },
+    "Необязательно: отправка навигации, стыковок, сканирования и грузовых событий в Inara.": {
+        "en": "Optional: send navigation, docking, scanning and cargo events to Inara.",
+        "de": "Optional: Navigations-, Andock-, Scan- und Frachtereignisse an Inara senden.",
+        "it": "Opzionale: invia a Inara eventi di navigazione, attracco, scansione e carico.",
+        "ko": "선택 사항: 항행, 도킹, 스캔, 화물 이벤트를 Inara로 보냅니다.",
+        "zh": "可选：将航行、停靠、扫描和货物事件发送到 Inara。",
+        "ja": "任意: 航行、ドッキング、スキャン、貨物イベントを Inara に送信します。",
+    },
+    "Имя командира в Inara": {
+        "en": "Commander name in Inara",
+        "de": "Kommandantenname in Inara",
+        "it": "Nome del comandante in Inara",
+        "ko": "Inara 커맨더 이름",
+        "zh": "Inara 中的指挥官名称",
+        "ja": "Inara のコマンダー名",
+    },
+    "Сохранить Inara настройки": {
+        "en": "Save Inara settings",
+        "de": "Inara-Einstellungen speichern",
+        "it": "Salva le impostazioni Inara",
+        "ko": "Inara 설정 저장",
+        "zh": "保存 Inara 设置",
+        "ja": "Inara 設定を保存",
+    },
+    "Inara: не настроена": {
+        "en": "Inara: not configured",
+        "de": "Inara: nicht eingerichtet",
+        "it": "Inara: non configurata",
+        "ko": "Inara: 설정 안 됨",
+        "zh": "Inara：未配置",
+        "ja": "Inara: 未設定",
+    },
+    "Inara: включена": {
+        "en": "Inara: enabled",
+        "de": "Inara: aktiv",
+        "it": "Inara: attiva",
+        "ko": "Inara: 사용 중",
+        "zh": "Inara：已启用",
+        "ja": "Inara: 有効",
+    },
+    "Готов к работе": {
+        "en": "Ready",
+        "de": "Bereit",
+        "it": "Pronto",
+        "ko": "준비됨",
+        "zh": "就绪",
+        "ja": "準備完了",
+    },
+    "Введите API токен": {
+        "en": "Enter the API token",
+        "de": "API-Token eingeben",
+        "it": "Inserisci il token API",
+        "ko": "API 토큰을 입력하세요",
+        "zh": "请输入 API 令牌",
+        "ja": "API トークンを入力してください",
+    },
+    "✓ Подключено как {name}": {
+        "en": "✓ Connected as {name}",
+        "de": "✓ Verbunden als {name}",
+        "it": "✓ Connesso come {name}",
+        "ko": "✓ {name}(으)로 연결됨",
+        "zh": "✓ 已连接为 {name}",
+        "ja": "✓ {name} として接続済み",
+    },
+    "○ Не подключено · {detail}": {
+        "en": "○ Not connected · {detail}",
+        "de": "○ Nicht verbunden · {detail}",
+        "it": "○ Non connesso · {detail}",
+        "ko": "○ 연결 안 됨 · {detail}",
+        "zh": "○ 未连接 · {detail}",
+        "ja": "○ 未接続 · {detail}",
+    },
+    "○ Не подключено — введите токен": {
+        "en": "○ Not connected — enter the token",
+        "de": "○ Nicht verbunden — Token eingeben",
+        "it": "○ Non connesso — inserisci il token",
+        "ko": "○ 연결 안 됨 — 토큰을 입력하세요",
+        "zh": "○ 未连接 — 请输入令牌",
+        "ja": "○ 未接続 — トークンを入力してください",
+    },
+    "Токен не введён": {
+        "en": "The token is empty",
+        "de": "Kein Token eingegeben",
+        "it": "Token non inserito",
+        "ko": "토큰이 입력되지 않았습니다",
+        "zh": "未输入令牌",
+        "ja": "トークンが入力されていません",
+    },
+    "Проверка токена...": {
+        "en": "Checking the token...",
+        "de": "Token wird geprüft...",
+        "it": "Verifica del token...",
+        "ko": "토큰 확인 중...",
+        "zh": "正在检查令牌...",
+        "ja": "トークンを確認しています...",
+    },
+    "Проверка токена…": {
+        "en": "Checking the token…",
+        "de": "Token wird geprüft…",
+        "it": "Verifica del token…",
+        "ko": "토큰 확인 중…",
+        "zh": "正在检查令牌…",
+        "ja": "トークンを確認しています…",
+    },
+    "Ошибка проверки: {error}": {
+        "en": "Check failed: {error}",
+        "de": "Prüfung fehlgeschlagen: {error}",
+        "it": "Verifica non riuscita: {error}",
+        "ko": "확인 실패: {error}",
+        "zh": "检查失败：{error}",
+        "ja": "確認に失敗しました: {error}",
+    },
+    "Ошибка": {
+        "en": "Error",
+        "de": "Fehler",
+        "it": "Errore",
+        "ko": "오류",
+        "zh": "错误",
+        "ja": "エラー",
+    },
+    "Сервер ED Ring Colony": {
+        "en": "ED Ring Colony server",
+        "de": "ED-Ring-Colony-Server",
+        "it": "Server di ED Ring Colony",
+        "ko": "ED Ring Colony 서버",
+        "zh": "ED Ring Colony 服务器",
+        "ja": "ED Ring Colony サーバー",
+    },
+    "HTTPS-адрес сайта (не Supabase):": {
+        "en": "Site HTTPS address (not Supabase):",
+        "de": "HTTPS-Adresse der Seite (nicht Supabase):",
+        "it": "Indirizzo HTTPS del sito (non Supabase):",
+        "ko": "사이트 HTTPS 주소 (Supabase 아님):",
+        "zh": "网站 HTTPS 地址（不是 Supabase）：",
+        "ja": "サイトの HTTPS アドレス (Supabase ではありません):",
+    },
+    "Адрес сервера": {
+        "en": "Server address",
+        "de": "Serveradresse",
+        "it": "Indirizzo del server",
+        "ko": "서버 주소",
+        "zh": "服务器地址",
+        "ja": "サーバーアドレス",
+    },
+    "Смена сервера": {
+        "en": "Change the server",
+        "de": "Server wechseln",
+        "it": "Cambio del server",
+        "ko": "서버 변경",
+        "zh": "更换服务器",
+        "ja": "サーバーの変更",
+    },
+    "Новый сервер: {site}\n\nТокен сайта будет удалён из настроек. Приложение закроется: "
+    "запустите его снова и введите токен нового сервера. Ключи Raven/EDSM/Inara "
+    "сохранятся. Продолжить?": {
+        "en": "New server: {site}\n\nThe site token will be removed from the settings. "
+              "The program will close: start it again and enter the new server's token. "
+              "Raven/EDSM/Inara keys are kept. Continue?",
+        "de": "Neuer Server: {site}\n\nDas Token der Seite wird aus den Einstellungen "
+              "entfernt. Das Programm wird beendet: starte es erneut und gib das Token des "
+              "neuen Servers ein. Schlüssel für Raven/EDSM/Inara bleiben erhalten. Fortfahren?",
+        "it": "Nuovo server: {site}\n\nIl token del sito verrà rimosso dalle impostazioni. "
+              "Il programma si chiuderà: avvialo di nuovo e inserisci il token del nuovo "
+              "server. Le chiavi Raven/EDSM/Inara restano. Continuare?",
+        "ko": "새 서버: {site}\n\n사이트 토큰이 설정에서 삭제됩니다. 프로그램이 종료됩니다. "
+              "다시 실행한 뒤 새 서버의 토큰을 입력하세요. Raven/EDSM/Inara 키는 유지됩니다. "
+              "계속할까요?",
+        "zh": "新服务器：{site}\n\n网站令牌将从设置中删除。程序将关闭：请重新启动并输入新服务器的"
+              "令牌。Raven/EDSM/Inara 密钥会保留。是否继续？",
+        "ja": "新しいサーバー: {site}\n\nサイトのトークンは設定から削除されます。プログラムは"
+              "終了します。もう一度起動して新しいサーバーのトークンを入力してください。"
+              "Raven/EDSM/Inara のキーは保持されます。続行しますか?",
+    },
 }
 
 

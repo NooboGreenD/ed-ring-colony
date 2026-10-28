@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from i18n import tr
 from ui_qt import (
     CYAN,
     GREEN,
@@ -179,15 +180,15 @@ class AuthPageState:
     journal_path: str = ""
     site_error: str = ""
     raven_key: str = ""
-    raven_status: str = "Raven Colonial: не подключено"
+    raven_status: str = ""
     edsm_key: str = ""
     edsm_name: str = ""
-    edsm_status: str = "EDSM: не настроен"
+    edsm_status: str = ""
     eddn_enabled: bool = False
     inara_key: str = ""
     inara_name: str = ""
-    inara_status: str = "Inara: не настроена"
-    capi_status: str = "Проверка привязки сайта…"
+    inara_status: str = ""
+    capi_status: str = ""
 
 
 @dataclass
@@ -304,27 +305,28 @@ class AuthPage(QWidget):
 
     # ---------------------------------------------------------------- sections
     def _build_api(self) -> None:
-        self._title(self.SECTION_TITLES["api"])
-        self.server_label = label(f"Сервер: {self.state.site_url}", role="accent", size=9)
+        self._title(tr(self.SECTION_TITLES["api"]))
+        self.server_label = label(tr("Сервер: {url}", url=self.state.site_url),
+                                  role="accent", size=9)
         self.layout_.addWidget(self.server_label)
         self._row(
-            self._button("Открыть API-токены на сайте", self.actions.open_tokens),
-            self._button("Другой сервер...", self.actions.change_server),
+            self._button(tr("Открыть API-токены на сайте"), self.actions.open_tokens),
+            self._button(tr("Другой сервер..."), self.actions.change_server),
         )
         self.site_error_label = label(self.state.site_error, size=9, color="#e27676", wrap=True)
         self.site_error_label.setVisible(bool(self.state.site_error))
         self.layout_.addWidget(self.site_error_label)
 
-        self._hint("API-токен сайта")
-        self._hint("Поле для API-токена ED Ring Colony из профиля сайта. "
-                   "Используется для загрузки журналов.")
+        self._hint(tr("API-токен сайта"))
+        self._hint(tr("Поле для API-токена ED Ring Colony из профиля сайта. "
+                      "Используется для загрузки журналов."))
         self.token_entry = self._field(self.state.token, password=True)
-        self.token_entry.setPlaceholderText("Токен ED Ring Colony")
+        self.token_entry.setPlaceholderText(tr("Токен ED Ring Colony"))
         self.layout_.addWidget(self.token_entry)
-        self.toggle_token_btn = self._button("Показать", self.toggle_token_visibility)
+        self.toggle_token_btn = self._button(tr("Показать"), self.toggle_token_visibility)
         self._row(
-            self._button("Проверить токен", self.actions.validate_token),
-            self._button("Вставить из буфера", self.actions.paste_token),
+            self._button(tr("Проверить токен"), self.actions.validate_token),
+            self._button(tr("Вставить из буфера"), self.actions.paste_token),
             self.toggle_token_btn,
         )
         self.auth_result = StatusLabel("", TEXT)
@@ -332,42 +334,44 @@ class AuthPage(QWidget):
 
     def _build_capi(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["capi"])
-        self._hint(
+        self._title(tr(self.SECTION_TITLES["capi"]))
+        self._hint(tr(
             "Подключение и данные CAPI принадлежат вашему аккаунту на сайте. "
             "Сначала привяжите Frontier в личном кабинете сайта; Colonial Helper "
             "не хранит Frontier-токены и запрашивает синхронизацию только через "
-            "ваш токен проекта. Сайт сам получает, разбирает и сохраняет данные.")
-        self.capi_link_btn = self._button("Открыть Frontier CAPI на сайте",
+            "ваш токен проекта. Сайт сам получает, разбирает и сохраняет данные."))
+        self.capi_link_btn = self._button(tr("Открыть Frontier CAPI на сайте"),
                                           self.actions.capi_link, primary=True)
-        self.capi_fetch_btn = self._button("Обновить досье", self.actions.capi_fetch)
+        self.capi_fetch_btn = self._button(tr("Обновить досье"), self.actions.capi_fetch)
         self._row(self.capi_link_btn, self.capi_fetch_btn)
-        self.capi_status = StatusLabel(self.state.capi_status, MUTED)
+        self.capi_status = StatusLabel(
+            self.state.capi_status or tr("Проверка привязки сайта…"), MUTED)
         self.layout_.addWidget(self.capi_status)
 
     def _build_journals(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["journals"])
+        self._title(tr(self.SECTION_TITLES["journals"]))
         holder = QWidget()
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(8)
         self.path_entry = self._field(self.state.journal_path)
         holder_layout.addWidget(self.path_entry, 1)
-        holder_layout.addWidget(self._button("Обзор...", self.actions.browse_journal))
+        holder_layout.addWidget(self._button(tr("Обзор..."), self.actions.browse_journal))
         self.layout_.addWidget(holder)
-        self._hint("По умолчанию: Saved Games\\Frontier Developments\\Elite Dangerous")
+        self._hint(tr("По умолчанию: Saved Games\\Frontier Developments\\Elite Dangerous"))
 
     def _build_raven(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["raven"])
-        self._hint("API-ключ Raven Colonial")
-        self._hint("Вставьте сюда ключ из профиля ravencolonial.com. Нажмите "
-                   "«Проверить ключ» и сохраните настройки.")
+        self._title(tr(self.SECTION_TITLES["raven"]))
+        self._hint(tr("API-ключ Raven Colonial"))
+        self._hint(tr("Вставьте сюда ключ из профиля ravencolonial.com. Нажмите "
+                      "«Проверить ключ» и сохраните настройки."))
         self.raven_key_entry = self._field(self.state.raven_key, password=True)
         self.layout_.addWidget(self.raven_key_entry)
-        self._row(self._button("Проверить ключ", self._raven_check))
-        self.raven_status_label = StatusLabel(self.state.raven_status, MUTED)
+        self._row(self._button(tr("Проверить ключ"), self._raven_check))
+        self.raven_status_label = StatusLabel(
+            self.state.raven_status or tr("Raven Colonial: не подключено"), MUTED)
         self.layout_.addWidget(self.raven_status_label)
 
     def _raven_check(self) -> None:
@@ -376,27 +380,28 @@ class AuthPage(QWidget):
 
     def _build_edsm(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["edsm"])
-        self._hint("Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM.")
+        self._title(tr(self.SECTION_TITLES["edsm"]))
+        self._hint(tr("Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM."))
         self._hint("EDSM API key")
         self.edsm_key_entry = self._field(self.state.edsm_key, password=True)
         self.layout_.addWidget(self.edsm_key_entry)
-        self._hint("Имя командира в EDSM (точное имя CMDR, зарегистрированное в EDSM)")
+        self._hint(tr("Имя командира в EDSM (точное имя CMDR, зарегистрированное в EDSM)"))
         self.edsm_name_entry = self._field(self.state.edsm_name)
         self.layout_.addWidget(self.edsm_name_entry)
-        self._row(self._button("Сохранить EDSM настройки", self.actions.save_edsm))
-        self.edsm_status_label = StatusLabel(self.state.edsm_status, MUTED)
+        self._row(self._button(tr("Сохранить EDSM настройки"), self.actions.save_edsm))
+        self.edsm_status_label = StatusLabel(
+            self.state.edsm_status or tr("EDSM: не настроен"), MUTED)
         self.layout_.addWidget(self.edsm_status_label)
 
     def _build_eddn(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["eddn"])
-        self._hint(
+        self._title(tr(self.SECTION_TITLES["eddn"]))
+        self._hint(tr(
             "Исследовательские события журнала (Location, FSDJump, CarrierJump, "
             "Scan, SAASignalsFound, Docked) уходят в открытую ленту EDDN, из которой "
             "берёт данные Spansh. Публикация необратима и видна всем. Колонизация, "
-            "вклады и грузы сюда не попадают.")
-        self.eddn_enabled_var = QCheckBox("Публиковать исследовательские события в EDDN")
+            "вклады и грузы сюда не попадают."))
+        self.eddn_enabled_var = QCheckBox(tr("Публиковать исследовательские события в EDDN"))
         self.eddn_enabled_var.setChecked(bool(self.state.eddn_enabled))
         self.eddn_enabled_var.toggled.connect(self._on_eddn_toggled)
         self.layout_.addWidget(self.eddn_enabled_var)
@@ -407,17 +412,18 @@ class AuthPage(QWidget):
 
     def _build_inara(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["inara"])
-        self._hint("Необязательно: отправка навигации, стыковок, сканирования и "
-                   "грузовых событий в Inara.")
+        self._title(tr(self.SECTION_TITLES["inara"]))
+        self._hint(tr("Необязательно: отправка навигации, стыковок, сканирования и "
+                      "грузовых событий в Inara."))
         self._hint("Inara API key")
         self.inara_key_entry = self._field(self.state.inara_key, password=True)
         self.layout_.addWidget(self.inara_key_entry)
-        self._hint("Имя командира в Inara")
+        self._hint(tr("Имя командира в Inara"))
         self.inara_name_entry = self._field(self.state.inara_name)
         self.layout_.addWidget(self.inara_name_entry)
-        self._row(self._button("Сохранить Inara настройки", self.actions.save_inara))
-        self.inara_status_label = StatusLabel(self.state.inara_status, MUTED)
+        self._row(self._button(tr("Сохранить Inara настройки"), self.actions.save_inara))
+        self.inara_status_label = StatusLabel(
+            self.state.inara_status or tr("Inara: не настроена"), MUTED)
         self.layout_.addWidget(self.inara_status_label)
 
     # ------------------------------------------------------------------ public
@@ -425,10 +431,10 @@ class AuthPage(QWidget):
         """Switch the token field between hidden and readable."""
         if self.token_entry.echoMode() == QLineEdit.EchoMode.Password:
             self.token_entry.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.toggle_token_btn.setText("Скрыть")
+            self.toggle_token_btn.setText(tr("Скрыть"))
         else:
             self.token_entry.setEchoMode(QLineEdit.EchoMode.Password)
-            self.toggle_token_btn.setText("Показать")
+            self.toggle_token_btn.setText(tr("Показать"))
 
     def token_is_hidden(self) -> bool:
         return self.token_entry.echoMode() == QLineEdit.EchoMode.Password

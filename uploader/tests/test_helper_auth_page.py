@@ -10,7 +10,7 @@ sys.path.insert(0, str(HERE.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtWidgets import QCheckBox, QLineEdit, QPushButton
+    from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit, QPushButton
 
     import helper_pages
     from ui_qt import ensure_app
@@ -62,7 +62,30 @@ class AuthPageTests(unittest.TestCase):
         self.app.processEvents()
 
     def tearDown(self):
+        import i18n
+
+        i18n.set_locale("ru")
         self.page.deleteLater()
+
+    def test_page_follows_the_language_chosen_in_the_launcher(self):
+        """Страница «Подключение» не должна оставаться русской в другом языке."""
+        import re
+
+        import i18n
+
+        for code in ("en", "ja"):
+            i18n.set_locale(code)
+            page = helper_pages.AuthPage(make_state(), helper_pages.AuthPageActions())
+            try:
+                texts = [item.text() for item in page.findChildren(QLabel)]
+                texts += [item.text() for item in page.findChildren(QPushButton)]
+                texts += [item.text() for item in page.findChildren(QCheckBox)]
+                texts.append(page.token_entry.placeholderText())
+                russian = [text for text in texts
+                           if text and re.search("[А-Яа-яЁё]", text)]
+                self.assertEqual(russian, [], f"{code}: остались русские подписи")
+            finally:
+                page.deleteLater()
 
     # ------------------------------------------------------------- structure
     def test_page_is_built_from_native_inputs(self):

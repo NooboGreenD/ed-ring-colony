@@ -129,7 +129,11 @@ class LauncherWindowTests(unittest.TestCase):
         russian = [item.text() for item in window.findChildren(QLabel)
                    if item.text() and re.search("[А-Яа-яЁё]", item.text())]
         self.assertEqual(russian, [])
-        self.assertIn("SEITE", window.connection_indicator.text())
+        # Лента могла успеть загрузиться или ещё грузиться — важен язык, а не
+        # конкретное состояние связи.
+        self.assertIn(window.connection_indicator.text(),
+                      {"●  OFFLINE-START MÖGLICH", "●  SEITE VERBUNDEN",
+                       "●  NACHRICHTEN NICHT ERREICHBAR"})
         window.close()
 
     def test_saved_language_is_restored_on_the_next_start(self):
