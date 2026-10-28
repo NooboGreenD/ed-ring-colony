@@ -34,9 +34,24 @@ PILOT_PAGE_CLASSES = ("PilotPage",)
 UPLOAD_PAGE_CLASSES = ("UploadPage",)
 ROUTE_PAGE_CLASSES = ("RoutePage",)
 COLONY_PAGE_CLASSES = ("ColonyPage",)
+OVERLAY_PAGE_CLASSES = ("OverlayPage", "OverlayPageState")
 
 #: Уже переведённые обработчики страницы «Маршрут».
 ROUTE_HELPER_FUNCTIONS = ("_refresh_route_tree",)
+
+#: Уже переведённые обработчики вкладки «Оверлей». ``_exobiology_overlay_state``
+#: сюда не входит: его строки — содержимое блока HUD, а оно переводится
+#: отдельным заходом вместе с `overlay_blocks`.
+OVERLAY_HELPER_FUNCTIONS = (
+    "_build_tab_overlay", "_idle_label", "_idle_seconds", "_overlay_screen_choices",
+    "_overlay_screens_text", "_block_screen_label", "_block_alpha_label",
+    "_block_font_label", "_on_block_screen_changed", "_on_block_alpha_changed",
+    "_on_block_font_changed", "_on_block_lock_changed", "_on_lock_all",
+    "_on_lock_hotkey_changed", "_sync_overlay_block_rows", "_update_overlay_hotkey_hint",
+    "_on_toggle_overlay", "_refresh_profile_combo", "_on_profile_save",
+    "_on_profile_apply", "_on_profile_delete", "_on_anchor_changed", "_on_apply_anchors",
+    "_update_layout_info", "_on_carrier_filter_changed", "_on_idle_changed",
+)
 
 #: Уже переведённые обработчики «Колонизатора». ``_colony_reconcile_done``
 #: сюда не входит: он собирает многострочный отчёт в журнал (``self.log``),
@@ -266,6 +281,45 @@ class CatalogTests(unittest.TestCase):
                                                     functions=COLONY_HELPER_FUNCTIONS)
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "обработчики «Колонизатора»: " + "; ".join(missing))
+
+    def test_overlay_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=OVERLAY_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in helper_pages.UNTRANSLATED_TEXTS
+                   and text not in helper_pages.KEEP_COLUMN_TITLES]
+        self.assertEqual(missing, [], "страница «Оверлей»: " + "; ".join(missing))
+
+    def test_overlay_labels_of_blocks_and_anchors_are_in_the_catalog(self):
+        """Подписи блоков, пресетов, правил, якорей и разделов — тоже ключи."""
+        from overlay_layout import (ANCHOR_LABELS, AUTO_RULE_LABELS, BLOCK_LABELS,
+                                    SIZE_PRESET_LABELS)
+        from overlay_options import CARRIER_FILTERS, CONTENT_OPTIONS
+
+        texts = set(BLOCK_LABELS.values()) | set(ANCHOR_LABELS.values())
+        texts |= set(AUTO_RULE_LABELS.values()) | set(CARRIER_FILTERS.values())
+        texts |= set(SIZE_PRESET_LABELS.values())
+        for sections in CONTENT_OPTIONS.values():
+            texts |= {text for text, _attributes in sections.values()}
+        missing = sorted(text for text in texts
+                         if text not in i18n_catalogs._STRINGS
+                         and text not in helper_pages.UNTRANSLATED_TEXTS)
+        self.assertEqual(missing, [], "нет в каталоге: " + "; ".join(missing))
+
+    def test_overlay_handler_strings_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=OVERLAY_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in helper_pages.UNTRANSLATED_TEXTS]
+        self.assertEqual(missing, [], "обработчики «Оверлея»: " + "; ".join(missing))
+
+    def test_hud_menu_strings_are_in_the_catalog(self):
+        missing = [f"hud_window.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "hud_window.py")
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "меню блока HUD: " + "; ".join(missing))
 
     def test_translations_differ_from_the_source(self):
         for key, translations in i18n_catalogs._STRINGS.items():

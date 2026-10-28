@@ -1131,9 +1131,9 @@ class OverlayEditMenuTests(unittest.TestCase):
         menu = block._edit_menu
         self.assertIsNotNone(menu, "меню обязано жить в атрибуте окна")
         self.assertEqual(menu.actions()[0].text(), "Закрепить (клики уходят в игру)")
-        # Подменю (Anchor, Alpha, Font size) тоже сохранены до закрытия меню.
+        # Подменю (якорь, прозрачность, шрифт) тоже сохранены до закрытия меню.
         titles = [submenu.title() for submenu in block._edit_submenus]
-        self.assertEqual(titles, ["Anchor", "Alpha", "Font size"])
+        self.assertEqual(titles, ["Якорь", "Прозрачность", "Размер шрифта"])
         self.assertTrue(menu.actions()[-1].isSeparator() or True)
 
     def test_reopening_menu_replaces_previous_one(self):
@@ -1170,10 +1170,10 @@ class OverlayEditMenuTests(unittest.TestCase):
                          "отдельного «клика насквозь» нет — его даёт закрепление")
         self.assertTrue(any(label.startswith("Закрепить") for label in labels))
         self.assertTrue(any("Отвязать от игры" in label for label in labels))
-        self.assertTrue(any("Reset size" in label for label in labels))
+        self.assertTrue(any("Сбросить размер" in label for label in labels))
         # Ширина и высота — справочные строки, их нельзя нажать.
         info = [action for action in block._edit_menu.actions()
-                if action.text().startswith(("Width:", "Height:"))]
+                if action.text().startswith(("Ширина:", "Высота:"))]
         self.assertEqual(len(info), 2)
         for action in info:
             self.assertFalse(action.isEnabled(), "размер — не команда")
@@ -1182,10 +1182,10 @@ class OverlayEditMenuTests(unittest.TestCase):
         block = self._block()
         block._show_edit_menu()
         submenus = {submenu.title(): submenu for submenu in block._edit_submenus}
-        anchors = [action.text() for action in submenus["Anchor"].actions()]
+        anchors = [action.text() for action in submenus["Якорь"].actions()]
         self.assertEqual(len(anchors), 10, "девять якорей и свободная позиция")
         self.assertIn("[x] Свободная", anchors)
-        alpha = [action.text() for action in submenus["Alpha"].actions()]
+        alpha = [action.text() for action in submenus["Прозрачность"].actions()]
         self.assertIn("[x] 95%", alpha, "текущая прозрачность отмечена")
 
     def test_menu_offers_screens_when_there_are_several(self):
@@ -1203,7 +1203,7 @@ class OverlayEditMenuTests(unittest.TestCase):
 
         block._show_edit_menu()
         titles = [submenu.title() for submenu in block._edit_submenus]
-        self.assertEqual(titles, ["Экран", "Anchor", "Alpha", "Font size"])
+        self.assertEqual(titles, ["Экран", "Якорь", "Прозрачность", "Размер шрифта"])
         screen_menu = block._edit_submenus[0]
         labels = [action.text() for action in screen_menu.actions()]
         self.assertTrue(any("Экран 2 · 2560×1440" in label for label in labels), labels)

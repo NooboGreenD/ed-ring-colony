@@ -13,6 +13,7 @@ try:
                                    QSlider, QTabWidget)
 
     import helper_pages
+    import i18n
     from ui_qt import ensure_app
 
     QT_ERROR = None
@@ -209,12 +210,12 @@ class OverlayPageTests(unittest.TestCase):
         self.assertEqual(self.page.profiles(), ["Хаул", "Бой", "Разведка"])
         self.assertEqual(self.page.profile_text(), "Разведка")
 
-        self.assertEqual(self.page.toggle_btn.text(), self.page.TOGGLE_ON_TEXT)
+        self.assertEqual(self.page.toggle_btn.text(), self.page.toggle_on_text())
         self.page.set_toggle_running(True)
-        self.assertEqual(self.page.toggle_btn.text(), self.page.TOGGLE_OFF_TEXT)
+        self.assertEqual(self.page.toggle_btn.text(), self.page.toggle_off_text())
         self.assertEqual(self.page.toggle_btn.property("variant"), "danger")
         self.page.set_toggle_running(False)
-        self.assertEqual(self.page.toggle_btn.text(), self.page.TOGGLE_ON_TEXT)
+        self.assertEqual(self.page.toggle_btn.text(), self.page.toggle_on_text())
 
     def test_status_text_setters(self):
         self.page.set_screens_text("Экраны: нет данных")
@@ -240,6 +241,47 @@ class OverlayPageTests(unittest.TestCase):
         self.assertEqual(self.page.carrier_search_text(), "gold")
         self.page.set_all_size_text("M — 100%")
         self.assertEqual(self.page.all_size_text(), "M — 100%")
+
+    # ---------------------------------------------------------------- language
+    def test_page_follows_the_language_chosen_in_the_launcher(self):
+        """Собственные подписи страницы переводятся; данные приходят готовыми.
+
+        Подписи блоков, якорей и разделов строит `colonial_helper` — он и
+        переводит их перед сборкой страницы. Здесь проверяется только то, что
+        страница пишет сама, поэтому состояние пустое.
+        """
+        import re
+
+        cyrillic = re.compile("[А-Яа-яЁё]")
+        empty = dict(rows=[], anchors=[], ship_blocks=[], content=[],
+                     carrier_filters=[], profiles=[], profile="", screens_text="",
+                     info_text="", hotkey_hint="")
+        for code, marker in (("en", "HUD overlay settings"), ("ko", "오버레이"),
+                             ("zh", "叠加层")):
+            i18n.set_locale(code)
+            page = helper_pages.OverlayPage(_state(**empty))
+            try:
+                joined = " ".join([page.toggle_btn.text(), page.reset_btn.text()]
+                                  + [widget.text() for widget in page.findChildren(QLabel)])
+                self.assertIn(marker, joined, f"{code}: нет перевода")
+                leftovers = [text for text in (widget.text()
+                                               for widget in page.findChildren(QLabel))
+                             if cyrillic.search(text)
+                             and text not in helper_pages.UNTRANSLATED_TEXTS]
+                self.assertEqual(leftovers, [], f"{code}: остались русские подписи")
+            finally:
+                page.close()
+        i18n.set_locale("ru")
+
+    def test_screen_value_stays_recognisable_in_another_language(self):
+        i18n.set_locale("de")
+        page = helper_pages.OverlayPage(_state())
+        try:
+            self.assertEqual(helper_pages.screen_with_game_label(), "mit Spiel")
+            self.assertEqual(helper_pages.screen_label(2), "Bildschirm 2")
+        finally:
+            page.close()
+        i18n.set_locale("ru")
 
     def test_empty_state_builds_without_rows(self):
         page = helper_pages.OverlayPage(_state(rows=[], anchors=[], ship_blocks=[],

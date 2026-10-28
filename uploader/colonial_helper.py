@@ -93,7 +93,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.18"
+VERSION = "2.18.19"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -163,6 +163,20 @@ COLOR_CYAN = "#3498db"
 COLOR_GREEN = "#2ecc71"
 COLOR_RED = "#e74c3c"
 COLOR_YELLOW = "#f1c40f"            # дедлайн стройки на исходе
+
+
+def _screen_with_game_label() -> str:
+    """Подпись «с игрой» (ключ перевода — из ``helper_pages``)."""
+    from helper_pages import screen_with_game_label
+
+    return screen_with_game_label()
+
+
+def _screen_label(index) -> str:
+    """Подпись экрана монитора: «экран N» на текущем языке."""
+    from helper_pages import screen_label
+
+    return screen_label(index)
 
 
 class ColonialHelperApp:
@@ -2496,14 +2510,14 @@ class ColonialHelperApp:
             rule = str(settings.get(f"{block_key}_auto_rule", "always") or "always")
             rows.append(OverlayBlockRow(
                 key=block_key,
-                label=BLOCK_LABELS.get(block_key, block_key),
+                label=tr(BLOCK_LABELS.get(block_key, block_key)),
                 visible=bool(settings.get(f"show_{block_key}", True)),
                 locked=bool(settings.get(f"{block_key}_locked", False)),
                 screen=self._block_screen_label(block_key),
                 alpha=self._block_alpha_label(block_key),
                 font_size=self._block_font_label(block_key),
-                size=SIZE_PRESET_LABELS.get(self._block_size_preset(block_key), "M — 100%"),
-                auto_rule=AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]),
+                size=self._size_label(self._block_size_preset(block_key)),
+                auto_rule=tr(AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"])),
                 hotkey=str(settings.get(f"{block_key}_hotkey", "") or "—") or "—",
             ))
 
@@ -2512,46 +2526,46 @@ class ColonialHelperApp:
             items = []
             for section_key, (text, _attributes) in sections.items():
                 setting = option_key(block_key, section_key)
-                items.append((setting, text, bool(settings.get(setting, True))))
-            content.append((block_key, block_key, items))
+                items.append((setting, tr(text), bool(settings.get(setting, True))))
+            content.append((block_key, tr(BLOCK_LABELS.get(block_key, block_key)), items))
 
-        anchor_values = [ANCHOR_LABELS[key] for key in ANCHOR_KEYS]
+        anchor_values = [tr(ANCHOR_LABELS[key]) for key in ANCHOR_KEYS]
         anchors = []
         for block_key in self.overlay_manager.BLOCKS:
             current = settings.get(f"{block_key}_anchor", "custom")
-            anchors.append((block_key, BLOCK_LABELS.get(block_key, block_key),
-                            ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"]),
+            anchors.append((block_key, tr(BLOCK_LABELS.get(block_key, block_key)),
+                            tr(ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"])),
                             anchor_values))
 
-        carrier_labels = list(CARRIER_FILTERS.items())
+        carrier_labels = [(mode, tr(text)) for mode, text in CARRIER_FILTERS.items()]
         state = OverlayPageState(
             alpha=float(settings.get("alpha", 0.90)),
             font_family=str(settings.get("font_family", "Consolas")),
             font_size=int(settings.get("font_size", 10) or 10),
             font_choices=("Consolas", "Courier New", "Segoe UI", "Arial", "Lucida Console"),
-            alpha_choices=tuple(self.OVERLAY_ALPHA_CHOICES),
+            alpha_choices=tuple(tr(value) for value in self.OVERLAY_ALPHA_CHOICES),
             hotkey_choices=tuple(self.OVERLAY_HOTKEY_CHOICES),
             lock_hotkey_choices=tuple(self.OVERLAY_LOCK_HOTKEY_CHOICES),
-            size_labels=[SIZE_PRESET_LABELS[name] for name, _factor in SIZE_PRESETS],
-            rule_labels=[AUTO_RULE_LABELS[name] for name in AUTO_RULES],
+            size_labels=[self._size_label(name) for name, _factor in SIZE_PRESETS],
+            rule_labels=[tr(AUTO_RULE_LABELS[name]) for name in AUTO_RULES],
             rows=rows,
             anchors=anchors,
             screen_choices=screen_choices,
             screens_text=self._overlay_screens_text(),
-            all_size="M — 100%",
+            all_size=self._size_label("M"),
             lock_hotkey=str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—",
             auto_rules=bool(settings.get("auto_rules_enabled", False)),
             attach_game=bool(settings.get("attach_to_game", True)),
             idle_choices=[self._idle_label(seconds) for seconds in IDLE_TIMEOUTS],
             idle=self._idle_label(int(settings.get("idle_timeout", 0) or 0)),
-            ship_blocks=[(key, text,
+            ship_blocks=[(key, tr(text),
                           bool(settings.get(f"show_{key}", True)))
                          for key, text in self.OVERLAY_SHIP_BLOCKS],
             ship_modules=str(settings.get("ship_modules_view", "important")),
             content=content,
-            carrier_filters=[(mode, text) for mode, text in carrier_labels],
-            carrier_filter=CARRIER_FILTERS.get(
-                settings.get("carrier_filter", "all"), list(CARRIER_FILTERS.values())[0]),
+            carrier_filters=carrier_labels,
+            carrier_filter=tr(CARRIER_FILTERS.get(
+                settings.get("carrier_filter", "all"), list(CARRIER_FILTERS.values())[0])),
             carrier_search=str(settings.get("carrier_search", "") or ""),
             profiles=self.overlay_manager.list_profiles(),
             profile=self.overlay_manager.active_profile,
@@ -2602,12 +2616,15 @@ class ColonialHelperApp:
 
     # ---------- Блоки: персональные настройки ----------
     OVERLAY_ALPHA_CHOICES = ("общая", "40%", "55%", "70%", "85%", "100%")
+    #: Колонка «Шрифт»: «общий» — наследовать общий размер, остальное — кегль.
     OVERLAY_FONT_CHOICES = ("общий", "8", "9", "10", "11", "12", "14", "16", "18")
     OVERLAY_HOTKEY_CHOICES = ("—", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8",
                               "F9", "F10", "F11", "F12")
     OVERLAY_LOCK_HOTKEY_CHOICES = ("—", "Ctrl+F12", "Ctrl+F11", "Ctrl+F10", "Shift+F12",
                                    "Alt+F12", "Ctrl+Shift+F12", "Ctrl+Shift+L")
-    #: Колонка «Экран»: блок с игрой или отвязан и стоит на экране N.
+    #: Колонка «Экран»: ключ значения «блок живёт поверх игры». Подпись берётся
+    #: из ``helper_pages.screen_with_game_label`` — ключ перевода должен быть
+    #: один на оба модуля, иначе сравнение подписей разъедется.
     OVERLAY_SCREEN_WITH_GAME = "с игрой"
     #: Блоки корабля (SHIP) с подписями: галочки «показывать» на вкладке оверлея.
     OVERLAY_SHIP_BLOCKS = (
@@ -2624,25 +2641,31 @@ class ColonialHelperApp:
         ("modules", "Модули"),
     )
 
+    def _size_label(self, preset: str) -> str:
+        """Подпись пресета размера на текущем языке."""
+        return tr(SIZE_PRESET_LABELS.get(preset, SIZE_PRESET_LABELS["M"]))
+
     def _idle_label(self, seconds: int) -> str:
         """Подпись для выбора таймера простоя."""
         seconds = int(seconds or 0)
         if seconds <= 0:
-            return "не скрывать"
+            return tr("не скрывать")
         if seconds < 60:
-            return f"{seconds} с"
-        return f"{seconds // 60} мин"
+            return tr("{seconds} с", seconds=seconds)
+        return tr("{minutes} мин", minutes=seconds // 60)
 
     def _idle_seconds(self, label: str) -> int:
-        """Обратно: подпись -> секунды."""
-        text = (label or "").strip().lower()
-        if not text or text.startswith("не "):
-            return 0
-        if "мин" in text:
-            digits = "".join(ch for ch in text if ch.isdigit())
-            return int(digits or 0) * 60
+        """Обратно: подпись -> секунды (по той же таблице, что и подписи).
+
+        Раньше разбирались слова «мин»/«с»: на другом языке разбор молча давал
+        ноль и таймер простоя выключался.
+        """
+        text = (label or "").strip()
+        for seconds in IDLE_TIMEOUTS:
+            if self._idle_label(seconds) == text:
+                return int(seconds)
         digits = "".join(ch for ch in text if ch.isdigit())
-        return int(digits or 0)
+        return int(digits or 0) * (60 if ":" in text else 1) if digits else 0
 
     def _block_size_preset(self, key: str) -> str:
         """Ближайший пресет к текущему размеру блока."""
@@ -2661,12 +2684,12 @@ class ColonialHelperApp:
     # -- подписи и разбор значений --
     def _overlay_screen_choices(self) -> list:
         """Значения колонки «Экран»: «с игрой» и номера подключённых экранов."""
-        choices = [self.OVERLAY_SCREEN_WITH_GAME]
+        choices = [_screen_with_game_label()]
         try:
             monitors = self.overlay_manager.monitors()
         except Exception:
             monitors = []
-        choices.extend(f"экран {monitor.index}" for monitor in monitors)
+        choices.extend(_screen_label(monitor.index) for monitor in monitors)
         return choices
 
     def _overlay_screens_text(self) -> str:
@@ -2680,40 +2703,41 @@ class ColonialHelperApp:
         parts = []
         for monitor in monitors:
             width, height = monitor.size
-            text = f"экран {monitor.index} — {width}×{height}"
+            text = tr("экран {index} — {width}×{height}",
+                      index=monitor.index, width=width, height=height)
             if monitor.primary:
-                text += " (основной)"
+                text += tr(" (основной)")
             parts.append(text)
-        return "Экраны: " + "; ".join(parts)
+        return tr("Экраны: {list}", list="; ".join(parts))
 
     def _block_screen_label(self, key: str) -> str:
         """Текущее значение колонки «Экран» для блока."""
         manager = self.overlay_manager
         if not manager.block_detached(key):
-            return self.OVERLAY_SCREEN_WITH_GAME
+            return _screen_with_game_label()
         try:
             monitor = manager.block_monitor(key)
         except Exception:
             monitor = None
-        return f"экран {monitor.index}" if monitor is not None else "экран 1"
+        return _screen_label(monitor.index if monitor is not None else 1)
 
     def _block_alpha_label(self, key: str) -> str:
         value = self.overlay_manager.settings.get(f"{key}_alpha")
-        return "общая" if value is None else f"{int(round(float(value) * 100))}%"
+        return tr("общая") if value is None else f"{int(round(float(value) * 100))}%"
 
     def _block_font_label(self, key: str) -> str:
         value = self.overlay_manager.settings.get(f"{key}_font_size")
-        return "общий" if value in (None, "") else str(int(value))
+        return tr("общий") if value in (None, "") else str(int(value))
 
     def _rule_key_by_label(self, label: str) -> str:
         for rule_key, text in AUTO_RULE_LABELS.items():
-            if text == label:
+            if tr(text) == label:
                 return rule_key
         return "always"
 
     def _preset_key_by_label(self, label: str) -> str:
-        for name, text in SIZE_PRESET_LABELS.items():
-            if text == label:
+        for name in SIZE_PRESET_LABELS:
+            if self._size_label(name) == label:
                 return name
         return "M"
 
@@ -2739,8 +2763,10 @@ class ColonialHelperApp:
         if value is None:
             value = self.overlay_page.block_value(key, "screen")
         value = str(value or "").strip()
-        label = BLOCK_LABELS.get(key, key)
-        if value == self.OVERLAY_SCREEN_WITH_GAME or not value:
+        label = tr(BLOCK_LABELS.get(key, key))
+        # «С игрой» — это значение без номера экрана; сравнивать подпись нельзя,
+        # иначе на другом языке блок «отвязывался» вместо возврата к игре.
+        if not "".join(ch for ch in value if ch.isdigit()):
             self.overlay_manager.set_block_detached(key, False, move_to_game=True)
             self.log(f"{label}: снова с игрой — виден только поверх игры", "info")
         else:
@@ -2787,7 +2813,7 @@ class ColonialHelperApp:
     def _on_block_alpha_changed(self, key: str, label=None):
         if label is None:
             label = self.overlay_page.block_value(key, "alpha")
-        if label == "общая":
+        if str(label) == tr("общая"):
             self.overlay_manager.set_block_alpha(key, None)
         else:
             digits = "".join(ch for ch in str(label) if ch.isdigit())
@@ -2796,7 +2822,7 @@ class ColonialHelperApp:
     def _on_block_font_changed(self, key: str, label=None):
         if label is None:
             label = self.overlay_page.block_value(key, "font_size")
-        if label == "общий":
+        if str(label) == tr("общий"):
             self.overlay_manager.set_block_font_size(key, None)
         else:
             digits = "".join(ch for ch in str(label) if ch.isdigit())
@@ -2862,7 +2888,7 @@ class ColonialHelperApp:
 
     def _on_carrier_filter_changed(self):
         label = self.overlay_page.carrier_filter_text()
-        mode = next((key for key, text in CARRIER_FILTERS.items() if text == label), "all")
+        mode = next((key for key, text in CARRIER_FILTERS.items() if tr(text) == label), "all")
         self.overlay_manager.set_carrier_filter(mode=mode)
 
     def _on_carrier_search_changed(self):
@@ -2881,11 +2907,10 @@ class ColonialHelperApp:
             page.set_block_value(key, "screen", self._block_screen_label(key))
             page.set_block_value(key, "alpha", self._block_alpha_label(key))
             page.set_block_value(key, "font_size", self._block_font_label(key))
-            page.set_block_value(key, "size",
-                                 SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
+            page.set_block_value(key, "size", self._size_label(self._block_size_preset(key)))
             rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
             page.set_block_value(key, "auto_rule",
-                                 AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
+                                 tr(AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"])))
             page.set_block_value(key, "hotkey",
                                  str(settings.get(f"{key}_hotkey", "") or "—") or "—")
         page.set_idle_text(self._idle_label(int(settings.get("idle_timeout", 0) or 0)))
@@ -2893,7 +2918,7 @@ class ColonialHelperApp:
             str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—")
         page.set_screens_text(self._overlay_screens_text())
         page.set_auto_rules(bool(settings.get("auto_rules_enabled", False)))
-        page.set_all_size_text("M — 100%")
+        page.set_all_size_text(self._size_label("M"))
 
     def _on_overlay_settings_changed(self, key: str, name: str, _value):
         """Настройка изменилась из оверлея (например, по горячей клавише)."""
@@ -2907,16 +2932,17 @@ class ColonialHelperApp:
         for key in self.overlay_manager.BLOCKS:
             combo = str(self.overlay_manager.settings.get(f"{key}_hotkey", "") or "")
             if combo:
-                lines.append(f"{combo} — {BLOCK_LABELS.get(key, key)}")
+                lines.append(f"{combo} — {tr(BLOCK_LABELS.get(key, key))}")
         all_combo = str(self.overlay_manager.settings.get("toggle_all_hotkey", "F12") or "")
         if all_combo:
-            lines.append(f"{all_combo} — показать/скрыть все блоки")
+            lines.append(tr("{combo} — показать/скрыть все блоки", combo=all_combo))
         lock_combo = str(self.overlay_manager.settings.get("lock_toggle_hotkey", "Ctrl+F12") or "")
         if lock_combo:
-            lines.append(f"{lock_combo} — закрепить/открепить все блоки")
-        hint = "Назначено: " + "; ".join(lines) if lines else "Клавиши не назначены."
+            lines.append(tr("{combo} — закрепить/открепить все блоки", combo=lock_combo))
+        hint = (tr("Назначено: {list}", list="; ".join(lines)) if lines
+                else tr("Клавиши не назначены."))
         if not self.overlay_manager.hotkeys.available:
-            hint += "  (системные горячие клавиши работают только в Windows)"
+            hint += tr("  (системные горячие клавиши работают только в Windows)")
         self.overlay_page.set_hotkey_hint_text(hint)
 
     def _on_toggle_overlay(self):
@@ -2969,8 +2995,8 @@ class ColonialHelperApp:
         name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             name = ask_string(
-                "Профиль раскладки",
-                "Имя профиля (например: Хаул, Эксобиология, Бой):",
+                tr("Профиль раскладки"),
+                tr("Имя профиля (например: Хаул, Эксобиология, Бой):"),
                 parent=self.root,
             )
             if not name:
@@ -3002,7 +3028,8 @@ class ColonialHelperApp:
         name = (self.overlay_page.profile_text() or "").strip()
         if not name:
             return
-        if not ask_yes_no("Удалить профиль", f"Удалить профиль «{name}»?", parent=self.root):
+        if not ask_yes_no(tr("Удалить профиль"),
+                          tr("Удалить профиль «{name}»?", name=name), parent=self.root):
             return
         if self.overlay_manager.delete_profile(name):
             self._refresh_profile_combo("")
@@ -3017,7 +3044,7 @@ class ColonialHelperApp:
     def _on_anchor_changed(self, block_key: str, label: str):
         anchor = "custom"
         for key, text in ANCHOR_LABELS.items():
-            if text == label:
+            if tr(text) == label:
                 anchor = key
                 break
         self.overlay_manager.snap_block(block_key, anchor)
@@ -3051,11 +3078,12 @@ class ColonialHelperApp:
         try:
             area = self.overlay_manager.overlay_area()
             state = self.overlay_manager.game_state()
-            source = "экран с игрой" if (state.running and state.monitor) else "основной экран"
-            self.overlay_page.set_info_text(
-                f"Область раскладки: {source} {area[2]}x{area[3]} "
-                f"(сдвиг {area[0]},{area[1]}), отступ "
-                f"{self.overlay_manager.settings.get('layout_margin', 24)} px")
+            source = (tr("экран с игрой") if (state.running and state.monitor)
+                      else tr("основной экран"))
+            self.overlay_page.set_info_text(tr(
+                "Область раскладки: {source} {width}x{height} (сдвиг {x},{y}), отступ {margin} px",
+                source=source, width=area[2], height=area[3], x=area[0], y=area[1],
+                margin=self.overlay_manager.settings.get("layout_margin", 24)))
         except Exception:
             pass
 
