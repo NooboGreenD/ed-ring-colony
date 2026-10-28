@@ -26,12 +26,14 @@ class BuildExeTests(unittest.TestCase):
         for module in ("ui_qt", "launcher_window", "launcher_content", "launcher_settings"):
             self.assertIn(module, build_exe.LAUNCHER_MODULES)
 
-    def test_tk_facade_is_not_frozen_into_the_launcher_any_more(self):
-        # qt_compat belongs to the updatable code bundle: a frozen copy would
-        # shadow updated program modules inside the launcher EXE.
-        for module in ("qt_compat", "qt_lazy", "qt_factions"):
+    def test_retired_tk_layers_are_not_frozen_any_more(self):
+        # Эмуляционный слой Tk удалён из кода: если он вернётся в сборку,
+        # значит его случайно импортируют обратно.
+        for module in ("qt_compat", "qt_lazy", "qt_factions", "tk_factions"):
             self.assertNotIn(module, build_exe.ALWAYS_INCLUDE)
             self.assertNotIn(module, build_exe.LAUNCHER_MODULES)
+        self.assertFalse((HERE.parent / "qt_compat.py").exists())
+        self.assertFalse((HERE.parent / "qt_lazy.py").exists())
 
     def test_tk_and_ttkbootstrap_are_not_runtime_dependencies(self):
         self.assertFalse(any(name == "tkinter" or name.startswith("tkinter.")
@@ -67,11 +69,18 @@ class BuildPreflightTests(unittest.TestCase):
                 build_installer.main()
 
     def test_qtextcursor_is_not_imported_from_widgets(self):
+        """`QTextCursor` живёт в QtGui; из QtWidgets он не импортируется."""
         import ast
-        tree = ast.parse((HERE.parent / 'qt_compat.py').read_text(encoding='utf-8'))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == 'PySide6.QtWidgets':
-                self.assertNotIn('QTextCursor', [alias.name for alias in node.names])
+
+        offenders = []
+        for path in sorted(HERE.parent.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.ImportFrom)
+                        and node.module == "PySide6.QtWidgets"
+                        and "QTextCursor" in [alias.name for alias in node.names]):
+                    offenders.append(path.name)
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

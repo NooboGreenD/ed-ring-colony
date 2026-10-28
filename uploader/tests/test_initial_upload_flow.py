@@ -1,10 +1,9 @@
-"""Сквозной smoke-тест первичной загрузки без настоящего Tk.
+"""Сквозной smoke-тест первичной загрузки на настоящем Qt.
 
 `colonial_helper.py` — GUI-приложение, но вся логика первичной загрузки
-(`_do_upload_thread`) должна работать и без реального окна. Здесь tkinter и
-ttkbootstrap подменяются заглушками, приложение конструируется, и реальный
-поток загрузки прогоняется на синтетических журналах с подменённым
-транспортом сайта.
+(`_do_upload_thread`) должна работать и без показа окна. Здесь строится
+настоящий корень из Qt-виджетов, диалоги выключены (`ui_qt.DIALOGS_ENABLED`),
+так что модальных окон никто не ждёт, а транспорт сайта подменён.
 
 Проверяется главное: доставки и snapshots уходят на сайт пачками, история не
 дёргает EDSM/Inara/Raven, повторный импорт тех же файлов ничего не делает.
@@ -13,7 +12,6 @@ ttkbootstrap подменяются заглушками, приложение �
 import json
 import sys
 import time
-import types
 import unittest
 import tempfile
 from pathlib import Path
@@ -23,173 +21,24 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 
-# ---------------------------------------------------------------------------
-# Заглушки tkinter / ttkbootstrap / pyperclip
-# ---------------------------------------------------------------------------
-class _ConstantsModule(types.ModuleType):
-    """Модуль, отдающий строковую константу для любого имени (LEFT, BOTH, ...)."""
+def install_gui_stubs():
+    """Подготовить Qt к прогону: один QApplication, без модальных диалогов.
 
-    def __getattr__(self, name):
-        if name.startswith("__"):
-            raise AttributeError(name)
-        return str(name)
+    Диалоги Helper теперь нативные (`ui_qt`); в прогоне они выключены —
+    модальное окно ждало бы клика, которого нет. Тесты, которым важен ответ,
+    подменяют `colonial_helper.ask_yes_no` и соседей сами.
+    """
+    import ui_qt
 
-
-class _FakeModule(types.ModuleType):
-    """Модуль-заглушка: любой атрибут — MagicMock."""
-
-    def __getattr__(self, name):
-        if name.startswith("__"):
-            raise AttributeError(name)
-        value = mock.MagicMock(name=name)
-        setattr(self, name, value)
-        return value
-
-
-#: Оригинальное состояние `qt_lazy` до подмены: без восстановления заглушки
-#: утекали в следующие тесты и ломали настоящие Qt-виджеты.
-_LAZY_SNAPSHOT = None
-_LAZY_NAMESPACES = ("tk", "ttk", "tb", "messagebox", "filedialog", "simpledialog")
-
-
-def _lazy_state():
-    import qt_lazy
-
-    return {
-        "module": dict(vars(qt_lazy)),
-        "namespaces": {name: dict(vars(getattr(qt_lazy, name)))
-                       for name in _LAZY_NAMESPACES},
-    }
-
-
-def _restore_object(obj, snapshot):
-    for key in [key for key in vars(obj) if key not in snapshot]:
-        try:
-            delattr(obj, key)
-        except AttributeError:
-            pass
-    for key, value in snapshot.items():
-        if vars(obj).get(key) is not value:
-            setattr(obj, key, value)
+    ui_qt.ensure_app()
+    ui_qt.DIALOGS_ENABLED = False
 
 
 def restore_gui_stubs():
-    """Вернуть `qt_lazy` и `sys.modules` в состояние до подмены."""
-    global _LAZY_SNAPSHOT
-    if _LAZY_SNAPSHOT is not None:
-        import qt_lazy
-
-        _restore_object(qt_lazy, _LAZY_SNAPSHOT["module"])
-        for name in _LAZY_NAMESPACES:
-            _restore_object(getattr(qt_lazy, name), _LAZY_SNAPSHOT["namespaces"][name])
-        _LAZY_SNAPSHOT = None
-    for name in ("tkinter", "ttkbootstrap", "ttkbootstrap.constants",
-                 "ttkbootstrap.scrolled", "pyperclip"):
-        sys.modules.pop(name, None)
+    """Вернуть диалоги остальным тестам (флаг общий на процесс)."""
     import ui_qt
 
     ui_qt.DIALOGS_ENABLED = True
-
-
-def install_gui_stubs():
-    for name in ("tkinter", "ttkbootstrap", "ttkbootstrap.constants",
-                 "ttkbootstrap.scrolled", "pyperclip"):
-        sys.modules.pop(name, None)
-
-    tkinter_stub = _FakeModule("tkinter")
-    sys.modules["tkinter"] = tkinter_stub
-
-    # Tk-переменные должны хранить реальные значения (tk.DoubleVar и т.п.).
-    class _TkVar:
-        def __init__(self, master=None, value=None, name=None):
-            self._value = value
-
-        def get(self):
-            return self._value
-
-        def set(self, value):
-            self._value = value
-
-        def trace_add(self, *args, **kwargs):
-            return ""
-
-    for var_name in ("BooleanVar", "IntVar", "DoubleVar", "StringVar", "Variable"):
-        setattr(tkinter_stub, var_name, _TkVar)
-
-    ttkbootstrap_stub = _FakeModule("ttkbootstrap")
-    # Frames have identity in the real UI (sidebar pages are separate parent
-    # windows); return unique stubs so navigation tests model that correctly.
-    ttkbootstrap_stub.Frame.side_effect = lambda *args, **kwargs: mock.MagicMock(name="Frame")
-    constants_stub = _ConstantsModule("ttkbootstrap.constants")
-    scrolled_stub = _FakeModule("ttkbootstrap.scrolled")
-
-    # Переменные Tk должны хранить реальные значения: по ним форматируются
-    # подписи ({alpha_var.get():.0%}) и читаются галочки.
-    class _Var:
-        def __init__(self, master=None, value=None, name=None):
-            self._value = value
-
-        def get(self):
-            return self._value
-
-        def set(self, value):
-            self._value = value
-
-        def trace_add(self, *args, **kwargs):
-            return ""
-
-    for var_name in ("BooleanVar", "IntVar", "DoubleVar", "StringVar", "Variable"):
-        setattr(ttkbootstrap_stub, var_name, _Var)
-
-    def ScrolledText(*args, **kwargs):
-        # Важно вернуть именно MagicMock: app обращается к log_text.text.<...>
-        widget = mock.MagicMock(name="ScrolledText")
-        widget.text = mock.MagicMock(name="ScrolledText.text")
-        return widget
-
-    scrolled_stub.ScrolledText = ScrolledText
-    ttkbootstrap_stub.constants = constants_stub
-    ttkbootstrap_stub.scrolled = scrolled_stub
-    sys.modules["ttkbootstrap"] = ttkbootstrap_stub
-    sys.modules["ttkbootstrap.constants"] = constants_stub
-    sys.modules["ttkbootstrap.scrolled"] = scrolled_stub
-    sys.modules["pyperclip"] = _FakeModule("pyperclip")
-
-    # `from ttkbootstrap.constants import *` требует непустой __all__.
-    # Значения берутся из __getattr__ заглушки (любое имя -> строка).
-    constants_stub.__all__ = (
-        "LEFT", "RIGHT", "TOP", "BOTTOM", "BOTH", "X", "Y", "N", "S", "E", "W",
-        "NE", "NW", "SE", "SW", "CENTER", "END", "NORMAL", "DISABLED", "ACTIVE",
-        "VERTICAL", "HORIZONTAL", "WORD", "CHAR", "NONE", "SOLID", "RAISED",
-        "TRUE", "FALSE", "READONLY", "HIDDEN",
-    )
-
-    # Keep controller tests independent of the host's Qt/OpenGL runtime while
-    # the shipped application uses the real PySide-backed factories.
-    import qt_lazy
-
-    global _LAZY_SNAPSHOT
-    if _LAZY_SNAPSHOT is None:
-        _LAZY_SNAPSHOT = _lazy_state()
-    for name in ("Label","Frame","Canvas","Toplevel","Text","Menu","Scrollbar","StringVar","IntVar","DoubleVar","BooleanVar","TclError"):
-        setattr(qt_lazy.tk,name,getattr(tkinter_stub,name))
-    for name in ("Frame","Label","Button","Checkbutton","Radiobutton","Entry","Combobox",
-                 "Progressbar","Scale","Separator","Scrollbar","Notebook","Treeview","LabelFrame","Style","Window","Canvas","Text","Menu"):
-        setattr(qt_lazy.tb,name,getattr(ttkbootstrap_stub,name))
-        setattr(qt_lazy.ttk,name,getattr(ttkbootstrap_stub,name))
-    qt_lazy.tb.BooleanVar=ttkbootstrap_stub.BooleanVar;qt_lazy.tb.StringVar=ttkbootstrap_stub.StringVar
-    qt_lazy.tk.BooleanVar=tkinter_stub.BooleanVar;qt_lazy.tk.StringVar=tkinter_stub.StringVar
-    qt_lazy.ScrolledText=ScrolledText
-    qt_lazy.QVBoxLayout=mock.MagicMock(name="QVBoxLayout")
-    qt_lazy.tk.TclError=RuntimeError
-    # Диалоги Helper теперь нативные (ui_qt). В прогоне они выключены: модальное
-    # окно ждало бы клика, которого нет. Тесты, которым важен ответ, подменяют
-    # `colonial_helper.ask_yes_no` и соседей сами.
-    import ui_qt
-
-    ui_qt.DIALOGS_ENABLED = False
-    qt_lazy.ensure_app=mock.MagicMock(name="ensure_app")
-    return ttkbootstrap_stub
 
 
 #: Живые корни, созданные `make_root()` (см. ограничение в конструкторе).
@@ -209,7 +58,7 @@ def make_root():
 
     from ui_qt import ensure_app
 
-    app = ensure_app()
+    ensure_app()
 
     class _TestRoot(QWidget):
         def __init__(self):
@@ -313,7 +162,7 @@ class _FakeResponse:
 
 class UploadFlowTests(unittest.TestCase):
     def setUp(self):
-        self.stub = install_gui_stubs()
+        install_gui_stubs()
         for name in ("colonial_helper", "api_client", "event_dispatch",
                      "journal_parser", "overlay", "ship_tracker", "route_tracker",
                      "game_monitor", "exobiology"):

@@ -22,10 +22,6 @@ class ExobioTabTests(unittest.TestCase):
         from test_initial_upload_flow import install_gui_stubs, make_root
 
         install_gui_stubs()
-        toolkit = sys.modules["ttkbootstrap"]
-        for widget_name in ("Frame", "Button", "Label"):
-            widget = getattr(toolkit, widget_name)
-            widget.side_effect = lambda *args, _name=widget_name, **kwargs: mock.MagicMock(name=_name)
         for name in ("colonial_helper", "api_client", "event_dispatch", "journal_parser",
                      "overlay", "ship_tracker", "route_tracker", "game_monitor",
                      "exobiology", "colonisation", "carrier", "raven_colonial_api"):

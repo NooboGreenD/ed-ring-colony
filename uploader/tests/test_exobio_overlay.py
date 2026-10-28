@@ -19,36 +19,14 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-from test_overlay_management import _ensure_gui_stubs  # noqa: E402
-
-_ensure_gui_stubs()
+from PySide6.QtCore import Qt  # noqa: E402
 
 from overlay import ExobiologyOverlay  # noqa: E402
-from test_overlay_layout import _FakeMaster  # noqa: E402
-
-
-class _Master(_FakeMaster):
-    """Tk-заглушка, которая запоминает отложенные вызовы, а не исполняет их."""
-
-    def __init__(self):
-        super().__init__()
-        self.scheduled = []
-        self.cancelled = []
-
-    def after(self, delay, callback=None):
-        self.scheduled.append((delay, callback))
-        return f"after-{len(self.scheduled)}"
-
-    def after_cancel(self, after_id):
-        self.cancelled.append(after_id)
 
 
 def _text(widget) -> str:
-    """Последний текст, который виджету передали в config()."""
-    call = widget.config.call_args
-    if not call:
-        return ""
-    return str(call.kwargs.get("text", ""))
+    """Текст подписи: у Qt он хранится в самом виджете."""
+    return str(widget.text())
 
 
 def state(**overrides):
@@ -79,28 +57,21 @@ def state(**overrides):
 
 
 class _OverlayTestCase(unittest.TestCase):
-    """База: каждый `tk.Label` — свой мок, иначе все подписи сливаются в один.
-
-    Общая заглушка GUI подменяет в tkinter только Canvas/Toplevel/Frame, а блок
-    Exobio рисуется обычными `tk.Label`.
-    """
+    """База: настоящее окно EXOBIO на Qt, без подмены виджетов."""
 
     def setUp(self):
-        # Патчим `tk` именно того экземпляра модуля, откуда взят класс:
-        # другие тесты делают `sys.modules.pop("overlay")`, и модуль
-        # импортируется заново — `sys.modules["overlay"]` может быть уже
-        # другой копией, чем `ExobiologyOverlay.__module__`.
-        tk_module = ExobiologyOverlay.__init__.__globals__["tk"]
-        patcher = mock.patch.object(
-            tk_module, "Label",
-            side_effect=lambda *args, **kwargs: mock.MagicMock(name="Label"))
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.master = _Master()
-        self.overlay = ExobiologyOverlay(self.master, {})
+        self.overlay = ExobiologyOverlay(None, {})
+        self.addCleanup(self.overlay.destroy)
 
 
 class ExobioOverlayRenderTests(_OverlayTestCase):
+
+    def wide_overlay(self):
+        """Блок шириной 640 px: таблица родов в него влезает целиком."""
+        overlay = ExobiologyOverlay(None, {"font_family": "Consolas", "font_size": 10,
+                                           "exobio_width": 640})
+        self.addCleanup(overlay.destroy)
+        return overlay
 
     def test_empty_state_shows_hint(self):
         self.overlay.update_exobiology(None)
@@ -164,8 +135,9 @@ class ExobioOverlayRenderTests(_OverlayTestCase):
 
     def test_predictions_show_percent_and_reason(self):
         """Таблица: род, процент, оценка и причина — одной строкой на род."""
-        self.overlay.update_exobiology(state())
-        text = _text(self.overlay.predict_label)
+        overlay = self.wide_overlay()
+        overlay.update_exobiology(state())
+        text = _text(overlay.predict_label)
         self.assertIn("род", text)
         self.assertIn("Tussock", text)
         self.assertIn("100%", text)
@@ -173,6 +145,17 @@ class ExobioOverlayRenderTests(_OverlayTestCase):
         # Одна строка на род — ради этого режим таблицы и заводили.
         self.assertEqual(len([line for line in text.split("\n") if line.startswith("Tussock")]), 1)
         self.assertNotIn("###", text)
+
+    def test_narrow_block_prints_predictions_without_a_table(self):
+        """В узкий блок таблица не влезает — печатаем строки с переносом.
+
+        Иначе Qt обрезал бы последний столбец, а там как раз причина.
+        """
+        self.overlay.update_exobiology(state())
+        text = _text(self.overlay.predict_label)
+        self.assertIn("Tussock", text)
+        self.assertIn("атмосфера: thin", text)
+        self.assertNotIn("род ", text, "таблица в узком блоке не печатается")
 
     def test_predictions_table_keeps_list_mode_available(self):
         """Старый «ленточный» режим остаётся: его выбирают настройки блока."""
@@ -254,48 +237,40 @@ class ExobioOverlayRenderTests(_OverlayTestCase):
 class ExobioOverlayTickerTests(_OverlayTestCase):
     """Отсчёт обязан тикать и без новых данных журнала."""
 
+    PENDING = {"species": "Tussock", "samples": 1, "complete": False,
+               "wait_seconds": 20}
+
     def test_tick_scheduled_while_sample_pending(self):
-        self.overlay.update_exobiology(state(
-            organics=[{"species": "Tussock", "samples": 1, "complete": False,
-                       "wait_seconds": 20}],
-        ))
-        self.assertTrue(self.master.scheduled, "таймер не запланирован")
-        self.assertEqual(self.master.scheduled[-1][0], 1000)
+        self.overlay.update_exobiology(state(organics=[dict(self.PENDING)]))
+        self.assertIsNotNone(self.overlay._tick, "таймер не запланирован")
+        self.assertTrue(self.overlay._tick.isActive(), "таймер не запущен")
+        self.assertEqual(self.overlay._tick.interval(), 1000)
 
     def test_no_tick_when_nothing_pending(self):
         self.overlay.update_exobiology(state(organics=[]))
-        self.assertEqual(self.master.scheduled, [])
+        self.assertIsNone(self.overlay._tick)
 
     def test_tick_reschedules_and_destroy_cancels_it(self):
-        self.overlay.update_exobiology(state(
-            organics=[{"species": "Tussock", "samples": 1, "complete": False,
-                       "wait_seconds": 20}],
-        ))
-        first = self.master.scheduled[-1][1]
-        first()  # имитируем срабатывание таймера
-        self.assertEqual(len(self.master.scheduled), 2, "таймер не перезапущен")
-        before = len(self.master.cancelled)
+        self.overlay.update_exobiology(state(organics=[dict(self.PENDING)]))
+        first = self.overlay._tick
+        self.overlay._on_tick()  # имитируем срабатывание таймера
+        self.assertIsNot(first, self.overlay._tick, "таймер не перезапущен")
+        self.assertTrue(self.overlay._tick.isActive())
         self.overlay.destroy()
-        self.assertEqual(len(self.master.cancelled), before + 1,
-                         "destroy() не отменил отложенный тик")
+        self.assertIsNone(self.overlay._tick, "destroy() не отменил тик")
         self.assertIsNone(self.overlay._tick_id)
 
     def test_previous_tick_is_cancelled_on_update(self):
-        pending = state(organics=[{"species": "Tussock", "samples": 1,
-                                   "complete": False, "wait_seconds": 20}])
+        pending = state(organics=[dict(self.PENDING)])
         self.overlay.update_exobiology(pending)
+        first = self.overlay._tick
         self.overlay.update_exobiology(pending)
-        self.assertTrue(self.master.cancelled, "старый таймер не отменён")
+        self.assertFalse(first.isActive(), "старый таймер не отменён")
 
     def test_tick_failure_does_not_raise(self):
-        self.overlay.update_exobiology(state(
-            organics=[{"species": "Tussock", "samples": 1, "complete": False,
-                       "wait_seconds": 20}],
-        ))
-        callback = self.master.scheduled[-1][1]
-        self.overlay._state = None  # рендер упадёт
+        self.overlay.update_exobiology(state(organics=[dict(self.PENDING)]))
         self.overlay._render = mock.Mock(side_effect=RuntimeError("boom"))
-        callback()  # не должно выбросить исключение
+        self.overlay._on_tick()  # не должно выбросить исключение
 
 
 class ExobioFingerprintTests(unittest.TestCase):
@@ -303,8 +278,10 @@ class ExobioFingerprintTests(unittest.TestCase):
 
     @staticmethod
     def _fingerprint_of(st):
-        module = sys.modules[ExobiologyOverlay.__module__]
-        return module.OverlayManager._exobiology_fingerprint(st)
+        # Окна блоков живут в `overlay_blocks`, менеджер — в `overlay`.
+        from overlay import OverlayManager
+
+        return OverlayManager._exobiology_fingerprint(st)
 
     def test_countdown_does_not_change_fingerprint(self):
         one = self._fingerprint_of(state(organics=[
@@ -332,32 +309,18 @@ class ExobioFingerprintTests(unittest.TestCase):
 class ExobioFiltersRenderTests(unittest.TestCase):
     """Фильтр по родам и раздел «Поиск планет» в окне EXOBIO."""
 
-    def setUp(self):
-        # В общей GUI-заглушке `tk.Label(...)` возвращает один и тот же
-        # MagicMock на все вызовы — не различишь, что написано в конкретной
-        # подписи. Здесь каждый Label свой, как в настоящем Tk.
-        import overlay
-
-        patcher = mock.patch.object(
-            overlay.tk, "Label",
-            side_effect=lambda *args, **kwargs: mock.MagicMock(name="Label"),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def _overlay(self, settings=None):
         from overlay import ExobiologyOverlay
 
         base = {"font_family": "Consolas", "font_size": 10}
         base.update(settings or {})
-        return ExobiologyOverlay(_Master(), base)
+        overlay = ExobiologyOverlay(None, base)
+        self.addCleanup(overlay.destroy)
+        return overlay
 
     @staticmethod
     def _text(widget):
-        call = widget.config.call_args_list[-1]
-        if call.kwargs.get("text") is not None:
-            return str(call.kwargs["text"])
-        return str(call.args[0]) if call.args else ""
+        return str(widget.text())
 
     def test_planet_section_lists_found_planets(self):
         overlay = self._overlay({"exobio_show_planet_search": True})
@@ -447,10 +410,11 @@ class ExobioFiltersRenderTests(unittest.TestCase):
                          "bio_signals": 0, "distance_ls": 900.0,
                          "matched": ["Ледяная с посадкой"]}],
         })
-        overlay.planets_label.pack_forget.assert_called()
+        self.assertTrue(overlay.planets_label.isHidden(),
+                        "выключенный раздел обязан быть скрыт")
 
-    def test_repeated_ticks_do_not_repack_planet_section(self):
-        """Блок тикает раз в секунду — переупаковка на каждом тике мигает."""
+    def test_repeated_ticks_do_not_touch_planet_section(self):
+        """Блок тикает раз в секунду — правка видимости на каждом тике мигает."""
         overlay = self._overlay({"exobio_show_planet_search": True})
         state = {
             "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
@@ -464,39 +428,47 @@ class ExobioFiltersRenderTests(unittest.TestCase):
             }],
         }
         overlay.update_exobiology(state)
-        for widget in (overlay.planet_separator, overlay.planets_header, overlay.planets_label):
-            widget.pack.reset_mock()
-            widget.pack_forget.reset_mock()
+        watched = (overlay.planet_separator, overlay.planets_header, overlay.planets_label)
+        originals = [widget.setVisible for widget in watched]
+        spies = []
+        for widget in watched:
+            spy = mock.Mock(wraps=widget.setVisible)
+            widget.setVisible = spy
+            spies.append(spy)
+        for widget, original in zip(watched, originals):
+            self.addCleanup(setattr, widget, "setVisible", original)
 
         for _ in range(5):
             overlay._render()
 
-        for widget in (overlay.planet_separator, overlay.planets_header, overlay.planets_label):
-            widget.pack.assert_not_called()
-            widget.pack_forget.assert_not_called()
+        for spy in spies:
+            spy.assert_not_called()
 
-    def test_visibility_switch_repacks_once(self):
+    def test_visibility_switch_happens_once(self):
         overlay = self._overlay({"exobio_show_planet_search": True})
         state = {
             "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
             "planet_criteria": [], "planets": [],
         }
         overlay.update_exobiology(state)
-        overlay.planets_label.pack_forget.reset_mock()
+        self.assertFalse(overlay.planets_label.isHidden())
 
-        overlay.settings["exobio_show_planet_search"] = False
-        overlay._render()
-        overlay.planets_label.pack_forget.assert_called_once()
+        with mock.patch.object(overlay.planets_label, "setVisible",
+                               wraps=overlay.planets_label.setVisible) as set_visible:
+            overlay.settings["exobio_show_planet_search"] = False
+            overlay._render()
+            set_visible.assert_called_once_with(False)
+            self.assertTrue(overlay.planets_label.isHidden())
 
-        # Повторный тик при том же состоянии — уже без переупаковки.
-        overlay.planets_label.pack_forget.reset_mock()
-        overlay._render()
-        overlay.planets_label.pack_forget.assert_not_called()
+            # Повторный тик при том же состоянии — уже без правки видимости.
+            set_visible.reset_mock()
+            overlay._render()
+            set_visible.assert_not_called()
 
-        overlay.settings["exobio_show_planet_search"] = True
-        overlay.planets_label.pack.reset_mock()
-        overlay._render()
-        overlay.planets_label.pack.assert_called_once()
+            overlay.settings["exobio_show_planet_search"] = True
+            overlay._render()
+            set_visible.assert_called_once_with(True)
+        self.assertFalse(overlay.planets_label.isHidden())
 
     def test_planet_section_visible_by_default(self):
         overlay = self._overlay()
@@ -505,7 +477,7 @@ class ExobioFiltersRenderTests(unittest.TestCase):
             "planet_criteria": [], "planets": [],
         })
         self.assertTrue(overlay._planets_shown)
-        overlay.planets_label.pack.assert_called()
+        self.assertFalse(overlay.planets_label.isHidden())
 
     def test_genus_filter_hides_other_genera(self):
         overlay = self._overlay()
@@ -561,42 +533,12 @@ class ExobioFiltersRenderTests(unittest.TestCase):
 class CarrierRowReuseTests(unittest.TestCase):
     """Строки CARRIER переиспользуются: пересоздание виджетов и было мерцанием."""
 
-    def setUp(self):
-        import overlay
-
-        self.created = []
-
-        def factory(*args, **kwargs):
-            widget = mock.MagicMock(name="Label")
-            widget.text_arg = str(kwargs.get("text", ""))
-
-            def _config(*c_args, **c_kwargs):
-                if "text" in c_kwargs:
-                    widget.text_arg = str(c_kwargs["text"])
-
-            widget.config.side_effect = _config
-            self.created.append(widget)
-            return widget
-
-        patcher = mock.patch.object(overlay.tk, "Label", side_effect=factory)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-        self.destroyed = []
-
-        def frame_factory(*args, **kwargs):
-            widget = mock.MagicMock(name="Frame")
-            widget.destroy.side_effect = lambda: self.destroyed.append(widget)
-            return widget
-
-        frame_patcher = mock.patch.object(overlay.tk, "Frame", side_effect=frame_factory)
-        frame_patcher.start()
-        self.addCleanup(frame_patcher.stop)
-
     def _overlay(self):
         from overlay import CarrierOverlay
 
-        return CarrierOverlay(_FakeMaster(), {"font_family": "Consolas", "font_size": 10})
+        overlay = CarrierOverlay(None, {"font_family": "Consolas", "font_size": 10})
+        self.addCleanup(overlay.destroy)
+        return overlay
 
     @staticmethod
     def _rows(steel=250, delivered=120):
@@ -612,92 +554,90 @@ class CarrierRowReuseTests(unittest.TestCase):
             {"key": "gold", "name": "Gold", "amount": 50, "need": 10, "remaining": 0},
         ], "need_total": 110, "need_label": "Build", "need_source": "project"}
         overlay.update_carrier(data)
-        original = overlay.summary_label.text_arg
+        original = overlay.summary_label.text()
         overlay.settings.update(carrier_filter="missing", carrier_search="steel")
         overlay.update_carrier(data)
-        self.assertEqual(overlay._row_pool[0]["cells"]["name"].text_arg, "Steel")
-        self.assertIn("Показано 1 / 2", overlay.summary_label.text_arg)
-        self.assertTrue(overlay.summary_label.text_arg.endswith(original))
+        self.assertEqual(overlay._row_pool[0]["cells"]["name"].text(), "Steel")
+        self.assertIn("Показано 1 / 2", overlay.summary_label.text())
+        self.assertTrue(overlay.summary_label.text().endswith(original))
         overlay.settings.update(carrier_filter="all", carrier_search="")
         overlay.update_carrier(data)
-        self.assertEqual(overlay.summary_label.text_arg, original)
-        self.assertEqual(overlay._row_pool[1]["cells"]["name"].text_arg, "Gold")
+        self.assertEqual(overlay.summary_label.text(), original)
+        self.assertEqual(overlay._row_pool[1]["cells"]["name"].text(), "Gold")
 
     def test_rows_are_not_recreated_on_update(self):
         overlay = self._overlay()
         overlay.update_carrier(self._rows())
-        labels_after_first = len(self.created)
-        frames_after_first = len(overlay._row_pool)
+        row = overlay._row_pool[0]["frame"]
+        cells = dict(overlay._row_pool[0]["cells"])
 
         for amount in (300, 350, 400):
             overlay.update_carrier(self._rows(steel=amount))
 
-        self.assertEqual(len(overlay._row_pool), frames_after_first)
-        # Новые Label не создавались — только менялся текст существующих.
-        self.assertEqual(len(self.created), labels_after_first)
-        self.assertEqual(self.destroyed, [])
-        cells = overlay._row_pool[0]["cells"]
-        self.assertEqual(cells["board"].text_arg, "400 (120)")
+        self.assertEqual(len(overlay._row_pool), 1)
+        # Те же самые виджеты — менялся только текст.
+        self.assertIs(overlay._row_pool[0]["frame"], row)
+        for key, cell in cells.items():
+            self.assertIs(overlay._row_pool[0]["cells"][key], cell)
+        self.assertEqual(cells["board"].text(), "400 (120)")
 
     def test_pool_grows_but_never_shrinks_widgets(self):
         overlay = self._overlay()
         overlay.update_carrier({"commodities": [
-            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
-            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5, "remaining": 3},
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5,
+             "remaining": 4},
+            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5,
+             "remaining": 3},
         ]})
         self.assertEqual(len(overlay._row_pool), 2)
         overlay.update_carrier({"commodities": [
-            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5,
+             "remaining": 4},
         ]})
         # Виджет остался в пуле, но скрыт.
         self.assertEqual(len(overlay._row_pool), 2)
-        overlay._row_pool[1]["frame"].pack_forget.assert_called()
-        self.assertEqual(self.destroyed, [])
+        self.assertTrue(overlay._row_pool[1]["frame"].isHidden())
 
-    def test_same_order_does_not_repack_rows(self):
-        """Пока состав и порядок строк не меняются, геометрию не трогаем."""
+    def test_same_order_does_not_touch_rows(self):
+        """Пока состав и порядок строк не меняются, видимость не трогаем."""
         overlay = self._overlay()
         overlay.update_carrier(self._rows())
         frame = overlay._row_pool[0]["frame"]
-        frame.pack.reset_mock()
-        frame.pack_forget.reset_mock()
+        with mock.patch.object(frame, "setVisible", wraps=frame.setVisible) as set_visible:
+            for amount in (300, 350, 400):
+                overlay.update_carrier(self._rows(steel=amount))
+            set_visible.assert_not_called()
+        self.assertEqual(overlay._row_pool[0]["cells"]["board"].text(), "400 (120)")
 
-        for amount in (300, 350, 400):
-            overlay.update_carrier(self._rows(steel=amount))
-
-        frame.pack.assert_not_called()
-        frame.pack_forget.assert_not_called()
-        self.assertEqual(overlay._row_pool[0]["cells"]["board"].text_arg, "400 (120)")
-
-    def test_changed_order_repacks_rows(self):
+    def test_changed_order_updates_rows(self):
         overlay = self._overlay()
         overlay.update_carrier(self._rows())
         overlay.update_carrier({"commodities": [
-            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
-            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5, "remaining": 3},
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5,
+             "remaining": 4},
+            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5,
+             "remaining": 3},
         ]})
-        frame = overlay._row_pool[0]["frame"]
-        frame.pack.reset_mock()
-        frame.pack_forget.reset_mock()
-
-        # Порядок сменился — строки обязаны переупаковаться.
+        # Порядок сменился — строки обязаны перестроиться.
         overlay.update_carrier({"commodities": [
-            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5, "remaining": 3},
-            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
+            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5,
+             "remaining": 3},
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5,
+             "remaining": 4},
         ]})
-        frame.pack_forget.assert_called()
         self.assertEqual(overlay._row_order, ["gold", "steel"])
+        self.assertEqual(overlay._row_pool[0]["cells"]["name"].text(), "Gold")
 
     def test_empty_rows_hide_pool_without_touching_it_twice(self):
         overlay = self._overlay()
         overlay.update_carrier(self._rows())
         overlay.update_carrier({"commodities": []})
         frame = overlay._row_pool[0]["frame"]
-        frame.pack_forget.reset_mock()
-
-        overlay.update_carrier({"commodities": []})
-        frame.pack_forget.assert_not_called()
+        with mock.patch.object(frame, "setVisible", wraps=frame.setVisible) as set_visible:
+            overlay.update_carrier({"commodities": []})
+            set_visible.assert_not_called()
         self.assertEqual(overlay._row_order, [])
+        self.assertFalse(overlay._empty_label.isHidden())
 
     def test_header_uses_the_same_column_spec(self):
         from overlay import CarrierOverlay
@@ -708,18 +648,20 @@ class CarrierRowReuseTests(unittest.TestCase):
                          ["Товар", "на борту", "нужно", "ост."])
         # Ширины колонок шапки и строк берутся из одной спецификации.
         widths = [width for _t, width, _a in CarrierOverlay.COLUMNS]
-        self.assertEqual(widths, [18, 9, 7, 6])
+        self.assertEqual(widths, [0, 11, 7, 6])
 
-    def test_canvas_resize_sets_inner_width(self):
+    def test_columns_are_measured_with_the_block_font(self):
+        """Ширина колонки считается по шрифту блока, а не «на глаз»."""
         overlay = self._overlay()
-        overlay._on_canvas_resize(mock.Mock(width=286))
-        overlay.canvas.itemconfigure.assert_called_with(overlay._inner_window, width=286)
-
-    def test_canvas_resize_ignores_garbage(self):
-        overlay = self._overlay()
-        overlay._on_canvas_resize(mock.Mock(width=0))
-        overlay._on_canvas_resize(mock.Mock(width=None))
-        overlay.canvas.itemconfigure.assert_not_called()
+        overlay.update_carrier(self._rows())
+        header, cells = overlay._header_cells, overlay._row_pool[0]["cells"]
+        for index, key in enumerate(overlay.CELL_KEYS):
+            expected = overlay._cell_width(overlay.COLUMNS[index][1])
+            self.assertEqual(cells[key].minimumWidth(), expected if expected else 0)
+            if index == 0:
+                self.assertEqual(expected, 0, "колонка названия тянется по ширине")
+            else:
+                self.assertEqual(header[index][0].width(), expected)
 
 
 class ExobioSectionOrderTests(unittest.TestCase):
@@ -729,33 +671,21 @@ class ExobioSectionOrderTests(unittest.TestCase):
     ради которого пользователь и включал поиск, не должен стоять последним.
     """
 
-    def setUp(self):
-        import overlay
-
-        self.made = []
-
-        def factory(*args, **kwargs):
-            widget = mock.MagicMock(name="Label")
-            widget.text_arg = str(kwargs.get("text", ""))
-            self.made.append(widget)
-            return widget
-
-        patcher = mock.patch.object(overlay.tk, "Label", side_effect=factory)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def _overlay(self):
         from overlay import ExobiologyOverlay
 
-        return ExobiologyOverlay(_Master(), {"font_family": "Consolas", "font_size": 10})
+        overlay = ExobiologyOverlay(None, {"font_family": "Consolas", "font_size": 10})
+        self.addCleanup(overlay.destroy)
+        return overlay
 
-    def test_planet_section_is_packed_before_bodies(self):
+    def test_planet_section_is_placed_before_bodies(self):
         overlay = self._overlay()
-        texts = [w.text_arg for w in self.made]
-        planets_at = texts.index("Поиск планет:")
-        bodies_at = texts.index("Тела системы:")
-        self.assertLess(planets_at, bodies_at,
-                        f"порядок разделов: {texts}")
+
+        def index(widget):
+            return overlay.body.indexOf(widget)
+
+        self.assertLess(index(overlay.planets_header), index(overlay.bodies_header),
+                        "«Поиск планет» обязан стоять выше списка тел")
 
     def test_default_height_fits_content(self):
         """Высота по умолчанию обязана вмещать разделы до списка тел."""
@@ -770,15 +700,15 @@ class ExobioSectionOrderTests(unittest.TestCase):
             "system": "S", "body": "S A 3", "planet_class": "Rocky body",
             "planet_criteria": [], "planets": [],
         })
+        position = overlay.body.indexOf(overlay.planets_header)
         overlay.settings["exobio_show_planet_search"] = False
         overlay._render()
         overlay.settings["exobio_show_planet_search"] = True
-        overlay.planets_header.pack.reset_mock()
         overlay._render()
 
-        kwargs = overlay.planets_header.pack.call_args.kwargs
-        self.assertIs(kwargs.get("before"), overlay.bodies_separator,
-                      "pack() без before= дописал бы раздел в конец окна")
+        self.assertEqual(overlay.body.indexOf(overlay.planets_header), position,
+                         "раздел уехал в другое место раскладки")
+        self.assertFalse(overlay.planets_header.isHidden())
 
     def test_bodies_separator_exists(self):
         overlay = self._overlay()
@@ -788,165 +718,105 @@ class ExobioSectionOrderTests(unittest.TestCase):
 class CarrierColumnGeometryTests(unittest.TestCase):
     """Шапка и строки CARRIER обязаны получать одинаковую геометрию.
 
-    Проверяем не константу `COLUMNS`, а то, что реально передаётся в виджеты:
+    Проверяем не константу `COLUMNS`, а то, что реально стоит на виджетах:
     именно расхождение шрифта или ширины и разъезжает колонки на экране.
     """
-
-    def setUp(self):
-        import overlay
-
-        self.calls = []
-
-        def factory(*args, **kwargs):
-            self.calls.append(dict(kwargs))
-            return mock.MagicMock(name="Label")
-
-        patcher = mock.patch.object(overlay.tk, "Label", side_effect=factory)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def _overlay(self):
         # Шрифт намеренно пропорциональный: на Consolas расхождение жирного и
         # обычного начертания невидно, а на Segoe UI колонки разъезжаются.
         from overlay import CarrierOverlay
 
-        return CarrierOverlay(_FakeMaster(), {"font_family": "Segoe UI", "font_size": 10})
+        overlay = CarrierOverlay(None, {"font_family": "Segoe UI", "font_size": 10})
+        self.addCleanup(overlay.destroy)
+        return overlay
 
-    def _geometry(self, overlay):
-        """(заголовки, ячейки первой строки) — списки (font, width, anchor)."""
-        from overlay import CarrierOverlay
-
-        titles = {text for text, _w, _a in CarrierOverlay.COLUMNS}
-        header = [call for call in self.calls if call.get("text") in titles]
-        # Ячейки строки создаются пустыми, после заголовков.
-        rows = [call for call in self.calls
-                if call.get("text") == "" and "width" in call and "anchor" in call]
-        cells = rows[:len(CarrierOverlay.COLUMNS)]
-        return header, cells
+    def _with_row(self):
+        overlay = self._overlay()
+        overlay.update_carrier({"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0,
+             "need": 5, "remaining": 4},
+        ]})
+        return overlay, overlay._header_cells, overlay._row_pool[0]["cells"]
 
     def test_header_and_rows_share_width_and_anchor(self):
         from overlay import CarrierOverlay
 
-        overlay = self._overlay()
-        overlay.update_carrier({"commodities": [
-            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0,
-             "need": 5, "remaining": 4},
-        ]})
-        header, cells = self._geometry(overlay)
-
+        overlay, header, cells = self._with_row()
         self.assertEqual(len(header), len(CarrierOverlay.COLUMNS), header)
-        self.assertEqual(len(cells), len(CarrierOverlay.COLUMNS), cells)
-        for index, (_text, width, anchor) in enumerate(CarrierOverlay.COLUMNS):
-            expected = overlay._name_chars if index == 0 else width
-            self.assertEqual(header[index]["width"], expected)
-            self.assertEqual(cells[index]["width"], expected)
-            self.assertEqual(header[index]["anchor"], anchor)
-            self.assertEqual(cells[index]["anchor"], anchor)
+        for index, (_text, chars, align) in enumerate(CarrierOverlay.COLUMNS):
+            key = CarrierOverlay.CELL_KEYS[index]
+            expected = overlay._cell_width(chars)
+            self.assertEqual(cells[key].minimumWidth(), expected)
+            if expected:
+                self.assertEqual(header[index][0].width(), expected)
+            right = cells[key].alignment() & Qt.AlignRight
+            self.assertEqual(bool(right), align == "right",
+                             f"колонка {index}: выравнивание не совпало")
 
     def test_header_font_matches_cell_font(self):
-        """Жирный заголовок над жирной ячейкой: иначе width даст разную ширину."""
+        """Жирный заголовок над жирной ячейкой: иначе ширины разъезжаются."""
         from overlay import CarrierOverlay
 
-        overlay = self._overlay()
-        overlay.update_carrier({"commodities": [
-            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0,
-             "need": 5, "remaining": 4},
-        ]})
-        header, cells = self._geometry(overlay)
-
+        _overlay, header, cells = self._with_row()
         for index in range(len(CarrierOverlay.COLUMNS)):
-            self.assertEqual(tuple(header[index]["font"]), tuple(cells[index]["font"]),
-                             f"колонка {index}: шрифт шапки != шрифт ячейки")
+            key = CarrierOverlay.CELL_KEYS[index]
+            header_font, cell_font = header[index][0].font(), cells[key].font()
+            self.assertEqual(header_font.pixelSize(), cell_font.pixelSize(),
+                             f"колонка {index}: кегль шапки != кегль ячейки")
             expect_bold = index in CarrierOverlay.BOLD_COLUMNS
-            self.assertEqual(len(header[index]["font"]) == 3, expect_bold,
+            self.assertEqual(cell_font.bold(), expect_bold,
                              f"колонка {index}: жирность не совпала с BOLD_COLUMNS")
 
     def test_all_columns_use_one_font_family(self):
-        from overlay import CarrierOverlay
-
-        overlay = self._overlay()
-        overlay.update_carrier({"commodities": [
-            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0,
-             "need": 5, "remaining": 4},
-        ]})
-        header, cells = self._geometry(overlay)
-        families = {call["font"][0] for call in header + cells}
+        _overlay, header, cells = self._with_row()
+        families = {widget.font().family() for widget, _chars in header}
+        families |= {cell.font().family() for cell in cells.values()}
         self.assertEqual(families, {"Segoe UI"})
-        sizes = {call["font"][1] for call in header + cells}
-        self.assertEqual(sizes, {9}, "шапка и строки обязаны быть одного кегля")
+        sizes = {cell.font().pixelSize() for cell in cells.values()}
+        self.assertEqual(len(sizes), 1, "ячейки обязаны быть одного кегля")
 
 
 class CargoRowReuseTests(unittest.TestCase):
     """Строки трюма (CARGO) переиспользуются: пересоздание и было миганием."""
 
-    def setUp(self):
-        import overlay
-
-        self.created = []
-
-        def label_factory(*args, **kwargs):
-            widget = mock.MagicMock(name="Label")
-            widget.text_arg = str(kwargs.get("text", ""))
-
-            def _config(*c_args, **c_kwargs):
-                if "text" in c_kwargs:
-                    widget.text_arg = str(c_kwargs["text"])
-
-            widget.config.side_effect = _config
-            self.created.append(widget)
-            return widget
-
-        patcher = mock.patch.object(overlay.tk, "Label", side_effect=label_factory)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-        self.destroyed = []
-
-        def frame_factory(*args, **kwargs):
-            widget = mock.MagicMock(name="Frame")
-            widget.destroy.side_effect = lambda: self.destroyed.append(widget)
-            return widget
-
-        frame_patcher = mock.patch.object(overlay.tk, "Frame", side_effect=frame_factory)
-        frame_patcher.start()
-        self.addCleanup(frame_patcher.stop)
-
     def _overlay(self):
         from overlay import CargoOverlay
 
-        return CargoOverlay(_FakeMaster(), {"font_family": "Consolas", "font_size": 10})
+        overlay = CargoOverlay(None, {"font_family": "Consolas", "font_size": 10})
+        self.addCleanup(overlay.destroy)
+        return overlay
 
     @staticmethod
     def _data(*rows):
-        return {"cargo_count": sum(r["Count"] for r in rows), "cargo_capacity": 100,
+        return {"cargo_count": sum(row["Count"] for row in rows), "cargo_capacity": 100,
                 "inventory": list(rows)}
 
     def test_rows_are_not_recreated_on_update(self):
         overlay = self._overlay()
-        overlay.update_cargo(self._data({"Name": "steel", "Name_Localised": "Steel", "Count": 10}))
-        labels_after_first = len(self.created)
+        overlay.update_cargo(self._data({"Name": "steel", "Name_Localised": "Steel",
+                                         "Count": 10}))
+        entry = dict(overlay._cargo_pool[0])
 
         for count in (20, 30, 40):
             overlay.update_cargo(self._data(
                 {"Name": "steel", "Name_Localised": "Steel", "Count": count}))
 
-        self.assertEqual(len(self.created), labels_after_first)
-        self.assertEqual(self.destroyed, [])
-        self.assertEqual(overlay._cargo_pool[0]["count"].text_arg, "  40")
-        self.assertEqual(overlay._cargo_pool[0]["name"].text_arg, "Steel")
+        self.assertEqual(len(overlay._cargo_pool), 1)
+        for key, widget in entry.items():
+            self.assertIs(overlay._cargo_pool[0][key], widget)
+        self.assertEqual(overlay._cargo_pool[0]["count"].text(), "  40")
+        self.assertEqual(overlay._cargo_pool[0]["name"].text(), "Steel")
 
-    def test_same_inventory_does_not_repack(self):
+    def test_same_inventory_does_not_touch_rows(self):
         overlay = self._overlay()
         overlay.update_cargo(self._data({"Name": "steel", "Count": 10}))
         frame = overlay._cargo_pool[0]["frame"]
-        frame.pack.reset_mock()
-        frame.pack_forget.reset_mock()
+        with mock.patch.object(frame, "setVisible", wraps=frame.setVisible) as set_visible:
+            overlay.update_cargo(self._data({"Name": "steel", "Count": 25}))
+            set_visible.assert_not_called()
 
-        overlay.update_cargo(self._data({"Name": "steel", "Count": 25}))
-        frame.pack.assert_not_called()
-        frame.pack_forget.assert_not_called()
-
-    def test_changed_inventory_repacks(self):
+    def test_changed_inventory_builds_new_rows(self):
         overlay = self._overlay()
         overlay.update_cargo(self._data({"Name": "steel", "Count": 10}))
         overlay.update_cargo(self._data({"Name": "steel", "Count": 10},
@@ -959,16 +829,16 @@ class CargoRowReuseTests(unittest.TestCase):
         overlay.update_cargo(self._data(
             {"Name": "tritium", "Name_Localised": "Tritium", "Count": 8, "Stolen": 3}))
         entry = overlay._cargo_pool[0]
-        self.assertEqual(entry["icon"].text_arg, "!")
-        self.assertIn("(3 stl)", entry["count"].text_arg)
+        self.assertEqual(entry["icon"].text(), "!")
+        self.assertIn("(3 stl)", entry["count"].text())
 
     def test_empty_hold_shows_placeholder(self):
         overlay = self._overlay()
         overlay.update_cargo(self._data({"Name": "steel", "Count": 10}))
         overlay.update_cargo({"cargo_count": 0, "cargo_capacity": 100, "inventory": []})
         self.assertEqual(overlay._cargo_order, [])
-        overlay._cargo_pool[0]["frame"].pack_forget.assert_called()
-        self.assertEqual(self.destroyed, [])
+        self.assertTrue(overlay._cargo_pool[0]["frame"].isHidden())
+        self.assertFalse(overlay.empty_label.isHidden())
 
 
 class ExobioVisualDesignTests(_OverlayTestCase):
@@ -1053,7 +923,7 @@ class ExobioOverlayFootfallAndLandableTests(_OverlayTestCase):
         self.assertIn("бонус ×5", predict_hdr)
 
         predict_txt = _text(self.overlay.predict_label)
-        self.assertIn("≈кр (×5)", predict_txt)
+        self.assertIn("бонус ×5", predict_txt)
         self.assertIn("95.1 млн", predict_txt)
 
     def test_known_footfall_by_other_pilot_shows_standard_mode(self):

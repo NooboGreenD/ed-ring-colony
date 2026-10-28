@@ -11,9 +11,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from overlay_options import CONTENT_OPTIONS, CONTENT_DEFAULTS, filter_carrier_rows, route_summary
 from route_tracker import RouteTracker
-from test_overlay_management import _ensure_gui_stubs
-_ensure_gui_stubs()
-from overlay import OverlayWindow, OverlayManager, RouteOverlay, SessionEventsOverlay, load_overlay_settings, save_overlay_settings
+from overlay import (
+    CargoOverlay,
+    CarrierOverlay,
+    ExobiologyOverlay,
+    OverlayManager,
+    RouteOverlay,
+    SessionEventsOverlay,
+    SessionOverlay,
+    ShipOverlay,
+    StatusOverlay,
+    load_overlay_settings,
+    save_overlay_settings,
+)
 
 
 class RouteSummaryTests(unittest.TestCase):
@@ -76,21 +86,20 @@ class RouteSummaryTests(unittest.TestCase):
         self.assertNotEqual(first, manager._hash_data({'route_summary': {'star_class': 'M'}}))
 
     def test_compact_route_renders_and_clears(self):
-        overlay = object.__new__(RouteOverlay)
-        overlay.settings, overlay.overlay_key = {}, 'route'
-        for _, attributes in CONTENT_OPTIONS['route'].values():
-            for name in attributes:
-                setattr(overlay, name, mock.MagicMock())
-        overlay.progress_fill = mock.MagicMock()
-        data = route_summary(self.tracker.systems, 'A')
-        overlay.update_route('A', 'B', 0, 3, summary=data)
-        self.assertIn('5.0', overlay.distance_label.config.call_args.kwargs['text'])
-        self.assertIn('17.0', overlay.remaining_label.config.call_args.kwargs['text'])
-        overlay.update_route('C', '—', 3, 3, summary=route_summary(self.tracker.systems, 'C'))
-        self.assertIn('завершён', overlay.next_label.config.call_args.kwargs['text'])
-        overlay.update_route('C', '—', 0, 0, summary=route_summary([], 'C'))
-        self.assertEqual(overlay.next_label.config.call_args.kwargs['text'], 'Маршрут не задан')
-        self.assertEqual(overlay.destination_label.config.call_args.kwargs['text'], 'Цель: —')
+        overlay = RouteOverlay(None, {'font_family': 'Consolas', 'font_size': 10})
+        try:
+            data = route_summary(self.tracker.systems, 'A')
+            overlay.update_route('A', 'B', 0, 3, summary=data)
+            self.assertIn('5.0', overlay.distance_label.text())
+            self.assertIn('17.0', overlay.remaining_label.text())
+            overlay.update_route('C', '—', 3, 3,
+                                 summary=route_summary(self.tracker.systems, 'C'))
+            self.assertIn('завершён', overlay.next_label.text())
+            overlay.update_route('C', '—', 0, 0, summary=route_summary([], 'C'))
+            self.assertEqual(overlay.next_label.text(), 'Маршрут не задан')
+            self.assertEqual(overlay.destination_label.text(), 'Цель: —')
+        finally:
+            overlay.destroy()
 
 
 class CarrierFilterTests(unittest.TestCase):
@@ -123,35 +132,6 @@ class CarrierFilterTests(unittest.TestCase):
         self.assertEqual(filter_carrier_rows(self.rows[-1:], 'missing'), [])
 
 
-class Widget:
-    """Small stateful pack stub: verifies order, not just method invocations."""
-    def __init__(self, parent=None):
-        self.master = parent
-        self.children, self.packed = [], []
-        self.options, self.managed = {'fill': 'x', 'pady': 2}, True
-        if parent:
-            parent.children.append(self)
-            parent.packed.append(self)
-    def winfo_children(self):
-        return self.children
-    def winfo_manager(self):
-        return 'pack' if self.managed else ''
-    def pack_info(self):
-        return self.options.copy()
-    def pack_forget(self):
-        self.managed = False
-        if self in self.master.packed:
-            self.master.packed.remove(self)
-    def pack(self, **options):
-        self.pack_forget()
-        before = options.pop('before', None)
-        if before is not None:
-            self.master.packed.insert(self.master.packed.index(before), self)
-        else:
-            self.master.packed.append(self)
-        self.options, self.managed = options, True
-
-
 class ContentSettingsTests(unittest.TestCase):
     def test_all_eight_blocks_have_persisted_preferences(self):
         self.assertEqual(set(CONTENT_OPTIONS), set(OverlayManager.BLOCKS))
@@ -169,46 +149,74 @@ class ContentSettingsTests(unittest.TestCase):
             self.assertEqual(restored['carrier_search'], 'Steel')
             self.assertEqual(restored['unrelated'], 'keep')
 
-    def test_each_section_hides_and_restores_same_widgets_in_order(self):
-        for block, sections in CONTENT_OPTIONS.items():
-            if block == 'events':
-                continue
-            overlay = object.__new__(OverlayWindow)
-            overlay.overlay_key, overlay.settings = block, {key: True for key in CONTENT_DEFAULTS}
-            parent = Widget()
-            for _, attributes in sections.values():
-                for attribute in attributes:
-                    setattr(overlay, attribute, Widget(parent))
-            original = list(parent.packed)
-            for section, (_, attributes) in sections.items():
-                key = f'overlay_{block}_{section}'
-                overlay.settings[key] = False
-                overlay.apply_data_options()
-                for attr in attributes:
-                    self.assertFalse(getattr(overlay, attr).managed, attr)
-                overlay.settings[key] = True
-                overlay.apply_data_options()
-                self.assertEqual(parent.packed, original, (block, section))
+    def test_each_section_hides_and_restores_same_widgets(self):
+        """Выключенный раздел скрывается, включённый — возвращается на место."""
+        blocks = {"route": RouteOverlay, "status": StatusOverlay, "ship": ShipOverlay,
+                  "cargo": CargoOverlay, "carrier": CarrierOverlay,
+                  "session": SessionOverlay, "exobio": ExobiologyOverlay}
+        self.assertEqual(set(blocks), set(CONTENT_OPTIONS) - {"events"})
+        for block, overlay_class in blocks.items():
+            with self.subTest(block=block):
+                overlay = overlay_class(None, {"font_family": "Consolas", "font_size": 10})
+                try:
+                    for section, (_, attributes) in CONTENT_OPTIONS[block].items():
+                        widgets = [getattr(overlay, name) for name in attributes]
+                        key = f"overlay_{block}_{section}"
+                        overlay.settings[key] = False
+                        overlay.apply_data_options()
+                        for widget in widgets:
+                            self.assertTrue(widget.isHidden(), (block, section))
+                        overlay.settings[key] = True
+                        overlay.apply_data_options()
+                        for widget in widgets:
+                            self.assertFalse(widget.isHidden(), (block, section))
+                finally:
+                    overlay.destroy()
 
-    def test_repacking_dynamic_content_with_hidden_neighbours(self):
-        parent = Widget()
-        first, telemetry, parameters, samples = [Widget(parent) for _ in range(4)]
-        first.pack_forget()
-        telemetry.pack_forget()
-        parameters.pack_forget()
-        OverlayWindow._pack_content_widget(telemetry, fill='x')
-        self.assertEqual(parent.packed, [telemetry, samples])
+    def test_hidden_sections_keep_their_place_in_layout(self):
+        """Скрытый раздел возвращается на своё место, а не в конец окна."""
+        overlay = ExobiologyOverlay(None, {"font_family": "Consolas", "font_size": 10})
+        try:
+            positions = [overlay.body.indexOf(overlay.planets_header),
+                         overlay.body.indexOf(overlay.bodies_header)]
+            for section in ("planets", "bodies"):
+                overlay.settings[f"overlay_exobio_{section}"] = False
+            overlay.apply_data_options()
+            self.assertTrue(overlay.planets_header.isHidden())
+            self.assertTrue(overlay.bodies_header.isHidden())
 
-    def test_dynamic_exobio_state_wins_over_old_pack_cache(self):
-        overlay = object.__new__(OverlayWindow)
-        overlay.overlay_key, overlay.settings = 'exobio', {'overlay_exobio_action': False}
-        overlay.next_action_label = Widget(Widget())
-        overlay._action_shown = True
-        overlay.apply_data_options()
-        overlay._action_shown = False
-        overlay.settings['overlay_exobio_action'] = True
-        overlay.apply_data_options()
-        self.assertFalse(overlay.next_action_label.managed)
+            for section in ("planets", "bodies"):
+                overlay.settings[f"overlay_exobio_{section}"] = True
+            overlay.apply_data_options()
+            self.assertEqual([overlay.body.indexOf(overlay.planets_header),
+                              overlay.body.indexOf(overlay.bodies_header)], positions)
+            self.assertLess(positions[0], positions[1],
+                            "«Поиск планет» обязан остаться выше списка тел")
+        finally:
+            overlay.destroy()
+
+    def test_dynamic_exobio_state_wins_over_old_cache(self):
+        """Живое состояние Экзобиологии перебивает устаревшую настройку.
+
+        Подсказка «что делать дальше» появляется только когда её есть что
+        показать (`_action_shown`): включение галочки на вкладке «Оверлей»
+        не должно вытаскивать на экран пустую строку.
+        """
+        overlay = ExobiologyOverlay(None, {"font_family": "Consolas", "font_size": 10})
+        try:
+            overlay._action_shown = True
+            overlay.settings["overlay_exobio_action"] = False
+            overlay.apply_data_options()
+            self.assertTrue(overlay.next_action_label.isHidden(),
+                            "галочка «Подсказка» выключена — строку прячем")
+
+            overlay._action_shown = False
+            overlay.settings["overlay_exobio_action"] = True
+            overlay.apply_data_options()
+            self.assertTrue(overlay.next_action_label.isHidden(),
+                            "данных для подсказки нет — строка остаётся скрытой")
+        finally:
+            overlay.destroy()
 
     def test_manager_updates_existing_window_without_recreation(self):
         manager = object.__new__(OverlayManager)
@@ -223,16 +231,24 @@ class ContentSettingsTests(unittest.TestCase):
         self.assertFalse(manager.settings['overlay_carrier_items'])
 
     def test_events_can_be_hidden_and_revealed_without_losing_history(self):
-        overlay = object.__new__(SessionEventsOverlay)
-        overlay.settings, overlay.text = {'overlay_events_timestamps': False, 'overlay_events_info': False}, mock.Mock()
-        overlay.add_event('hidden', 'info')
-        overlay.text.insert.assert_not_called()
-        overlay.add_event('visible', 'success')
-        self.assertEqual(overlay.text.insert.call_args.args[1], 'visible\n')
-        overlay.settings['overlay_events_info'] = True
-        overlay.text.insert.reset_mock()
-        overlay.render_events()
-        self.assertEqual([c.args[1] for c in overlay.text.insert.call_args_list], ['hidden\n', 'visible\n'])
-        for i in range(110):
-            overlay.add_event(str(i))
-        self.assertEqual(len(overlay._events), 100)
+        overlay = SessionEventsOverlay(None, {"font_family": "Consolas", "font_size": 10})
+        try:
+            overlay.settings.update({"overlay_events_timestamps": False,
+                                     "overlay_events_info": False})
+            overlay.add_event("hidden", "info")
+            self.assertEqual(overlay.text.toPlainText(), "")
+
+            overlay.add_event("visible", "success")
+            self.assertEqual(overlay.text.toPlainText(), "visible\n",
+                             "без времени и только разрешённые уровни")
+
+            overlay.settings["overlay_events_info"] = True
+            overlay.render_events()
+            self.assertEqual(overlay.text.toPlainText(), "hidden\nvisible\n",
+                             "история не теряется при смене фильтра")
+
+            for index in range(110):
+                overlay.add_event(str(index))
+            self.assertEqual(len(overlay._events), 100, "журнал не растёт без предела")
+        finally:
+            overlay.destroy()

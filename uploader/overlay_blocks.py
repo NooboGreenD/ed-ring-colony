@@ -1,0 +1,1802 @@
+"""Блоки HUD оверлея на чистом Qt.
+
+Каждый блок — это окно `HudWindow` (без рамки, поверх игры) и содержимое из
+настоящих виджетов: подписи, полосы заполнения, списки и график. Логика
+«что показать» осталась прежней (её считают `ship_hud`, `overlay_options`,
+`exobiology` и `carrier`), изменился только способ печати.
+"""
+from __future__ import annotations
+
+import time
+from collections import deque
+from typing import Any, Dict, List, Optional, Sequence
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QBrush, QColor, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+import ship_hud
+from exobiology import estimate_value, format_credits
+from hud_window import (
+    COLOR_ACCENT,
+    COLOR_BORDER,
+    COLOR_CYAN,
+    COLOR_GREEN_TEXT,
+    COLOR_LINE,
+    COLOR_PANEL,
+    COLOR_PANEL_ALT,
+    COLOR_RED,
+    COLOR_RED_TEXT,
+    COLOR_SURFACE,
+    COLOR_TEXT,
+    COLOR_TEXT_MUTED,
+    COLOR_YELLOW,
+    HudBar,
+    HudChart,
+    HudWindow,
+    hud_font,
+    hud_panel,
+    hud_section,
+    hud_separator,
+    paint,
+)
+from overlay_options import filter_carrier_rows, option_key
+
+
+# ============================================================
+#  Текстовые утилиты
+# ============================================================
+#: Моноширинные семейства, в которых таблица выравнивается по колонкам.
+MONO_FONT_HINTS = ("consolas", "courier", "mono", "dejavu sans mono", "menlo",
+                   "liberation mono", "fixedsys", "nsimsun")
+
+
+def is_monospace_font(family: object) -> bool:
+    text = str(family or "").lower()
+    return any(hint in text for hint in MONO_FONT_HINTS)
+
+
+def format_table(headers: Sequence[str], rows: Sequence[Sequence[object]],
+                 aligns: Optional[Sequence[str]] = None,
+                 max_width: Optional[int] = None) -> str:
+    """Моноширинная таблица для оверлея: заголовок + строки по колонкам.
+
+    Считаем ширину колонки по самой длинной ячейке; если строка длиннее
+    `max_width`, лишнее отрезаем в последней колонке — перенос внутри такой
+    таблицы сломал бы выравнивание всех строк ниже.
+    """
+    headers = [str(item) for item in headers]
+    body = [[("" if cell is None else str(cell)) for cell in row] for row in rows]
+    aligns = list(aligns or [])
+    widths = [len(item) for item in headers]
+    for row in body:
+        for index, cell in enumerate(row[:len(widths)]):
+            widths[index] = max(widths[index], len(cell))
+
+    def line(cells: Sequence[str]) -> str:
+        parts = []
+        for index, cell in enumerate(cells[:len(widths)]):
+            width = widths[index]
+            if (aligns[index] if index < len(aligns) else "left") == "right":
+                parts.append(cell.rjust(width))
+            else:
+                parts.append(cell.ljust(width))
+        return "  ".join(parts).rstrip()
+
+    lines = [line(headers)] + [line(row) for row in body]
+    if max_width:
+        cut = []
+        for text in lines:
+            cut.append(text if len(text) <= max_width
+                       else text[: max(1, max_width - 1)] + "…")
+        lines = cut
+    return "\n".join(lines)
+
+
+def _section_text(index: str, text: str) -> str:
+    """Заголовок раздела с буквой-номером: «B / ОБРАЗЦЫ»."""
+    return f"{index} / {text}".strip() if index else text
+
+
+def _species_tail(name: object) -> str:
+    """«Tussock stigmasis» → «stigmasis»: род и так показан в своей колонке."""
+    text = str(name or "").strip()
+    parts = text.split(" ", 1)
+    return parts[1] if len(parts) == 2 and parts[1] else text
+
+
+class _RowsHost(QWidget):
+    """Контейнер для списка строк, которые создаются по ходу отрисовки."""
+
+    def __init__(self, parent: Optional[QWidget] = None, *, spacing: int = 1) -> None:
+        super().__init__(parent)
+        self.rows = QVBoxLayout(self)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(int(spacing))
+        # Строки прижаты вверх: пустое место под ними лучше, чем строки,
+        # растянутые на всю высоту блока.
+        self.rows.setAlignment(Qt.AlignTop)
+
+    def add(self, widget: QWidget) -> None:
+        # Строки не растягиваются на всю высоту контейнера: иначе при четырёх
+        # товарах строки разъезжаются по пустому блоку.
+        widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.rows.addWidget(widget)
+
+    def add_stretch(self) -> None:
+        self.rows.addStretch(1)
+
+    def clear_rows(self) -> None:
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+
+# ============================================================
+#  ROUTE
+# ============================================================
+class RouteOverlay(HudWindow):
+    """Compact navigation summary; journal facts only, no guessed fuel range."""
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        super().__init__(
+            master, "ROUTE",
+            settings.get("route_x", 50), settings.get("route_y", 50),
+            settings.get("route_width", 280), settings.get("route_height", 160),
+            settings, "route",
+        )
+        wrap = max(120, int(settings.get("route_width", 280)) - 26)
+        for name, text, color, delta, bold in (
+            ("current_label", "Сейчас: —", COLOR_TEXT_MUTED, -1, False),
+            ("next_label", "→ —", COLOR_CYAN, 0, True),
+            ("star_label", "Звезда: —", COLOR_TEXT_MUTED, -1, False),
+            ("distance_label", "Прыжок: — св. л.", COLOR_TEXT, -1, False),
+            ("remaining_label", "Осталось: —", COLOR_TEXT, -1, False),
+            ("destination_label", "Цель: —", COLOR_ACCENT, -1, False),
+        ):
+            label = self.make_label(self.content, text, color=color, bold=bold,
+                                    dp=delta, wrap=wrap)
+            self.body.addWidget(label)
+            setattr(self, name, label)
+
+        self.progress_frame = QWidget(self.content)
+        progress_layout = QVBoxLayout(self.progress_frame)
+        progress_layout.setContentsMargins(0, 2, 0, 0)
+        progress_layout.setSpacing(2)
+        self.progress_bar = HudBar(self.progress_frame, color=COLOR_ACCENT, height=4)
+        self.progress_label = self.make_label(self.progress_frame, "",
+                                              color=COLOR_TEXT_MUTED, dp=-3)
+        progress_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.progress_label)
+        self.body.addWidget(self.progress_frame)
+        self.body.addStretch(1)
+        self.apply_data_options()
+
+    def update_route(self, current, next_system, visited, total, remaining=None,
+                     next_info=None, summary=None) -> None:
+        summary = summary or {}
+        self.current_label.setText(f"Сейчас: {current}")
+        self.next_label.setText(
+            (f"→ {next_system}" if summary.get("jumps_left", 1) else "Маршрут завершён")
+            if total else "Маршрут не задан")
+        star = summary.get("star_class") or "—"
+        scoopable = summary.get("scoopable")
+        fuel = ("заправка возможна" if scoopable is True
+                else ("без заправки" if scoopable is False else "заправка неизвестна"))
+        self.star_label.setText(f"Звезда: {star} · {fuel}")
+        paint(self.star_label, color=COLOR_GREEN_TEXT if scoopable is True else COLOR_TEXT_MUTED)
+
+        def ly(value):
+            return "—" if value is None else f"{value:,.1f}"
+
+        self.distance_label.setText(f"Прыжок: {ly(summary.get('jump_distance'))} св. л.")
+        left = summary.get("jumps_left", max(0, total - visited))
+        self.remaining_label.setText(
+            f"Осталось: {left} прыж. · {ly(summary.get('remaining_distance'))} св. л.")
+        self.destination_label.setText(f"Цель: {summary.get('destination') or '—'}")
+        self.progress_label.setText(f"{visited} / {total}" if total else "")
+        self.progress_bar.set_fraction(visited / total if total else 0)
+        self.apply_data_options()
+
+
+# ============================================================
+#  SESSION EVENTS
+# ============================================================
+class SessionEventsOverlay(HudWindow):
+    """Поток событий сессии: журнал строк с цветом по уровню."""
+
+    LEVEL_COLORS = {
+        "info": COLOR_TEXT,
+        "success": COLOR_GREEN_TEXT,
+        "warn": COLOR_YELLOW,
+        "error": COLOR_RED_TEXT,
+    }
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        super().__init__(
+            master, "SESSION EVENTS",
+            settings.get("events_x", 740), settings.get("events_y", 50),
+            settings.get("events_width", 360), settings.get("events_height", 260),
+            settings, "events",
+        )
+        self._events: deque = deque(maxlen=100)
+        header = hud_section(self.content, "Chronological stream", size=self._font_size - 3)
+        self.body.addWidget(header)
+        self.text = QTextEdit(self.content)
+        self.text.setReadOnly(True)
+        self.text.setFrameShape(QFrame.NoFrame)
+        self.text.setFont(hud_font(self._font_family, max(7, self._font_size - 1)))
+        self.text.setStyleSheet(
+            f"QTextEdit{{background:{COLOR_SURFACE};border:1px solid {COLOR_LINE};"
+            f"color:{COLOR_TEXT};}}")
+        self.body.addWidget(self.text, 1)
+
+    def add_event(self, message: str, level: str = "info") -> None:
+        self._events.append((time.strftime("%H:%M:%S"), str(message), level))
+        self.render_events()
+
+    def render_events(self) -> None:
+        """Перерисовать журнал: строки вставляются курсором самого редактора."""
+        self.text.clear()
+        cursor = self.text.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        show_time = bool(self.settings.get(option_key("events", "timestamps"), True))
+        for stamp, message, level in self._events:
+            kind = level if level in self.LEVEL_COLORS else "info"
+            if not self.settings.get(option_key("events", kind), True):
+                continue
+            prefix = f"{stamp}  " if show_time else ""
+            fmt = QTextCharFormat()
+            fmt.setForeground(QBrush(QColor(self.LEVEL_COLORS[kind])))
+            cursor.insertText(prefix + message + "\n", fmt)
+        self.text.setTextCursor(cursor)
+        self.text.moveCursor(QTextCursor.End)
+
+
+# ============================================================
+#  STATUS
+# ============================================================
+class StatusOverlay(HudWindow):
+    """Состояние связи с сервисами, игры и наблюдения за журналом."""
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        super().__init__(
+            master, "STATUS",
+            settings.get("status_x", 50), settings.get("status_y", 220),
+            settings.get("status_width", 280), settings.get("status_height", 220),
+            settings, "status",
+        )
+        self.body.addWidget(hud_section(self.content, "System health",
+                                       size=self._font_size - 2))
+        self.status_frame, dot, self.status_text = self._indicator_row("■", "OFFLINE")
+        self.status_dot = dot
+        self.body.addWidget(self.status_frame)
+        self.game_frame, dot, self.game_text = self._indicator_row("□", "ИГРА / НЕТ ДАННЫХ")
+        self.game_dot = dot
+        self.body.addWidget(self.game_frame)
+        self.watcher_frame, dot, self.watcher_text = self._indicator_row("□", "WATCHER / OFF")
+        self.watcher_dot = dot
+        self.body.addWidget(self.watcher_frame)
+
+        self.progress_text = self.make_label(self.content, "", color=COLOR_ACCENT, dp=-1,
+                                             wrap=250)
+        self.body.addWidget(self.progress_text)
+        self.body.addWidget(hud_separator(self.content))
+        self.detail_text = self.make_label(self.content, "Ошибок нет",
+                                           color=COLOR_TEXT_MUTED, dp=-2, wrap=250)
+        self.body.addWidget(self.detail_text)
+        self.body.addStretch(1)
+
+    def _indicator_row(self, mark: str, text: str):
+        frame = hud_panel(self.content, margins=(6, 4))
+        layout = frame.layout_
+        dot = QLabel(mark, frame)
+        dot.setFont(hud_font(self._font_family, max(7, self._font_size - 3)))
+        paint(dot, color=COLOR_RED)
+        dot.setFixedWidth(14)
+        label = self.make_label(frame, text, dp=0, bold=True)
+        layout.addWidget(dot)
+        layout.addWidget(label, 1)
+        return frame, dot, label
+
+    def set_status(self, online: bool, detail: str = "") -> None:
+        if online:
+            paint(self.status_dot, color=COLOR_GREEN_TEXT)
+            self.status_text.setText(f"ONLINE  {detail}".rstrip())
+            paint(self.status_text, color=COLOR_GREEN_TEXT)
+        else:
+            paint(self.status_dot, color=COLOR_RED_TEXT)
+            self.status_text.setText("OFFLINE")
+            paint(self.status_text, color=COLOR_RED_TEXT)
+
+    def set_game(self, running: bool, focused: bool = False, detail: str = "") -> None:
+        """Строка «Игра: запущена / в фокусе / не запущена»."""
+        if running:
+            color = COLOR_GREEN_TEXT if focused else COLOR_YELLOW
+            text = "ИГРА / В ФОКУСЕ" if focused else "ИГРА / ЗАПУЩЕНА"
+            dot = "■"
+        else:
+            color = COLOR_RED_TEXT
+            text = "ИГРА / НЕ ЗАПУЩЕНА"
+            dot = "□"
+        if detail:
+            text = f"{text} ({detail})"
+        paint(self.game_dot, color=color)
+        self.game_dot.setText(dot)
+        self.game_text.setText(text)
+        paint(self.game_text, color=color)
+
+    def set_watcher(self, active: bool) -> None:
+        color = COLOR_GREEN_TEXT if active else COLOR_TEXT_MUTED
+        paint(self.watcher_dot, color=color)
+        self.watcher_dot.setText("■" if active else "□")
+        self.watcher_text.setText("WATCHER / ON" if active else "WATCHER / OFF")
+        paint(self.watcher_text, color=color)
+
+    def set_progress(self, text: str) -> None:
+        self.progress_text.setText(text)
+
+    def add_log(self, message: str, level: str = "info") -> None:
+        # STATUS — компактный индикатор здоровья, а не второй журнал:
+        # оставляем только то, на что нужно реагировать.
+        if level not in ("warn", "error"):
+            return
+        color = COLOR_RED_TEXT if level == "error" else COLOR_YELLOW
+        self.detail_text.setText(f"{level.upper()}: {message[-180:]}")
+        paint(self.detail_text, color=color)
+
+
+# ============================================================
+#  SHIP
+# ============================================================
+class ShipOverlay(HudWindow):
+    """Корабль: прочность корпуса и модулей, щиты, энергия, топливо, лента.
+
+    Состав и текст каждой строки считает ``ship_hud``, а здесь только печать:
+    строка = подпись из пула, перекрашивается по тону. Одна строка — одна
+    подпись: при обновлении раз в секунду это не дёргает геометрию окна.
+    """
+
+    #: Тон HUD -> цвет текста.
+    TONE_COLORS = {
+        "ok": COLOR_GREEN_TEXT,
+        "warn": COLOR_YELLOW,
+        "bad": COLOR_RED_TEXT,
+        "muted": COLOR_TEXT_MUTED,
+        "text": COLOR_TEXT,
+        "info": COLOR_CYAN,
+    }
+    #: Тон чипа -> (цвет текста, фон плашки).
+    CHIP_COLORS = {
+        "ok": (COLOR_GREEN_TEXT, "#123324"),
+        "info": (COLOR_CYAN, "#10253d"),
+        "warn": (COLOR_YELLOW, "#3a2c10"),
+        "bad": (COLOR_RED_TEXT, "#3d1418"),
+        "muted": (COLOR_TEXT_MUTED, "#21262d"),
+    }
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        # Высота подбиралась под список плашек; текстовые строки компактнее,
+        # поэтому окно стартует ниже — и не режет список модулей.
+        height = max(settings.get("ship_height", 330), 180)
+        super().__init__(
+            master, "SHIP",
+            settings.get("ship_x", 50), settings.get("ship_y", 440),
+            settings.get("ship_width", 360), height, settings, "ship",
+        )
+        self._ff = self._font_family
+        self._fs = self._font_size
+        self._wrap = max(150, int(settings.get("ship_width", 360)) - 26)
+        self._last_data: Dict[str, Any] = {}
+        self._last_signature = ""
+        self._last_rows = 0
+        self._hud: Dict[str, Any] = {}
+        self._paints = 0
+
+        self.body.addWidget(hud_section(self.content, "Vessel telemetry",
+                                       size=self._fs - 2))
+        self.ship_name_label = self.make_label(
+            self.content, "КОРАБЛЬ НЕ ОПРЕДЕЛЁН", color=COLOR_ACCENT,
+            background=COLOR_PANEL_ALT, dp=1, bold=True, wrap=self._wrap)
+        self.body.addWidget(self.ship_name_label)
+
+        self.chips_frame = QWidget(self.content)
+        self._chips_layout = QHBoxLayout(self.chips_frame)
+        self._chips_layout.setContentsMargins(0, 0, 0, 0)
+        self._chips_layout.setSpacing(3)
+        self._chips_layout.addStretch(1)
+        self.body.addWidget(self.chips_frame)
+        self._chip_widgets: List[QLabel] = []
+        self._chips_signature = ""
+
+        self.rows_host = _RowsHost(self.content)
+        self.body.addWidget(self.rows_host)
+        self.body.addStretch(1)
+        self._row_labels: List[QLabel] = []
+
+    # -- строки HUD --------------------------------------------------------
+    def _row_widget(self, index: int) -> QLabel:
+        """i-я строка HUD: создать при необходимости, иначе переиспользовать."""
+        while len(self._row_labels) <= index:
+            label = self.make_label(self.rows_host, "", dp=0, wrap=self._wrap)
+            label.setContentsMargins(5, 1, 5, 1)
+            self.rows_host.add(label)
+            self._row_labels.append(label)
+        return self._row_labels[index]
+
+    def _render_chips(self, chips: Sequence[Dict[str, str]]) -> None:
+        signature = ",".join(f"{chip['text']}:{chip['tone']}" for chip in chips)
+        if signature == self._chips_signature:
+            # Те же чипы — не трогаем виджеты: пересборка ряда на каждом тике
+            # и есть та вспышка, за которую ругали оверлей.
+            return
+        self._chips_signature = signature
+        for widget in self._chip_widgets:
+            self._chips_layout.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+        self._chip_widgets = []
+        size = max(7, int(self._fs) - 2)
+        for chip in chips:
+            color, background = self.CHIP_COLORS.get(chip.get("tone", "muted"),
+                                                     self.CHIP_COLORS["muted"])
+            widget = QLabel(chip.get("text", ""), self.chips_frame)
+            widget.setFont(hud_font(self._ff, size, bold=True))
+            widget.setAttribute(Qt.WA_StyledBackground, True)
+            widget.setStyleSheet(
+                f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
+                f"padding:0 4px;")
+            self._chips_layout.insertWidget(self._chips_layout.count() - 1, widget)
+            self._chip_widgets.append(widget)
+
+    def update_ship(self, data: dict, force: bool = False) -> None:
+        """Нарисовать состояние корабля по ``ShipTracker.get_state_dict()``.
+
+        `force=True` — перерисовать даже при неизменной подписи данных: так
+        выглядит смена настроек блока, при которых цифры те же, а экран обязан
+        обновиться.
+        """
+        hud = ship_hud.build_ship_hud(data, settings=self.settings)
+        self._hud = hud
+        self._last_data = dict(data or {})
+        self.ship_name_label.setText(hud["title"])
+        self._render_chips(hud.get("chips") or [])
+
+        rows = ship_hud.hud_rows(hud)
+        if (not force and hud.get("signature") == self._last_signature
+                and len(rows) == self._last_rows):
+            return
+        self._last_signature = str(hud.get("signature", ""))
+        self._last_rows = len(rows)
+        self._paints += 1
+
+        for index, row in enumerate(rows):
+            label = self._row_widget(index)
+            delta = ship_hud.ROW_FONT_DELTA.get(row["kind"], 0)
+            color = self.TONE_COLORS.get(row.get("tone", "text"), COLOR_TEXT)
+            label.setText(row["text"])
+            label.setFont(hud_font(self._ff, max(7, int(self._fs) + delta)))
+            background = COLOR_PANEL_ALT if index % 2 else COLOR_PANEL
+            paint(label, color=color, background=background)
+            label.setAttribute(Qt.WA_StyledBackground, True)
+            label.show()
+        for label in self._row_labels[len(rows):]:
+            label.hide()
+
+    def get_hud(self) -> Dict[str, Any]:
+        """Последняя модель HUD — тестам и отладочной печати."""
+        return dict(self._hud)
+
+    def on_font_changed(self) -> None:
+        """Шрифт блока: строки перекраиваются сами, база помечается заново."""
+        self._fs = self._font_size
+        self._ff = self._font_family
+        self._chips_signature = ""      # чипы — под новый размер
+        if self._last_data:
+            self.update_ship(self._last_data, force=True)
+        else:
+            self.ship_name_label.setFont(
+                hud_font(self._ff, self._fs + 1, bold=True))
+
+
+# ============================================================
+#  CARGO
+# ============================================================
+class CargoOverlay(HudWindow):
+    """Трюм: вместимость, заполнение и поимённый список товаров."""
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        super().__init__(
+            master, "CARGO",
+            settings.get("cargo_x", 50), settings.get("cargo_y", 980),
+            settings.get("cargo_width", 300), settings.get("cargo_height", 340),
+            settings, "cargo",
+        )
+        self.capacity_header = hud_section(self.content, "Capacity", size=self._font_size - 2)
+        self.body.addWidget(self.capacity_header)
+        self.capacity_frame = hud_panel(self.content, margins=(6, 4))
+        layout = self.capacity_frame.layout_
+        self.total_label = self.make_label(self.capacity_frame, "0 / 0 T",
+                                           color=COLOR_ACCENT, dp=1, bold=True)
+        self.fill_pct = self.make_label(self.capacity_frame, "0%",
+                                        color=COLOR_TEXT_MUTED, dp=-1, bold=True,
+                                        align_right=True)
+        layout.addWidget(self.total_label)
+        layout.addStretch(1)
+        layout.addWidget(self.fill_pct)
+        self.body.addWidget(self.capacity_frame)
+
+        self.cargo_bar_bg = QWidget(self.content)
+        bar_layout = QVBoxLayout(self.cargo_bar_bg)
+        bar_layout.setContentsMargins(0, 2, 0, 4)
+        bar_layout.setSpacing(0)
+        self.cargo_bar = HudBar(self.cargo_bar_bg, color=COLOR_ACCENT, height=6)
+        bar_layout.addWidget(self.cargo_bar)
+        self.body.addWidget(self.cargo_bar_bg)
+
+        self.items_header = hud_section(self.content, "Hold manifest", size=self._font_size - 2)
+        self.body.addWidget(self.items_header)
+        self.cargo_canvas = QScrollArea(self.content)
+        self.cargo_canvas.setWidgetResizable(True)
+        self.cargo_canvas.setFrameShape(QFrame.NoFrame)
+        self.cargo_canvas.setStyleSheet(
+            f"QScrollArea{{background:{COLOR_PANEL};border:1px solid {COLOR_LINE};}}")
+        self.cargo_inner = _RowsHost(self.cargo_canvas, spacing=2)
+        self.cargo_inner.setStyleSheet(f"background:{COLOR_PANEL};")
+        self.cargo_canvas.setWidget(self.cargo_inner)
+        self.cargo_scrollbar = self.cargo_canvas.verticalScrollBar()
+        self.body.addWidget(self.cargo_canvas, 1)
+
+        self.empty_label = self.make_label(self.cargo_inner, "[ Empty hold ]",
+                                           color=COLOR_TEXT_MUTED, dp=0)
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.cargo_inner.add(self.empty_label)
+        # Пул строк: виджеты создаются один раз и дальше только меняют текст —
+        # пересоздание списка на каждое обновление выглядело как мигание.
+        self._cargo_pool: list = []
+        self._cargo_order: list = []
+
+    def update_cargo(self, data: dict) -> None:
+        total = data.get("cargo_count", 0)
+        capacity = data.get("cargo_capacity", 0)
+        self.total_label.setText(f"{total} / {capacity} t")
+        pct = int(total / capacity * 100) if capacity > 0 else 0
+        self.fill_pct.setText(f"{pct}%")
+        self.cargo_bar.set_fraction(pct / 100.0 if capacity > 0 else 0)
+        self.cargo_bar.set_color(
+            COLOR_GREEN_TEXT if pct < 80 else (COLOR_YELLOW if pct < 100 else COLOR_RED_TEXT))
+        self._render_cargo_rows(data.get("inventory", []))
+
+    # -- список трюма ------------------------------------------------------
+    def _make_cargo_row(self) -> dict:
+        row = QWidget(self.cargo_inner)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(6)
+        icon = self.make_label(row, "-", color=COLOR_ACCENT, dp=-2)
+        icon.setFixedWidth(14)
+        name = self.make_label(row, "", dp=-1)
+        count = self.make_label(row, "", dp=-1, bold=True, align_right=True)
+        count.setMinimumWidth(60)
+        layout.addWidget(icon)
+        layout.addWidget(name, 1)
+        layout.addWidget(count)
+        self.cargo_inner.add(row)
+        return {"frame": row, "icon": icon, "name": name, "count": count}
+
+    def _render_cargo_rows(self, inventory: list) -> None:
+        """Обновить список трюма, переиспользуя виджеты."""
+        inventory = list(inventory or [])
+        if not inventory:
+            for entry in self._cargo_pool:
+                entry["frame"].hide()
+            self._cargo_order = []
+            self.empty_label.show()
+            return
+
+        self.empty_label.hide()
+        while len(self._cargo_pool) < len(inventory):
+            self._cargo_pool.append(self._make_cargo_row())
+
+        order = [str(item.get("Name") or item.get("Name_Localised") or index)
+                 for index, item in enumerate(inventory)]
+        if order != self._cargo_order:
+            for entry in self._cargo_pool:
+                entry["frame"].hide()
+            for index in range(len(inventory)):
+                self._cargo_pool[index]["frame"].show()
+            self._cargo_order = order
+
+        for index, item in enumerate(inventory):
+            entry = self._cargo_pool[index]
+            name = item.get("Name_Localised") or item.get("Name", "Unknown")
+            count = int(item.get("Count") or 0)
+            stolen = int(item.get("Stolen") or 0)
+            entry["icon"].setText("!" if stolen > 0 else "-")
+            paint(entry["icon"], color=COLOR_RED_TEXT if stolen > 0 else COLOR_ACCENT)
+            entry["name"].setText(f"{name[:22]}")
+            count_text = f"{count:>4}"
+            if stolen > 0:
+                count_text += f" ({stolen} stl)"
+            entry["count"].setText(count_text)
+            paint(entry["count"], color=COLOR_ACCENT if stolen > 0 else COLOR_TEXT)
+
+
+# ============================================================
+#  CARRIER — груз на авианосце
+# ============================================================
+class CarrierOverlay(HudWindow):
+    """Груз Fleet Carrier: сколько завезено и сколько осталось завезти.
+
+    Слева — тоннаж из `CarrierStats` (достоверный), справа список товаров:
+    сколько лежит на борту и сколько ещё не хватает до потребности
+    стройплощадки колонизации. Данные собирает `carrier.CarrierTracker`.
+    """
+
+    #: Колонки списка товаров: (заголовок, ширина в символах, выравнивание).
+    #: Спецификация общая для шапки и для строк — иначе заголовки разъезжаются
+    #: с цифрами. Ширина задана в символах, а в пиксели её переводит шрифт
+    #: блока (`_cell_width`), поэтому колонки не зависят от кегля.
+    COLUMNS = (
+        ("Товар", 0, "left"),
+        ("на борту", 11, "right"),
+        ("нужно", 7, "right"),
+        ("ост.", 6, "right"),
+    )
+    #: Ключи ячеек строки в том же порядке, что и `COLUMNS`.
+    CELL_KEYS = ("name", "board", "need", "tail")
+    #: Номера колонок, которые печатаем жирным (числа важнее подписей).
+    BOLD_COLUMNS = (1, 3)
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        super().__init__(
+            master, "CARRIER",
+            settings.get("carrier_x", 1060), settings.get("carrier_y", 430),
+            settings.get("carrier_width", 330), settings.get("carrier_height", 300),
+            settings, "carrier",
+        )
+        self.body.addWidget(hud_section(self.content, "Carrier status",
+                                       size=self._font_size - 2))
+        self.carrier_header = hud_panel(self.content, margins=(6, 4))
+        header_layout = self.carrier_header.layout_
+        self.name_label = self.make_label(self.carrier_header, "FLEET CARRIER",
+                                          color=COLOR_ACCENT, dp=1, bold=True)
+        self.callsign_label = self.make_label(self.carrier_header, "",
+                                              color=COLOR_TEXT_MUTED, dp=-1,
+                                              align_right=True)
+        header_layout.addWidget(self.name_label, 1)
+        header_layout.addWidget(self.callsign_label)
+        self.body.addWidget(self.carrier_header)
+
+        self.total_label = self.make_label(self.content, "— / — t", dp=0)
+        self.body.addWidget(self.total_label)
+
+        self.cargo_bar_bg = QWidget(self.content)
+        bar_layout = QVBoxLayout(self.cargo_bar_bg)
+        bar_layout.setContentsMargins(0, 2, 0, 2)
+        bar_layout.setSpacing(0)
+        self.cargo_bar = HudBar(self.cargo_bar_bg, color=COLOR_ACCENT, height=6)
+        bar_layout.addWidget(self.cargo_bar)
+        self.body.addWidget(self.cargo_bar_bg)
+
+        self.detail_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED,
+                                            dp=-1, wrap=True)
+        self.body.addWidget(self.detail_label)
+        self.project_label = self.make_label(self.content, "", color=COLOR_CYAN,
+                                             dp=-1, bold=True, wrap=True)
+        self.body.addWidget(self.project_label)
+
+        self.items_header = hud_section(self.content, "Cargo manifest",
+                                        size=self._font_size - 2)
+        self.body.addWidget(self.items_header)
+
+        self._name_chars = self._name_width_chars()
+        self.list_frame = QWidget(self.content)
+        list_layout = QVBoxLayout(self.list_frame)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(2)
+
+        self.columns = QWidget(self.list_frame)
+        columns_layout = QHBoxLayout(self.columns)
+        columns_layout.setContentsMargins(0, 0, 0, 0)
+        columns_layout.setSpacing(6)
+        self._header_cells = []
+        for index, (text, chars, align) in enumerate(self.COLUMNS):
+            label = self.make_label(self.columns, text, color=COLOR_TEXT_MUTED,
+                                    dp=-1, bold=index in self.BOLD_COLUMNS,
+                                    align_right=align == "right")
+            width = self._cell_width(chars)
+            if width:
+                label.setFixedWidth(width)
+            self._header_cells.append((label, chars))
+            columns_layout.addWidget(label, 1 if not width else 0)
+        list_layout.addWidget(self.columns)
+
+        self.canvas = QScrollArea(self.list_frame)
+        self.canvas.setWidgetResizable(True)
+        self.canvas.setFrameShape(QFrame.NoFrame)
+        # Строки уже подогнаны под ширину блока — горизонтальная прокрутка
+        # здесь только съедала бы место у цифр.
+        self.canvas.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.canvas.setMinimumHeight(60)
+        self.canvas.setStyleSheet(
+            f"QScrollArea{{background:{COLOR_PANEL};border:0;}}")
+        self.inner = _RowsHost(self.canvas)
+        self.inner.setStyleSheet(f"background:{COLOR_PANEL};")
+        self.canvas.setWidget(self.inner)
+        list_layout.addWidget(self.canvas, 1)
+        self.body.addWidget(self.list_frame, 1)
+
+        self.summary_label = self.make_label(self.content, "", color=COLOR_CYAN,
+                                             dp=-1, bold=True, wrap=True)
+        self.body.addWidget(self.summary_label)
+
+        self._row_pool: list = []
+        self._row_order: list = []
+        self._empty_label: Optional[QLabel] = None
+        self._scroll_job = None
+        self._last_carrier_data: Dict[str, Any] = {}
+        self.update_carrier({})
+
+    def update_carrier(self, data: Optional[dict]) -> None:
+        """Обновить блок. `data` — `CarrierState.get_state_dict(need)`."""
+        data = dict(data or {})
+        self._last_carrier_data = data
+
+        stats_seen = bool(data.get("stats_seen"))
+        name = str(data.get("name") or "").strip()
+        self.name_label.setText(name or "Fleet Carrier")
+        callsign = str(data.get("callsign") or "").strip()
+        system = str(data.get("system_name") or "").strip()
+        # Вид носителя виден сразу: личный Drake-Class, эскадренный
+        # Javelin-Class или чужой.
+        kind = str(data.get("kind") or "")
+        if kind == "squadron":
+            kind_mark = "эскадр."
+        elif kind == "other" and data.get("at_carrier") and not stats_seen:
+            kind_mark = "чужой"
+        else:
+            kind_mark = ""
+        head = " · ".join(part for part in (callsign or system, kind_mark) if part)
+        self.callsign_label.setText(head)
+        paint(self.callsign_label,
+              color=COLOR_ACCENT if kind == "squadron" else COLOR_TEXT_MUTED)
+
+        stored = int(data.get("stored") or 0)
+        capacity = int(data.get("cargo_capacity") or 0)
+        pct = int(data.get("fill_percent") or 0)
+
+        if stats_seen and capacity > 0:
+            # «≈» — тоннаж сдвинут нашими переводами после последнего
+            # CarrierStats: цифра живая, но это уже оценка.
+            mark = "≈" if data.get("stored_estimated") else ""
+            self.total_label.setText(f"{mark}{stored} / {capacity} t")
+            self.cargo_bar.set_fraction(pct / 100.0)
+            self.cargo_bar.set_color(
+                COLOR_GREEN_TEXT if pct < 80
+                else (COLOR_YELLOW if pct < 100 else COLOR_RED_TEXT))
+        else:
+            # Без CarrierStats тоннаж неизвестен: показываем только учтённое
+            # поимённо и честно пишем, откуда цифра.
+            tracked = int(data.get("tracked_total") or 0)
+            self.total_label.setText(
+                f"{tracked} t (учтено по журналу)" if tracked else "Тоннаж неизвестен")
+            self.cargo_bar.set_fraction(0)
+
+        details = []
+        if stats_seen:
+            details.append(f"свободно {int(data.get('free') or 0)} t")
+            if int(data.get("reserved") or 0):
+                details.append(f"резерв {int(data.get('reserved') or 0)} t")
+            if int(data.get("untracked") or 0):
+                details.append(f"прочее {int(data.get('untracked') or 0)} t")
+        if bool(data.get("pending_decommission")):
+            details.append("списывается!")
+        if bool(data.get("at_carrier")):
+            details.append("вы на борту")
+        jump_system = str(data.get("jump_system") or "").strip()
+        if jump_system:
+            details.append(f"прыжок → {jump_system[:24]}")
+        elif data.get("location_estimated") and system:
+            details.append(f"≈ {system[:24]}")
+        services = [str(item) for item in (data.get("services") or []) if item]
+        detail_text = "  ·  ".join(details)
+        if services:
+            shown = ", ".join(services[:4]) + (
+                f" +{len(services) - 4}" if len(services) > 4 else "")
+            detail_text = (f"{detail_text}\n" if detail_text else "") + f"службы: {shown}"
+        self.detail_label.setText(detail_text)
+
+        rows = list(data.get("commodities") or [])
+        mode = self.settings.get("carrier_filter", "all")
+        query = self.settings.get("carrier_search", "")
+        shown = filter_carrier_rows(rows, mode, query)
+        filtered = mode != "all" or bool(query)
+        self._render_rows(
+            shown,
+            "Нет товаров по фильтру" if filtered and rows else self._empty_text(data))
+
+        need_label = str(data.get("need_label") or "").strip()
+        need_source = str(data.get("need_source") or "").strip()
+        need_total = int(data.get("need_total") or 0)
+        if need_label and need_total > 0:
+            kind_label = "Проект (основной)" if need_source == "project" else "Стройплощадка"
+            self.project_label.setText(f"{kind_label}: {need_label}\nнужно {need_total} t")
+        elif need_label:
+            self.project_label.setText(f"Проект: {need_label} · потребность закрыта")
+        else:
+            self.project_label.setText(
+                "Проект не выбран — отметьте основной во вкладке «Колонизатор»")
+
+        tracked_total = int(data.get("tracked_total") or 0)
+        delivered_total = int(data.get("delivered_total") or 0)
+        if need_total > 0:
+            left = sum(int(row.get("remaining") or 0) for row in rows)
+            have = sum(int(row.get("amount") or 0) for row in rows)
+            summary = f"На борту {have} / {need_total} t · осталось {left} t"
+            color = COLOR_GREEN_TEXT if left == 0 else COLOR_CYAN
+        elif stats_seen:
+            summary = f"На борту {stored} t · свободно {int(data.get('free') or 0)} t"
+            color = COLOR_ACCENT
+        else:
+            summary = ""
+            color = COLOR_CYAN
+
+        cargo_source = str(data.get("cargo_source") or "")
+        if not cargo_source:
+            cargo_source = "remote" if data.get("remote_seen") else (
+                "journal" if (tracked_total or delivered_total) else "")
+        source = {
+            "server": "груз: сайт проекта",
+            "remote": "груз: Raven Colonial",
+            "journal": "груз: по журналу (только ваши перевозки)",
+            "estimate": "груз: оценка, сведена с CarrierStats",
+        }.get(cargo_source, "")
+        if cargo_source == "server" and int(data.get("server_age") or 0) >= 15:
+            source = f"{source} ({int(data.get('server_age') or 0)} мин назад)"
+        if delivered_total and need_total:
+            source = (f"{source} · завезено вами {delivered_total} t").strip(" ·")
+        if source:
+            summary = f"{summary}\n{source}" if summary else source
+
+        others = [row for row in (data.get("other_carriers") or []) if row]
+        if others:
+            parts = [
+                f"{str(row.get('name') or '')[:18]} {int(row.get('tracked_total') or 0)} t"
+                for row in others[:3]
+            ]
+            summary = (f"{summary}\n" if summary else "") + "ещё носители: " + ", ".join(parts)
+
+        prefix = (f"Показано {len(shown)} / {len(rows)} · итоги по всем товарам\n"
+                  if filtered else "")
+        self.summary_label.setText(prefix + summary)
+        paint(self.summary_label, color=color)
+
+    # -- список товаров ----------------------------------------------------
+    def _cell_width(self, chars: int) -> int:
+        """Ширина колонки в пикселях по реальному шрифту блока."""
+        if not chars:
+            return 0
+        metrics = self.name_label.fontMetrics()
+        return max(10, metrics.horizontalAdvance("0" * int(chars)) + 2)
+
+    def _name_width_chars(self) -> int:
+        """Сколько символов помещается в колонку «Товар» при текущей ширине."""
+        try:
+            width_px = int(self.settings.get("carrier_width", 330) or 330)
+        except (TypeError, ValueError):
+            width_px = 330
+        char_px = float(self.name_label.fontMetrics().averageCharWidth()) or 7.0
+        numeric = sum(self._cell_width(chars) for _text, chars, _anchor in self.COLUMNS[1:])
+        available = int((width_px - 40 - numeric) / char_px)
+        return max(8, min(40, available))
+
+    def _make_row(self) -> dict:
+        """Одна строка списка: те же ширины колонок, что и у шапки."""
+        frame = QWidget(self.inner)
+        frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        cells = {}
+        for index, (_text, chars, align) in enumerate(self.COLUMNS):
+            cell = self.make_label(frame, "", dp=-1,
+                                   bold=index in self.BOLD_COLUMNS,
+                                   align_right=align == "right")
+            width = self._cell_width(chars)
+            if width:
+                cell.setFixedWidth(width)
+            layout.addWidget(cell, 1 if not width else 0)
+            cells[self.CELL_KEYS[index]] = cell
+        self.inner.add(frame)
+        return {"frame": frame, "cells": cells}
+
+    #: Что писать вместо списка товаров, когда показывать нечего.
+    EMPTY_DEFAULT = ("[ Нет данных по товарам ]\nОткройте Carrier Management\n"
+                     "или пристыкуйтесь к авианосцу")
+
+    @classmethod
+    def _empty_text(cls, data: dict) -> str:
+        """Почему список пуст — это разные ситуации, и врать нельзя."""
+        data = data or {}
+        if not data.get("stats_seen"):
+            return cls.EMPTY_DEFAULT
+        stored = int(data.get("stored") or 0)
+        if stored <= 0:
+            return "[ Трюм пуст ]\nПо CarrierStats на борту 0 t"
+        if str(data.get("reconciled") or "") == "dropped":
+            return (f"[ Состав груза неизвестен ]\nНа борту {stored} t по CarrierStats,\n"
+                    "поимённый учёт устарел")
+        return cls.EMPTY_DEFAULT
+
+    def _render_rows(self, rows: list, empty_text: str = "") -> None:
+        """Обновить список, переиспользуя виджеты (без мерцания текста)."""
+        if self._empty_label is None:
+            self._empty_label = self.make_label(self.inner, empty_text or self.EMPTY_DEFAULT,
+                                                color=COLOR_TEXT_MUTED, dp=-1)
+            self.inner.add(self._empty_label)
+
+        if not rows:
+            if self._row_order:
+                for entry in self._row_pool:
+                    entry["frame"].hide()
+                self._row_order = []
+            self._empty_label.setText(empty_text or self.EMPTY_DEFAULT)
+            self._empty_label.show()
+            return
+
+        self._empty_label.hide()
+        while len(self._row_pool) < len(rows):
+            self._row_pool.append(self._make_row())
+
+        order = [str(row.get("key") or row.get("name") or index)
+                 for index, row in enumerate(rows)]
+        if order != self._row_order:
+            for entry in self._row_pool:
+                entry["frame"].hide()
+            for index in range(len(rows)):
+                self._row_pool[index]["frame"].show()
+            self._row_order = order
+
+        for index, row in enumerate(rows):
+            cells = self._row_pool[index]["cells"]
+            amount = int(row.get("amount") or 0)
+            delivered = int(row.get("delivered") or 0)
+            need = int(row.get("need") or 0)
+            remaining = int(row.get("remaining") or 0)
+
+            on_board = (f"{amount} ({delivered})"
+                        if delivered and delivered < amount else f"{amount}")
+            if need > 0:
+                tail = f"-{remaining}" if remaining > 0 else "OK"
+                tail_color = COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT
+                board_color = COLOR_GREEN_TEXT if remaining == 0 else COLOR_ACCENT
+            else:
+                tail, tail_color, board_color = "", COLOR_TEXT_MUTED, COLOR_TEXT
+
+            label = str(row.get("name") or row.get("key") or "")
+            if len(label) > self._name_chars:
+                label = label[: self._name_chars - 1] + "…"
+            cells["name"].setText(label)
+            paint(cells["name"], color=COLOR_TEXT)
+            cells["board"].setText(on_board)
+            paint(cells["board"], color=board_color)
+            cells["need"].setText(str(need) if need else "—")
+            paint(cells["need"], color=COLOR_TEXT_MUTED)
+            cells["tail"].setText(tail)
+            paint(cells["tail"], color=tail_color)
+
+
+# ============================================================
+#  EXOBIO
+# ============================================================
+class ExobiologyOverlay(HudWindow):
+    """Экзобиология: тело, образцы с обратным отсчётом, роды и тела системы.
+
+    Данные — только из журнала игрока (Scan / SAAScanComplete / FSSBodySignals /
+    ScanOrganic). Предсказание уровня **род**, упрощённая собственная модель
+    (`exobiology.GENUS_RULES`).
+
+    Блок сам обновляется раз в секунду, пока идёт отсчёт до следующего
+    образца: общий цикл HUD перерисовывает окно только когда меняются данные
+    журнала, а таймер обязан тикать и без них.
+    """
+
+    #: Сколько родов, тел системы и найденных планет показываем.
+    MAX_PREDICTIONS = 5
+    MAX_BODIES = 6
+    MAX_PLANETS = 5
+    #: Цвета плашек телеметрии: (текст, фон) по состоянию.
+    CHIP_BIO_ON = (COLOR_GREEN_TEXT, "#123824")
+    CHIP_BIO_OFF = (COLOR_TEXT_MUTED, "#1c2128")
+    CHIP_LAND_ON = (COLOR_GREEN_TEXT, "#143823")
+    CHIP_LAND_OFF = (COLOR_RED_TEXT, "#381414")
+    CHIP_DSS_ON = (COLOR_CYAN, "#0e2a47")
+    CHIP_DSS_OFF = (COLOR_TEXT_MUTED, "#1c2128")
+    CHIP_BONUS = (COLOR_YELLOW, "#3d3008")
+    CHIP_PLAIN = (COLOR_TEXT, "#21262d")
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        super().__init__(
+            master, "EXOBIO",
+            settings.get("exobio_x", 1060), settings.get("exobio_y", 50),
+            settings.get("exobio_width", 360), settings.get("exobio_height", 620),
+            settings, "exobio",
+        )
+        self._wrap = max(160, int(settings.get("exobio_width", 360)) - 30)
+        # Табличный режим (по умолчанию): разделы печатаются колонками.
+        self._table_mode = str(settings.get("exobio_layout", "table")).lower() != "list"
+        self._state: Dict[str, Any] = {}
+        self._tick: Optional[QTimer] = None
+        self._tick_id: Optional[str] = None
+        # Применённая видимость разделов: сравниваем, чтобы не дёргать
+        # пересборку раскладки на каждом тике.
+        self._planets_shown = True
+        self._telemetry_shown = True
+        self._action_shown = True
+        self._signals_shown = True
+
+        # Заголовок тела
+        self.body.addWidget(hud_section(self.content, "Target body",
+                                        size=self._font_size - 2))
+        self.body_label = self.make_label(
+            self.content, "ТЕЛО / —", color=COLOR_ACCENT, background=COLOR_PANEL_ALT,
+            dp=0, bold=True, wrap=self._wrap)
+        self.body_label.setContentsMargins(6, 4, 6, 4)
+        self.body.addWidget(self.body_label)
+
+        # Полоса значков телеметрии: био, посадка, DSS, бонус, гравитация, T.
+        self.telemetry_frame = QWidget(self.content)
+        telemetry = QHBoxLayout(self.telemetry_frame)
+        telemetry.setContentsMargins(0, 2, 0, 1)
+        telemetry.setSpacing(4)
+        self.chip_bio = self._chip(telemetry, "", *self.CHIP_BIO_ON)
+        self.chip_land = self._chip(telemetry, "", *self.CHIP_LAND_ON)
+        self.chip_dss = self._chip(telemetry, "", *self.CHIP_DSS_ON)
+        self.chip_footfall = self._chip(telemetry, "", *self.CHIP_BONUS)
+        self.chip_grav = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
+        self.chip_temp = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
+        telemetry.addStretch(1)
+        self.body.addWidget(self.telemetry_frame)
+
+        self.params_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED,
+                                            dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.params_label)
+        self.signals_label = self.make_label(self.content, "", color=COLOR_YELLOW,
+                                             dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.signals_label)
+        self.body.addWidget(hud_separator(self.content))
+
+        self.samples_header = self.make_label(self.content, "B / ОБРАЗЦЫ",
+                                              color=COLOR_TEXT_MUTED, dp=-1, bold=True)
+        self.body.addWidget(self.samples_header)
+        self.organics_label = self.make_label(self.content, "—", dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.organics_label)
+
+        self.next_action_label = self.make_label(
+            self.content, "", color=COLOR_CYAN, background="#10253d", dp=-1,
+            bold=True, wrap=self._wrap)
+        self.next_action_label.setContentsMargins(6, 2, 6, 2)
+        self.body.addWidget(self.next_action_label)
+        self.body.addWidget(hud_separator(self.content))
+
+        self.predict_header = self.make_label(self.content, "C / ВЕРОЯТНЫЕ РОДЫ",
+                                              color=COLOR_TEXT_MUTED, dp=-1, bold=True)
+        self.body.addWidget(self.predict_header)
+        self.predict_label = self.make_label(self.content, "нет данных",
+                                             color=COLOR_GREEN_TEXT, dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.predict_label)
+
+        # Раздел «Поиск планет» стоит ВЫШЕ списка тел системы: окно не
+        # резиновое, и при переполнении обрезается низ.
+        self.planet_separator = hud_separator(self.content)
+        self.body.addWidget(self.planet_separator)
+        self.planets_header = self.make_label(self.content, "Поиск планет:",
+                                              color=COLOR_TEXT_MUTED, dp=-1, bold=True)
+        self.body.addWidget(self.planets_header)
+        self.planets_label = self.make_label(self.content, "—", color=COLOR_GREEN_TEXT,
+                                             dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.planets_label)
+
+        self.bodies_separator = hud_separator(self.content)
+        self.body.addWidget(self.bodies_separator)
+        self.bodies_header = self.make_label(self.content, "Тела системы:",
+                                             color=COLOR_TEXT_MUTED, dp=-1, bold=True)
+        self.body.addWidget(self.bodies_header)
+        self.bodies_label = self.make_label(self.content, "—", color=COLOR_TEXT_MUTED,
+                                            dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.bodies_label)
+
+        self.footer_label = self.make_label(
+            self.content, "ℹ Прогноз по родам · Оценка выплат ориентировочная",
+            color=COLOR_TEXT_MUTED, dp=-3, wrap=self._wrap)
+        self.body.addWidget(self.footer_label)
+        self.body.addStretch(1)
+
+    def _chip(self, layout: QHBoxLayout, text: str, color: str, background: str,
+              *, bold: bool = True) -> QLabel:
+        label = QLabel(text, self.telemetry_frame)
+        label.setFont(hud_font(self._font_family, max(7, self._font_size - 3), bold=bold))
+        label.setAttribute(Qt.WA_StyledBackground, True)
+        label.setStyleSheet(
+            f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
+            f"padding:0 4px;")
+        layout.addWidget(label)
+        return label
+
+    @staticmethod
+    def _paint_chip(label: QLabel, text: str, color: str, background: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(
+            f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
+            f"padding:0 4px;")
+
+    # -- контекстное меню блока -------------------------------------------
+    def _add_custom_menu_entries(self, menu) -> None:
+        menu.addSeparator()
+        compact = bool(self.settings.get("exobio_compact", True))
+        menu.addAction(
+            ("[x] " if compact else "[ ] ") + "Компактный вид (значки и шкалы)",
+            self._toggle_compact_mode)
+        menu.addAction(
+            "⊞ Таблица (компактно)" if not self._table_mode else "≡ Лента (по-старому)",
+            self._toggle_layout_mode)
+
+    def _toggle_layout_mode(self) -> None:
+        """Таблица ↔ лента. Режим живёт в настройке, чтобы пережить перезапуск."""
+        self._table_mode = not self._table_mode
+        self.settings["exobio_layout"] = "table" if self._table_mode else "list"
+        self._render()
+        self._flash_indicator(COLOR_CYAN)
+
+    def _toggle_compact_mode(self) -> None:
+        new_val = not bool(self.settings.get("exobio_compact", True))
+        self.settings["exobio_compact"] = new_val
+        self._render()
+        self._flash_indicator(COLOR_CYAN)
+
+    def _table_width(self) -> int:
+        """Сколько символов влезает в строку таблицы при текущем шрифте.
+
+        Ширину символа спрашиваем у самого шрифта: прежняя оценка «доля
+        кегля» зависела от того, в чём кегль — в пунктах или пикселях, — и
+        таблица вылезала за край окна.
+        """
+        char = float(self.organics_label.fontMetrics().averageCharWidth())
+        return max(32, int(self._wrap / max(4.0, char)))
+
+    @staticmethod
+    def _set_table_text(label: QLabel, text: str, color: Optional[str] = None) -> None:
+        """Текст-таблица без переноса: перенос внутри таблицы ломает колонки."""
+        label.setWordWrap(False)
+        label.setText(text)
+        if color:
+            paint(label, color=color)
+
+    def _table_or_flow(self, label: QLabel, headers: Sequence[str],
+                       rows: Sequence[Sequence[object]], flow: str, *,
+                       aligns: Optional[Sequence[str]] = None,
+                       color: Optional[str] = None) -> None:
+        """Таблица, если она влезает по ширине, иначе — обычный текст.
+
+        Таблица нужна, чтобы цифры стояли колонками, но в узком блоке она
+        обрезает последний столбец — а там самое важное (статус, причина).
+        Поэтому ширину проверяем заранее и при нехватке места печатаем
+        строки с переносом.
+        """
+        width = self._table_width()
+        table = format_table(headers, rows, aligns=aligns, max_width=None)
+        if max((len(line) for line in table.splitlines()), default=0) <= width:
+            self._set_table_text(label, table, color)
+            return
+        self._set_flow_text(label, flow)
+        if color:
+            paint(label, color=color)
+
+    @staticmethod
+    def _set_flow_text(label: QLabel, text: str) -> None:
+        """Обычный текст — с переносом по словам."""
+        label.setWordWrap(True)
+        label.setText(text)
+
+    def _short_body(self, state: dict, name: object) -> str:
+        """Имя тела без префикса системы — в блоке мало места."""
+        text = str(name or "?")
+        system = str(state.get("system") or "")
+        if system and text.startswith(system):
+            text = text[len(system):].strip() or text
+        return text
+
+    # -- обновление -------------------------------------------------------
+    def update_exobiology(self, state: Optional[dict]) -> None:
+        """Обновить содержимое. `state` — словарь от `ExobiologyTracker`."""
+        self._state = dict(state or {})
+        self._render()
+        self._schedule_tick()
+
+    def _schedule_tick(self) -> None:
+        """Тикать раз в секунду, пока есть незавершённые образцы."""
+        if self._tick is not None:
+            self._tick.stop()
+            self._tick = None
+            self._tick_id = None
+        if not self._has_pending_samples():
+            return
+        self._tick = QTimer(self)
+        self._tick.setSingleShot(True)
+        self._tick.timeout.connect(self._on_tick)
+        self._tick.start(1000)
+        self._tick_id = "tick"
+
+    def _on_tick(self) -> None:
+        self._tick = None
+        self._tick_id = None
+        try:
+            self._render()
+            self._schedule_tick()
+        except Exception:
+            # Оверлей не имеет права ронять приложение.
+            pass
+
+    def _has_pending_samples(self) -> bool:
+        for row in self._state.get("organics") or []:
+            if not row.get("complete") and int(row.get("samples") or 0) > 0:
+                return True
+        return False
+
+    def destroy(self) -> None:
+        if self._tick is not None:
+            self._tick.stop()
+            self._tick = None
+            self._tick_id = None
+        super().destroy()
+
+    # -- отрисовка и визуальные элементы ----------------------------------
+    @staticmethod
+    def _format_prob_bar(percent: Optional[int], length: int = 8) -> str:
+        """Визуальная шкала вероятности (LED pips meter)."""
+        if percent is None:
+            return ""
+        try:
+            pct = max(0, min(100, int(percent)))
+        except (TypeError, ValueError):
+            return ""
+        filled = int(round((pct / 100.0) * length))
+        return "■" * filled + "□" * max(0, length - filled)
+
+    def _set_action_visible(self, visible: bool) -> None:
+        if self._action_shown == visible:
+            return
+        self._action_shown = visible
+        self.next_action_label.setVisible(visible)
+
+    def _hide_telemetry_chips(self) -> None:
+        if self._telemetry_shown:
+            self._telemetry_shown = False
+            self.telemetry_frame.setVisible(False)
+        if not self._signals_shown:
+            self._signals_shown = True
+            self.signals_label.setVisible(True)
+
+    def _show_telemetry_chips(self, signals: int, landable: bool, mapped: bool,
+                              gravity: float, temp: float, atmo: str,
+                              no_first_footfall: Optional[bool] = None,
+                              first_footfall_by: str = "") -> None:
+        if not self._telemetry_shown:
+            self._telemetry_shown = True
+            self.telemetry_frame.setVisible(True)
+        if self._signals_shown:
+            self._signals_shown = False
+            self.signals_label.setVisible(False)
+
+        if signals > 0:
+            self._paint_chip(self.chip_bio, f"🌿 {signals} BIO", *self.CHIP_BIO_ON)
+        else:
+            self._paint_chip(self.chip_bio, "🌿 0 BIO", *self.CHIP_BIO_OFF)
+
+        if landable:
+            self._paint_chip(self.chip_land, "🛬 ПОСАДКА", *self.CHIP_LAND_ON)
+        else:
+            self._paint_chip(self.chip_land, "⛔ НЕ СЕСТЬ", *self.CHIP_LAND_OFF)
+
+        if mapped:
+            self._paint_chip(self.chip_dss, "📡 DSS ✓", *self.CHIP_DSS_ON)
+        else:
+            self._paint_chip(self.chip_dss, "📡 DSS ✗", *self.CHIP_DSS_OFF)
+
+        # Бонус первопроходца ×5: плашка есть только когда это про нас.
+        if no_first_footfall:
+            self._paint_chip(self.chip_footfall, "👣 БОНУС ×5", *self.CHIP_BONUS)
+            self.chip_footfall.setVisible(True)
+        elif first_footfall_by and first_footfall_by not in ("Вы", "You"):
+            self._paint_chip(self.chip_footfall, "👣 ЕСТЬ", *self.CHIP_BIO_OFF)
+            self.chip_footfall.setVisible(True)
+        else:
+            self.chip_footfall.setVisible(False)
+
+        self._paint_chip(self.chip_grav, f"⚖ {gravity / 10.0:.2f}g", *self.CHIP_PLAIN)
+        self._paint_chip(self.chip_temp, f"🌡 {temp:.0f}K", *self.CHIP_PLAIN)
+
+    def _render(self) -> None:
+        self._render_content()
+        self.apply_data_options()
+
+    def _render_content(self) -> None:
+        state = self._state
+        if not state:
+            self.body_label.setText("Тело: —")
+            self.params_label.setText("Отсканируйте тело (FSS или подход)")
+            self.signals_label.setText("")
+            self.samples_header.setText(_section_text("B", "Образцы"))
+            self.organics_label.setText("—")
+            self.next_action_label.setText("")
+            self._set_action_visible(False)
+            self.predict_header.setText(_section_text("C", "Вероятные роды"))
+            self.predict_label.setText("нет данных")
+            self.bodies_header.setText(_section_text("E", "Тела системы"))
+            self.bodies_label.setText("—")
+            self._hide_telemetry_chips()
+            self._render_planets({})
+            return
+
+        body_name = str(state.get("body") or "").strip()
+        if not body_name:
+            # Текущее тело неизвестно (игрок в космосе/на станции), но данные
+            # системы могут быть: показываем разделы честно.
+            system = str(state.get("system") or "").strip()
+            prefix = f"{system} · " if system else ""
+            self.body_label.setText(f"{prefix}Тело: —")
+
+            bio_bodies = state.get("system_bodies") or []
+            total_bio_signals = sum(int(body.get("bio_signals") or 0) for body in bio_bodies)
+            scanned_count = int(state.get("system_scanned_bodies")
+                                or state.get("system_known_bodies") or 0)
+
+            if bio_bodies:
+                self.params_label.setText(
+                    f"данных о текущем теле нет — в системе {len(bio_bodies)} тел с "
+                    f"биосигналами ({total_bio_signals} сигн.)\n"
+                    "подлетите к планете (FSS или подход) или выберите в списке")
+                self.signals_label.setText(f"Биосигналов в системе: {total_bio_signals}")
+                self.next_action_label.setText(
+                    "→ выберите планету для высадки и сбора образцов")
+                self._set_action_visible(True)
+            elif scanned_count > 0:
+                self.params_label.setText(
+                    f"данных о текущем теле нет — отсканировано {scanned_count} тел "
+                    "(FSS или подход)\nсканируйте другие планеты системы (FSS/DSS)")
+                self.signals_label.setText("")
+                self.next_action_label.setText("")
+                self._set_action_visible(False)
+            else:
+                self.params_label.setText(
+                    "данных о текущем теле нет — отсканируйте тело (FSS или подход)")
+                self.signals_label.setText("")
+                self.next_action_label.setText("")
+                self._set_action_visible(False)
+
+            self.samples_header.setText(_section_text("B", "Образцы"))
+            self.organics_label.setText("—")
+            self.predict_header.setText(_section_text("C", "Вероятные роды"))
+            self.predict_label.setText("нет данных")
+            self._hide_telemetry_chips()
+            self._render_bodies(state)
+            self._render_planets(state)
+            return
+
+        system = str(state.get("system") or "").strip()
+        body = str(state.get("body") or "—")
+        prefix = f"{system} · " if system and system not in body else ""
+        planet_class = str(state.get("planet_class") or "?")
+        self.body_label.setText(f"{prefix}{body}  ({planet_class})")
+
+        gravity = float(state.get("gravity") or 0.0)
+        mapped = bool(state.get("mapped"))
+        landable = bool(state.get("landable"))
+        signals = int(state.get("bio_signals") or 0)
+        temp = float(state.get("temperature") or 0)
+        atmo = str(state.get("atmosphere") or "нет атмосферы")
+        volc = str(state.get("volcanism") or "")
+        no_first_footfall = bool(state.get("no_first_footfall"))
+        first_footfall_by = str(state.get("first_footfall_by") or "")
+
+        compact = bool(self.settings.get("exobio_compact", True))
+        if compact:
+            self._show_telemetry_chips(
+                signals=signals, landable=landable, mapped=mapped, gravity=gravity,
+                temp=temp, atmo=atmo, no_first_footfall=no_first_footfall,
+                first_footfall_by=first_footfall_by)
+            volc_text = f"  ·  🌋 {volc}" if volc and volc.lower() != "нет" else ""
+            self.params_label.setText(f"🌫 {atmo}{volc_text}")
+            self.signals_label.setText(
+                f"Биосигналов: {signals}  |  "
+                f"{'карта есть (DSS)' if mapped else 'карты нет'}" if signals else
+                f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
+        else:
+            self._hide_telemetry_chips()
+            self.params_label.setText(
+                f"{atmo}\n"
+                f"T {temp:.0f} K   g {gravity / 10.0:.2f}\n"
+                f"Вулканизм: {volc or 'нет'}   "
+                f"{'посадка возможна' if landable else 'посадка невозможна'}")
+            self.signals_label.setText(
+                f"Биосигналов: {signals}  |  "
+                f"{'карта есть (DSS)' if mapped else 'карты нет'}" if signals else
+                f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
+
+        self._render_samples(state, mapped)
+        self._render_predictions(state, mapped)
+        self._render_bodies(state)
+        self._render_planets(state)
+
+    def _render_samples(self, state: dict, mapped: bool) -> None:
+        organics = state.get("organics") or []
+        total_value = int(state.get("value_cr") or 0)
+        if not total_value:
+            total_value = sum(int(row.get("value_cr") or 0) for row in organics)
+        no_footfall = bool(state.get("no_first_footfall"))
+        bonus_tag = " (бонус ×5)" if no_footfall else ""
+        header = (f"Образцы{bonus_tag}:"
+                  + (f"  ≈ {format_credits(total_value)} кр" if total_value else ""))
+        self.samples_header.setText(_section_text("B", header))
+
+        if not organics:
+            self.organics_label.setText("образцы не взяты")
+            action = self._suggest_next_action(state, [])
+            self.next_action_label.setText(action)
+            self._set_action_visible(bool(action))
+            return
+
+        lines = []
+        for row in organics:
+            samples = int(row.get("samples") or 0)
+            complete = bool(row.get("complete"))
+            marks = "●" * min(samples, 3) + "○" * max(0, 3 - min(samples, 3))
+            value = int(row.get("value_cr") or 0)
+            name = str(row.get("species") or "?")
+            if row.get("seen_before"):
+                name += " (уже встречалось)"
+            status = ""
+            if complete:
+                status = "комплект готов ✓"
+            elif samples:
+                wait = int(row.get("wait_seconds") or 0)
+                stage = str(row.get("stage") or "")
+                status = (f"ждите {wait} с" if wait > 0
+                          else f"готов к образцу ({stage or 'Sample'}) — смените точку")
+            lines.append((name, f"{marks} {samples}/3",
+                          format_credits(value) if value else "—", status))
+        flat = []
+        for name, marks_value, price_value, status in lines:
+            price = "" if price_value in ("", "—") else f"  ≈ {price_value}"
+            flat.append(f"{name}  {marks_value}{price}")
+            if status:
+                flat.append(f"   {'✔ ' if 'готов ✓' in status else ''}{status}")
+        if self._table_mode and lines:
+            col_price = "≈кр (×5)" if no_footfall else "≈кр"
+            self._table_or_flow(
+                self.organics_label,
+                ("вид", "образцы", col_price, "статус"),
+                [line[:3] + (line[3],) for line in lines],
+                "\n".join(flat),
+                aligns=("left", "left", "right", "left"),
+            )
+        else:
+            self._set_flow_text(self.organics_label, "\n".join(flat))
+        action = self._suggest_next_action(state, organics)
+        self.next_action_label.setText(action)
+        self._set_action_visible(bool(action))
+
+    @staticmethod
+    def _suggest_next_action(state: dict, organics: list) -> str:
+        """Одна строка-подсказка: что делать прямо сейчас."""
+        if not organics:
+            signals = int(state.get("bio_signals") or 0)
+            if signals:
+                return f"→ найдите организм: биосигналов на теле {signals}"
+            if not state.get("landable", True):
+                return "→ на это тело не сесть"
+            return "→ отсканируйте тело, чтобы получить прогноз"
+        waiting = [row for row in organics
+                   if not row.get("complete") and int(row.get("wait_seconds") or 0) > 0]
+        if waiting:
+            wait = min(int(row.get("wait_seconds")) for row in waiting)
+            return f"→ {wait} с до следующего образца"
+        open_rows = [row for row in organics if not row.get("complete")]
+        if open_rows:
+            return "→ возьмите образец с новой точки"
+        return "→ все комплекты собраны — можно лететь дальше"
+
+    def _render_predictions(self, state: dict, mapped: bool) -> None:
+        if not state.get("landable", True):
+            self.predict_header.setText(_section_text("C", "Вероятные роды"))
+            self.predict_label.setText("посадка невозможна — био-прогноз отключен")
+            return
+
+        predictions = state.get("predictions") or []
+        # Фильтр по родам задаётся на вкладке «Экзобиология».
+        allowed = state.get("genera_filter") or []
+        if allowed:
+            predictions = [row for row in predictions
+                           if str(row.get("genus") or "") in {str(g) for g in allowed}]
+
+        no_footfall = bool(state.get("no_first_footfall"))
+        self.predict_header.setText(_section_text(
+            "C", f"Вероятные роды{' (бонус ×5)' if no_footfall else ''}"))
+
+        if not predictions:
+            self.predict_label.setText(
+                "роды отфильтрованы (вкладка «Экзобиология»)" if allowed
+                else "нет подходящих родов")
+            return
+        entries = []
+        for row in predictions[:self.MAX_PREDICTIONS]:
+            genus = str(row.get("genus") or "?")
+            percent = row.get("percent")
+            value = (int(row.get("value_cr") or 0)
+                     or estimate_value(genus, mapped=mapped, first_discovery=no_footfall))
+            species = [str(item) for item in (row.get("species") or []) if item]
+            short_species = ", ".join(_species_tail(name) for name in species[:2]) or ""
+            if len(species) > 2:
+                short_species += f" +{len(species) - 2}"
+            if row.get("confirmed"):
+                short_species = ("DSS ✓ " + short_species).strip()
+            entries.append({
+                "genus": genus,
+                "percent": f"{percent}%" if percent is not None else "—",
+                "bar": self._format_prob_bar(percent) if percent is not None else "",
+                "value": format_credits(value) if value else "",
+                "species": short_species,
+                "notes": ", ".join(str(item) for item in (row.get("notes") or [])[:2]),
+            })
+        extra = len(predictions) - self.MAX_PREDICTIONS
+
+        lines = []
+        for item in entries:
+            head = (f"{item['genus']}  {item['percent']}"
+                    + (f"  {item['bar']}" if item["bar"] else ""))
+            if item["value"]:
+                bonus_tag = " (бонус ×5)" if no_footfall else ""
+                head += f"  ≈ {item['value']}{bonus_tag}"
+            details = " · ".join(part for part in (
+                (f"виды: {item['species']}" if item["species"] else ""),
+                item["notes"]) if part)
+            lines.append(head + (f"\n   {details}" if details else ""))
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        if self._table_mode:
+            col_val = "≈кр (×5)" if no_footfall else "≈кр"
+            rows = [(item["genus"], item["percent"], item["bar"] or "·",
+                     item["value"] or "—",
+                     " · ".join(part for part in (item["species"], item["notes"]) if part)
+                     or "—")
+                    for item in entries]
+            self._table_or_flow(
+                self.predict_label,
+                ("род", "%", "вероятность", col_val, "виды и причина"),
+                rows, "\n".join(lines),
+                aligns=("left", "right", "left", "right", "left"))
+            return
+        self._set_flow_text(self.predict_label, "\n".join(lines))
+
+    def _set_planets_visible(self, visible: bool) -> None:
+        """Показать/скрыть раздел, но только если видимость изменилась.
+
+        Раскладка Qt сама ставит раздел на прежнее место, поэтому прежний
+        `pack(before=…)` не нужен: достаточно скрыть или показать виджеты.
+        """
+        if self._planets_shown == visible:
+            return
+        self._planets_shown = visible
+        for widget in (self.planet_separator, self.planets_header, self.planets_label):
+            widget.setVisible(visible)
+
+    def _render_planets(self, state: dict) -> None:
+        """Раздел «Поиск планет»: что в этой системе подходит под фильтры."""
+        criteria = state.get("planet_criteria") or []
+        if not bool(self.settings.get("exobio_show_planet_search", True)):
+            self._set_planets_visible(False)
+            return
+        self._set_planets_visible(True)
+
+        if not criteria:
+            self.planets_header.setText(_section_text("D", "Поиск планет"))
+            self.planets_label.setText("критерии не выбраны — вкладка «Экзобиология»")
+            paint(self.planets_label, color=COLOR_TEXT_MUTED)
+            return
+
+        rows = state.get("planets") or []
+        self.planets_header.setText(
+            _section_text("D", f"Поиск планет · найдено {len(rows)}"))
+        if not rows:
+            known = int(state.get("system_known_bodies")
+                        or state.get("system_scanned_bodies") or 0)
+            if known:
+                text = ("в этой системе подходящих планет нет\n"
+                        f"(журнал знает {known} тел системы)")
+            else:
+                text = ("журнал ещё не знает сканов тел этой системы\n"
+                        "(сканируйте планеты FSS/DSS при работающем Watcher)")
+            self.planets_label.setText(text)
+            paint(self.planets_label, color=COLOR_TEXT_MUTED)
+            return
+
+        limit = max(1, int(self.settings.get("exobio_planet_limit", self.MAX_PLANETS)
+                           or self.MAX_PLANETS))
+        table_rows = []
+        matched_lines = []
+        for row in rows[:limit]:
+            name = self._short_body(state, row.get("body"))
+            traits = []
+            category = str(row.get("atmosphere_category") or "")
+            if category in ("thin", "thick"):
+                traits.append("атмосфера")
+            elif category == "none":
+                traits.append("без атмосферы")
+            traits.append("посадка" if row.get("landable") else "не сесть")
+            if int(row.get("bio_signals") or 0):
+                traits.append(f"сигналов {row['bio_signals']}")
+            distance = float(row.get("distance_ls") or 0.0)
+            if distance > 0:
+                traits.append(f"{distance:.0f} св.с")
+            table_rows.append((name, str(row.get("planet_class") or "?"), ", ".join(traits)))
+            # Почему планета попала в список — иначе фильтры непрозрачны.
+            matched = [str(item) for item in (row.get("matched") or []) if item]
+            if matched:
+                matched_lines.append((name, ", ".join(matched[:2])))
+        extra = len(rows) - limit
+        lines = [f"{name}  ·  {planet_class}  ·  {traits}"
+                 for name, planet_class, traits in table_rows]
+        for name, why in matched_lines:
+            lines.append(f"   ↳ {why}")
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        if self._table_mode and table_rows:
+            self._table_or_flow(
+                self.planets_label, ("тело", "класс", "признаки"), table_rows,
+                "\n".join(lines), color=COLOR_GREEN_TEXT)
+            return
+        self._set_flow_text(self.planets_label, "\n".join(lines))
+        paint(self.planets_label, color=COLOR_GREEN_TEXT)
+
+    def _render_bodies(self, state: dict) -> None:
+        bodies = state.get("system_bodies") or []
+        self.bodies_header.setText(_section_text(
+            "E", f"Тела системы · биосигналы {len(bodies)}" if bodies else "Тела системы"))
+        if not bodies:
+            self.bodies_label.setText("в этой системе биосигналов не найдено")
+            return
+        rows = []
+        for row in bodies[:self.MAX_BODIES]:
+            name = self._short_body(state, row.get("body"))
+            marks = []
+            if row.get("has_organics"):
+                marks.append("образцы")
+            marks.append("карта есть" if row.get("mapped") else "карты нет")
+            if not row.get("landable"):
+                marks.append("не сесть")
+            rows.append((name, str(row.get("planet_class") or "?"),
+                         str(row.get("bio_signals", 0)), ", ".join(marks)))
+        extra = len(bodies) - self.MAX_BODIES
+        lines = [f"{name}  ·  сигналов {bio}  ·  {marks}" for name, _cls, bio, marks in rows]
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        if self._table_mode and rows:
+            self._table_or_flow(
+                self.bodies_label, ("тело", "класс", "био", "признаки"), rows,
+                "\n".join(lines), aligns=("left", "left", "right", "left"))
+            return
+        self._set_flow_text(self.bodies_label, "\n".join(lines))
+
+
+# ============================================================
+#  SESSION — статистика сессии с графиком
+# ============================================================
+class SessionOverlay(HudWindow):
+    def __init__(self, master, settings: Dict[str, Any]):
+        # Шесть счётчиков, график и строка маршрута в 300 px не помещаются:
+        # график наезжал на подпись под ним. Окно стартует выше, а сохранённый
+        # пользователем размер по-прежнему главнее.
+        height = max(int(settings.get("session_height", 300) or 300), 340)
+        super().__init__(
+            master, "SESSION",
+            settings.get("session_x", 400), settings.get("session_y", 50),
+            settings.get("session_width", 320), height, settings, "session",
+        )
+        self.session_header = hud_section(self.content, "Session metrics",
+                                          size=self._font_size - 2)
+        self.body.addWidget(self.session_header)
+
+        self.stats_grid = QWidget(self.content)
+        self._stats_layout = QGridLayout(self.stats_grid)
+        self._stats_layout.setContentsMargins(0, 0, 0, 0)
+        self._stats_layout.setHorizontalSpacing(8)
+        self._stats_layout.setVerticalSpacing(1)
+        self.body.addWidget(self.stats_grid)
+
+        self.systems_label = self._make_stat_row(0, "Systems:", "0", COLOR_CYAN)
+        self.deliveries_label = self._make_stat_row(1, "Deliveries:", "0", COLOR_GREEN_TEXT)
+        self.cargo_label = self._make_stat_row(2, "Cargo (t):", "0", COLOR_ACCENT)
+        self.route_cargo_label = self._make_stat_row(3, "Route (t):", "0", COLOR_YELLOW)
+        self.construction_cargo_label = self._make_stat_row(4, "Build (t):", "0", COLOR_CYAN)
+        self.time_label = self._make_stat_row(5, "Time:", "00:00", COLOR_TEXT_MUTED)
+
+        self.route_system_label = self.make_label(self.content, "", color=COLOR_YELLOW, dp=-1)
+        self.body.addWidget(self.route_system_label)
+        self.body.addWidget(hud_separator(self.content))
+
+        self.history_header = hud_section(self.content, "Cargo history",
+                                          size=self._font_size - 2)
+        self.body.addWidget(self.history_header)
+        self.chart_canvas = HudChart(self.content, height=90)
+        self.chart_canvas.set_font_spec(self._font_family, self._font_size - 2)
+        self.body.addWidget(self.chart_canvas)
+
+        self.route_info = self.make_label(self.content, "", color=COLOR_TEXT_MUTED,
+                                          dp=-2, wrap=280)
+        self.body.addWidget(self.route_info)
+        self.body.addStretch(1)
+
+        self.cargo_history: deque = deque(maxlen=20)
+        self.jump_history: deque = deque(maxlen=20)
+        self.session_start = time.time()
+        self.start_system = ""
+        self.current_system = ""
+
+    def _make_stat_row(self, row: int, label: str, value: str, value_color: str):
+        name = self.make_label(self.stats_grid, label.rstrip(":"), color=COLOR_TEXT_MUTED, dp=0)
+        value_label = self.make_label(self.stats_grid, value, color=value_color, dp=0,
+                                      bold=True, align_right=True)
+        self._stats_layout.addWidget(name, row, 0)
+        self._stats_layout.addWidget(value_label, row, 1)
+        return value_label
+
+    def update_session(self, data: dict) -> None:
+        self.systems_label.setText(str(data.get("systems_visited", 0)))
+        self.deliveries_label.setText(str(data.get("deliveries_count", 0)))
+        self.cargo_label.setText(f"{data.get('cargo_total_tons', 0):.1f}")
+        self.route_cargo_label.setText(f"{data.get('route_cargo_tons', 0):.1f}")
+        self.construction_cargo_label.setText(
+            f"{data.get('construction_cargo_tons', 0):.1f}")
+
+        elapsed = int(time.time() - self.session_start)
+        hours = elapsed // 3600
+        mins = (elapsed % 3600) // 60
+        self.time_label.setText(f"{hours:02d}:{mins:02d}")
+
+        last_system = data.get("last_delivery_system", "")
+        self.route_system_label.setText(f"-> {last_system}" if last_system else "")
+
+        current = data.get("current_system", "")
+        if current and not self.start_system:
+            self.start_system = current
+        self.current_system = current
+
+        if self.start_system and self.current_system:
+            self.route_info.setText(f">> {self.start_system}  ->  {self.current_system}")
+        else:
+            self.route_info.setText("")
+
+        self.cargo_history.append(data.get("cargo_count", 0))
+        if current:
+            self.jump_history.append(current)
+        self._draw_chart()
+
+    def _draw_chart(self) -> None:
+        self.chart_canvas.set_history(list(self.cargo_history))
+
+    def on_font_changed(self) -> None:
+        self.chart_canvas.set_font_spec(self._font_family, self._font_size - 2)

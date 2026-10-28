@@ -440,43 +440,30 @@ if __name__ == "__main__":
 
 # ---------------------------------------------------------------------------
 class CarrierOverlayReconcileTests(unittest.TestCase):
-    """Что именно видит пилот в блоке CARRIER после сверки."""
+    """Что именно видит пилот в блоке CARRIER после сверки.
+
+    Блок строится настоящим (`CarrierOverlay`), поэтому читаем текст прямо у
+    Qt-подписей: прежние заглушки `tk.Label` с `config(text=...)` больше
+    невозможны.
+    """
 
     def setUp(self):
-        from unittest import mock
-
         from test_overlay_management import _ensure_gui_stubs
 
         _ensure_gui_stubs()
         import overlay as overlay_module
 
         self.overlay_module = overlay_module
-        self.texts = {}
-
-        def label_factory(*args, **kwargs):
-            widget = mock.MagicMock(name="Label")
-            widget.text_arg = str(kwargs.get("text", ""))
-
-            def _config(*c_args, **c_kwargs):
-                if "text" in c_kwargs:
-                    widget.text_arg = str(c_kwargs["text"])
-
-            widget.config.side_effect = _config
-            return widget
-
-        patcher = mock.patch.object(overlay_module.tk, "Label", side_effect=label_factory)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        frame_patcher = mock.patch.object(overlay_module.tk, "Frame",
-                                          side_effect=lambda *a, **k: mock.MagicMock(name="Frame"))
-        frame_patcher.start()
-        self.addCleanup(frame_patcher.stop)
 
     def _overlay(self):
-        from test_overlay_layout import _FakeMaster
+        overlay = self.overlay_module.CarrierOverlay(
+            None, {"font_family": "Consolas", "font_size": 10})
+        self.addCleanup(overlay.destroy)
+        return overlay
 
-        return self.overlay_module.CarrierOverlay(
-            _FakeMaster(), {"font_family": "Consolas", "font_size": 10})
+    @staticmethod
+    def _text(widget):
+        return str(widget.text())
 
     @staticmethod
     def _state(**overrides):
@@ -493,20 +480,20 @@ class CarrierOverlayReconcileTests(unittest.TestCase):
         block.update_carrier(self._state(untracked=800, tracked_total=200, commodities=[
             {"key": "steel", "name": "Steel", "amount": 200, "delivered": 0,
              "need": 0, "remaining": 0}]))
-        self.assertIn("прочее 800 t", block.detail_label.text_arg)
+        self.assertIn("прочее 800 t", self._text(block.detail_label))
 
     def test_estimated_tonnage_is_marked(self):
         block = self._overlay()
         block.update_carrier(self._state(stored_estimated=True))
-        self.assertTrue(block.total_label.text_arg.startswith("≈"))
+        self.assertTrue(self._text(block.total_label).startswith("≈"))
         block.update_carrier(self._state(stored_estimated=False))
-        self.assertFalse(block.total_label.text_arg.startswith("≈"))
+        self.assertFalse(self._text(block.total_label).startswith("≈"))
 
     def test_source_line_says_the_list_was_reconciled(self):
         block = self._overlay()
         block.update_carrier(self._state(cargo_source="estimate", tracked_total=700,
                                          reconciled="trimmed"))
-        self.assertIn("оценка, сведена с CarrierStats", block.summary_label.text_arg)
+        self.assertIn("оценка, сведена с CarrierStats", self._text(block.summary_label))
 
     def test_empty_list_explains_itself(self):
         block = self.overlay_module.CarrierOverlay
@@ -520,9 +507,9 @@ class CarrierOverlayReconcileTests(unittest.TestCase):
         """Текст создавался один раз — «трюм пуст» никогда бы не показался."""
         block = self._overlay()
         block.update_carrier(self._state(stored=0, commodities=[]))
-        self.assertIn("Трюм пуст", block._empty_label.text_arg)
+        self.assertIn("Трюм пуст", self._text(block._empty_label))
         block.update_carrier(self._state(stored=900, reconciled="dropped", commodities=[]))
-        self.assertIn("Состав груза неизвестен", block._empty_label.text_arg)
+        self.assertIn("Состав груза неизвестен", self._text(block._empty_label))
 
     def test_manager_updates_the_block_even_with_empty_data(self):
         """Иначе блок замирал на прошлом состоянии — с прежними строками."""
