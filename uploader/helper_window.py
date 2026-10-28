@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Optional
 
-from PySide6.QtCore import QTimer
+import threading
+
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication
 
@@ -27,11 +29,21 @@ SHORTCUT_KEYS = {
 class HelperWindow(FramelessWindow):
     """Main window: custom frame, timers, clipboard and a close hook."""
 
+    #: Отложенный вызов, пришедший из фонового потока. Сигнал доставляется в
+    #: поток окна (queued connection), поэтому таймер создаётся там, где живёт
+    #: цикл событий. Раньше `after()` из потока делал `QTimer(self)` прямо в
+    #: рабочем потоке: Qt отказывался («Cannot create children for a parent
+    #: that is in a different thread»), колбэк не выполнялся никогда — так
+    #: «зависали» проверка токена и проверка ключа Raven Colonial.
+    _scheduled = Signal(object)
+
     def __init__(self, title: str = "Colonial Helper") -> None:
         ensure_app()
         super().__init__(title)
-        self._timers: Dict[int, QTimer] = {}
+        self._timers: Dict[int, Optional[QTimer]] = {}
         self._timer_seq = 0
+        self._scheduled.connect(self._start_scheduled,
+                                Qt.ConnectionType.QueuedConnection)
         self._shortcuts = []
         self._close_handler: Optional[Callable] = None
         self._closing = False
@@ -77,7 +89,33 @@ class HelperWindow(FramelessWindow):
 
     # ------------------------------------------------------------------ timers
     def after(self, delay_ms: int, callback: Callable) -> int:
-        """Run ``callback`` once after ``delay_ms``; returns a cancellation id."""
+        """Run ``callback`` once after ``delay_ms``; returns a cancellation id.
+
+        Вызывать можно из любого потока: сеть в Helper живёт в фоновых
+        потоках, а из них результат возвращается именно так (`root.after(0,
+        …)`). Из рабочего потока запрос уезжает сигналом в поток окна, где и
+        создаётся `QTimer`; иначе таймер не запускался вовсе.
+        """
+        self._timer_seq += 1
+        token = self._timer_seq
+        delay = max(0, int(delay_ms))
+        if threading.current_thread() is threading.main_thread():
+            self._start_timer(token, delay, callback)
+        else:
+            # Пока таймера нет, `after_cancel` должен находить токен — иначе
+            # отменённый вызов всё равно выполнится.
+            self._timers[token] = None
+            self._scheduled.emit((token, delay, callback))
+        return token
+
+    def _start_scheduled(self, payload) -> None:
+        """Сигнал из фонового потока уже в потоке окна — заводим таймер."""
+        token, delay, callback = payload
+        if token not in self._timers:
+            return                      # вызов отменили до доставки
+        self._start_timer(token, delay, callback)
+
+    def _start_timer(self, token: int, delay: int, callback: Callable) -> None:
         timer = QTimer(self)
         timer.setSingleShot(True)
 
@@ -87,11 +125,8 @@ class HelperWindow(FramelessWindow):
                 callback()
 
         timer.timeout.connect(fire)
-        self._timer_seq += 1
-        token = self._timer_seq
         self._timers[token] = timer
-        timer.start(max(0, int(delay_ms)))
-        return token
+        timer.start(delay)
 
     def after_cancel(self, token: Optional[int]) -> None:
         timer = self._timers.pop(token, None)

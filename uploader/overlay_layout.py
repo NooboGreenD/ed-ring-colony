@@ -283,14 +283,17 @@ def capture_layout_snapshot(settings: dict, windows: dict, blocks: tuple) -> dic
         }
         if overlay is not None:
             # Живое окно: его фактическая геометрия актуальнее сохранённой.
+            # Блок — сам Qt-виджет, отдельного `overlay.window` с
+            # `winfo_*`-методами больше нет: этот путь молча падал, и профиль
+            # раскладки запоминал старые координаты из настроек.
             try:
-                entry["x"] = overlay.window.winfo_x()
-                entry["y"] = overlay.window.winfo_y()
-                entry["width"] = overlay.window.winfo_width()
-                entry["height"] = overlay.window.winfo_height()
-                entry["anchor"] = getattr(overlay, "_anchor", entry["anchor"])
+                geometry = (int(overlay.x()), int(overlay.y()),
+                            int(overlay.width()), int(overlay.height()))
             except Exception:
-                pass
+                geometry = None
+            if geometry:
+                entry["x"], entry["y"], entry["width"], entry["height"] = geometry
+            entry["anchor"] = getattr(overlay, "_anchor", entry["anchor"])
         snapshot[key] = entry
     # Общие настройки вида и поведения тоже часть раскладки.
     for key in LAYOUT_GLOBAL_KEYS:

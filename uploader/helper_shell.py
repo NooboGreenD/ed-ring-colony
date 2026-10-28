@@ -27,10 +27,12 @@ from PySide6.QtWidgets import (
 from ui_qt import (
     panel,
     CYAN,
+    GREEN,
     LINE,
     MUTED,
     ORANGE,
     PANEL_ALT,
+    RED,
     TEXT,
     WINDOW_STYLE,
     label,
@@ -210,6 +212,14 @@ class HelperShell(QWidget):
         return frame
 
     def _status_bar(self) -> QWidget:
+        """Нижняя строка: состояние связи слева, текущая операция справа.
+
+        Состояние подключения (точка + слово + подробность) — то, что раньше
+        писалось в Tk-виджеты `status_dot`/`status_text`/`status_detail`
+        через `config(foreground=…)`. В Qt-оболочке этих виджетов не было
+        вовсе, поэтому после перевода на Qt строка «Подключено / Не
+        подключено» не обновлялась и не показывалась.
+        """
         frame = panel(QWidget(), "panelClear")
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -218,10 +228,67 @@ class HelperShell(QWidget):
         line.setObjectName("separator")
         line.setFixedHeight(1)
         layout.addWidget(line)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(10, 0, 10, 4)
+        row_layout.setSpacing(8)
+
+        self.status_dot = label("○", size=11, bold=True, color=RED)
+        self.status_text = label("Не подключено", size=9, bold=True, color=RED)
+        self.status_detail = label("", role="muted", size=9)
+        self.status_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.bottom_status = label("Готов", role="mono", size=9, color=MUTED)
         self.bottom_status.setObjectName("statusLine")
-        layout.addWidget(self.bottom_status)
+
+        # Индикатор игры: раньше он жил в Tk-шапке (`game_dot`/`game_label`/
+        # `game_hint`). После перевода шапки на Qt этих виджетов не стало, а
+        # `_tick_game_status` продолжал писать в них через `.config(...)` —
+        # исключение глушилось, и вместе с индикатором переставали
+        # обновляться груз авианосца и проекты колонизатора: они идут в том
+        # же тике, ниже упавшей строки.
+        self.game_dot = label("○", size=9, color=MUTED)
+        self.game_label = label("Игра: нет данных", size=9, color=MUTED)
+        self.game_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.game_hint = label("", role="muted", size=9)
+
+        row_layout.addWidget(self.status_dot)
+        row_layout.addWidget(self.status_text)
+        row_layout.addWidget(self.status_detail, 1)
+        row_layout.addWidget(self.game_dot)
+        row_layout.addWidget(self.game_label)
+        row_layout.addWidget(self.game_hint)
+        row_layout.addWidget(self.bottom_status)
+        layout.addWidget(row)
         return frame
+
+    def set_game_state(self, text: str, color: str = MUTED, dot: str = "●") -> None:
+        """Состояние игры в статусной строке: точка и подпись."""
+        self.game_dot.setText(str(dot or "●"))
+        self.game_dot.setStyleSheet(f"color:{color}; background: transparent;")
+        self.game_label.setText(str(text or ""))
+        self.game_label.setStyleSheet(f"color:{color}; background: transparent;")
+
+    def game_state(self) -> str:
+        """Текст индикатора игры (для проверок и тестов)."""
+        return self.game_label.text()
+
+    def set_game_hint(self, text: str) -> None:
+        """Подробности об игре: имя процесса, разрешение и заголовок окна."""
+        self.game_hint.setText(str(text or ""))
+
+    def set_connection(self, online: bool, detail: str = "") -> None:
+        """Показать состояние связи с сайтом: точка, слово и подробность."""
+        color = GREEN if online else RED
+        self.status_dot.setText("●" if online else "○")
+        for widget in (self.status_dot, self.status_text):
+            widget.setStyleSheet(f"color:{color}; background: transparent;")
+        self.status_text.setText("Подключено" if online else "Не подключено")
+        self.status_detail.setText(str(detail or ""))
+
+    def connection(self) -> tuple:
+        """(подключено, подробность) — для проверок и тестов."""
+        return (self.status_text.text() == "Подключено", self.status_detail.text())
 
     def _pack_into_root(self) -> None:
         """Attach the shell to the window created by the bootstrapper."""
