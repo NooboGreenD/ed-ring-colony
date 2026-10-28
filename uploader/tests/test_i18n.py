@@ -461,6 +461,21 @@ class TranslationTests(unittest.TestCase):
             self.assertIn(code, SUPPORTED_LOCALES)
             self.assertTrue(str(name).strip())
 
+    def test_helper_module_has_no_untranslated_ui_strings(self):
+        """Весь `colonial_helper.py`: подписи окна переведены, диагностика — нет.
+
+        `NON_UI_LITERALS` — это значения полей журнала, токены разбора ответов
+        сервера, причины для журнала программы и текст консольного старта: они
+        не подписи окна и намеренно остаются русскими.
+        """
+        import colonial_helper
+
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "colonial_helper.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in colonial_helper.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "строки без перевода: " + "; ".join(missing))
+
 
 if __name__ == "__main__":
     unittest.main()
