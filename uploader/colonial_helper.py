@@ -93,7 +93,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.15"
+VERSION = "2.18.16"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -538,11 +538,11 @@ class ColonialHelperApp:
             raven_key=getattr(self.raven_api, "api_key", "") or "",
             edsm_key=self.edsm_api.api_key or "",
             edsm_name=self.edsm_api.commander_name or "",
-            edsm_status="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен",
+            edsm_status=tr("EDSM: включён") if self.edsm_api.enabled else tr("EDSM: не настроен"),
             eddn_enabled=bool(self.eddn_api.enabled),
             inara_key=self.inara_api.api_key or "",
             inara_name=self.inara_api.commander_name or "",
-            inara_status="Inara: включена" if self.inara_api.enabled else "Inara: не настроена",
+            inara_status=tr("Inara: включена") if self.inara_api.enabled else tr("Inara: не настроена"),
         )
         actions = AuthPageActions(
             open_tokens=self._open_site_account,
@@ -593,7 +593,8 @@ class ColonialHelperApp:
         self.config["inara_commander_name"] = self.inara_api.commander_name
         self.save_config()
         self.inara_status_label.set_status(
-            "Inara: включена" if self.inara_api.enabled else "Inara: не настроена", COLOR_MUTED)
+            tr("Inara: включена") if self.inara_api.enabled else tr("Inara: не настроена"),
+            COLOR_MUTED)
 
     def _save_eddn_setting(self):
         self._on_eddn_toggle(bool(self.eddn_enabled_var.isChecked()))
@@ -604,7 +605,8 @@ class ColonialHelperApp:
         self.config["edsm_commander_name"] = self.edsm_api.commander_name
         self.save_config()
         self.edsm_status_label.set_status(
-            "EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", COLOR_MUTED)
+            tr("EDSM: включён") if self.edsm_api.enabled else tr("EDSM: не настроен"),
+            COLOR_MUTED)
 
     # ============================================================
     #  Инфографика пилота: крупные плитки, спарклайны, компактный режим
@@ -769,13 +771,13 @@ class ColonialHelperApp:
             visited = self.route.visited_count
             route_percent = (visited / route_total * 100) if route_total else 0.0
             current = self.ship.state.current_system or "—"
-            ship_name = state.get("ship_type") or "Корабль не определён"
+            ship_name = state.get("ship_type") or tr("Корабль не определён")
             services = " / ".join(
                 name for name, enabled in (
                     ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
                     ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
                 ) if enabled
-            ) or "нет подключений"
+            ) or tr("нет подключений")
             cargo = float(state.get("cargo_count", 0) or 0)
             capacity = float(state.get("cargo_capacity", 0) or 0)
             cargo_percent = cargo / capacity * 100 if capacity > 0 else 0.0
@@ -789,22 +791,33 @@ class ColonialHelperApp:
 
             # --- крупные показатели ---
             self._pilot_set("kpi_tons", f"{self._session_cargo_tons:.0f} t")
-            self._pilot_set("kpi_tons_sub", f"на маршрут {self._session_route_cargo_tons:.0f} t · на стройки {self._session_construction_cargo_tons:.0f} t")
+            self._pilot_set("kpi_tons_sub", tr(
+                "на маршрут {route} t · на стройки {site} t",
+                route=f"{self._session_route_cargo_tons:.0f}",
+                site=f"{self._session_construction_cargo_tons:.0f}"))
             self._pilot_set("kpi_deliveries", str(self._session_deliveries))
-            self._pilot_set("kpi_deliveries_sub", f"событий в сессии: {event_count}")
+            self._pilot_set("kpi_deliveries_sub",
+                            tr("событий в сессии: {count}", count=event_count))
             self._pilot_set("kpi_cargo", f"{cargo:.0f} / {capacity:.0f} t")
-            self._pilot_set("kpi_cargo_sub", f"трюм заполнен на {cargo_percent:.0f}%")
+            self._pilot_set("kpi_cargo_sub",
+                            tr("трюм заполнен на {percent}%", percent=f"{cargo_percent:.0f}"))
             self._pilot_set("kpi_systems", str(len(self._session_systems_visited)))
-            self._pilot_set("kpi_systems_sub", f"маршрут: {visited}/{route_total}" if route_total else "маршрут не загружен")
+            self._pilot_set("kpi_systems_sub",
+                            tr("маршрут: {visited}/{total}", visited=visited,
+                               total=route_total) if route_total
+                            else tr("маршрут не загружен"))
 
             # --- динамика ---
-            self._pilot_set("session_rate", f"{self._pilot_rate():.0f} t/час")
+            self._pilot_set("session_rate",
+                            tr("{rate} t/час", rate=f"{self._pilot_rate():.0f}"))
             self._pilot_set("session_construction", f"{self._session_construction_cargo_tons:.0f} t")
             self._pilot_set("session_route", f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t")
 
             # --- корабль ---
             self._pilot_set("ship", ship_name)
-            self._pilot_set("modules", f"{total_modules - damaged}/{total_modules} исправны")
+            self._pilot_set("modules", tr("{healthy}/{total} исправны",
+                                          healthy=total_modules - damaged,
+                                          total=total_modules))
             for key, value in {
                 "hull_bar": self._pilot_percent(state.get("hull_percent")),
                 "shield_bar": self._pilot_percent(state.get("shield_percent")),
@@ -815,7 +828,10 @@ class ColonialHelperApp:
                     self.pilot_page.set_bar(key, value)
 
             # --- маршрут ---
-            self._pilot_set("route_status", f"{visited}/{route_total} систем" if route_total else "не загружен")
+            self._pilot_set("route_status",
+                            tr("{visited}/{total} систем", visited=visited,
+                               total=route_total) if route_total
+                            else tr("не загружен"))
             if getattr(self, "pilot_page", None) is not None:
                 self.pilot_page.set_bar("route_progress", route_percent)
             overlay_data = self._get_overlay_data()
@@ -825,29 +841,36 @@ class ColonialHelperApp:
             self._pilot_set("last_delivery", self._last_delivery_system or "—")
 
             # --- статус и подключения ---
-            self._pilot_set("commander", self._current_cmdr_name() or "CMDR не определён")
+            self._pilot_set("commander",
+                            self._current_cmdr_name() or tr("CMDR не определён"))
             self._pilot_set("system", current)
-            game_text = "запущена (в фокусе)" if game_state.focused else ("запущена" if game_state.running else "не запущена")
+            game_text = (tr("запущена (в фокусе)") if game_state.focused
+                         else (tr("запущена") if game_state.running else tr("не запущена")))
             if game_state.error:
-                game_text = f"нет данных ({game_state.error})"
+                game_text = tr("нет данных ({error})", error=game_state.error)
             self._pilot_set("game", game_text)
-            self._pilot_set("watcher", "АКТИВЕН" if self.watcher_active else "остановлен")
+            self._pilot_set("watcher",
+                            tr("АКТИВЕН") if self.watcher_active else tr("остановлен"))
             self._pilot_set("services", services)
             if exobio:
                 genera = ", ".join(row["genus"] for row in (exobio.get("predictions") or [])[:3])
-                exobio_text = f"{exobio.get('body')}: {exobio.get('bio_signals', 0)} сигналов"
+                exobio_text = tr("{body}: {signals} сигналов",
+                                 body=exobio.get("body"),
+                                 signals=exobio.get("bio_signals", 0))
                 if genera:
                     exobio_text += f" · {genera}"
             else:
-                exobio_text = "тело не отсканировано"
+                exobio_text = tr("тело не отсканировано")
             self._pilot_set("exobio", exobio_text)
 
             # --- журналы и экономика ---
             self._pilot_set("balance", f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "))
             self._pilot_set("rebuy", f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "))
-            self._pilot_set("legal", state.get("legal_state") or "неизвестно")
+            self._pilot_set("legal", state.get("legal_state") or tr("неизвестно"))
             self._pilot_set("journal_state", self._pilot_journal_state())
-            self._pilot_set("event_summary", f"{event_count} событий" if event_count else "ожидание событий")
+            self._pilot_set("event_summary",
+                            tr("{count} событий", count=event_count) if event_count
+                            else tr("ожидание событий"))
             self._pilot_set("last_event", (self._last_session_event or "—")[:48])
 
             # --- графики ---
@@ -900,8 +923,9 @@ class ColonialHelperApp:
         """Короткая сводка по журналам: сколько файлов и отслеживается ли."""
         count = self._pilot_journal_count()
         if not count:
-            return "папка журналов не выбрана"
-        return f"{count} файлов · {'слежение' if self.watcher_active else 'ожидание'}"
+            return tr("папка журналов не выбрана")
+        return tr("{count} файлов · {state}", count=count,
+                  state=tr("слежение") if self.watcher_active else tr("ожидание"))
 
     # ============================================================
     #  Вкладка: Загрузка логов
@@ -2150,7 +2174,7 @@ class ColonialHelperApp:
         """Открыть единственное место, где Frontier можно привязать/отвязать."""
         site = getattr(getattr(self, "api", None), "site_url", "") or ""
         if not site:
-            self._capi_set_status("Сначала подключите токен проекта", ok=False)
+            self._capi_set_status(tr("Сначала подключите токен проекта"), ok=False)
             return
         url = localized_url(f"{site.rstrip('/')}/account/capi", self.config.get("site_locale"))
         try:
@@ -2167,9 +2191,10 @@ class ColonialHelperApp:
         """Показать статус привязки, полученный от сайта по токену проекта."""
         api = getattr(self, "api", None)
         if not api or not api.is_connected:
-            self._capi_set_status("Подключите токен проекта, затем привяжите Frontier на сайте", ok=None)
+            self._capi_set_status(
+                tr("Подключите токен проекта, затем привяжите Frontier на сайте"), ok=None)
             return
-        self._capi_set_status("Проверяю привязку Frontier на сайте…", ok=None)
+        self._capi_set_status(tr("Проверяю привязку Frontier на сайте…"), ok=None)
 
         def worker():
             try:
@@ -2180,28 +2205,37 @@ class ColonialHelperApp:
             def done():
                 if not result.get("ok"):
                     self._capi_set_status(
-                        f"Не удалось проверить CAPI сайта: {result.get('error', 'ошибка запроса')}",
+                        tr("Не удалось проверить CAPI сайта: {error}",
+                           error=result.get("error") or tr("Ошибка")),
                         ok=False,
                     )
                     return
                 if not result.get("linked"):
                     self._capi_set_status(
-                        "Frontier не привязан на сайте. Нажмите «Открыть Frontier CAPI на сайте».",
+                        tr("Frontier не привязан на сайте. "
+                           "Нажмите «Открыть Frontier CAPI на сайте»."),
                         ok=None,
                     )
                 elif not result.get("active"):
                     self._capi_set_status(
-                        "Привязка Frontier сохранена, но требует внимания. Откройте CAPI на сайте.",
+                        tr("Привязка Frontier сохранена, но требует внимания. "
+                           "Откройте CAPI на сайте."),
                         ok=False,
                     )
                 else:
                     cmdr = result.get("cmdrName") or ""
                     synced = result.get("lastSyncedAt") or ""
-                    suffix = f"; синхронизация: {synced}" if synced else ""
-                    self._capi_set_status(
-                        f"Frontier привязан на сайте{f' (CMDR {cmdr})' if cmdr else ''}{suffix}",
-                        ok=True,
-                    )
+                    if cmdr and synced:
+                        text = tr("Frontier привязан на сайте (CMDR {cmdr}); "
+                                  "синхронизация: {synced}", cmdr=cmdr, synced=synced)
+                    elif cmdr:
+                        text = tr("Frontier привязан на сайте (CMDR {cmdr})", cmdr=cmdr)
+                    elif synced:
+                        text = tr("Frontier привязан на сайте; синхронизация: {synced}",
+                                  synced=synced)
+                    else:
+                        text = tr("Frontier привязан на сайте")
+                    self._capi_set_status(text, ok=True)
 
             self.root.after(0, done)
 
@@ -2225,7 +2259,7 @@ class ColonialHelperApp:
         if not api or not api.is_connected:
             self._capi_set_status("Сначала подключите токен проекта", ok=False)
             return
-        self._capi_set_status("Сайт синхронизирует данные Frontier…", ok=None)
+        self._capi_set_status(tr("Сайт синхронизирует данные Frontier…"), ok=None)
 
         def worker():
             try:
@@ -2235,11 +2269,15 @@ class ColonialHelperApp:
 
             def done():
                 if not result.get("ok"):
-                    error = result.get("error") or "Синхронизация не удалась"
+                    error = result.get("error") or tr("Синхронизация не удалась")
                     if result.get("needsSiteLink"):
-                        error += ". Сначала привяжите Frontier на сайте."
+                        error += ". " + tr(
+                            "Frontier не привязан на сайте. "
+                            "Нажмите «Открыть Frontier CAPI на сайте».")
                     elif result.get("needsReauth"):
-                        error += ". Откройте Frontier CAPI на сайте и переподключите аккаунт."
+                        error += ". " + tr(
+                            "Привязка Frontier сохранена, но требует внимания. "
+                            "Откройте CAPI на сайте.")
                     self._capi_set_status(error, ok=False)
                     self.log(f"Frontier CAPI: {error}", "warn")
                     return
@@ -2247,14 +2285,14 @@ class ColonialHelperApp:
                 cmdr = result.get("cmdrName") or ""
                 imported = result.get("eventsImported", 0)
                 warnings = result.get("warnings") or []
-                suffix = f"; событий колонизации добавлено: {imported}" if imported else ""
+                parts = [tr("Досье обновлено сайтом из Frontier (CMDR {cmdr})", cmdr=cmdr)
+                         if cmdr else tr("Досье обновлено сайтом из Frontier")]
+                if imported:
+                    parts.append(tr("событий колонизации добавлено: {count}", count=imported))
                 if warnings:
-                    suffix += f"; предупреждений: {len(warnings)}"
-                self._capi_set_status(
-                    f"Досье обновлено сайтом из Frontier{f' (CMDR {cmdr})' if cmdr else ''}{suffix}",
-                    ok=True,
-                )
-                self.log("Досье Frontier синхронизировано сайтом", "success")
+                    parts.append(tr("предупреждений: {count}", count=len(warnings)))
+                self._capi_set_status("; ".join(parts), ok=True)
+                self.log(tr("Досье Frontier синхронизировано сайтом"), "success")
 
             self.root.after(0, done)
 
@@ -4059,13 +4097,14 @@ class ColonialHelperApp:
         shell = getattr(self, "shell", None)
         setter = getattr(shell, "set_connection", None)
         if callable(setter):
-            setter(online, detail or ("Готов к работе" if online else "Введите API токен"))
+            setter(online, detail or (tr("Готов к работе") if online
+                                      else tr("Введите API токен")))
 
         auth = getattr(self, "auth_result", None)
         if auth is None:
             return
         if online:
-            auth.set_status(f"✓ Подключено как {detail}".rstrip(), COLOR_GREEN)
+            auth.set_status(tr("✓ Подключено как {name}", name=detail).rstrip(), COLOR_GREEN)
             return
         # «Не подключено» — это не всегда ошибка: пустое поле, сохранённый, но
         # ещё не проверенный токен. Красным помечаем только настоящие отказы.
@@ -4074,8 +4113,8 @@ class ColonialHelperApp:
         if failed:
             auth.set_status(f"✗ {detail}", COLOR_RED)
         else:
-            auth.set_status(f"○ Не подключено · {detail}" if detail
-                            else "○ Не подключено — введите токен", COLOR_ORANGE)
+            auth.set_status(tr("○ Не подключено · {detail}", detail=detail) if detail
+                            else tr("○ Не подключено — введите токен"), COLOR_ORANGE)
 
     # ============================================================
     #  Конфиг
@@ -4389,21 +4428,23 @@ class ColonialHelperApp:
         webbrowser.open(localized_url(f"{self.api.site_url}/account?tab=tokens", self.config.get("site_locale")), new=2)
 
     def _change_site_url(self):
-        value = ask_string("Сервер ED Ring Colony", "HTTPS-адрес сайта (не Supabase):",
+        value = ask_string(tr("Сервер ED Ring Colony"), tr("HTTPS-адрес сайта (не Supabase):"),
                                        initialvalue=self.api.site_url, parent=self.root)
         if value is None:
             return
         try:
             site = normalize_site_url(value)
         except ValueError as exc:
-            show_error("Адрес сервера", str(exc), parent=self.root)
+            show_error(tr("Адрес сервера"), str(exc), parent=self.root)
             return
         if site == self.api.site_url:
             return
-        if not ask_yes_no("Смена сервера",
-                f"Новый сервер: {site}\n\nТокен сайта будет удалён из настроек. "
-                "Приложение закроется: запустите его снова и введите токен нового сервера. "
-                "Ключи Raven/EDSM/Inara сохранятся. Продолжить?", parent=self.root):
+        if not ask_yes_no(
+                tr("Смена сервера"),
+                tr("Новый сервер: {site}\n\nТокен сайта будет удалён из настроек. "
+                   "Приложение закроется: запустите его снова и введите токен нового "
+                   "сервера. Ключи Raven/EDSM/Inara сохранятся. Продолжить?", site=site),
+                parent=self.root):
             return
         # In-flight requests retain the old client/host. Never repoint a client
         # carrying the previous host's token while worker threads are running.
@@ -4428,7 +4469,7 @@ class ColonialHelperApp:
         """
         token = self.token_entry.text().strip()
         if not token:
-            self.set_connection_status(False, "Токен не введён")
+            self.set_connection_status(False, tr("Токен не введён"))
             self.log("Введите API токен", "error")
             return
 
@@ -4440,17 +4481,17 @@ class ColonialHelperApp:
             return
         self._token_check_busy = True
 
-        self.log("Проверка токена...", "info")
-        self.set_status("Проверка токена...")
+        self.log(tr("Проверка токена..."), "info")
+        self.set_status(tr("Проверка токена..."))
         auth = getattr(self, "auth_result", None)
         if auth is not None:
-            auth.set_status("Проверка токена…", COLOR_ORANGE)
+            auth.set_status(tr("Проверка токена…"), COLOR_ORANGE)
 
         def worker():
             try:
                 result = self.api.validate_token(token)
             except Exception as exc:  # сеть/TLS не должны ронять поток
-                result = {"ok": False, "error": f"Ошибка проверки: {exc}"}
+                result = {"ok": False, "error": tr("Ошибка проверки: {error}", error=exc)}
             self.root.after(0, lambda r=result: self._on_token_validated(r))
 
         threading.Thread(target=worker, daemon=True, name="validate-token").start()
@@ -4477,9 +4518,9 @@ class ColonialHelperApp:
             if not self.watcher_active:
                 self.root.after(300, self._auto_start_watcher)
         else:
-            self.set_connection_status(False, result.get("error", "Ошибка"))
+            self.set_connection_status(False, result.get("error", tr("Ошибка")))
             self.log(f"Ошибка: {result.get('error')}", "error")
-        self.set_status("Готов")
+        self.set_status(tr("Готов"))
 
     def _auto_validate(self):
         self._on_validate_token()
@@ -4509,14 +4550,14 @@ class ColonialHelperApp:
     def _on_check_raven(self):
         key = self.raven_key_entry.text().strip()
         if not key:
-            self.raven_status_label.set_status("Raven Colonial: ключ пустой", COLOR_RED)
+            self.raven_status_label.set_status(tr("Raven Colonial: ключ пустой"), COLOR_RED)
             self.log("Raven Colonial API ключ пустой", "warn")
             return
         self.raven_api.set_key(key)
         self.config["raven_colonial_key"] = key
         self.save_config()
         self._update_colony_key_label()
-        self.raven_status_label.set_status("Raven Colonial: проверка…", COLOR_ORANGE)
+        self.raven_status_label.set_status(tr("Raven Colonial: проверка…"), COLOR_ORANGE)
         self.log("Raven Colonial: проверка ключа...", "info")
         # Асинхронная проверка ключа через API
         threading.Thread(target=self._check_raven_key_async, args=(key,), daemon=True).start()
@@ -4537,8 +4578,9 @@ class ColonialHelperApp:
         if result.get("ok"):
             cmdr = self.raven_api.cmdr_display_name(result)
             self.root.after(0, lambda: self.raven_status_label.set_status(
-                "Raven Colonial: подключено", COLOR_GREEN))
-            self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
+                tr("Raven Colonial: подключено"), COLOR_GREEN))
+            self.root.after(0, lambda: self.log(tr("Raven Colonial: ключ действителен"),
+                                                "success"))
             if cmdr:
                 self.root.after(0, lambda name=cmdr: self._apply_rcc_commander(name))
             # До появления ключа доставки копились в очереди досылки
@@ -4549,16 +4591,17 @@ class ColonialHelperApp:
             return
 
         status = int(result.get("status") or 0)
-        error = str(result.get("error") or "неизвестная ошибка")
+        error = str(result.get("error") or tr("неизвестная ошибка"))
         if status == 401:
-            text, log_text = "Raven Colonial: ключ неверный", "Raven Colonial: ключ неверный (401)"
-            level = "error"
+            text = tr("Raven Colonial: ключ неверный")
+            log_text = tr("Raven Colonial: ключ неверный (401)")
         elif status == 0:
-            text, log_text = "Raven Colonial: сетевая ошибка", f"Raven Colonial: {error}"
-            level = "error"
+            text = tr("Raven Colonial: сетевая ошибка")
+            log_text = tr("Raven Colonial: ошибка {error}", error=error)
         else:
-            text, log_text = f"Raven Colonial: ошибка {status}", f"Raven Colonial: {error}"
-            level = "error"
+            text = tr("Raven Colonial: ошибка {error}", error=status)
+            log_text = tr("Raven Colonial: ошибка {error}", error=error)
+        level = "error"
         self.root.after(0, lambda t=text: self.raven_status_label.set_status(t, COLOR_RED))
         self.root.after(0, lambda m=log_text, lv=level: self.log(m, lv))
 
@@ -4692,7 +4735,8 @@ class ColonialHelperApp:
             # журнала ED (Journal.YYYY-MM-DDThhmmss.NN.log) сортируются
             # лексикографически так же, как и хронологически.
             self.selected_files = sorted((Path(f) for f in files), key=lambda p: p.name)
-            self.upload_page.set_files_text(f"Выбрано файлов: {len(self.selected_files)}")
+            self.upload_page.set_files_text(
+                tr("Выбрано файлов: {count}", count=len(self.selected_files)))
             self.upload_page.set_upload_enabled(True)
             self.log(f"Выбрано {len(self.selected_files)} файлов", "info")
 
@@ -4705,7 +4749,7 @@ class ColonialHelperApp:
 
         self.upload_page.set_upload_enabled(False)
         self.upload_page.set_progress(0)
-        self.upload_page.set_progress_text("Обработка...")
+        self.upload_page.set_progress_text(tr("Обработка..."))
         self.root.update_idletasks()
 
         threading.Thread(target=self._do_upload_thread, daemon=True).start()
@@ -5204,7 +5248,8 @@ class ColonialHelperApp:
             self.root.after(
                 0,
                 lambda ins=inserted, rt=route_tons: self.upload_page.set_progress_text(
-                    f"Загружено: {ins} записей ({rt:.0f}t на маршрут)"
+                    tr("Загружено: {count} записей ({tons}t на маршрут)",
+                       count=ins, tons=f"{rt:.0f}")
                 ),
             )
             if construction_ok and community_goal_reports_ok:
@@ -5231,7 +5276,8 @@ class ColonialHelperApp:
             # вкладку "Лог". Показываем хотя бы начало реального текста ошибки.
             self.root.after(
                 0,
-                lambda e=error_text: self.upload_page.set_progress_text(f"Ошибка: {e[:100]}"),
+                lambda e=error_text: self.upload_page.set_progress_text(
+                    tr("Ошибка: {error}", error=str(e)[:100])),
             )
         self.root.after(0, lambda: self.upload_page.set_upload_enabled(True))
 

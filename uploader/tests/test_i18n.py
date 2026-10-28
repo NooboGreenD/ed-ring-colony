@@ -27,9 +27,69 @@ PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 TRANSLATED_MODULES = ("launcher_window.py", "installer_window.py",
                       "helper_shell.py", "ui_qt.py")
 
+#: Уже переведённые части Helper: страница «Подключение» и её обработчики.
+AUTH_PAGE_CLASSES = ("AuthPageState", "AuthPage")
+PILOT_PAGE_CLASSES = ("PilotPage",)
+UPLOAD_PAGE_CLASSES = ("UploadPage",)
+#: Метки внутри пришедшего текста ошибки, по которым выбирается цвет строки.
+#: Это не подпись для пользователя, а разбор ответа сервера — они не переводятся.
+ERROR_MARKER_LITERALS = {"ошиб", "невер", "недоступ", "сбой", "не удалось", "занят"}
+
+AUTH_HELPER_FUNCTIONS = ("_build_tab_auth", "_save_edsm_settings", "_save_inara_settings",
+                         "_capi_refresh_status", "_capi_fetch_and_upload", "_change_site_url",
+                         "_on_validate_token", "_apply_token_result", "set_connection_status",
+                         "_on_check_raven", "_check_raven_key_async")
+
+#: Уже переведённые части инфографики пилота.
+PILOT_HELPER_FUNCTIONS = ("_refresh_pilot_infographic", "_pilot_journal_state")
+
 
 def placeholders(text: str) -> set:
     return set(PLACEHOLDER.findall(str(text)))
+
+
+def _log_literal_ids(node) -> set:
+    """Строки, ушедшие в ``self.log(...)``: это диагностика, не интерфейс."""
+    found = set()
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        name = getattr(sub.func, "attr", None) or getattr(sub.func, "id", None)
+        if name != "log":
+            continue
+        for argument in sub.args:
+            for inner in ast.walk(argument):
+                if isinstance(inner, ast.Constant):
+                    found.add(id(inner))
+    return found
+
+
+def slice_literals(path: Path, *, classes=(), functions=()) -> list:
+    """Русские литералы выбранных классов и функций (без докстрингов и логов)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    nodes = [node for node in ast.walk(tree)
+             if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+             and (node.name in classes or (isinstance(node, ast.FunctionDef)
+                                           and node.name in functions))]
+    collected = []
+    for node in nodes:
+        docstrings = set()
+        for inner in ast.walk(node):
+            if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                text = ast.get_docstring(inner, clean=False)
+                if text:
+                    docstrings.add(text)
+            if isinstance(inner, (ast.Module,)):
+                pass
+        skip = _log_literal_ids(node)
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Constant) or not isinstance(inner.value, str):
+                continue
+            if inner.value in docstrings or id(inner) in skip:
+                continue
+            if CYRILLIC.search(inner.value):
+                collected.append((inner.lineno, inner.value))
+    return collected
 
 
 def russian_literals(path: Path) -> list:
@@ -86,6 +146,42 @@ class CatalogTests(unittest.TestCase):
                 if text not in i18n_catalogs._STRINGS:
                     missing.append(f"{name}:{lineno}: {text!r}")
         self.assertEqual(missing, [], "строки без записи в каталоге: " + "; ".join(missing))
+
+    def test_connection_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=AUTH_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "страница «Подключение»: " + "; ".join(missing))
+
+    def test_connection_handlers_strings_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=AUTH_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in ERROR_MARKER_LITERALS]
+        self.assertEqual(missing, [], "обработчики «Подключения»: " + "; ".join(missing))
+
+    def test_pilot_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=PILOT_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "страница «Пилот»: " + "; ".join(missing))
+
+    def test_pilot_values_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=PILOT_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "значения инфографики: " + "; ".join(missing))
+
+    def test_upload_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=UPLOAD_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "страница «Загрузка логов»: " + "; ".join(missing))
 
     def test_translations_differ_from_the_source(self):
         for key, translations in i18n_catalogs._STRINGS.items():

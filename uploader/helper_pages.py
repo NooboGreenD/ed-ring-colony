@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from i18n import tr
 from ui_qt import (
     CYAN,
     GREEN,
@@ -179,15 +180,15 @@ class AuthPageState:
     journal_path: str = ""
     site_error: str = ""
     raven_key: str = ""
-    raven_status: str = "Raven Colonial: не подключено"
+    raven_status: str = ""
     edsm_key: str = ""
     edsm_name: str = ""
-    edsm_status: str = "EDSM: не настроен"
+    edsm_status: str = ""
     eddn_enabled: bool = False
     inara_key: str = ""
     inara_name: str = ""
-    inara_status: str = "Inara: не настроена"
-    capi_status: str = "Проверка привязки сайта…"
+    inara_status: str = ""
+    capi_status: str = ""
 
 
 @dataclass
@@ -304,27 +305,28 @@ class AuthPage(QWidget):
 
     # ---------------------------------------------------------------- sections
     def _build_api(self) -> None:
-        self._title(self.SECTION_TITLES["api"])
-        self.server_label = label(f"Сервер: {self.state.site_url}", role="accent", size=9)
+        self._title(tr(self.SECTION_TITLES["api"]))
+        self.server_label = label(tr("Сервер: {url}", url=self.state.site_url),
+                                  role="accent", size=9)
         self.layout_.addWidget(self.server_label)
         self._row(
-            self._button("Открыть API-токены на сайте", self.actions.open_tokens),
-            self._button("Другой сервер...", self.actions.change_server),
+            self._button(tr("Открыть API-токены на сайте"), self.actions.open_tokens),
+            self._button(tr("Другой сервер..."), self.actions.change_server),
         )
         self.site_error_label = label(self.state.site_error, size=9, color="#e27676", wrap=True)
         self.site_error_label.setVisible(bool(self.state.site_error))
         self.layout_.addWidget(self.site_error_label)
 
-        self._hint("API-токен сайта")
-        self._hint("Поле для API-токена ED Ring Colony из профиля сайта. "
-                   "Используется для загрузки журналов.")
+        self._hint(tr("API-токен сайта"))
+        self._hint(tr("Поле для API-токена ED Ring Colony из профиля сайта. "
+                      "Используется для загрузки журналов."))
         self.token_entry = self._field(self.state.token, password=True)
-        self.token_entry.setPlaceholderText("Токен ED Ring Colony")
+        self.token_entry.setPlaceholderText(tr("Токен ED Ring Colony"))
         self.layout_.addWidget(self.token_entry)
-        self.toggle_token_btn = self._button("Показать", self.toggle_token_visibility)
+        self.toggle_token_btn = self._button(tr("Показать"), self.toggle_token_visibility)
         self._row(
-            self._button("Проверить токен", self.actions.validate_token),
-            self._button("Вставить из буфера", self.actions.paste_token),
+            self._button(tr("Проверить токен"), self.actions.validate_token),
+            self._button(tr("Вставить из буфера"), self.actions.paste_token),
             self.toggle_token_btn,
         )
         self.auth_result = StatusLabel("", TEXT)
@@ -332,42 +334,44 @@ class AuthPage(QWidget):
 
     def _build_capi(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["capi"])
-        self._hint(
+        self._title(tr(self.SECTION_TITLES["capi"]))
+        self._hint(tr(
             "Подключение и данные CAPI принадлежат вашему аккаунту на сайте. "
             "Сначала привяжите Frontier в личном кабинете сайта; Colonial Helper "
             "не хранит Frontier-токены и запрашивает синхронизацию только через "
-            "ваш токен проекта. Сайт сам получает, разбирает и сохраняет данные.")
-        self.capi_link_btn = self._button("Открыть Frontier CAPI на сайте",
+            "ваш токен проекта. Сайт сам получает, разбирает и сохраняет данные."))
+        self.capi_link_btn = self._button(tr("Открыть Frontier CAPI на сайте"),
                                           self.actions.capi_link, primary=True)
-        self.capi_fetch_btn = self._button("Обновить досье", self.actions.capi_fetch)
+        self.capi_fetch_btn = self._button(tr("Обновить досье"), self.actions.capi_fetch)
         self._row(self.capi_link_btn, self.capi_fetch_btn)
-        self.capi_status = StatusLabel(self.state.capi_status, MUTED)
+        self.capi_status = StatusLabel(
+            self.state.capi_status or tr("Проверка привязки сайта…"), MUTED)
         self.layout_.addWidget(self.capi_status)
 
     def _build_journals(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["journals"])
+        self._title(tr(self.SECTION_TITLES["journals"]))
         holder = QWidget()
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(8)
         self.path_entry = self._field(self.state.journal_path)
         holder_layout.addWidget(self.path_entry, 1)
-        holder_layout.addWidget(self._button("Обзор...", self.actions.browse_journal))
+        holder_layout.addWidget(self._button(tr("Обзор..."), self.actions.browse_journal))
         self.layout_.addWidget(holder)
-        self._hint("По умолчанию: Saved Games\\Frontier Developments\\Elite Dangerous")
+        self._hint(tr("По умолчанию: Saved Games\\Frontier Developments\\Elite Dangerous"))
 
     def _build_raven(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["raven"])
-        self._hint("API-ключ Raven Colonial")
-        self._hint("Вставьте сюда ключ из профиля ravencolonial.com. Нажмите "
-                   "«Проверить ключ» и сохраните настройки.")
+        self._title(tr(self.SECTION_TITLES["raven"]))
+        self._hint(tr("API-ключ Raven Colonial"))
+        self._hint(tr("Вставьте сюда ключ из профиля ravencolonial.com. Нажмите "
+                      "«Проверить ключ» и сохраните настройки."))
         self.raven_key_entry = self._field(self.state.raven_key, password=True)
         self.layout_.addWidget(self.raven_key_entry)
-        self._row(self._button("Проверить ключ", self._raven_check))
-        self.raven_status_label = StatusLabel(self.state.raven_status, MUTED)
+        self._row(self._button(tr("Проверить ключ"), self._raven_check))
+        self.raven_status_label = StatusLabel(
+            self.state.raven_status or tr("Raven Colonial: не подключено"), MUTED)
         self.layout_.addWidget(self.raven_status_label)
 
     def _raven_check(self) -> None:
@@ -376,27 +380,28 @@ class AuthPage(QWidget):
 
     def _build_edsm(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["edsm"])
-        self._hint("Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM.")
+        self._title(tr(self.SECTION_TITLES["edsm"]))
+        self._hint(tr("Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM."))
         self._hint("EDSM API key")
         self.edsm_key_entry = self._field(self.state.edsm_key, password=True)
         self.layout_.addWidget(self.edsm_key_entry)
-        self._hint("Имя командира в EDSM (точное имя CMDR, зарегистрированное в EDSM)")
+        self._hint(tr("Имя командира в EDSM (точное имя CMDR, зарегистрированное в EDSM)"))
         self.edsm_name_entry = self._field(self.state.edsm_name)
         self.layout_.addWidget(self.edsm_name_entry)
-        self._row(self._button("Сохранить EDSM настройки", self.actions.save_edsm))
-        self.edsm_status_label = StatusLabel(self.state.edsm_status, MUTED)
+        self._row(self._button(tr("Сохранить EDSM настройки"), self.actions.save_edsm))
+        self.edsm_status_label = StatusLabel(
+            self.state.edsm_status or tr("EDSM: не настроен"), MUTED)
         self.layout_.addWidget(self.edsm_status_label)
 
     def _build_eddn(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["eddn"])
-        self._hint(
+        self._title(tr(self.SECTION_TITLES["eddn"]))
+        self._hint(tr(
             "Исследовательские события журнала (Location, FSDJump, CarrierJump, "
             "Scan, SAASignalsFound, Docked) уходят в открытую ленту EDDN, из которой "
             "берёт данные Spansh. Публикация необратима и видна всем. Колонизация, "
-            "вклады и грузы сюда не попадают.")
-        self.eddn_enabled_var = QCheckBox("Публиковать исследовательские события в EDDN")
+            "вклады и грузы сюда не попадают."))
+        self.eddn_enabled_var = QCheckBox(tr("Публиковать исследовательские события в EDDN"))
         self.eddn_enabled_var.setChecked(bool(self.state.eddn_enabled))
         self.eddn_enabled_var.toggled.connect(self._on_eddn_toggled)
         self.layout_.addWidget(self.eddn_enabled_var)
@@ -407,17 +412,18 @@ class AuthPage(QWidget):
 
     def _build_inara(self) -> None:
         self._divider()
-        self._title(self.SECTION_TITLES["inara"])
-        self._hint("Необязательно: отправка навигации, стыковок, сканирования и "
-                   "грузовых событий в Inara.")
+        self._title(tr(self.SECTION_TITLES["inara"]))
+        self._hint(tr("Необязательно: отправка навигации, стыковок, сканирования и "
+                      "грузовых событий в Inara."))
         self._hint("Inara API key")
         self.inara_key_entry = self._field(self.state.inara_key, password=True)
         self.layout_.addWidget(self.inara_key_entry)
-        self._hint("Имя командира в Inara")
+        self._hint(tr("Имя командира в Inara"))
         self.inara_name_entry = self._field(self.state.inara_name)
         self.layout_.addWidget(self.inara_name_entry)
-        self._row(self._button("Сохранить Inara настройки", self.actions.save_inara))
-        self.inara_status_label = StatusLabel(self.state.inara_status, MUTED)
+        self._row(self._button(tr("Сохранить Inara настройки"), self.actions.save_inara))
+        self.inara_status_label = StatusLabel(
+            self.state.inara_status or tr("Inara: не настроена"), MUTED)
         self.layout_.addWidget(self.inara_status_label)
 
     # ------------------------------------------------------------------ public
@@ -425,10 +431,10 @@ class AuthPage(QWidget):
         """Switch the token field between hidden and readable."""
         if self.token_entry.echoMode() == QLineEdit.EchoMode.Password:
             self.token_entry.setEchoMode(QLineEdit.EchoMode.Normal)
-            self.toggle_token_btn.setText("Скрыть")
+            self.toggle_token_btn.setText(tr("Скрыть"))
         else:
             self.token_entry.setEchoMode(QLineEdit.EchoMode.Password)
-            self.toggle_token_btn.setText("Показать")
+            self.toggle_token_btn.setText(tr("Показать"))
 
     def token_is_hidden(self) -> bool:
         return self.token_entry.echoMode() == QLineEdit.EchoMode.Password
@@ -462,6 +468,7 @@ class UploadPage(QWidget):
     and buttons are switched with ``set_upload_enabled()``.
     """
 
+    #: Строки-источники: показываются в текущем языке через ``tr()``.
     WATCHER_IDLE_TEXT = "▶ Следить за игрой"
     WATCHER_RUNNING_TEXT = "⏹ Остановить"
     #: Подпись под прогрессом, пока файлы не выбраны.
@@ -487,23 +494,24 @@ class UploadPage(QWidget):
         self.scroll.setWidget(self.content)
         outer.addWidget(self.scroll)
 
-        self.layout_.addWidget(heading("Загрузка журналов", size=14))
-        self.layout_.addWidget(label(
+        self.layout_.addWidget(heading(tr("Загрузка журналов"), size=14))
+        self.layout_.addWidget(label(tr(
             "Файлы журнала Elite Dangerous читаются локально и отправляются "
-            "только на ваш сервер проекта.", role="muted", size=9, wrap=True))
+            "только на ваш сервер проекта."), role="muted", size=9, wrap=True))
 
         # -- Кнопки действий ------------------------------------------------
-        self.select_btn = action_button("Выбрать файлы .log", self._select_files,
+        self.select_btn = action_button(tr("Выбрать файлы .log"), self._select_files,
                                         height=34)
-        self.upload_btn = action_button("Загрузить", self._upload,
+        self.upload_btn = action_button(tr("Загрузить"), self._upload,
                                         variant="primary", height=34)
         self.upload_btn.setEnabled(False)
-        self.watcher_btn = action_button(self.WATCHER_IDLE_TEXT, self._toggle_watcher,
+        self._watcher_running = False
+        self.watcher_btn = action_button(tr(self.WATCHER_IDLE_TEXT), self._toggle_watcher,
                                          height=34)
         self.layout_.addWidget(row(self.select_btn, self.upload_btn,
                                    self.watcher_btn, None))
 
-        self.files_label = label(self.FILES_EMPTY_TEXT, role="muted", size=9, wrap=True)
+        self.files_label = label(tr(self.FILES_EMPTY_TEXT), role="muted", size=9, wrap=True)
         self.layout_.addWidget(self.files_label)
 
         self.progress = QProgressBar()
@@ -526,30 +534,30 @@ class UploadPage(QWidget):
 
         # -- Первичная загрузка ---------------------------------------------
         self._divider()
-        self.layout_.addWidget(label("Первичная загрузка (вся история журналов)",
+        self.layout_.addWidget(label(tr("Первичная загрузка (вся история журналов)"),
                                      size=11, bold=True))
 
-        self.skip_imported_var = QCheckBox(
-            "Пропускать файлы, загруженные ранее (быстрый повторный импорт)")
+        self.skip_imported_var = QCheckBox(tr(
+            "Пропускать файлы, загруженные ранее (быстрый повторный импорт)"))
         self.skip_imported_var.setChecked(bool(skip_imported))
         self.skip_imported_var.toggled.connect(self._on_skip_imported_toggled)
         self.layout_.addWidget(self.skip_imported_var)
 
-        self.backfill_third_party_var = QCheckBox(
-            "Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)")
+        self.backfill_third_party_var = QCheckBox(tr(
+            "Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)"))
         self.backfill_third_party_var.setChecked(bool(backfill_enabled))
         self.backfill_third_party_var.toggled.connect(self._on_backfill_toggled)
         self.layout_.addWidget(self.backfill_third_party_var)
 
-        self.layout_.addWidget(label(
+        self.layout_.addWidget(label(tr(
             "По умолчанию история отправляется только на ED Ring Colony: внешние "
             "сервисы получают лишь live-события watcher'а. Отправка тысяч "
             "исторических событий в EDSM/Inara/Raven — это часы ожидания и риск "
-            "блокировки по rate limit.", role="muted", size=9, wrap=True))
+            "блокировки по rate limit."), role="muted", size=9, wrap=True))
 
-        self.reset_cache_btn = action_button("Сбросить кэш импорта",
+        self.reset_cache_btn = action_button(tr("Сбросить кэш импорта"),
                                              self._reset_import_cache, height=32)
-        self.reset_server_btn = action_button("Очистить логи на сервере",
+        self.reset_server_btn = action_button(tr("Очистить логи на сервере"),
                                               self._reset_server_journals,
                                               variant="danger", height=32)
         self.layout_.addWidget(row(self.reset_cache_btn, self.reset_server_btn, None))
@@ -625,18 +633,20 @@ class UploadPage(QWidget):
 
     def set_watcher_running(self, running: bool) -> None:
         """Switch the watcher button between «следить» and «остановить»."""
+        self._watcher_running = bool(running)
         if running:
-            self.watcher_btn.setText(self.WATCHER_RUNNING_TEXT)
+            self.watcher_btn.setText(tr(self.WATCHER_RUNNING_TEXT))
             self.watcher_btn.setProperty("variant", "danger")
         else:
-            self.watcher_btn.setText(self.WATCHER_IDLE_TEXT)
+            self.watcher_btn.setText(tr(self.WATCHER_IDLE_TEXT))
             self.watcher_btn.setProperty("variant", "default")
         style = self.watcher_btn.style()
         style.unpolish(self.watcher_btn)
         style.polish(self.watcher_btn)
 
     def watcher_running(self) -> bool:
-        return self.watcher_btn.text() == self.WATCHER_RUNNING_TEXT
+        """Состояние берётся из флага: подпись кнопки переводится."""
+        return bool(getattr(self, "_watcher_running", False))
 
     def set_skip_imported(self, enabled: bool) -> None:
         """Set the checkbox without re-triggering the save callback."""
@@ -2298,8 +2308,8 @@ class PilotPage(QWidget):
         layout.setSpacing(8)
         layout.addWidget(self._header())
         layout.addWidget(label(
-            "Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
-            "Сетевых запросов инфографика не делает.", role="muted", size=9, wrap=True))
+            tr("Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
+               "Сетевых запросов инфографика не делает."), role="muted", size=9, wrap=True))
 
         self.kpi_row = QWidget()
         self.kpi_layout = QHBoxLayout(self.kpi_row)
@@ -2321,15 +2331,15 @@ class PilotPage(QWidget):
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(10)
-        title = label("ИНФОГРАФИКА ПИЛОТА", role="mono", size=15, bold=True, color=ORANGE)
+        title = label(tr("ИНФОГРАФИКА ПИЛОТА"), role="mono", size=15, bold=True, color=ORANGE)
         holder_layout.addWidget(title)
         holder_layout.addStretch(1)
         self.updated_label = label("", role="mono", size=9, color=MUTED)
         self.updated_label.setObjectName("pilotUpdated")
         holder_layout.addWidget(self.updated_label)
-        self.refresh_button = action_button("Обновить", self._refresh_clicked, height=30)
+        self.refresh_button = action_button(tr("Обновить"), self._refresh_clicked, height=30)
         holder_layout.addWidget(self.refresh_button)
-        self.compact_check = QCheckBox("Компактный режим")
+        self.compact_check = QCheckBox(tr("Компактный режим"))
         self.compact_check.setChecked(self._compact)
         self.compact_check.toggled.connect(self._compact_toggled)
         holder_layout.addWidget(self.compact_check)
@@ -2347,10 +2357,10 @@ class PilotPage(QWidget):
     # -------------------------------------------------------------------- KPIs
     def _build_kpis(self) -> None:
         specs = (
-            ("kpi_tons", "ТОННЫ ЗА СЕССИЮ", GREEN),
-            ("kpi_deliveries", "ДОСТАВКИ", CYAN),
-            ("kpi_cargo", "ГРУЗ", ORANGE),
-            ("kpi_systems", "СИСТЕМЫ", CYAN),
+            ("kpi_tons", tr("ТОННЫ ЗА СЕССИЮ"), GREEN),
+            ("kpi_deliveries", tr("ДОСТАВКИ"), CYAN),
+            ("kpi_cargo", tr("ГРУЗ"), ORANGE),
+            ("kpi_systems", tr("СИСТЕМЫ"), CYAN),
         )
         for index, (key, title, color) in enumerate(specs):
             card = panel(QFrame(), "card")
@@ -2403,7 +2413,7 @@ class PilotPage(QWidget):
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(8)
-        title = label(self.ROW_LABELS.get(key, key), role="mono", size=9, color=MUTED)
+        title = label(tr(self.ROW_LABELS.get(key, key)), role="mono", size=9, color=MUTED)
         title.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
         holder_layout.addWidget(title, 0)
         holder_layout.addStretch(1)
@@ -2426,7 +2436,7 @@ class PilotPage(QWidget):
         holder_layout = QVBoxLayout(holder)
         holder_layout.setContentsMargins(0, 2, 0, 0)
         holder_layout.setSpacing(2)
-        holder_layout.addWidget(label(title, role="mono", size=9, color=MUTED))
+        holder_layout.addWidget(label(tr(title), role="mono", size=9, color=MUTED))
         bar = QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(0)
@@ -2460,9 +2470,9 @@ class PilotPage(QWidget):
             self.tile_layout.setColumnStretch(column, 1)
 
     def _tile_session(self) -> QWidget:
-        card, card_layout = self._tile("ДИНАМИКА СЕССИИ")
+        card, card_layout = self._tile(tr("ДИНАМИКА СЕССИИ"))
         self.spark = SparklineWidget(color=GREEN, height=64,
-                                     empty_text="журнал пока пуст")
+                                     empty_text=tr("журнал пока пуст"))
         card_layout.addWidget(self.spark)
         for key in self.ROW_KEYS["session"]:
             card_layout.addWidget(self._row_widget(key))
@@ -2470,7 +2480,7 @@ class PilotPage(QWidget):
         return card
 
     def _tile_ship(self) -> QWidget:
-        card, card_layout = self._tile("КОРАБЛЬ")
+        card, card_layout = self._tile(tr("КОРАБЛЬ"))
         card_layout.addWidget(self._row_widget("ship"))
         for key, title in self.BAR_KEYS["ship"]:
             card_layout.addWidget(self._bar_widget(key, title))
@@ -2479,7 +2489,7 @@ class PilotPage(QWidget):
         return card
 
     def _tile_route(self) -> QWidget:
-        card, card_layout = self._tile("МАРШРУТ")
+        card, card_layout = self._tile(tr("МАРШРУТ"))
         card_layout.addWidget(self._row_widget("route_status"))
         for key, title in self.BAR_KEYS["route"]:
             card_layout.addWidget(self._bar_widget(key, title))
@@ -2489,21 +2499,21 @@ class PilotPage(QWidget):
         return card
 
     def _tile_systems(self) -> QWidget:
-        card, card_layout = self._tile("ТОП СИСТЕМ ПО ТОННАМ")
+        card, card_layout = self._tile(tr("ТОП СИСТЕМ ПО ТОННАМ"))
         self.systems_chart = BarsChart(color=CYAN, height=110)
         card_layout.addWidget(self.systems_chart)
         card_layout.addStretch(1)
         return card
 
     def _tile_status(self) -> QWidget:
-        card, card_layout = self._tile("СТАТУС И ПОДКЛЮЧЕНИЯ")
+        card, card_layout = self._tile(tr("СТАТУС И ПОДКЛЮЧЕНИЯ"))
         for key in self.ROW_KEYS["status"]:
             card_layout.addWidget(self._row_widget(key))
         card_layout.addStretch(1)
         return card
 
     def _tile_journal(self) -> QWidget:
-        card, card_layout = self._tile("ЖУРНАЛЫ И ЭКОНОМИКА")
+        card, card_layout = self._tile(tr("ЖУРНАЛЫ И ЭКОНОМИКА"))
         for key in self.ROW_KEYS["journal"]:
             color = MUTED if key == "last_event" else CYAN
             card_layout.addWidget(self._row_widget(key, color=color))
