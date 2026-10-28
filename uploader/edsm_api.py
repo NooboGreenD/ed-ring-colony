@@ -31,6 +31,7 @@ import time
 
 import requests
 from typing import Optional
+from i18n import tr
 
 from http_errors import apply_client_headers, describe_bad_response, short_body
 
@@ -91,7 +92,7 @@ class EDSMAPI:
         """
         if not self.enabled:
             return {"ok": False, "skipped": True}
-        result: dict = {"ok": False, "error": "EDSM: не отправлено"}
+        result: dict = {"ok": False, "error": tr("EDSM: не отправлено")}
         for attempt in range(1, max(1, self.MAX_ATTEMPTS) + 1):
             result = self._submit_once(event)
             if result.get("ok") or not result.get("retryable"):
@@ -124,7 +125,8 @@ class EDSMAPI:
                 "ok": False,
                 "status": 0,
                 "retryable": True,
-                "error": f"EDSM: нет соединения ({exc}); событие будет повторено",
+                "error": tr("EDSM: нет соединения ({error}); событие будет повторено",
+                            error=exc),
             }
 
         # EDSM всегда отвечает 200, даже когда событие отклонено: статус живёт
@@ -143,7 +145,7 @@ class EDSMAPI:
             # Не JSON: HTML от Cloudflare, пустое тело, страница ошибки.
             # Сырую разметку в лог не кладём — только короткое описание.
             return describe_bad_response(
-                "EDSM", response, detail="нет JSON в ответе"
+                "EDSM", response, detail=tr("нет JSON в ответе")
             )
 
         try:
@@ -152,7 +154,8 @@ class EDSMAPI:
             return {
                 "ok": False,
                 "status": response.status_code,
-                "error": f"EDSM: неожиданный msgnum {msgnum!r} ({msg or short_body(response)})",
+                "error": tr("EDSM: неожиданный msgnum {msgnum} ({detail})",
+                            msgnum=repr(msgnum), detail=msg or short_body(response)),
             }
 
         if msgnum in self.OK_MSGNUMS:
@@ -161,7 +164,8 @@ class EDSMAPI:
             "ok": False,
             "msgnum": msgnum,
             "status": response.status_code,
-            "error": f"EDSM {msgnum}: {msg or 'отклонено'}",
+            "error": tr("EDSM отклонил событие ({msgnum}): {reason}", msgnum=msgnum,
+                        reason=msg or tr("отклонено")),
         }
 
     def fetch_system_bodies(self, system_name: str) -> dict:
@@ -171,7 +175,7 @@ class EDSMAPI:
         """
         name = str(system_name or "").strip()
         if not name:
-            return {"ok": False, "error": "Пустое имя системы"}
+            return {"ok": False, "error": tr("Пустое имя системы")}
         try:
             url = f"https://www.edsm.net/api-system-v1/bodies?systemName={requests.utils.quote(name)}"
             resp = self._session.get(url, timeout=10)
@@ -182,5 +186,6 @@ class EDSMAPI:
                 return {"ok": True, "bodies": data.get("bodies") or []}
             return {"ok": True, "bodies": []}
         except Exception as exc:
-            return {"ok": False, "error": f"Сбой запроса к EDSM: {exc}"}
+            return {"ok": False, "error": tr("Сбой запроса к EDSM: {error}",
+                                                  error=exc)}
 

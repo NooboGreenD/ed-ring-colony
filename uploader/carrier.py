@@ -68,6 +68,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Mapping, Optional
+from i18n import tr
 
 from event_dispatch import (
     FLEET_CARRIER_MARKET_MAX,
@@ -278,10 +279,10 @@ class CarrierState:
 
     @property
     def kind_label(self) -> str:
-        return {
+        return tr({
             "own": "ваш носитель",
             "squadron": "эскадренный носитель",
-        }.get(self.kind, "чужой носитель")
+        }.get(self.kind, "чужой носитель"))
 
     def display_name(self) -> str:
         if self.name:
@@ -294,11 +295,10 @@ class CarrierState:
         """Одна строка для лога/подсказки."""
         name = self.display_name() or "Fleet Carrier"
         if not self.stats_seen:
-            return f"{name}: данные CarrierStats ещё не встречались"
-        return (
-            f"{name}: груз {self.stored} t / {self.cargo_capacity} t "
-            f"(свободно {self.free} t)"
-        )
+            return tr("{name}: данные CarrierStats ещё не встречались", name=name)
+        return tr("{name}: груз {stored} t / {capacity} t (свободно {free} t)",
+                  name=name, stored=self.stored, capacity=self.cargo_capacity,
+                  free=self.free)
 
     def remaining(self, need: Mapping[str, int]) -> Dict[str, int]:
         """Сколько ещё завезти по каждому товару из потребности `need`.

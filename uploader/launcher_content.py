@@ -70,7 +70,7 @@ def fetch_home_data(session=None, site_url: str = DEFAULT_SITE_URL,
 
 def format_date(value: str) -> str:
     if not value:
-        return "НОВОСТИ ПРОЕКТА"
+        return tr("НОВОСТИ ПРОЕКТА")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return parsed.astimezone().strftime("%d.%m.%Y  ·  %H:%M")

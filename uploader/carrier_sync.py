@@ -33,6 +33,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
+from i18n import tr
 
 FC_MARKET_MIN = 3_700_000_000
 FC_MARKET_MAX = 3_800_000_000
@@ -237,7 +238,8 @@ class CarrierEventCollector:
                 break
             result = api.sync_carrier_events(batch) or {}
             if not result.get("ok"):
-                self.last_error = str(result.get("error") or "Сервер не принял события авианосца")
+                self.last_error = str(result.get("error")
+                                  or tr("Сервер не принял события авианосца"))
                 total.update(ok=False, error=self.last_error)
                 break
             with self.lock:

@@ -86,11 +86,11 @@ def describe_bad_response(service: str, response,
     retryable = status in RETRYABLE_STATUS or html or status == 0
 
     if html:
-        reason = "сервер вернул HTML-страницу (защита/сбой Cloudflare), а не JSON"
+        reason = tr("сервер вернул HTML-страницу (защита/сбой Cloudflare), а не JSON")
     elif status == 0:
-        reason = "нет ответа от сервера"
+        reason = tr("нет ответа от сервера")
     elif status in (401, 403):
-        reason = "доступ запрещён — проверьте ключ API и имя командира"
+        reason = tr("доступ запрещён — проверьте ключ API и имя командира")
     elif status == 404:
         reason = tr("адрес API не найден (404)")
     elif status == 429:
@@ -100,9 +100,14 @@ def describe_bad_response(service: str, response,
     else:
         reason = tr("неожиданный ответ (HTTP {status})", status=status)
 
-    message = f"{service}: {detail + ' — ' if detail else ''}{reason}"
+    if detail:
+        message = tr("{service}: запрос отклонён ({detail}) — {reason}",
+                     service=service, detail=detail, reason=reason)
+    else:
+        message = tr("{service}: запрос отклонён — {reason}",
+                     service=service, reason=reason)
     if retryable:
-        message += "; событие будет повторено"
+        message = tr("{message} Событие будет повторено.", message=message)
     return {
         "ok": False,
         "status": status,

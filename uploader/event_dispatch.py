@@ -46,6 +46,7 @@ import queue
 import threading
 import time
 from typing import Callable, Optional
+from i18n import tr
 
 from eddn_api import EDDN_EVENTS, EddnContext
 
@@ -479,8 +480,9 @@ class ThirdPartyDispatcher:
         elif streak % self.FAIL_NOTICE_EVERY == 0:
             self._notify(
                 service, False,
-                f"{service.upper()}: сервис по-прежнему не принимает события — "
-                f"{streak} неудач подряд (последняя: {message})",
+                tr("{service}: сервис по-прежнему не принимает события — "
+                   "{count} неудач подряд (последняя: {error})",
+                   service=service.upper(), count=streak, error=message),
             )
 
     def _notify_success(self, service: str):
@@ -490,8 +492,8 @@ class ThirdPartyDispatcher:
         if streak > 1:
             self._notify(
                 service, True,
-                f"{service.upper()}: отправка восстановлена "
-                f"(до этого {streak} событий не ушло)",
+                tr("{service}: отправка восстановлена (до этого {count} "
+                   "событий не ушло)", service=service.upper(), count=streak),
             )
 
     def _notify(self, service: str, ok: bool, message: str):
@@ -815,8 +817,8 @@ class ThirdPartyDispatcher:
             if now - self._last_drop_warning > 30:
                 self._last_drop_warning = now
                 self._log(
-                    f"Внешние API не успевают: очередь переполнена, "
-                    f"пропущено событий — {self.stats['dropped']}"
+                    tr("Внешние API не успевают: очередь переполнена, "
+                       "пропущено событий — {count}", count=self.stats["dropped"])
                 )
             return _DROPPED
         self.stats["queued"] += 1
@@ -856,7 +858,8 @@ class ThirdPartyDispatcher:
                     self._do_eddn(payload)
             except Exception as exc:  # воркер не должен умирать из-за одного события
                 self.stats["failed"] += 1
-                self._log(f"Ошибка отправки в {service}: {exc}")
+                self._log(tr("Ошибка отправки в {service}: {error}",
+                             service=service, error=exc))
             finally:
                 self._queue.task_done()
 
@@ -869,7 +872,7 @@ class ThirdPartyDispatcher:
             self._notify_success("edsm")
         else:
             self.stats["failed"] += 1
-            self._notify_failure("edsm", str(result.get("error") or "EDSM отклонил событие"))
+            self._notify_failure("edsm", str(result.get("error") or tr("EDSM отклонил событие")))
 
     def _do_eddn(self, payload: dict):
         if not self._eddn_enabled():
@@ -880,7 +883,7 @@ class ThirdPartyDispatcher:
             self._notify_success("eddn")
         else:
             self.stats["failed"] += 1
-            self._notify_failure("eddn", str(result.get("error") or "EDDN отклонил сообщение"))
+            self._notify_failure("eddn", str(result.get("error") or tr("EDDN отклонил сообщение")))
 
     def _do_inara(self, payload: dict):
         if not self._inara_enabled():
@@ -898,7 +901,7 @@ class ThirdPartyDispatcher:
                 self._notify("inara", False, str(result.get("error") or ""))
         else:
             self.stats["failed"] += 1
-            self._notify_failure("inara", str(result.get("error") or "Inara отклонила событие"))
+            self._notify_failure("inara", str(result.get("error") or tr("Inara отклонила событие")))
 
     def _raven_fc_known(self, market_id) -> Optional[bool]:
         checker = getattr(self.raven_api, "fc_known", None)
@@ -915,9 +918,9 @@ class ThirdPartyDispatcher:
         self._raven_fc_unknown_notified.add(market_id)
         self._notify(
             "raven", True,
-            f"Raven Colonial: авианосец {market_id} там не зарегистрирован — груз туда не "
-            f"отправляется (учёт ведёт сайт проекта). Привяжите носитель на ravencolonial.com, "
-            f"если он нужен и в Raven.",
+            tr("Raven Colonial: авианосец {market} там не зарегистрирован — груз "
+               "туда не отправляется (учёт ведёт сайт проекта). Привяжите носитель "
+               "на ravencolonial.com, если он нужен и в Raven.", market=market_id),
         )
 
     def submit_fc_cargo_correction(self, market_id, cargo: dict = None, empty: bool = False,
@@ -974,14 +977,16 @@ class ThirdPartyDispatcher:
         result = self.raven_api.set_fc_cargo(market_id, changed) or {}
         if result.get("ok"):
             self.stats["sent"] += 1
-            reason = payload.get("reason") or ("трюм пуст" if payload.get("empty") else "по рынку носителя")
+            reason = payload.get("reason") or (tr("трюм пуст") if payload.get("empty") else tr("по рынку носителя"))
             self._notify("raven", True,
-                         f"Raven FC cargo: груз носителя {market_id} исправлен ({reason}, позиций: {len(changed)})")
+                         tr("Raven FC cargo: груз носителя {market} исправлен "
+                            "({reason}, позиций: {count})", market=market_id,
+                            reason=reason, count=len(changed)))
         else:
             self.stats["failed"] += 1
             # Снимок не ушёл — дать ему шанс при следующем открытии рынка.
             self._raven_fc_corrections.pop(market_id, None)
-            self._notify_failure("raven", str(result.get("error") or "Raven Colonial не принял исправление груза"))
+            self._notify_failure("raven", str(result.get("error") or tr("Raven Colonial не принял исправление груза")))
 
     def _do_raven(self, payload: dict):
         if not self._raven_enabled():
@@ -1007,12 +1012,13 @@ class ThirdPartyDispatcher:
                 self._notify(
                     "raven",
                     True,
-                    f"Raven FC cargo: событие уже принято ранее "
-                    f"({payload['commodity']} {payload['delta']:+d})",
+                    tr("Raven FC cargo: событие уже принято ранее "
+                       "({commodity} {delta:+d})",
+                       commodity=payload["commodity"], delta=payload["delta"]),
                 )
         else:
             self.stats["failed"] += 1
-            self._notify("raven", False, str(result.get("error") or "Raven Colonial отклонил событие"))
+            self._notify("raven", False, str(result.get("error") or tr("Raven Colonial отклонил событие")))
 
     def _do_raven_supply(self, payload: dict):
         project = self.raven_api.get_project(
@@ -1021,14 +1027,14 @@ class ThirdPartyDispatcher:
         if not build_id:
             self.stats["failed"] += 1
             self._notify("raven", False,
-                         "Raven Colonial: не нашёл проект для обновления потребности")
+                         tr("Raven Colonial: не нашёл проект для обновления потребности"))
             return
         result = self.raven_api.update_supply(
             build_id, payload.get("commodities") or {}, payload.get("max_need") or 0) or {}
         if result.get("ok"):
             self.stats["sent"] += 1
             self._notify("raven", True,
-                         "Raven Colonial: потребность площадки обновлена по журналу")
+                         tr("Raven Colonial: потребность площадки обновлена по журналу"))
             if self.on_supply_sent:
                 try:
                     self.on_supply_sent(build_id)
@@ -1037,7 +1043,7 @@ class ThirdPartyDispatcher:
         else:
             self.stats["failed"] += 1
             self._notify_failure("raven", str(result.get("error")
-                                              or "Raven Colonial отклонил ProjectUpdate"))
+                                              or tr("Raven Colonial отклонил ProjectUpdate")))
 
     # -- состояние ---------------------------------------------------------
     def pending(self) -> int:

@@ -919,7 +919,7 @@ class ShipTracker:
             if "cockpit" in slot.lower() or "canopy" in module.name.lower():
                 module.health = max(0.0, module.health - 0.2)
                 module.suspect = True
-        self.state.note(ev.get("timestamp", ""), "КАБИНА ПРОБИТА")
+        self.state.note(ev.get("timestamp", ""), tr("КАБИНА ПРОБИТА"))
         return True
 
     def _handle_repair(self, ev: dict) -> bool:

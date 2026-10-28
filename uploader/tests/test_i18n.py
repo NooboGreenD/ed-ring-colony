@@ -503,12 +503,29 @@ class TranslationTests(unittest.TestCase):
         modules = ("colony_build_types.py", "site_config.py", "screens.py",
                    "hotkeys.py", "http_errors.py", "colonisation.py",
                    "qt_factions.py", "api_client.py", "raven_colonial_api.py",
-                   "companion_api.py")
+                   "companion_api.py", "carrier.py", "carrier_sync.py",
+                   "bgs_sync.py", "eddn_api.py", "edsm_api.py", "inara_api.py",
+                   "game_monitor.py", "launcher_content.py", "launcher_ui.py",
+                   "event_dispatch.py")
         missing = [f"{name}:{line}: {text!r}"
                    for name in modules
                    for line, text in russian_literals(UPLOADER / name)
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "без перевода: " + "; ".join(missing))
+
+    def test_catalog_keys_are_never_identical_to_their_source(self):
+        """Ключ и все шесть переводов различаются — иначе язык «не переключился».
+
+        Отдельная проверка от `test_translations_differ_from_the_source`:
+        здесь ловится случай, когда в каталог случайно положили русский текст
+        вместо перевода, и подпись молча осталась русской.
+        """
+        same = []
+        for key, langs in i18n_catalogs._STRINGS.items():
+            for code, value in langs.items():
+                if value == key:
+                    same.append(f"{code}: {key!r}")
+        self.assertEqual(same, [], "перевод совпал с ключом: " + "; ".join(same))
 
     def test_launcher_package_and_installer_strings_are_in_the_catalog(self):
         """Диалоги обновления и установки: пакет, загрузка, ярлыки."""

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from typing import Optional
+from i18n import tr
 
 import requests
 
@@ -240,7 +241,8 @@ class EddnClient:
                 timeout=self.timeout,
             )
         except requests.RequestException as exc:
-            return {"ok": False, "error": f"EDDN недоступен: {exc.__class__.__name__}"}
+            return {"ok": False, "error": tr("EDDN недоступен: {error}",
+                                             error=exc.__class__.__name__)}
         if response.status_code == 200:
             return {"ok": True, "status": 200}
         # 400 и 426 по правилам EDDN не повторяются: сообщение нужно чинить.

@@ -33,6 +33,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+from i18n import tr
 
 #: События, которые несут состояние фракций системы.
 BGS_EVENTS = ("FSDJump", "Location", "CarrierJump")
@@ -236,7 +237,8 @@ class BgsSnapshotCollector:
                 break
             result = api.sync_bgs_snapshots([item for _, item in batch]) or {}
             if not result.get("ok"):
-                self.last_error = str(result.get("error") or "Сервер не принял данные о фракциях")
+                self.last_error = str(result.get("error")
+                                  or tr("Сервер не принял данные о фракциях"))
                 total.update(ok=False, error=self.last_error)
                 break
             now = time.monotonic()
