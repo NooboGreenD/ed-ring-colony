@@ -2251,10 +2251,12 @@ class SparklineWidget(QWidget):
     """Filled line chart of the current session (no external chart library)."""
 
     def __init__(self, color: str = "#65c78a", *, height: int = 64,
-                 empty_text: str = "накопление данных…", parent=None) -> None:
+                 empty_text: str = "", parent=None) -> None:
         super().__init__(parent)
         self.color = QColor(color)
-        self.empty_text = empty_text
+        # Ключ перевода подставляется при сборке: значение по умолчанию в
+        # подписи метода вычислилось бы один раз, при импорте модуля.
+        self.empty_text = empty_text or tr("накопление данных…")
         self.values: List[float] = []
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2295,10 +2297,10 @@ class BarsChart(QWidget):
     """Horizontal bars: "top systems by tons"."""
 
     def __init__(self, color: str = "#42b9d4", *, height: int = 110,
-                 empty_text: str = "данных пока нет", parent=None) -> None:
+                 empty_text: str = "", parent=None) -> None:
         super().__init__(parent)
         self.color = QColor(color)
-        self.empty_text = empty_text
+        self.empty_text = empty_text or tr("данных пока нет")
         self.rows: List[Tuple[str, float]] = []
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)

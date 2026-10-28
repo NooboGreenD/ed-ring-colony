@@ -476,6 +476,28 @@ class TranslationTests(unittest.TestCase):
                    and text not in colonial_helper.NON_UI_LITERALS]
         self.assertEqual(missing, [], "строки без перевода: " + "; ".join(missing))
 
+    def test_faction_panel_strings_are_in_the_catalog(self):
+        """Панель фракций: весь файл, включая подпись пустого списка."""
+        missing = [f"qt_factions.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "qt_factions.py")
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "панель фракций: " + "; ".join(missing))
+
+    def test_chart_empty_texts_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=("SparklineWidget", "BarsChart"))
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "пустые графики: " + "; ".join(missing))
+
+    def test_construction_site_summary_is_in_the_catalog(self):
+        """`ConstructionSite.summary()` виден в окне: строка статуса «Колонизатора»."""
+        missing = [f"colonisation.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonisation.py",
+                                                    functions=("summary",))
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "сводка стройплощадки: " + "; ".join(missing))
+
 
 if __name__ == "__main__":
     unittest.main()
