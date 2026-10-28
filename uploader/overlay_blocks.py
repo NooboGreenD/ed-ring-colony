@@ -12,7 +12,7 @@ from collections import deque
 from typing import Any, Dict, List, Optional, Sequence
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -416,14 +416,24 @@ class ShipOverlay(HudWindow):
         self._last_data: Dict[str, Any] = {}
         self._last_signature = ""
         self._last_rows = 0
+        #: Ключ последней отрисовки: подпись данных + геометрия + шрифт.
+        #: Пока он тот же, строки не пересобираются (обновление раз в секунду).
+        self._render_key: Optional[tuple] = None
+        self._rows: List[Dict[str, Any]] = []
+        #: Идёт подгонка под размер блока: `resizeEvent` не перерисовывает сам.
+        self._fitting = False
         self._hud: Dict[str, Any] = {}
         self._paints = 0
 
-        self.body.addWidget(hud_section(self.content, "Vessel telemetry",
-                                       size=self._fs - 2))
+        self._section_label = hud_section(self.content, "Vessel telemetry",
+                                          size=self._fs - 2)
+        self.body.addWidget(self._section_label)
         self.ship_name_label = self.make_label(
             self.content, tr("КОРАБЛЬ НЕ ОПРЕДЕЛЁН"), color=COLOR_ACCENT,
             background=COLOR_PANEL_ALT, dp=1, bold=True, wrap=self._wrap)
+        # Заголовок тоже одна строка: длинное имя корабля укорачивается
+        # многоточием, а не переносится и не съедает высоту строк.
+        self.ship_name_label.setWordWrap(False)
         self.body.addWidget(self.ship_name_label)
 
         self.chips_frame = QWidget(self.content)
@@ -445,6 +455,10 @@ class ShipOverlay(HudWindow):
         """i-я строка HUD: создать при необходимости, иначе переиспользовать."""
         while len(self._row_labels) <= index:
             label = self.make_label(self.rows_host, "", dp=0, wrap=self._wrap)
+            # Одна строка HUD — одна строка текста. Перенос в QLabel выглядел
+            # хуже обрезки: высота строки фиксирована раскладкой, поэтому вторая
+            # половина строки (шкала, процент) просто не рисовалась.
+            label.setWordWrap(False)
             label.setContentsMargins(5, 1, 5, 1)
             self.rows_host.add(label)
             self._row_labels.append(label)
@@ -485,29 +499,183 @@ class ShipOverlay(HudWindow):
         hud = ship_hud.build_ship_hud(data, settings=self.settings)
         self._hud = hud
         self._last_data = dict(data or {})
-        self.ship_name_label.setText(hud["title"])
+        self.ship_name_label.setText(self._fit_text(hud["title"], self._title_metrics()))
         self._render_chips(hud.get("chips") or [])
 
-        rows = ship_hud.hud_rows(hud)
-        if (not force and hud.get("signature") == self._last_signature
-                and len(rows) == self._last_rows):
+        key = (hud.get("signature"), self.width(), self.height(),
+               int(self._fs), str(self._ff))
+        if not force and key == self._render_key:
             return
+        self._render_key = key
         self._last_signature = str(hud.get("signature", ""))
-        self._last_rows = len(rows)
         self._paints += 1
 
+        rows = self._render_rows(self._fit_rows_to_block(hud))
+        self._rows = rows
+        self._last_rows = len(rows)
+
+    def _render_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Разложить строки по подписям: текст, кегль, цвет, видимость."""
+        width = self._row_text_width()
         for index, row in enumerate(rows):
             label = self._row_widget(index)
             delta = ship_hud.ROW_FONT_DELTA.get(row["kind"], 0)
             color = self.TONE_COLORS.get(row.get("tone", "text"), COLOR_TEXT)
-            label.setText(row["text"])
             label.setFont(hud_font(self._ff, max(7, int(self._fs) + delta)))
+            label.setText(self._fit_text(row["text"], label.fontMetrics(), width))
             background = COLOR_PANEL_ALT if index % 2 else COLOR_PANEL
             paint(label, color=color, background=background)
             label.setAttribute(Qt.WA_StyledBackground, True)
             label.show()
         for label in self._row_labels[len(rows):]:
             label.hide()
+        return rows
+
+    # -- подгонка строк под настоящий размер блока --------------------------
+    #: Поля строки слева и справа: столько отнимает `setContentsMargins`.
+    ROW_SIDE_MARGIN = 5
+    def _metrics(self, delta: int = 0) -> QFontMetricsF:
+        """Метрики шрифта строки: кегль тот же, что выставит `update_ship`."""
+        return QFontMetricsF(hud_font(self._ff, max(7, int(self._fs) + int(delta))))
+
+    def _title_metrics(self) -> QFontMetricsF:
+        return QFontMetricsF(hud_font(self._ff, max(7, int(self._fs) + 1), bold=True))
+
+    def _row_text_width(self) -> int:
+        """Сколько пикселей реально отведено под текст строки."""
+        width = self.rows_host.width()
+        if width <= 1 or not self.isVisible():
+            # Раскладка ещё не считалась или окно скрыто: берём ширину из
+            # настроек блока — ровно её получит строка, когда окно покажется.
+            width = max(150, int(self._wrap))
+        return max(60, int(width) - 2 * self.ROW_SIDE_MARGIN - 1)
+
+    def _fit_text(self, text: str, metrics: QFontMetricsF,
+                  width: Optional[int] = None) -> str:
+        """Обрезать строку по пикселям, а не по «среднему символу».
+
+        Бюджет в символах считает `ship_hud.line_budget` — он не знает ни
+        настоящего шрифта, ни ширины полей. Если глифы шире ожидаемого (крупный
+        кегль, не Consolas, а системный шрифт), строка вылезала за край и Qt
+        рисовал её обрезанной на середине шкалы.
+        """
+        text = str(text)
+        width = self._row_text_width() if width is None else int(width)
+        if not text or metrics.horizontalAdvance(text) <= width:
+            return text
+        return metrics.elidedText(text, Qt.TextElideMode.ElideRight, width)
+
+    def _rows_height(self) -> int:
+        """Сколько высоты заняли разложенные строки: их собственные sizeHint."""
+        labels = [label for label in self._row_labels if not label.isHidden()]
+        if not labels:
+            return 0
+        return (sum(max(label.sizeHint().height(), label.height()) for label in labels)
+                + max(0, len(labels) - 1))                       # spacing = 1
+
+    #: «Места сколько угодно» — пока окно не разложено, урезать список не за что.
+    NO_LIMIT = 1 << 20
+
+    def _rows_space(self) -> int:
+        """Сколько пикселей высоты отведено под строки в этом окне."""
+        content = self.content.height()
+        top = self.rows_host.y()
+        if not self.isVisible() or content <= 1 or top <= 0:
+            # Настоящей раскладки ещё нет (окно скрыто, первый кадр): считаем,
+            # что места хватает, и ничего не урезаем — иначе список модулей
+            # пропадал бы ещё до первого показа блока.
+            return self.NO_LIMIT
+        return max(0, int(content) - int(top) - 7)                # нижнее поле body
+
+    def _fit_rows_to_block(self, hud: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Строки HUD, ужатые по ширине и по высоте блока.
+
+        Ширина: бюджет в символах уточняется по настоящим метрикам шрифта —
+        строка обязана влезть целиком, шкала не должна рваться.
+        Высота: если строк больше, чем помещается, список модулей укорачивается
+        (лишние уходят в «ещё N»), а не сжимается: сжатые строки Qt режет по
+        высоте, и вместо шкалы видна только её верхняя половина.
+        """
+        total = len((hud.get("modules") or {}).get("rows") or [])
+        keep = total
+        space = self._rows_space()
+        rows = self._render_rows(self._fit_rows_width(hud))
+        while keep > 0 and self._rows_height() > space:
+            keep -= 1
+            hud = ship_hud.limit_module_rows(hud, keep)
+            rows = self._render_rows(self._fit_rows_width(hud))
+        self._fit_block_height(space)
+        self._hud = hud
+        return rows
+
+    def _fit_block_height(self, space: int) -> None:
+        """Блоку мало высоты — поднять нижнюю границу, но не резать строки.
+
+        Строки уже не переносятся и не ужимаются содержимым, но если окно ниже
+        даже свёрнутого списка, Qt всё равно сожмёт подписи, и от глифов
+        останется верхняя половина. Тогда окно подрастает до нужного размера:
+        читаемое содержимое важнее точного размера блока.
+        """
+        needed = self._rows_height()
+        if needed > space:
+            current = int(self.height())
+            required = max(self.MIN_HEIGHT, current - space + needed + 1)
+            self._apply_min_height(required, grow_to=required)
+        elif self.minimumHeight() > self.MIN_HEIGHT:
+            self._apply_min_height(self.MIN_HEIGHT)
+
+    def _apply_min_height(self, minimum: int, grow_to: int = 0) -> None:
+        """Поставить нижнюю границу высоты, не вызывая лишней перерисовки."""
+        if int(minimum) == self.minimumHeight():
+            return
+        self._fitting = True
+        try:
+            self.setMinimumHeight(int(minimum))
+            if grow_to and int(self.height()) < int(grow_to):
+                self.resize(int(self.width()), int(grow_to))
+        finally:
+            self._fitting = False
+
+    #: Строка-проба для средней ширины глифа: цифры, шкала, знаки строк HUD.
+    WIDTH_PROBE = "0123456789 ▓░%()/·MWt"
+
+    def _char_width(self) -> float:
+        """Средняя ширина глифа в пикселях — в ней и меряем бюджет строки.
+
+        `ship_hud.CHAR_WIDTH_EM` — модель «0.62 em у моноширинного шрифта».
+        Она верна для Consolas, но HUD рисуют и системным шрифтом, где глифы
+        шире: строка вылезала за край, и Qt обрезал её на середине шкалы.
+        """
+        metrics = self._metrics(0)
+        probe = self.WIDTH_PROBE
+        return max(1.0, metrics.horizontalAdvance(probe) / len(probe))
+
+    def _fit_rows_width(self, hud: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Строки HUD по бюджету, посчитанному по настоящему шрифту."""
+        width = self._row_text_width()
+        budget = max(12, int(width / self._char_width()))
+        return ship_hud.hud_rows(hud, max_chars=budget)
+
+    def get_rows(self) -> List[Dict[str, Any]]:
+        """Строки последней отрисовки — ровно то, что на экране."""
+        return [dict(row) for row in self._rows]
+
+    def showEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        """Блок показали — строки подгоняются под настоящую раскладку окна."""
+        super().showEvent(event)
+        if self._fitting:
+            return
+        if getattr(self, "_last_data", None) and getattr(self, "_row_labels", None) is not None:
+            self.update_ship(self._last_data, force=True)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        """Блок потянули за угол — строки пересобираются под новый размер."""
+        super().resizeEvent(event)
+        if self._fitting:
+            return
+        # За время вызова из `HudWindow.__init__` полей ещё нет — молча выходим.
+        if getattr(self, "_last_data", None) and getattr(self, "_row_labels", None) is not None:
+            self.update_ship(self._last_data)
 
     def get_hud(self) -> Dict[str, Any]:
         """Последняя модель HUD — тестам и отладочной печати."""

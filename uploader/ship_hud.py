@@ -381,13 +381,20 @@ def module_rows(modules: Sequence[Dict[str, Any]], *, mode: str = "important",
     return rows, max(0, len(ordered) - len(rows))
 
 
-def modules_table_line(row: Dict[str, Any], *, width: int = 34) -> str:
-    """Одна строка списка модулей: метка слота, имя, шкала, процент, заметка.
+def module_mark(row: Dict[str, Any]) -> str:
+    """Пометка состояния модуля перед строкой: ``?``, ``!``, ``*`` или пробел."""
+    if row.get("suspect"):
+        return "?"
+    percent = int(row.get("percent") or 0)
+    if percent < 50:
+        return "!"
+    if percent < 100:
+        return "*"
+    return " "
 
-    Отдельная функция — потому что и текстовый дамп, и Tk-оверлей должны
-    печатать ровно одну и ту же строку: иначе «что в тесте» и «что на экране»
-    разъедутся, а это ровно тот класс багов, из-за которого HUD и переписывали.
-    """
+
+def module_note(row: Dict[str, Any]) -> str:
+    """Заметка строки модуля: «ВЫКЛ», приоритет питания, боезапас."""
     flags = []
     if not row.get("on", True):
         flags.append(tr("ВЫКЛ"))
@@ -395,18 +402,134 @@ def modules_table_line(row: Dict[str, Any], *, width: int = 34) -> str:
         flags.append(f"P{row['priority']}")
     if row.get("ammo"):
         flags.append(tr("ЗАП {ammo}", ammo=row["ammo"]))
-    note = " ".join(flags)
-    mark = "?" if row.get("suspect") else ("!" if row["percent"] < 50 else
-                                          ("*" if row["percent"] < 100 else " "))
-    head = f"{mark} {row.get('slot', ''):>6} {row['name']}"
-    spare = max(4, width - len(head) - 12 - (len(note) + 1 if note else 0))
-    tail = f" {note}" if note else ""
-    return (f"{head} {bar(row['percent'], min(BAR_NARROW, spare))} "
-            f"{int(row['percent']):>3}%{tail}").rstrip()
+    return " ".join(flags)
+
+
+def module_line(row: Dict[str, Any], *, bar_width: int = BAR_NARROW,
+                slot: bool = True, name: Optional[str] = None,
+                note: bool = True) -> str:
+    """Строка модуля из кусков: метка, слот, имя, шкала, процент, заметка.
+
+    Шкала — отдельное слово строки, поэтому её нельзя «порезать пополам»:
+    либо она есть целиком, либо её нет.
+    """
+    pieces = [module_mark(row)]
+    if slot and row.get("slot"):
+        pieces.append(f"{row['slot']:>6}")
+    text = str(row.get("name") or "—") if name is None else str(name)
+    if text:
+        pieces.append(text)
+    if bar_width > 0:
+        scale = bar(row.get("percent"), int(bar_width))
+        if scale:
+            pieces.append(scale)
+    pieces.append(f"{int(row.get('percent') or 0):>3}%")
+    line = " ".join(piece for piece in pieces if piece)
+    tail = module_note(row)
+    if note and tail:
+        line = f"{line} {tail}"
+    return line
+
+
+def fit_module_line(row: Dict[str, Any], budget: int,
+                    *, bar_limit: int = BAR_NARROW) -> str:
+    """Строка модуля ровно по бюджету блока — без «обрезанной» шкалы.
+
+    Раньше строка собиралась как есть, а потом резалась по числу символов:
+    многоточие съедало то заметку, то процент, то саму шкалу — именно это и
+    выглядело как «оверлей обрезает прогресс-бары». Теперь теряется не хвост
+    строки, а самый необязательный кусок, и порядок потерь задан здесь:
+
+    1. номер слота («05/S2») — модуль и так узнаётся по имени;
+    2. заметка («ВЫКЛ», «P2», «ЗАП 12») — уточнение к проценту;
+    3. шкала: клетки убавляются целиком (6 → 5 → 4 → 3 → 2), потом пропадает;
+    4. имя модуля укорачивается с многоточием — в последнюю очередь.
+
+    Процент и пометка состояния остаются всегда: это и есть данные.
+    """
+    budget = int(budget)
+    note = module_note(row)
+    name = str(row.get("name") or "—")
+    percent = f"{int(row.get('percent') or 0):>3}%"
+
+    widths: List[int] = []
+    for width in (int(bar_limit), 5, 4, 3, 2, 0):
+        if 0 <= width <= max(0, int(bar_limit)) and width not in widths:
+            widths.append(width)
+
+    def compose(bar_width: int, with_note: bool, with_slot: bool, text: str) -> str:
+        pieces = [module_mark(row)]
+        if with_slot and row.get("slot"):
+            pieces.append(f"{row['slot']:>6}")
+        if text:
+            pieces.append(text)
+        if bar_width > 0:
+            scale = bar(row.get("percent"), bar_width)
+            if scale:
+                pieces.append(scale)
+        pieces.append(percent)
+        line = " ".join(piece for piece in pieces if piece)
+        if with_note and note:
+            line = f"{line} {note}"
+        return line
+
+    if budget <= 0:
+        return percent.strip()
+    # Порядок перебора = порядок потерь: шкала пробуется целиком, внутри одной
+    # её ширины сначала отдаём номер слота, потом заметку.
+    for bar_width in widths:
+        for with_note in (True, False):
+            for with_slot in (True, False):
+                line = compose(bar_width, with_note, with_slot, name)
+                if len(line) <= budget:
+                    return line
+    # Всё равно длинно: шкалу сохраняем, а имя режем по месту.
+    for bar_width in widths:
+        for with_slot in (False, True):
+            headroom = budget - len(compose(bar_width, False, with_slot, "")) - 1
+            if headroom < 4:
+                continue
+            cut = name[:max(1, headroom - 1)].rstrip() + "…"
+            line = compose(bar_width, False, with_slot, cut)
+            if len(line) <= budget:
+                return line
+    tail = f"{module_mark(row)} {percent}"
+    if len(tail) <= budget:
+        return tail
+    return percent if len(percent) <= budget else percent.strip()[:budget]
+
+
+def modules_table_line(row: Dict[str, Any], *, width: int = 34) -> str:
+    """Одна строка списка модулей: метка слота, имя, шкала, процент, заметка.
+
+    Отдельная функция — потому что и текстовый дамп, и оверлей должны печатать
+    ровно одну и ту же строку: иначе «что в тесте» и «что на экране» разъедутся,
+    а это ровно тот класс багов, из-за которого HUD и переписывали. ``width`` —
+    бюджет строки в символах: длиннее она не бывает никогда, и шкала не рвётся
+    посередине (см. :func:`fit_module_line`).
+    """
+    return fit_module_line(row, width)
+
+
+def module_bar_limit(rows: Sequence[Dict[str, Any]], budget: int,
+                     *, max_width: int = BAR_NARROW) -> int:
+    """Общая ширина шкалы для всех строк списка: колонки обязаны совпадать.
+
+    Если у каждой строки ужимать шкалу отдельно, проценты встанут по разным
+    колонкам и таблица рассыплется. Поэтому ширину выбираем одну — самую
+    широкую из тех, при которых в бюджет влезает любая строка.
+    """
+    for width in range(max(0, int(max_width)), 1, -1):
+        if all(len(module_line(row, bar_width=width, note=False)) <= budget
+               for row in rows):
+            return width
+    return 0
 
 
 def modules_table(rows: Sequence[Dict[str, Any]], *, width: int = 34) -> str:
-    return "\n".join(modules_table_line(row, width=width) for row in rows)
+    rows = list(rows)
+    limit = module_bar_limit(rows, width)
+    return "\n".join(fit_module_line(row, width, bar_limit=limit) for row in rows)
 
 
 def build_ship_hud(state: Dict[str, Any], *, settings: Optional[Dict[str, Any]] = None,
@@ -791,8 +914,13 @@ def hud_rows(hud: Dict[str, Any], max_chars: Optional[int] = None) -> List[Dict[
             texts = [modules["header"]]
         for packed in texts:
             rows.append({"kind": "text", "text": clip(packed, budget), "tone": "muted"})
-    for row in modules.get("rows") or []:
-        rows.append({"kind": "mod", "text": modules_table_line(row), "tone": row.get("tone", "ok")})
+    module_list = list(modules.get("rows") or [])
+    # Одна ширина шкалы на весь список: иначе колонка процентов «пляшет».
+    bar_limit = module_bar_limit(module_list, budget)
+    for row in module_list:
+        rows.append({"kind": "mod",
+                     "text": fit_module_line(row, budget, bar_limit=bar_limit),
+                     "tone": row.get("tone", "ok")})
     tail_bits = []
     if modules.get("hidden"):
         tail_bits.append(tr("ещё {count}", count=modules["hidden"]))
@@ -807,6 +935,28 @@ def hud_rows(hud: Dict[str, Any], max_chars: Optional[int] = None) -> List[Dict[
     for row in rows:
         row["text"] = clip(row["text"], budget)
     return rows
+
+
+def limit_module_rows(hud: Dict[str, Any], keep: int) -> Dict[str, Any]:
+    """Оставить в списке модулей ``keep`` строк, остальные свернуть в «ещё N».
+
+    Блок HUD — окно фиксированного размера: если список длиннее, Qt ужимает
+    строки, и текст режется по высоте (а при включённом переносе вторая половина
+    строки просто не рисуется). Поэтому лишние строки не «сжимаются», а
+    убираются из списка — с честным счётчиком в последней строке.
+    """
+    modules = dict(hud.get("modules") or {})
+    rows = list(modules.get("rows") or [])
+    keep = max(0, min(int(keep), len(rows)))
+    if keep == len(rows):
+        return hud
+    dropped = len(rows) - keep
+    limited = dict(hud)
+    modules["rows"] = rows[:keep]
+    modules["hidden"] = int(modules.get("hidden") or 0) + dropped
+    modules["text"] = "\n".join(modules_table_line(row) for row in modules["rows"])
+    limited["modules"] = modules
+    return limited
 
 
 def render_hud_text(hud: Dict[str, Any]) -> str:
