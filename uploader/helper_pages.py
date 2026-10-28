@@ -665,6 +665,20 @@ class UploadPage(QWidget):
 # ===========================================================================
 #: Заголовки колонок и стартовая ширина в пикселях.
 ROUTE_COLUMNS = (("#", 46), ("Система", 300), ("Статус", 130), ("Посещена", 170))
+#: Заголовки таблиц, которые не переводятся: номер строки и техническое имя поля.
+KEEP_COLUMN_TITLES = frozenset({"#", "buildId"})
+
+
+def column_title(title: str) -> str:
+    """Подпись заголовка колонки на текущем языке.
+
+    Переводится только то, что видит командир: «#» и «buildId» — это номер
+    строки и имя поля API, их перевод сделал бы таблицу непонятной.
+    """
+    text = str(title)
+    return text if text in KEEP_COLUMN_TITLES else tr(text)
+
+
 #: Цвет строки по состоянию системы маршрута.
 ROUTE_STATUS_COLORS = {"visited": GREEN, "current": ORANGE, "pending": MUTED}
 
@@ -697,23 +711,23 @@ class RoutePage(QWidget):
         layout.setContentsMargins(16, 14, 16, 16)
         layout.setSpacing(8)
 
-        layout.addWidget(heading("Отслеживание маршрута", size=14))
-        layout.addWidget(label(
+        layout.addWidget(heading(tr("Отслеживание маршрута"), size=14))
+        layout.addWidget(label(tr(
             "Импортируйте маршрут из NavRoute.json или CSV. Системы отмечаются "
-            "автоматически при разборе журналов.", role="muted", size=9, wrap=True))
+            "автоматически при разборе журналов."), role="muted", size=9, wrap=True))
 
-        self.import_btn = action_button("Импорт маршрута", self._import_route, height=34)
-        self.export_btn = action_button("Экспорт CSV", self._export_csv, height=34)
-        self.atlas_btn = action_button("Забрать из Atlas", self._import_atlas,
+        self.import_btn = action_button(tr("Импорт маршрута"), self._import_route, height=34)
+        self.export_btn = action_button(tr("Экспорт CSV"), self._export_csv, height=34)
+        self.atlas_btn = action_button(tr("Забрать из Atlas"), self._import_atlas,
                                        variant="primary", height=34)
-        self.clear_btn = action_button("Очистить", self._clear, height=34)
+        self.clear_btn = action_button(tr("Очистить"), self._clear, height=34)
         layout.addWidget(row(self.import_btn, self.export_btn, self.atlas_btn,
                              self.clear_btn, None))
 
         self.table = QTableWidget(0, len(ROUTE_COLUMNS))
         self.table.setObjectName("routeTable")
         for index, (title, _width) in enumerate(ROUTE_COLUMNS):
-            header_item = QTableWidgetItem(title)
+            header_item = QTableWidgetItem(column_title(title))
             header_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignVCenter |
                 (Qt.AlignmentFlag.AlignLeft if index == 1
@@ -746,7 +760,7 @@ class RoutePage(QWidget):
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.table, 1)
 
-        self.counter = label("Маршрут не загружен", role="muted", size=9, wrap=True)
+        self.counter = label(tr("Маршрут не загружен"), role="muted", size=9, wrap=True)
         layout.addWidget(self.counter)
 
     # ------------------------------------------------------------------ pieces

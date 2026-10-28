@@ -16,6 +16,7 @@ HERE = Path(__file__).resolve().parent
 UPLOADER = HERE.parent
 sys.path.insert(0, str(UPLOADER))
 
+import helper_pages  # noqa: E402
 import i18n  # noqa: E402
 import i18n_catalogs  # noqa: E402
 from locale_config import DEFAULT_LOCALE, SUPPORTED_LOCALES  # noqa: E402
@@ -31,6 +32,10 @@ TRANSLATED_MODULES = ("launcher_window.py", "installer_window.py",
 AUTH_PAGE_CLASSES = ("AuthPageState", "AuthPage")
 PILOT_PAGE_CLASSES = ("PilotPage",)
 UPLOAD_PAGE_CLASSES = ("UploadPage",)
+ROUTE_PAGE_CLASSES = ("RoutePage",)
+
+#: Уже переведённые обработчики страницы «Маршрут».
+ROUTE_HELPER_FUNCTIONS = ("_refresh_route_tree",)
 #: Метки внутри пришедшего текста ошибки, по которым выбирается цвет строки.
 #: Это не подпись для пользователя, а разбор ответа сервера — они не переводятся.
 ERROR_MARKER_LITERALS = {"ошиб", "невер", "недоступ", "сбой", "не удалось", "занят"}
@@ -182,6 +187,21 @@ class CatalogTests(unittest.TestCase):
                                                     classes=UPLOAD_PAGE_CLASSES)
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "страница «Загрузка логов»: " + "; ".join(missing))
+
+    def test_route_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=ROUTE_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in helper_pages.KEEP_COLUMN_TITLES]
+        self.assertEqual(missing, [], "страница «Маршрут»: " + "; ".join(missing))
+
+    def test_route_handler_strings_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=ROUTE_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "обработчики «Маршрута»: " + "; ".join(missing))
 
     def test_translations_differ_from_the_source(self):
         for key, translations in i18n_catalogs._STRINGS.items():

@@ -2183,6 +2183,117 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "zh": "错误：{error}",
         "ja": "エラー: {error}",
     },
+    # --------------------------------------------- вкладка «Маршрут»
+    "Отслеживание маршрута": {
+        "en": "Route tracking",
+        "de": "Routenverfolgung",
+        "it": "Monitoraggio della rotta",
+        "ko": "경로 추적",
+        "zh": "航线跟踪",
+        "ja": "ルート追跡",
+    },
+    "Импортируйте маршрут из NavRoute.json или CSV. Системы отмечаются "
+    "автоматически при разборе журналов.": {
+        "en": "Import a route from NavRoute.json or CSV. Systems are marked "
+              "automatically while the journals are parsed.",
+        "de": "Importiere eine Route aus NavRoute.json oder CSV. Systeme werden beim "
+              "Auswerten der Journale automatisch markiert.",
+        "it": "Importa una rotta da NavRoute.json o CSV. I sistemi vengono contrassegnati "
+              "automaticamente durante l'analisi dei journal.",
+        "ko": "NavRoute.json 또는 CSV에서 경로를 가져오세요. 저널을 분석할 때 시스템이 "
+              "자동으로 표시됩니다.",
+        "zh": "从 NavRoute.json 或 CSV 导入航线。解析日志时会自动标记星系。",
+        "ja": "NavRoute.json または CSV からルートを取り込んでください。システムは"
+              "ジャーナル解析時に自動で記録されます。",
+    },
+    "Импорт маршрута": {
+        "en": "Import route",
+        "de": "Route importieren",
+        "it": "Importa rotta",
+        "ko": "경로 가져오기",
+        "zh": "导入航线",
+        "ja": "ルートを取り込む",
+    },
+    "Экспорт CSV": {
+        "en": "Export CSV",
+        "de": "CSV exportieren",
+        "it": "Esporta CSV",
+        "ko": "CSV 내보내기",
+        "zh": "导出 CSV",
+        "ja": "CSV に書き出す",
+    },
+    "Забрать из Atlas": {
+        "en": "Fetch from Atlas",
+        "de": "Aus Atlas holen",
+        "it": "Preleva da Atlas",
+        "ko": "Atlas에서 가져오기",
+        "zh": "从 Atlas 获取",
+        "ja": "Atlas から取得",
+    },
+    "Очистить": {
+        "en": "Clear",
+        "de": "Leeren",
+        "it": "Svuota",
+        "ko": "지우기",
+        "zh": "清空",
+        "ja": "クリア",
+    },
+    "Маршрут не загружен": {
+        "en": "No route loaded",
+        "de": "Keine Route geladen",
+        "it": "Nessuna rotta caricata",
+        "ko": "경로가 로드되지 않았습니다",
+        "zh": "航线未加载",
+        "ja": "ルート未読み込み",
+    },
+    "Статус": {
+        "en": "Status",
+        "de": "Status",
+        "it": "Stato",
+        "ko": "상태",
+        "zh": "状态",
+        "ja": "ステータス",
+    },
+    "Посещена": {
+        "en": "Visited",
+        "de": "Besucht",
+        "it": "Visitata",
+        "ko": "방문함",
+        "zh": "已到访",
+        "ja": "訪問済み",
+    },
+    "✓ Посещена": {
+        "en": "✓ Visited",
+        "de": "✓ Besucht",
+        "it": "✓ Visitata",
+        "ko": "✓ 방문함",
+        "zh": "✓ 已到访",
+        "ja": "✓ 訪問済み",
+    },
+    "● Текущая": {
+        "en": "● Current",
+        "de": "● Aktuell",
+        "it": "● Attuale",
+        "ko": "● 현재",
+        "zh": "● 当前",
+        "ja": "● 現在",
+    },
+    "○ Ожидает": {
+        "en": "○ Pending",
+        "de": "○ Ausstehend",
+        "it": "○ In attesa",
+        "ko": "○ 대기",
+        "zh": "○ 待访",
+        "ja": "○ 待機",
+    },
+    "Всего: {total} | Посещено: {visited} | Осталось: {left}": {
+        "en": "Total: {total} | Visited: {visited} | Left: {left}",
+        "de": "Gesamt: {total} | Besucht: {visited} | Übrig: {left}",
+        "it": "Totale: {total} | Visitati: {visited} | Rimanenti: {left}",
+        "ko": "전체: {total} | 방문: {visited} | 남음: {left}",
+        "zh": "总计：{total} | 已到访：{visited} | 剩余：{left}",
+        "ja": "合計: {total} | 訪問済み: {visited} | 残り: {left}",
+    },
 }
 
 

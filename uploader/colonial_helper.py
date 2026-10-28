@@ -93,7 +93,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.16"
+VERSION = "2.18.17"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -8026,15 +8026,15 @@ class ColonialHelperApp:
 
         if not self.route.systems:
             page.set_rows([])
-            page.set_counter("Маршрут не загружен")
+            page.set_counter(tr("Маршрут не загружен"))
             return
 
         rows = []
         for s in self.route.systems:
             status_label = {
-                "visited": "✓ Посещена",
-                "current": "● Текущая",
-                "pending": "○ Ожидает",
+                "visited": tr("✓ Посещена"),
+                "current": tr("● Текущая"),
+                "pending": tr("○ Ожидает"),
             }.get(s["status"], s["status"])
 
             visited_str = ""
@@ -8051,9 +8051,8 @@ class ColonialHelperApp:
         page.set_rows(rows)
         visited = self.route.visited_count
         total = len(self.route.systems)
-        page.set_counter(
-            f"Всего: {total} | Посещено: {visited} | Осталось: {total - visited}"
-        )
+        page.set_counter(tr("Всего: {total} | Посещено: {visited} | Осталось: {left}",
+                            total=total, visited=visited, left=total - visited))
 
     # ============================================================
     #  Лог
