@@ -2304,8 +2304,8 @@ class PilotPage(QWidget):
         layout.setSpacing(8)
         layout.addWidget(self._header())
         layout.addWidget(label(
-            "Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
-            "Сетевых запросов инфографика не делает.", role="muted", size=9, wrap=True))
+            tr("Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
+               "Сетевых запросов инфографика не делает."), role="muted", size=9, wrap=True))
 
         self.kpi_row = QWidget()
         self.kpi_layout = QHBoxLayout(self.kpi_row)
@@ -2327,15 +2327,15 @@ class PilotPage(QWidget):
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(10)
-        title = label("ИНФОГРАФИКА ПИЛОТА", role="mono", size=15, bold=True, color=ORANGE)
+        title = label(tr("ИНФОГРАФИКА ПИЛОТА"), role="mono", size=15, bold=True, color=ORANGE)
         holder_layout.addWidget(title)
         holder_layout.addStretch(1)
         self.updated_label = label("", role="mono", size=9, color=MUTED)
         self.updated_label.setObjectName("pilotUpdated")
         holder_layout.addWidget(self.updated_label)
-        self.refresh_button = action_button("Обновить", self._refresh_clicked, height=30)
+        self.refresh_button = action_button(tr("Обновить"), self._refresh_clicked, height=30)
         holder_layout.addWidget(self.refresh_button)
-        self.compact_check = QCheckBox("Компактный режим")
+        self.compact_check = QCheckBox(tr("Компактный режим"))
         self.compact_check.setChecked(self._compact)
         self.compact_check.toggled.connect(self._compact_toggled)
         holder_layout.addWidget(self.compact_check)
@@ -2353,10 +2353,10 @@ class PilotPage(QWidget):
     # -------------------------------------------------------------------- KPIs
     def _build_kpis(self) -> None:
         specs = (
-            ("kpi_tons", "ТОННЫ ЗА СЕССИЮ", GREEN),
-            ("kpi_deliveries", "ДОСТАВКИ", CYAN),
-            ("kpi_cargo", "ГРУЗ", ORANGE),
-            ("kpi_systems", "СИСТЕМЫ", CYAN),
+            ("kpi_tons", tr("ТОННЫ ЗА СЕССИЮ"), GREEN),
+            ("kpi_deliveries", tr("ДОСТАВКИ"), CYAN),
+            ("kpi_cargo", tr("ГРУЗ"), ORANGE),
+            ("kpi_systems", tr("СИСТЕМЫ"), CYAN),
         )
         for index, (key, title, color) in enumerate(specs):
             card = panel(QFrame(), "card")
@@ -2409,7 +2409,7 @@ class PilotPage(QWidget):
         holder_layout = QHBoxLayout(holder)
         holder_layout.setContentsMargins(0, 0, 0, 0)
         holder_layout.setSpacing(8)
-        title = label(self.ROW_LABELS.get(key, key), role="mono", size=9, color=MUTED)
+        title = label(tr(self.ROW_LABELS.get(key, key)), role="mono", size=9, color=MUTED)
         title.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
         holder_layout.addWidget(title, 0)
         holder_layout.addStretch(1)
@@ -2432,7 +2432,7 @@ class PilotPage(QWidget):
         holder_layout = QVBoxLayout(holder)
         holder_layout.setContentsMargins(0, 2, 0, 0)
         holder_layout.setSpacing(2)
-        holder_layout.addWidget(label(title, role="mono", size=9, color=MUTED))
+        holder_layout.addWidget(label(tr(title), role="mono", size=9, color=MUTED))
         bar = QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(0)
@@ -2466,9 +2466,9 @@ class PilotPage(QWidget):
             self.tile_layout.setColumnStretch(column, 1)
 
     def _tile_session(self) -> QWidget:
-        card, card_layout = self._tile("ДИНАМИКА СЕССИИ")
+        card, card_layout = self._tile(tr("ДИНАМИКА СЕССИИ"))
         self.spark = SparklineWidget(color=GREEN, height=64,
-                                     empty_text="журнал пока пуст")
+                                     empty_text=tr("журнал пока пуст"))
         card_layout.addWidget(self.spark)
         for key in self.ROW_KEYS["session"]:
             card_layout.addWidget(self._row_widget(key))
@@ -2476,7 +2476,7 @@ class PilotPage(QWidget):
         return card
 
     def _tile_ship(self) -> QWidget:
-        card, card_layout = self._tile("КОРАБЛЬ")
+        card, card_layout = self._tile(tr("КОРАБЛЬ"))
         card_layout.addWidget(self._row_widget("ship"))
         for key, title in self.BAR_KEYS["ship"]:
             card_layout.addWidget(self._bar_widget(key, title))
@@ -2485,7 +2485,7 @@ class PilotPage(QWidget):
         return card
 
     def _tile_route(self) -> QWidget:
-        card, card_layout = self._tile("МАРШРУТ")
+        card, card_layout = self._tile(tr("МАРШРУТ"))
         card_layout.addWidget(self._row_widget("route_status"))
         for key, title in self.BAR_KEYS["route"]:
             card_layout.addWidget(self._bar_widget(key, title))
@@ -2495,21 +2495,21 @@ class PilotPage(QWidget):
         return card
 
     def _tile_systems(self) -> QWidget:
-        card, card_layout = self._tile("ТОП СИСТЕМ ПО ТОННАМ")
+        card, card_layout = self._tile(tr("ТОП СИСТЕМ ПО ТОННАМ"))
         self.systems_chart = BarsChart(color=CYAN, height=110)
         card_layout.addWidget(self.systems_chart)
         card_layout.addStretch(1)
         return card
 
     def _tile_status(self) -> QWidget:
-        card, card_layout = self._tile("СТАТУС И ПОДКЛЮЧЕНИЯ")
+        card, card_layout = self._tile(tr("СТАТУС И ПОДКЛЮЧЕНИЯ"))
         for key in self.ROW_KEYS["status"]:
             card_layout.addWidget(self._row_widget(key))
         card_layout.addStretch(1)
         return card
 
     def _tile_journal(self) -> QWidget:
-        card, card_layout = self._tile("ЖУРНАЛЫ И ЭКОНОМИКА")
+        card, card_layout = self._tile(tr("ЖУРНАЛЫ И ЭКОНОМИКА"))
         for key in self.ROW_KEYS["journal"]:
             color = MUTED if key == "last_event" else CYAN
             card_layout.addWidget(self._row_widget(key, color=color))

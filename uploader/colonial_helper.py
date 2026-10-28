@@ -771,13 +771,13 @@ class ColonialHelperApp:
             visited = self.route.visited_count
             route_percent = (visited / route_total * 100) if route_total else 0.0
             current = self.ship.state.current_system or "—"
-            ship_name = state.get("ship_type") or "Корабль не определён"
+            ship_name = state.get("ship_type") or tr("Корабль не определён")
             services = " / ".join(
                 name for name, enabled in (
                     ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
                     ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
                 ) if enabled
-            ) or "нет подключений"
+            ) or tr("нет подключений")
             cargo = float(state.get("cargo_count", 0) or 0)
             capacity = float(state.get("cargo_capacity", 0) or 0)
             cargo_percent = cargo / capacity * 100 if capacity > 0 else 0.0
@@ -791,22 +791,33 @@ class ColonialHelperApp:
 
             # --- крупные показатели ---
             self._pilot_set("kpi_tons", f"{self._session_cargo_tons:.0f} t")
-            self._pilot_set("kpi_tons_sub", f"на маршрут {self._session_route_cargo_tons:.0f} t · на стройки {self._session_construction_cargo_tons:.0f} t")
+            self._pilot_set("kpi_tons_sub", tr(
+                "на маршрут {route} t · на стройки {site} t",
+                route=f"{self._session_route_cargo_tons:.0f}",
+                site=f"{self._session_construction_cargo_tons:.0f}"))
             self._pilot_set("kpi_deliveries", str(self._session_deliveries))
-            self._pilot_set("kpi_deliveries_sub", f"событий в сессии: {event_count}")
+            self._pilot_set("kpi_deliveries_sub",
+                            tr("событий в сессии: {count}", count=event_count))
             self._pilot_set("kpi_cargo", f"{cargo:.0f} / {capacity:.0f} t")
-            self._pilot_set("kpi_cargo_sub", f"трюм заполнен на {cargo_percent:.0f}%")
+            self._pilot_set("kpi_cargo_sub",
+                            tr("трюм заполнен на {percent}%", percent=f"{cargo_percent:.0f}"))
             self._pilot_set("kpi_systems", str(len(self._session_systems_visited)))
-            self._pilot_set("kpi_systems_sub", f"маршрут: {visited}/{route_total}" if route_total else "маршрут не загружен")
+            self._pilot_set("kpi_systems_sub",
+                            tr("маршрут: {visited}/{total}", visited=visited,
+                               total=route_total) if route_total
+                            else tr("маршрут не загружен"))
 
             # --- динамика ---
-            self._pilot_set("session_rate", f"{self._pilot_rate():.0f} t/час")
+            self._pilot_set("session_rate",
+                            tr("{rate} t/час", rate=f"{self._pilot_rate():.0f}"))
             self._pilot_set("session_construction", f"{self._session_construction_cargo_tons:.0f} t")
             self._pilot_set("session_route", f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t")
 
             # --- корабль ---
             self._pilot_set("ship", ship_name)
-            self._pilot_set("modules", f"{total_modules - damaged}/{total_modules} исправны")
+            self._pilot_set("modules", tr("{healthy}/{total} исправны",
+                                          healthy=total_modules - damaged,
+                                          total=total_modules))
             for key, value in {
                 "hull_bar": self._pilot_percent(state.get("hull_percent")),
                 "shield_bar": self._pilot_percent(state.get("shield_percent")),
@@ -817,7 +828,10 @@ class ColonialHelperApp:
                     self.pilot_page.set_bar(key, value)
 
             # --- маршрут ---
-            self._pilot_set("route_status", f"{visited}/{route_total} систем" if route_total else "не загружен")
+            self._pilot_set("route_status",
+                            tr("{visited}/{total} систем", visited=visited,
+                               total=route_total) if route_total
+                            else tr("не загружен"))
             if getattr(self, "pilot_page", None) is not None:
                 self.pilot_page.set_bar("route_progress", route_percent)
             overlay_data = self._get_overlay_data()
@@ -827,29 +841,36 @@ class ColonialHelperApp:
             self._pilot_set("last_delivery", self._last_delivery_system or "—")
 
             # --- статус и подключения ---
-            self._pilot_set("commander", self._current_cmdr_name() or "CMDR не определён")
+            self._pilot_set("commander",
+                            self._current_cmdr_name() or tr("CMDR не определён"))
             self._pilot_set("system", current)
-            game_text = "запущена (в фокусе)" if game_state.focused else ("запущена" if game_state.running else "не запущена")
+            game_text = (tr("запущена (в фокусе)") if game_state.focused
+                         else (tr("запущена") if game_state.running else tr("не запущена")))
             if game_state.error:
-                game_text = f"нет данных ({game_state.error})"
+                game_text = tr("нет данных ({error})", error=game_state.error)
             self._pilot_set("game", game_text)
-            self._pilot_set("watcher", "АКТИВЕН" if self.watcher_active else "остановлен")
+            self._pilot_set("watcher",
+                            tr("АКТИВЕН") if self.watcher_active else tr("остановлен"))
             self._pilot_set("services", services)
             if exobio:
                 genera = ", ".join(row["genus"] for row in (exobio.get("predictions") or [])[:3])
-                exobio_text = f"{exobio.get('body')}: {exobio.get('bio_signals', 0)} сигналов"
+                exobio_text = tr("{body}: {signals} сигналов",
+                                 body=exobio.get("body"),
+                                 signals=exobio.get("bio_signals", 0))
                 if genera:
                     exobio_text += f" · {genera}"
             else:
-                exobio_text = "тело не отсканировано"
+                exobio_text = tr("тело не отсканировано")
             self._pilot_set("exobio", exobio_text)
 
             # --- журналы и экономика ---
             self._pilot_set("balance", f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "))
             self._pilot_set("rebuy", f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "))
-            self._pilot_set("legal", state.get("legal_state") or "неизвестно")
+            self._pilot_set("legal", state.get("legal_state") or tr("неизвестно"))
             self._pilot_set("journal_state", self._pilot_journal_state())
-            self._pilot_set("event_summary", f"{event_count} событий" if event_count else "ожидание событий")
+            self._pilot_set("event_summary",
+                            tr("{count} событий", count=event_count) if event_count
+                            else tr("ожидание событий"))
             self._pilot_set("last_event", (self._last_session_event or "—")[:48])
 
             # --- графики ---
@@ -902,8 +923,9 @@ class ColonialHelperApp:
         """Короткая сводка по журналам: сколько файлов и отслеживается ли."""
         count = self._pilot_journal_count()
         if not count:
-            return "папка журналов не выбрана"
-        return f"{count} файлов · {'слежение' if self.watcher_active else 'ожидание'}"
+            return tr("папка журналов не выбрана")
+        return tr("{count} файлов · {state}", count=count,
+                  state=tr("слежение") if self.watcher_active else tr("ожидание"))
 
     # ============================================================
     #  Вкладка: Загрузка логов

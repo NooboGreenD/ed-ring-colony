@@ -9,6 +9,8 @@ sys.path.insert(0, str(HERE.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton
+
     import helper_pages
     from ui_qt import ensure_app
 
@@ -79,7 +81,30 @@ class PilotPageTests(unittest.TestCase):
         self.app.processEvents()
 
     def tearDown(self):
+        import i18n
+
+        i18n.set_locale("ru")
         self.page.deleteLater()
+
+    def test_page_follows_the_language_chosen_in_the_launcher(self):
+        """Инфографика пилота не должна остаться русской в другом языке."""
+        import re
+
+        import i18n
+
+        for code in ("en", "de", "ja"):
+            i18n.set_locale(code)
+            page = helper_pages.PilotPage(columns_provider=lambda: 2)
+            try:
+                page.set_value("ship", i18n.tr("Корабль не определён"))
+                texts = [item.text() for item in page.findChildren(QLabel)]
+                texts += [item.text() for item in page.findChildren(QPushButton)]
+                texts += [item.text() for item in page.findChildren(QCheckBox)]
+                russian = [text for text in texts
+                           if text and re.search("[А-Яа-яЁё]", text)]
+                self.assertEqual(russian, [], f"{code}: остались русские подписи")
+            finally:
+                page.deleteLater()
 
     # ------------------------------------------------------------- structure
     def test_page_is_native_qt_with_kpi_tiles_bars_and_charts(self):

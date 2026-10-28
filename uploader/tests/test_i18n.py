@@ -29,6 +29,7 @@ TRANSLATED_MODULES = ("launcher_window.py", "installer_window.py",
 
 #: Уже переведённые части Helper: страница «Подключение» и её обработчики.
 AUTH_PAGE_CLASSES = ("AuthPageState", "AuthPage")
+PILOT_PAGE_CLASSES = ("PilotPage",)
 #: Метки внутри пришедшего текста ошибки, по которым выбирается цвет строки.
 #: Это не подпись для пользователя, а разбор ответа сервера — они не переводятся.
 ERROR_MARKER_LITERALS = {"ошиб", "невер", "недоступ", "сбой", "не удалось", "занят"}
@@ -37,6 +38,9 @@ AUTH_HELPER_FUNCTIONS = ("_build_tab_auth", "_save_edsm_settings", "_save_inara_
                          "_capi_refresh_status", "_capi_fetch_and_upload", "_change_site_url",
                          "_on_validate_token", "_apply_token_result", "set_connection_status",
                          "_on_check_raven", "_check_raven_key_async")
+
+#: Уже переведённые части инфографики пилота.
+PILOT_HELPER_FUNCTIONS = ("_refresh_pilot_infographic", "_pilot_journal_state")
 
 
 def placeholders(text: str) -> set:
@@ -156,6 +160,20 @@ class CatalogTests(unittest.TestCase):
                    if text not in i18n_catalogs._STRINGS
                    and text not in ERROR_MARKER_LITERALS]
         self.assertEqual(missing, [], "обработчики «Подключения»: " + "; ".join(missing))
+
+    def test_pilot_page_strings_are_in_the_catalog(self):
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=PILOT_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "страница «Пилот»: " + "; ".join(missing))
+
+    def test_pilot_values_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=PILOT_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "значения инфографики: " + "; ".join(missing))
 
     def test_translations_differ_from_the_source(self):
         for key, translations in i18n_catalogs._STRINGS.items():
