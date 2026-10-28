@@ -18,6 +18,7 @@ sys.path.insert(0, str(UPLOADER))
 
 import helper_pages  # noqa: E402
 import i18n  # noqa: E402
+import overlay_blocks  # noqa: E402
 import i18n_catalogs  # noqa: E402
 from locale_config import DEFAULT_LOCALE, SUPPORTED_LOCALES  # noqa: E402
 
@@ -320,6 +321,24 @@ class CatalogTests(unittest.TestCase):
                    if text not in i18n_catalogs._STRINGS
                    and text not in helper_pages.UNTRANSLATED_TEXTS]
         self.assertEqual(missing, [], "обработчики «Оверлея»: " + "; ".join(missing))
+
+    def test_overlay_block_contents_are_in_the_catalog(self):
+        """Содержимое блоков HUD: маршрут, статус, корабль, авианосец, экзобиология."""
+        missing = [f"overlay_blocks.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "overlay_blocks.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in overlay_blocks.NOT_UI_LITERALS]
+        self.assertEqual(missing, [], "блоки HUD: " + "; ".join(missing))
+
+    def test_overlay_block_columns_are_in_the_catalog(self):
+        """Заголовки колонок блока авианосца — ключи, их печатает ``tr()``."""
+        missing = [title for title, _width, _align in overlay_blocks.CarrierOverlay.COLUMNS
+                   if title not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "колонки авианосца: " + "; ".join(missing))
+
+    def test_overlay_block_empty_text_is_translated(self):
+        """Текст «данных нет» печатается из ключа, а не русской строкой."""
+        self.assertIn(overlay_blocks.CarrierOverlay.EMPTY_DEFAULT, i18n_catalogs._STRINGS)
 
     def test_hud_menu_strings_are_in_the_catalog(self):
         missing = [f"hud_window.py:{line}: {text!r}"
