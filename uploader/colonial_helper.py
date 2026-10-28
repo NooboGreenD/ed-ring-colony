@@ -93,7 +93,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.18.21"
+VERSION = "2.18.22"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -3292,7 +3292,7 @@ class ColonialHelperApp:
             str(b.get("name") or "")
         ))
 
-        from exobiology import body_matches
+        from exobiology import body_matches, preset_label
         rows = []
         for body in system_bodies:
             name = str(body.get("name") or "")
@@ -3304,7 +3304,7 @@ class ColonialHelperApp:
             matched_rules = []
             for rule in criteria:
                 if body_matches(body, rule):
-                    matched_rules.append(str(rule.get("label") or rule.get("id") or ""))
+                    matched_rules.append(preset_label(rule))
 
             matched_str = ", ".join(matched_rules[:2]) if matched_rules else "—"
             if len(matched_rules) > 2:

@@ -45,6 +45,10 @@ COLLECT_DATA_PACKAGES = ("certifi",)
 LAUNCHER_MODULES = (
     "bundle", "launcher_ui", "launcher_content", "launcher_settings",
     "launcher_window", "ui_qt", "bundle_updater", "site_config", "locale_config",
+    # Лаунчер сам пишет сообщения об ошибках запуска через `tr()`: каталог
+    # переводов обязан быть в базовой сборке, иначе старт зависел бы от того,
+    # установлен ли уже пакет программы.
+    "i18n", "i18n_catalogs",
 )
 
 #: Проверка настоящего импорта Qt перед упаковкой (отдельный процесс).

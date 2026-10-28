@@ -18,7 +18,9 @@ sys.path.insert(0, str(UPLOADER))
 
 import helper_pages  # noqa: E402
 import i18n  # noqa: E402
+import exobiology  # noqa: E402
 import overlay_blocks  # noqa: E402
+import ship_hud  # noqa: E402
 import i18n_catalogs  # noqa: E402
 from locale_config import DEFAULT_LOCALE, SUPPORTED_LOCALES  # noqa: E402
 
@@ -209,6 +211,13 @@ class CatalogTests(unittest.TestCase):
                     missing.append(f"{name}:{lineno}: {text!r}")
         self.assertEqual(missing, [], "строки без записи в каталоге: " + "; ".join(missing))
 
+    def test_launcher_bootstrap_strings_are_in_the_catalog(self):
+        """Сообщения `launcher.py`: они показываются до окна и тоже переводятся."""
+        missing = [f"launcher.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "launcher.py")
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "launcher.py: " + "; ".join(missing))
+
     def test_connection_page_strings_are_in_the_catalog(self):
         missing = [f"helper_pages.py:{line}: {text!r}"
                    for line, text in slice_literals(UPLOADER / "helper_pages.py",
@@ -339,6 +348,39 @@ class CatalogTests(unittest.TestCase):
     def test_overlay_block_empty_text_is_translated(self):
         """Текст «данных нет» печатается из ключа, а не русской строкой."""
         self.assertIn(overlay_blocks.CarrierOverlay.EMPTY_DEFAULT, i18n_catalogs._STRINGS)
+
+    def test_ship_hud_strings_are_in_the_catalog(self):
+        """Блок SHIP: подписи, чипы, метки модулей, возраст данных, суммы."""
+        missing = [f"ship_hud.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "ship_hud.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in ship_hud.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "блок SHIP: " + "; ".join(missing))
+
+    def test_ship_hud_tables_hold_keys(self):
+        """Подписи в таблицах модуля — ключи каталога, а не готовый русский текст."""
+        texts = {text for _name, text, _tone in ship_hud.CHIP_RULES}
+        texts |= {label for _hint, label in ship_hud.LABELS}
+        texts |= set(ship_hud.HULL_SOURCES.values())
+        missing = sorted(text for text in texts
+                         if CYRILLIC.search(text) and text not in i18n_catalogs._STRINGS)
+        self.assertEqual(missing, [], "таблицы SHIP: " + "; ".join(missing))
+
+    def test_exobiology_strings_are_in_the_catalog(self):
+        """Модуль экзобиологии: суммы, пояснения родов и подписи пресетов."""
+        missing = [f"exobiology.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "exobiology.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in exobiology.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "экзобиология: " + "; ".join(missing))
+
+    def test_exobiology_planet_presets_hold_keys(self):
+        """Подписи наборов критериев и групп планет — ключи: их печатает ``tr()``."""
+        texts = set(exobiology.PLANET_GROUP_LABELS.values())
+        texts |= {str(row.get("label")) for row in exobiology.PLANET_SEARCH_PRESETS}
+        missing = sorted(text for text in texts
+                         if CYRILLIC.search(text) and text not in i18n_catalogs._STRINGS)
+        self.assertEqual(missing, [], "наборы критериев: " + "; ".join(missing))
 
     def test_hud_menu_strings_are_in_the_catalog(self):
         missing = [f"hud_window.py:{line}: {text!r}"

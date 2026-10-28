@@ -36,6 +36,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from i18n import tr
+
+#: Русские строки файла, которые не являются подписями интерфейса: это
+#: фрагменты, по которым ищется ответ игры в журнале, и значение поля события.
+#: ``биологическ``/``биолог`` — токены типа биосигнала, ``Вы`` — имя
+#: первооткрывателя (``FirstFootfallBy``), ``нет`` — пустой вулканизм в теле.
+NON_UI_LITERALS = frozenset({"биологическ", "биолог", "Вы", "нет"})
+
 # В журнале тип биосигнала приходит в виде локализационного токена.
 BIO_SIGNAL_TOKENS = (
     "$SAA_SignalType_Biological;",
@@ -465,15 +473,23 @@ def estimate_value(name: object, mapped: bool = False,
 
 
 def format_credits(value) -> str:
-    """«1.2 млн» / «850 тыс» — в оверлее мало места на полные числа."""
+    """«1.2 млн» / «850 тыс» — в оверлее мало места на полные числа.
+
+    Сокращения («млн», «тыс») — не часть числа, а подпись: их берёт каталог
+    переводов, иначе сумма оставалась бы русской при любом языке интерфейса.
+    Целое число миллионов печатаем без «.0»: «12 млн» вместо «12.0 млн».
+    """
     try:
         value = float(value or 0)
     except (TypeError, ValueError):
         return "0"
     if value >= 1_000_000:
-        return f"{value / 1_000_000:.1f} млн".replace(".0 млн", " млн")
+        millions = f"{value / 1_000_000:.1f}"
+        if millions.endswith(".0"):
+            millions = millions[:-2]
+        return tr("{value} млн", value=millions)
     if value >= 1_000:
-        return f"{value / 1_000:.0f} тыс"
+        return tr("{value} тыс", value=f"{value / 1_000:.0f}")
     return f"{value:.0f}"
 
 
@@ -499,7 +515,8 @@ PLANET_CLASS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "ammonia": ("Ammonia world",),
 }
 
-#: Русские подписи групп — для вкладки настроек.
+#: Подписи групп — для вкладки настроек. Это ключи перевода: их печатает
+#: :func:`planet_group_label`, а не сам словарь.
 PLANET_GROUP_LABELS: Dict[str, str] = {
     "rocky": "Каменистая",
     "icy": "Ледяная",
@@ -511,7 +528,13 @@ PLANET_GROUP_LABELS: Dict[str, str] = {
     "ammonia": "Аммиачный мир",
 }
 
+def planet_group_label(group: str) -> str:
+    """Подпись группы типов планет на текущем языке."""
+    return tr(PLANET_GROUP_LABELS.get(group, group))
+
+
 #: Готовые наборы критериев. `classes` пусто — подходит любой тип.
+#: ``label`` — ключ перевода, подпись печатает :func:`preset_label`.
 #: `atmosphere`: "any" / "none" / "present" / "thin" / "thick".
 PLANET_SEARCH_PRESETS: Tuple[Dict[str, Any], ...] = (
     {
@@ -602,6 +625,15 @@ PLANET_PRESETS_BY_ID: Dict[str, Dict[str, Any]] = {
 }
 
 
+def preset_label(criteria: dict) -> str:
+    """Подпись набора критериев на текущем языке.
+
+    В данных лежит ключ (``label``), а печатать нужно перевод: подпись попадает
+    и в список вкладки, и в раздел «Поиск планет» оверлея.
+    """
+    return tr(str(criteria.get("label") or criteria.get("id") or ""))
+
+
 def _preset_classes(criteria: dict) -> set:
     """Множество `PlanetClass` из критериев (пусто — подходит любой тип)."""
     result = set()
@@ -680,8 +712,7 @@ def search_planets(bodies, criteria_list, limit: int = 6) -> List[Dict[str, Any]
     for body in bodies or []:
         if not isinstance(body, dict):
             continue
-        matched = [str(rule.get("label") or rule.get("id") or "")
-                   for rule in active if body_matches(body, rule)]
+        matched = [preset_label(rule) for rule in active if body_matches(body, rule)]
         if not matched:
             continue
         rows.append({
@@ -731,6 +762,7 @@ def filter_predictions(rows, allowed) -> List[Dict[str, Any]]:
 #   geology  — "require" (нужна активность/гейзеры) | "bonus" | None;
 #   max_g    — предел гравитации в g (или None);
 #   temp     — (min, max) средней температуры поверхности, K;
+#   note     — пояснение рода, ключ перевода (печатает :func:`score_genus`);
 #   species  — виды: (название, {уточняющие условия}).
 #
 # Жёстко отсекается то, чего не бывает: атмосфера не того типа, другой газ,
@@ -1219,7 +1251,7 @@ def score_genus(body: dict, genus: str) -> Optional[Tuple[float, float, List[str
         maximum += WEIGHT_ATMOSPHERE
         if category in allowed_atmos:
             score += WEIGHT_ATMOSPHERE
-            notes.append(f"атмосфера: {category}")
+            notes.append(tr("атмосфера: {category}", category=category))
         else:
             return None
 
@@ -1232,11 +1264,11 @@ def score_genus(body: dict, genus: str) -> Optional[Tuple[float, float, List[str
                 score += WEIGHT_GAS
                 matched_gas = next((gas for gas in gases
                                     if _gas_tokens(gas) & gas_tokens), gases[0])
-                notes.append(f"газ: {matched_gas}")
+                notes.append(tr("газ: {gas}", gas=matched_gas))
             else:
                 return None
         else:
-            notes.append("состав атмосферы неизвестен")
+            notes.append(tr("состав атмосферы неизвестен"))
 
     classes = rule.get("classes") or ()
     planet_class = str(body.get("planet_class") or "")
@@ -1248,14 +1280,14 @@ def score_genus(body: dict, genus: str) -> Optional[Tuple[float, float, List[str
             else:
                 return None
         else:
-            notes.append("класс тела неизвестен")
+            notes.append(tr("класс тела неизвестен"))
 
     if rule.get("geology"):
         maximum += WEIGHT_GEOLOGY
         volcanism = _volcanism_text(body)
         if volcanism:
             score += WEIGHT_GEOLOGY
-            notes.append("геология есть")
+            notes.append(tr("геология есть"))
         elif rule["geology"] == "require":
             return None
 
@@ -1264,11 +1296,12 @@ def score_genus(body: dict, genus: str) -> Optional[Tuple[float, float, List[str
     if max_g is not None:
         maximum += WEIGHT_GRAVITY
         if gravity <= 0:
-            notes.append("гравитация неизвестна")
+            notes.append(tr("гравитация неизвестна"))
         elif gravity <= max_g:
             score += WEIGHT_GRAVITY
         else:
-            notes.append(f"гравитация {gravity:.2f} g выше предела {max_g} g")
+            notes.append(tr("гравитация {gravity} g выше предела {limit} g",
+                            gravity=f"{gravity:.2f}", limit=max_g))
 
     temp_range = rule.get("temp")
     temperature = _temp_of(body)
@@ -1279,17 +1312,18 @@ def score_genus(body: dict, genus: str) -> Optional[Tuple[float, float, List[str
             if low <= temperature <= high:
                 score += WEIGHT_TEMP
             else:
-                notes.append(f"температура {temperature:.0f} K вне {low}–{high} K")
+                notes.append(tr("температура {temp} K вне {low}–{high} K",
+                                temp=f"{temperature:.0f}", low=low, high=high))
 
     material = rule.get("materials")
     if material:
         maximum += WEIGHT_MATERIAL
         if material in {str(item).lower() for item in (body.get("materials") or [])}:
             score += WEIGHT_MATERIAL
-            notes.append(f"материал: {material}")
+            notes.append(tr("материал: {material}", material=material))
 
     if rule.get("note"):
-        notes.append(str(rule["note"]))
+        notes.append(tr(str(rule["note"])))
     species = species_candidates(body, genus)
     return score, maximum, notes, species
 
@@ -1366,13 +1400,14 @@ def prediction_rows(body: dict, limit: Optional[int] = None,
         # на том, сколько критериев удалось проверить.
         percent = int(round(base * (COVERAGE_FLOOR + (1 - COVERAGE_FLOOR) * coverage)))
         if coverage < 1.0:
-            notes = list(notes) + [f"данных о теле: {int(round(coverage * 100))} %"]
+            notes = list(notes) + [tr("данных о теле: {percent} %",
+                                      percent=int(round(coverage * 100)))]
         if genus in context:
             percent += SYSTEM_CONTEXT_BONUS
-            notes = list(notes) + ["род уже найден в этой системе"]
+            notes = list(notes) + [tr("род уже найден в этой системе")]
         if genus in confirmed:
             percent = 100
-            notes = list(notes) + ["подтверждено DSS"]
+            notes = list(notes) + [tr("подтверждено DSS")]
         percent = max(0, min(100, percent))
         if percent < MIN_PREDICTION_PERCENT and genus not in confirmed:
             continue
@@ -1417,7 +1452,7 @@ def prediction_rows(body: dict, limit: Optional[int] = None,
             "genus": genus,
             "score": WEIGHT_ATMOSPHERE + WEIGHT_GAS,
             "percent": 100,
-            "notes": ["подтверждено DSS"],
+            "notes": [tr("подтверждено DSS")],
             "species": cand_species,
             "value_cr": row_val,
             "confirmed": True,
@@ -1437,7 +1472,8 @@ def prediction_rows(body: dict, limit: Optional[int] = None,
                 continue
             row["percent"] = max(1, int(round(row["percent"] * SIGNAL_OVERFLOW_FACTOR)))
             row["beyond_signals"] = True
-            row["notes"] = list(row["notes"]) + [f"сигналов DSS: {signals}"]
+            row["notes"] = list(row["notes"]) + [tr("сигналов DSS: {count}",
+                                                    count=signals)]
         rows.sort(key=lambda row: (not row["confirmed"], -row["percent"],
                                    -row["value_cr"], row["genus"]))
 

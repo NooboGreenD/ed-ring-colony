@@ -2840,7 +2840,7 @@ class ExobioPage(QWidget):
 
         selected = {str(item) for item in self.state.selected_planets}
         for preset_id, preset_label in self.state.planet_choices:
-            check = QCheckBox(str(preset_label))
+            check = QCheckBox(tr(str(preset_label)))
             check.setChecked(str(preset_id) in selected)
             check.toggled.connect(lambda _state: self._on_filters_changed())
             self.layout_.addWidget(check)
