@@ -123,7 +123,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.18.33"
+VERSION = "2.18.34"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -222,8 +222,14 @@ class ColonialHelperApp:
             pass
 
         # Данные
+        # Путь к конфигу нужен уже здесь: рядом с ним лежат дисковые кэши
+        # (например, подсказки ROUTE), а не только настройки ниже по коду.
+        self.config_path = Path.home() / ".colonial_helper.json"
         self.api = ApiClient()
-        self.route = RouteTracker()
+        # Кэш подсказок ROUTE лежит рядом с конфигом: после перезапуска
+        # стройка и первооткрыватель известных систем видны сразу.
+        self.route = RouteTracker(
+            self.config_path.with_name(".colonial_helper_route_hints.json"))
         self.ship = ShipTracker()
         self._latest_loadout_event = None
         self._ship_state_last_synced = None
@@ -354,7 +360,6 @@ class ColonialHelperApp:
 
         # Конфиг
         self.config = {}
-        self.config_path = Path.home() / ".colonial_helper.json"
         # Отдельное хранилище credentials переживает обновление приложения и
         # не может быть затёрто настройками HUD/overlay.
         self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
@@ -5626,6 +5631,9 @@ class ColonialHelperApp:
                         self.route.refresh_next_system_info(force=True)
                         self.route.refresh_system_hint(self.api.get_route_hint,
                                                        force=True)
+                        # Пока летим до первой системы, прогреваем подсказки
+                        # для следующих: после прыжка блок заполнится сразу.
+                        self.route.prefetch_system_hints(self.api.get_route_hint)
                         self.root.after(0, lambda n=len(route), p=path: self.log(f"NavRoute загружен автоматически: {n} систем ({p.name})", "success"))
                         return True
             except Exception as exc:

@@ -11,6 +11,11 @@ from locale_config import normalize_locale
 
 API_BASE = f"{DEFAULT_SITE_URL}/api"
 
+# Сколько ждём подсказку о системе (стройка и первооткрыватель). Запрос идёт
+# фоном, поэтому можно позволить себе подождать: лучше ответ через 20 секунд,
+# чем «сайт недоступен» и пустая колонка на всю дорогу.
+ROUTE_HINT_TIMEOUT = 20
+
 # Сколько доставок уходит в одном запросе и сколько запросов идёт параллельно.
 #
 # Раньше доставки отправлялись пачками по 25 СТРОГО последовательно: при
@@ -513,11 +518,14 @@ class ApiClient:
         if not name:
             return {"ok": False, "error": tr("Пустое имя системы")}
         try:
-            resp = self._session.get(
+            # Свой таймаут: первый запрос к маршруту может попасть на холодный
+            # старт функции на сайте, а обрывать его на 10 секундах означало бы
+            # «сайт недоступен» там, где ответ просто шёл дольше.
+            resp = _session_for_thread().get(
                 f"{self.api_base}/systems/route-hint",
                 params={"name": name},
                 allow_redirects=False,
-                timeout=10,
+                timeout=ROUTE_HINT_TIMEOUT,
             )
             data = _safe_json(resp)
             if resp.ok and data.get("ok"):

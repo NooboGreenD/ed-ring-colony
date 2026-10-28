@@ -51,6 +51,10 @@ def empty_hint() -> Dict[str, Any]:
         "sites_active": 0,
         "sites_complete": 0,
         "updated_at": None,
+        # Ответ сайта неполный (один из источников не успел). Такую подсказку
+        # нельзя считать свежей надолго: «стройка неизвестна» — это не «стройки
+        # нет», и через минуту её надо переспросить.
+        "partial": False,
     }
 
 
@@ -97,6 +101,7 @@ def normalize_hint(payload: Any, system: str = "") -> Dict[str, Any]:
     if not payload.get("ok", True):
         hint["error"] = _text(payload.get("error") or "нет ответа сайта", 200)
         return hint
+    hint["partial"] = bool(payload.get("partial"))
 
     system_name = _text(payload.get("system"), 200)
     if system_name:
@@ -160,4 +165,5 @@ def hint_signature(hint: Optional[Dict[str, Any]]) -> str:
     return "|".join(str(hint.get(key, "")) for key in (
         "system", "loading", "error", "known", "discoverer", "status", "progress",
         "remaining", "sites_active", "sites_complete", "bodies", "mapped", "footfall",
+        "partial",
     ))
