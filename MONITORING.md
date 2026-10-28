@@ -516,9 +516,10 @@ sed -i 's/^DISABLE_SIGNUP=.*/DISABLE_SIGNUP=false/' /opt/supabase/.env
 grep -q '^DISABLE_SIGNUP=' /opt/supabase/.env || echo 'DISABLE_SIGNUP=false' >> /opt/supabase/.env
 
 # 2) пересоздать auth с тем же набором -f, что у панели
+#    (docker-compose.override.yml подключайте только если файл существует)
 cd /opt/supabase
-docker compose -f docker-compose.yml -f docker-compose.override.yml \
-  -f docker-compose.smtp-override.yml up -d --no-deps --force-recreate auth
+docker compose -f docker-compose.yml -f docker-compose.smtp-override.yml \
+  up -d --no-deps --force-recreate auth
 
 # 3) проверить не по логам, а по ответу GoTrue
 docker exec supabase-auth wget -qO- http://127.0.0.1:9999/settings | grep -o '"disable_signup":[a-z]*'
