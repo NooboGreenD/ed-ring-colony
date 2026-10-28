@@ -9408,6 +9408,38 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "zh": "此响应本身并不表示缺少游戏或 Epic/Steam 登录有误。授权已保留——请稍后重试；若再次出现，请将代码和 CAPI 响应发给支持。",
         "ja": "この応答だけでは、ゲームがないことや Epic/Steam ログインが誤っていることを意味しません。認証は保持されています — 後で再試行してください。繰り返す場合はコードと CAPI の応答をサポートへお送りください。",
     },
+    "Не найден модуль bootstrapper": {
+        "en": "The bootstrapper module was not found",
+        "de": "Das Bootstrapper-Modul wurde nicht gefunden",
+        "it": "Il modulo bootstrapper non è stato trovato",
+        "ko": "bootstrapper 모듈을 찾을 수 없습니다",
+        "zh": "未找到 bootstrapper 模块",
+        "ja": "bootstrapper モジュールが見つかりません",
+    },
+    "Ответ сайта имеет неверный формат": {
+        "en": "The site response has an invalid format",
+        "de": "Die Antwort der Seite hat ein ungültiges Format",
+        "it": "La risposta del sito ha un formato non valido",
+        "ko": "사이트 응답 형식이 잘못되었습니다",
+        "zh": "网站响应格式不正确",
+        "ja": "サイトの応答形式が不正です",
+    },
+    "в фокусе": {
+        "en": "focused",
+        "de": "im Fokus",
+        "it": "in primo piano",
+        "ko": "활성 창",
+        "zh": "已聚焦",
+        "ja": "フォーカス中",
+    },
+    "недоступно ({error})": {
+        "en": "unavailable ({error})",
+        "de": "nicht verfügbar ({error})",
+        "it": "non disponibile ({error})",
+        "ko": "사용할 수 없음 ({error})",
+        "zh": "不可用（{error}）",
+        "ja": "利用不可（{error}）",
+    },
 }
 
 
