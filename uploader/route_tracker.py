@@ -4,7 +4,9 @@ import csv
 import io
 import threading
 import time
-from typing import List, Dict, Optional
+from typing import Callable, List, Dict, Optional
+
+import route_hint
 
 
 class RouteTracker:
@@ -15,6 +17,12 @@ class RouteTracker:
         self._info_loading = False
         self._last_info_name = ""
         self._last_info_at = 0.0
+        #: Подсказка о следующей системе: стройка и первооткрыватель.
+        self.system_hint: dict = route_hint.empty_hint()
+        self._hint_lock = threading.Lock()
+        self._hint_loading = False
+        self._hint_name = ""
+        self._hint_at = 0.0
 
     def load_from_navroute(self, data: dict):
         """Загрузить из NavRoute.json, сохранив уже посещённые системы."""
@@ -95,6 +103,74 @@ class RouteTracker:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    #: Сколько секунд подсказка о системе считается свежей.
+    HINT_TTL = 300
+
+    def next_name(self) -> str:
+        """Имя следующей (ещё не посещённой) системы маршрута."""
+        pending = next((s for s in self.systems if s["status"] != "visited"), None)
+        return str(pending["name"]) if pending else ""
+
+    def refresh_system_hint(self, fetch: Optional[Callable[[str], dict]] = None,
+                            force: bool = False) -> None:
+        """Асинхронно получить подсказку о следующей системе с сайта.
+
+        :param fetch: ``fetch(name) -> dict`` — запрос к сайту. Передаётся
+            снаружи (``ApiClient.get_route_hint``), чтобы трекер не знал, какой
+            клиент и какой адрес сайта используются, и чтобы это можно было
+            проверить без сети.
+        :param force: спросить заново, даже если ответ ещё свежий.
+
+        Подсказка кэшируется по имени системы: оверлей обновляется раз в
+        секунду, а ходить на сайт раз в секунду незачем.
+        """
+        name = self.next_name()
+        now = time.time()
+        with self._hint_lock:
+            if not name:
+                self.system_hint = route_hint.empty_hint()
+                self._hint_name = ""
+                self._hint_at = now
+                return
+            if self._hint_loading:
+                return
+            fresh = (name == self._hint_name
+                     and self.system_hint.get("system") == name
+                     and not self.system_hint.get("error")
+                     and now - self._hint_at < self.HINT_TTL)
+            if fresh and not force:
+                return
+            self._hint_loading = True
+            self.system_hint = route_hint.mark_loading(self.system_hint, name)
+        if fetch is None:
+            with self._hint_lock:
+                self._hint_loading = False
+            return
+
+        def worker():
+            payload = {}
+            try:
+                payload = fetch(name) or {}
+            except Exception as exc:                      # сеть — не повод падать
+                payload = {"ok": False, "error": str(exc)}
+            with self._hint_lock:
+                self.system_hint = route_hint.normalize_hint(payload, name)
+                self._hint_name = name
+                self._hint_at = time.time()
+                self._hint_loading = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def get_system_hint(self) -> dict:
+        """Подсказка о следующей системе — то, что печатает оверлей ROUTE."""
+        with self._hint_lock:
+            return dict(self.system_hint)
+
+    def hint_matches(self, system_name: str) -> bool:
+        """Относится ли текущая подсказка именно к этой системе."""
+        with self._hint_lock:
+            return bool(system_name) and self.system_hint.get("system") == system_name
+
     def get_next_system_info(self) -> dict:
         with self._info_lock:
             return dict(self.next_system_info)
@@ -128,6 +204,9 @@ class RouteTracker:
 
     def clear(self):
         self.systems = []
+        with self._hint_lock:
+            self.system_hint = route_hint.empty_hint()
+            self._hint_name = ""
 
     @property
     def visited_count(self) -> int:

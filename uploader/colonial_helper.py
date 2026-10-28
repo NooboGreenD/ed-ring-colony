@@ -123,7 +123,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.18.32"
+VERSION = "2.18.33"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -3199,6 +3199,7 @@ class ColonialHelperApp:
             "total": 0,
             "remaining": [],
             "next_system_info": self.route.get_next_system_info(),
+            "next_system_hint": self.route.get_system_hint(),
             "new_deliveries": 0,
             "cargo_total_tons": self._session_cargo_tons,
         }
@@ -5623,6 +5624,8 @@ class ColonialHelperApp:
                         self.route.load_from_navroute(payload)
                         self.root.after(0, self._refresh_route_tree)
                         self.route.refresh_next_system_info(force=True)
+                        self.route.refresh_system_hint(self.api.get_route_hint,
+                                                       force=True)
                         self.root.after(0, lambda n=len(route), p=path: self.log(f"NavRoute загружен автоматически: {n} систем ({p.name})", "success"))
                         return True
             except Exception as exc:
@@ -6292,6 +6295,9 @@ class ColonialHelperApp:
             # маршрута. Подхватываем изменение без ручного импорта.
             self._auto_load_navroute()
             self.route.refresh_next_system_info()
+            # Стройка и первооткрыватель следующей системы: стройка живёт в
+            # базе проекта, поэтому её надо спросить у сайта, а не у EDSM.
+            self.route.refresh_system_hint(self.api.get_route_hint)
 
     def _record_session_deliveries(self, deliveries: list):
         """Учесть событие в SESSION сразу после разбора, независимо от ответа API."""

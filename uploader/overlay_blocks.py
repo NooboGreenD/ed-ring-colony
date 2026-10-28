@@ -25,8 +25,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import route_hint
 import ship_hud
 from exobiology import estimate_value, format_credits
+from hud_icons import HudIcon
 from hud_window import (
     COLOR_ACCENT,
     COLOR_BORDER,
@@ -39,6 +41,7 @@ from hud_window import (
     COLOR_RED_TEXT,
     COLOR_SURFACE,
     COLOR_TEXT,
+    COLOR_TEXT_DIM,
     COLOR_TEXT_MUTED,
     COLOR_YELLOW,
     HudBar,
@@ -162,10 +165,25 @@ class RouteOverlay(HudWindow):
         super().__init__(
             master, "ROUTE",
             settings.get("route_x", 50), settings.get("route_y", 50),
-            settings.get("route_width", 280), settings.get("route_height", 160),
+            settings.get("route_width", 380), settings.get("route_height", 210),
             settings, "route",
         )
-        wrap = max(120, int(settings.get("route_width", 280)) - 26)
+        #: Последняя подсказка о следующей системе (стройка и первооткрыватель).
+        self._hint: Dict[str, Any] = route_hint.empty_hint()
+
+        # Слева — сам маршрут, справа — подсказка о следующей системе: стройка
+        # и первооткрыватель. Колонка подсказки узкая и появляется только
+        # тогда, когда ей есть что сказать.
+        self.main_row = QHBoxLayout()
+        self.main_row.setContentsMargins(0, 0, 0, 0)
+        self.main_row.setSpacing(6)
+
+        self.left_column = QWidget(self.content)
+        left_layout = QVBoxLayout(self.left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+        self.main_row.addWidget(self.left_column, 1)
+
         for name, text, color, delta, bold in (
             ("current_label", tr("Сейчас: —"), COLOR_TEXT_MUTED, -1, False),
             ("next_label", "→ —", COLOR_CYAN, 0, True),
@@ -174,12 +192,12 @@ class RouteOverlay(HudWindow):
             ("remaining_label", tr("Осталось: —"), COLOR_TEXT, -1, False),
             ("destination_label", tr("Цель: —"), COLOR_ACCENT, -1, False),
         ):
-            label = self.make_label(self.content, text, color=color, bold=bold,
-                                    dp=delta, wrap=wrap)
-            self.body.addWidget(label)
+            label = self.make_label(self.left_column, text, color=color, bold=bold,
+                                    dp=delta, wrap=self._text_width())
+            left_layout.addWidget(label)
             setattr(self, name, label)
 
-        self.progress_frame = QWidget(self.content)
+        self.progress_frame = QWidget(self.left_column)
         progress_layout = QVBoxLayout(self.progress_frame)
         progress_layout.setContentsMargins(0, 2, 0, 0)
         progress_layout.setSpacing(2)
@@ -188,12 +206,200 @@ class RouteOverlay(HudWindow):
                                               color=COLOR_TEXT_MUTED, dp=-3)
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_label)
-        self.body.addWidget(self.progress_frame)
+        left_layout.addWidget(self.progress_frame)
+        left_layout.addStretch(1)
+
+        # Подсказка: значки — те же геометрии, что у иконок сайта (`hud_icons`),
+        # поэтому строка читается боковым зрением и не спорит с остальным HUD.
+        self.hint_frame = QFrame(self.content)
+        self.hint_frame.setAttribute(Qt.WA_StyledBackground, True)
+        self.hint_frame.setStyleSheet(f"background:{COLOR_PANEL_ALT};border:0;")
+        # Ширина колонки считается по самому длинному слову подсказки: иначе
+        # «Первооткрыватель» в русском клипается по буквам, а в английском
+        # колонка стояла бы шире нужного.
+        self._hint_width = self._hint_column_width()
+        self.hint_frame.setFixedWidth(self._hint_width)
+        hint_layout = QVBoxLayout(self.hint_frame)
+        hint_layout.setContentsMargins(6, 4, 6, 4)
+        hint_layout.setSpacing(4)
+
+        self.hint_build_icon = HudIcon(self.hint_frame, name="idle", size=14,
+                                       color=COLOR_TEXT_MUTED)
+        self.hint_build_label = self.make_label(self.hint_frame, tr("Стройка: нет данных"),
+                                                color=COLOR_TEXT_MUTED, dp=-1,
+                                                wrap=self._hint_width - 12)
+        hint_layout.addWidget(self.hint_build_icon)
+        hint_layout.addWidget(self.hint_build_label)
+        self.hint_build_bar = HudBar(self.hint_frame, color=COLOR_ACCENT, height=3)
+        self.hint_build_bar.hide()
+        hint_layout.addWidget(self.hint_build_bar)
+
+        hint_layout.addWidget(hud_separator(self.hint_frame))
+
+        self.hint_author_icon = HudIcon(self.hint_frame, name="search", size=14,
+                                        color=COLOR_TEXT_MUTED)
+        self.hint_author_label = self.make_label(self.hint_frame, tr("Система не исследована"),
+                                                 color=COLOR_TEXT_MUTED, dp=-1,
+                                                 wrap=self._hint_width - 12)
+        hint_layout.addWidget(self.hint_author_icon)
+        hint_layout.addWidget(self.hint_author_label)
+        self.main_row.addWidget(self.hint_frame, 0, Qt.AlignTop)
+
+        self.body.addLayout(self.main_row)
         self.body.addStretch(1)
         self.apply_data_options()
 
+    # -- раскладка колонок ---------------------------------------------------
+    #: Колонка подсказки справа: узкая намеренно — значок и одна-две короткие
+    #: строки, а не второй абзац текста.
+    HINT_COLUMN_MIN = 118
+    HINT_COLUMN_MAX = 176
+
+    def _hint_column_width(self) -> int:
+        """Ширина по самому длинному слову подсказки в текущем языке."""
+        from PySide6.QtGui import QFontMetrics
+
+        font = hud_font(self._font_family, max(6, int(self._font_size) - 1))
+        metrics = QFontMetrics(font)
+        widest = 0
+        for text in (tr("Стройка: нет данных"), tr("Стройка: сайт недоступен"),
+                     tr("Стройка: завершена"), tr("Стройка: запланирована"),
+                     tr("Стройка: {percent}%", percent=100),
+                     tr("Система не исследована"), tr("Первооткрыватель неизвестен"),
+                     tr("Система: спрашиваем…")):
+            for word in str(text).replace("\n", " ").split(" "):
+                widest = max(widest, metrics.horizontalAdvance(word))
+        return max(self.HINT_COLUMN_MIN, min(self.HINT_COLUMN_MAX, widest + 16))
+
+    def _settings_width(self) -> int:
+        try:
+            return max(200, int(self.settings.get("route_width", 380)))
+        except (TypeError, ValueError):
+            return 300
+
+    def _text_width(self) -> int:
+        """Сколько пикселей остаётся тексту маршрута слева."""
+        width = self.width() if self.width() > 1 else self._settings_width()
+        spare = getattr(self, "_hint_width", self.HINT_COLUMN_MIN) + 6
+        if not self._hint_visible():
+            spare = 0
+        return max(120, int(width) - 26 - spare)
+
+    def _hint_visible(self) -> bool:
+        from overlay_options import CONTENT_DEFAULTS, option_key
+
+        key = option_key("route", "hint")
+        return bool(self.settings.get(key, CONTENT_DEFAULTS.get(key, True)))
+
+    def _apply_text_wrap(self) -> None:
+        """Подогнать перенос строк маршрута под ширину левой колонки."""
+        width = self._text_width()
+        for name in ("current_label", "next_label", "star_label", "distance_label",
+                     "remaining_label", "destination_label"):
+            label = getattr(self, name, None)
+            if label is None:
+                continue
+            label.setMinimumWidth(min(width, 80))
+            label.setMaximumWidth(width)
+
+    def apply_data_options(self) -> None:
+        """Скрыть выключенные разделы и пересчитать ширину текста маршрута."""
+        super().apply_data_options()
+        self._apply_text_wrap()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        super().resizeEvent(event)
+        if getattr(self, "left_column", None) is not None:
+            self._apply_text_wrap()
+
+    # -- подсказка о следующей системе ---------------------------------------
+    #: Значок и цвет по состоянию стройки: дом — строят, галочка — готово,
+    #: часы — запланировано, часы серые — о стройке ничего не известно.
+    BUILD_LOOKS = {
+        route_hint.BUILDING: ("building", COLOR_ACCENT),
+        route_hint.DONE: ("done", COLOR_GREEN_TEXT),
+        route_hint.PLANNED: ("idle", COLOR_YELLOW),
+        route_hint.UNKNOWN: ("idle", COLOR_TEXT_MUTED),
+    }
+
+    def _render_hint(self, hint: Optional[Dict[str, Any]]) -> None:
+        """Нарисовать подсказку: стройка с процентом и первооткрыватель системы."""
+        hint = hint or route_hint.empty_hint()
+        status = str(hint.get("status") or route_hint.UNKNOWN)
+        icon, color = self.BUILD_LOOKS.get(status, self.BUILD_LOOKS[route_hint.UNKNOWN])
+        percent = hint.get("progress")
+        known = bool(hint.get("known"))
+        loading = bool(hint.get("loading"))
+        error = str(hint.get("error") or "")
+
+        if error:
+            self.hint_build_icon.set_icon("idle")
+            self.hint_build_icon.set_color(COLOR_RED_TEXT)
+            self.hint_build_label.setText(tr("Стройка: сайт недоступен"))
+            paint(self.hint_build_label, color=COLOR_RED_TEXT)
+            self.hint_build_bar.hide()
+        elif status == route_hint.BUILDING and percent is not None:
+            self.hint_build_icon.set_icon(icon)
+            self.hint_build_icon.set_color(color)
+            self.hint_build_label.setText(tr("Стройка: {percent}%", percent=percent))
+            paint(self.hint_build_label, color=color)
+            self.hint_build_bar.set_color(COLOR_ACCENT)
+            self.hint_build_bar.set_fraction(float(percent) / 100.0)
+            self.hint_build_bar.show()
+        elif status == route_hint.DONE:
+            self.hint_build_icon.set_icon(icon)
+            self.hint_build_icon.set_color(color)
+            self.hint_build_label.setText(tr("Стройка: завершена"))
+            paint(self.hint_build_label, color=color)
+            self.hint_build_bar.set_color(COLOR_GREEN_TEXT)
+            self.hint_build_bar.set_fraction(1.0)
+            self.hint_build_bar.show()
+        elif status == route_hint.PLANNED:
+            self.hint_build_icon.set_icon(icon)
+            self.hint_build_icon.set_color(color)
+            self.hint_build_label.setText(tr("Стройка: запланирована"))
+            paint(self.hint_build_label, color=color)
+            self.hint_build_bar.hide()
+        else:
+            self.hint_build_icon.set_icon("idle")
+            self.hint_build_icon.set_color(COLOR_TEXT_MUTED)
+            self.hint_build_label.setText(tr("Стройка: нет данных") if not loading
+                                          else tr("Стройка: спрашиваем…"))
+            paint(self.hint_build_label, color=COLOR_TEXT_MUTED)
+            self.hint_build_bar.hide()
+
+        author = str(hint.get("discoverer") or "")
+        if loading and not known:
+            self.hint_author_icon.set_icon("search")
+            self.hint_author_icon.set_color(COLOR_TEXT_MUTED)
+            self.hint_author_label.setText(tr("Система: спрашиваем…"))
+            paint(self.hint_author_label, color=COLOR_TEXT_MUTED)
+        elif not known:
+            # Системы нет в базе проекта — это и есть «ещё не исследована».
+            self.hint_author_icon.set_icon("search")
+            self.hint_author_icon.set_color(COLOR_YELLOW)
+            self.hint_author_label.setText(tr("Система не исследована"))
+            paint(self.hint_author_label, color=COLOR_YELLOW)
+        elif author:
+            self.hint_author_icon.set_icon("compass")
+            self.hint_author_icon.set_color(COLOR_CYAN)
+            self.hint_author_label.setText(tr("Открыл: {name}", name=author))
+            paint(self.hint_author_label, color=COLOR_CYAN)
+        else:
+            self.hint_author_icon.set_icon("star")
+            self.hint_author_icon.set_color(COLOR_TEXT_DIM)
+            bodies = int(hint.get("bodies") or 0)
+            self.hint_author_label.setText(
+                tr("Первооткрыватель неизвестен\nтел\u00a0{count}", count=bodies)
+                if bodies else tr("Первооткрыватель неизвестен"))
+            paint(self.hint_author_label, color=COLOR_TEXT_DIM)
+
+    def get_hint(self) -> Dict[str, Any]:
+        """Последняя нарисованная подсказка — тестам и отладочной печати."""
+        return dict(self._hint)
+
     def update_route(self, current, next_system, visited, total, remaining=None,
-                     next_info=None, summary=None) -> None:
+                     next_info=None, summary=None, hint=None) -> None:
         summary = summary or {}
         self.current_label.setText(tr("Сейчас: {system}", system=current))
         self.next_label.setText(
@@ -221,6 +427,16 @@ class RouteOverlay(HudWindow):
                                           destination=summary.get("destination") or "—"))
         self.progress_label.setText(f"{visited} / {total}" if total else "")
         self.progress_bar.set_fraction(visited / total if total else 0)
+        # Подсказка относится к конкретной системе: если сайт ответил про
+        # предыдущую (маршрут только что сменился), показываем не её, а
+        # честное «спрашиваем» — путать системы нельзя.
+        shown = hint if isinstance(hint, dict) else {}
+        if not total:
+            shown = route_hint.empty_hint()
+        elif shown.get("system") and str(shown["system"]) != str(next_system):
+            shown = route_hint.mark_loading(shown, str(next_system))
+        self._hint = shown
+        self._render_hint(shown)
         self.apply_data_options()
 
 

@@ -11,6 +11,7 @@ CONTENT_OPTIONS = {
         'remaining': ('Остаток маршрута', ('remaining_label',)),
         'destination': ('Конечная точка', ('destination_label',)),
         'progress': ('Прогресс', ('progress_frame', 'progress_label')),
+        'hint': ('Стройка и первооткрыватель', ('hint_frame',)),
     },
     'status': {
         'connection': ('Подключение к сервисам', ('status_frame',)),
