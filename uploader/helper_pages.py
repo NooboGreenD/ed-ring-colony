@@ -1495,6 +1495,18 @@ class OverlayPage(QWidget):
     def toggle_off_text(cls) -> str:
         return tr(cls.TOGGLE_OFF_TEXT)
 
+    #: Разделы страницы: ключ и подпись вкладки. Порядок — от общего к частному:
+    #: сначала «что и как выглядит», потом отдельные блоки, потом раскладка и
+    #: справка по клавишам.
+    TABS = (
+        ("general", "Общее"),
+        ("blocks", "Блоки"),
+        ("ship", "Корабль"),
+        ("content", "Содержимое"),
+        ("layout", "Раскладка"),
+        ("keys", "Клавиши"),
+    )
+
     def __init__(self, state: OverlayPageState,
                  actions: _Optional[OverlayPageActions] = None,
                  parent: _Optional[QWidget] = None) -> None:
@@ -1506,25 +1518,64 @@ class OverlayPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.content = QWidget()
-        self.layout_ = QVBoxLayout(self.content)
-        self.layout_.setContentsMargins(16, 14, 16, 16)
-        self.layout_.setSpacing(8)
-        self.scroll.setWidget(self.content)
-        outer.addWidget(self.scroll)
 
+        # Шапка не прокручивается: кнопки включения и строка состояния видны
+        # с любого раздела.
+        self.header = QWidget()
+        self.header.setObjectName("overlayHeader")
+        self.header_layout = QVBoxLayout(self.header)
+        self.header_layout.setContentsMargins(16, 12, 16, 8)
+        self.header_layout.setSpacing(6)
+        outer.addWidget(self.header)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("overlayTabs")
+        outer.addWidget(self.tabs, 1)
+
+        self.tab_layouts: Dict[str, QVBoxLayout] = {}
+        for key, title in self.TABS:
+            self.tab_layouts[key] = self._add_tab(key, tr(title))
+
+        self.layout_ = self.header_layout
         self._build_header()
-        self._build_style()
+        self._build_general()
         self._build_blocks()
         self._build_behaviour()
         self._build_ship()
         self._build_content()
         self._build_layout()
         self._build_hotkeys()
-        self.layout_.addStretch(1)
+        for layout in self.tab_layouts.values():
+            layout.addStretch(1)
+
+    # ------------------------------------------------------------------- вкладки
+    def _add_tab(self, key: str, title: str) -> QVBoxLayout:
+        """Раздел страницы: свой прокручиваемый столбец внутри вкладки.
+
+        Раньше весь раздел «Оверлей» был одной простынёй в общем скролле: чтобы
+        дойти до раскладки, надо было прокрутить таблицу блоков, а справка по
+        клавишам уезжала за край. Теперь у каждой группы настроек своя вкладка,
+        и прокрутка у каждой своя.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        scroll = QScrollArea()
+        scroll.setObjectName(f"overlayTab_{key}")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(page)
+        self.tabs.addTab(scroll, title)
+        return layout
+
+    def tab_index(self, key: str) -> int:
+        """Номер вкладки раздела — по ключу из :data:`TABS`."""
+        for index, (name, _title) in enumerate(self.TABS):
+            if name == key:
+                return index
+        raise KeyError(key)
 
     # ------------------------------------------------------------------ pieces
     def _call(self, name: str, *args) -> None:
@@ -1582,17 +1633,30 @@ class OverlayPage(QWidget):
     # -------------------------------------------------------------- sections
     def _build_header(self) -> None:
         self.layout_.addWidget(heading(tr("Настройки оверлея HUD"), size=14))
+        self.toggle_btn = action_button(self.toggle_on_text(), self._toggle, height=34)
+        self.reset_btn = action_button(tr("Сбросить позиции"), self._reset_positions,
+                                       variant="danger", height=34)
+        self.layout_.addWidget(row(self.toggle_btn, self.reset_btn, None))
+        # Строка состояния: экраны и назначенные клавиши — то, что раньше надо
+        # было искать в конце прокрутки.
+        self.screens_label = label(self.state.screens_text, role="muted", size=8, wrap=True)
+        self.hotkey_hint_label = label(self.state.hotkey_hint, role="muted", size=8, wrap=True)
+        self.status_box = QWidget()
+        status = QVBoxLayout(self.status_box)
+        status.setContentsMargins(0, 0, 0, 0)
+        status.setSpacing(2)
+        status.addWidget(self.screens_label)
+        status.addWidget(self.hotkey_hint_label)
+        self.layout_.addWidget(self.status_box)
+
+    def _build_general(self) -> None:
+        self.layout_ = self.tab_layouts["general"]
         self._hint(tr(
             "Оверлей работает поверх Elite Dangerous в режиме Borderless Windowed.\n"
             "Закреплённый блок не мешает мыши — клики уходят в игру. Чтобы подвинуть "
             "блоки или поменять размер, открепите их (Ctrl+F12 или галочки «Закреп.»). "
             "F12 — показать/скрыть."))
-        self.toggle_btn = action_button(self.toggle_on_text(), self._toggle, height=34)
-        self.reset_btn = action_button(tr("Сбросить позиции"), self._reset_positions,
-                                       variant="danger", height=34)
-        self.layout_.addWidget(row(self.toggle_btn, self.reset_btn, None))
-
-    def _build_style(self) -> None:
+        self._section(tr("Общий вид"))
         self.alpha_slider = QSlider(Qt.Orientation.Horizontal)
         self.alpha_slider.setRange(10, 100)
         self.alpha_slider.setMinimumWidth(240)
@@ -1615,6 +1679,15 @@ class OverlayPage(QWidget):
         self.layout_.addWidget(row(label(tr("Размер шрифта:"), size=9),
                                    self.font_size_slider, self.size_label, None))
 
+        self._section(tr("Размер блоков"))
+        self.all_size_combo = self._combo(self.state.size_labels, self.state.all_size, 110)
+        self.all_size_combo.currentTextChanged.connect(lambda _t: self._call("all_size_changed"))
+        self.all_size_btn = action_button(tr("Применить"), self._all_size_apply, height=30)
+        self.layout_.addWidget(row(label(tr("Размер всех блоков:"), size=9),
+                                   self.all_size_combo, self.all_size_btn,
+                                   label(tr("сразу для всех блоков HUD"), role="muted",
+                                         size=9), None))
+
     def _on_alpha_slider(self, value: int) -> None:
         self.set_alpha(value / 100.0)
         self._call("alpha_changed", float(value) / 100.0)
@@ -1624,7 +1697,7 @@ class OverlayPage(QWidget):
         self._call("font_size_changed", int(value))
 
     def _build_blocks(self) -> None:
-        self._divider(top=12, bottom=8)
+        self.layout_ = self.tab_layouts["blocks"]
         self._section(tr("Блоки HUD: вид и поведение"))
         self._hint(tr(
             "Каждый блок настраивается отдельно: показывать ли его, закреплён ли он, "
@@ -1703,20 +1776,17 @@ class OverlayPage(QWidget):
             self.block_widgets[block.key] = widgets
         grid.setColumnStretch(7, 1)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.block_table)
-        scroll.setMinimumHeight(min(260, 70 + 34 * max(1, len(self.state.rows))))
-        self.layout_.addWidget(scroll)
-
-        self.screens_label = label(self.state.screens_text, role="muted", size=8, wrap=True)
-        self.layout_.addWidget(self.screens_label)
-
-        self.all_size_combo = self._combo(self.state.size_labels, self.state.all_size, 110)
-        self.all_size_combo.currentTextChanged.connect(lambda _t: self._call("all_size_changed"))
-        self.all_size_btn = action_button(tr("Применить"), self._all_size_apply, height=30)
-        self.layout_.addWidget(row(label(tr("Размер всех блоков:"), size=9),
-                                   self.all_size_combo, self.all_size_btn, None))
+        # Таблица блоков не прокручивается сама: вкладка уже в скролле, а два
+        # вложенных скролла путают колесо мыши. По высоте таблица занимает
+        # ровно свои строки, по ширине — уезжает вбок, если окно узкое.
+        self.blocks_scroll = QScrollArea()
+        self.blocks_scroll.setWidgetResizable(True)
+        self.blocks_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.blocks_scroll.setWidget(self.block_table)
+        grid.activate()
+        table_height = self.block_table.sizeHint().height() + 18
+        self.blocks_scroll.setFixedHeight(max(120, table_height))
+        self.layout_.addWidget(self.blocks_scroll)
 
     def _block_reset_callback(self, key: str):
         return lambda: self._call("block_reset", key)
@@ -1725,7 +1795,8 @@ class OverlayPage(QWidget):
         self._call("all_size_changed")
 
     def _build_behaviour(self) -> None:
-        self._divider()
+        self.layout_ = self.tab_layouts["blocks"]
+        self._divider(top=6, bottom=8)
         self._section(tr("Поведение оверлея"))
         self._hint(tr(
             "Закреплённый блок — только для глаз: мышь проходит сквозь него в игру, "
@@ -1765,7 +1836,12 @@ class OverlayPage(QWidget):
                                          role="muted", size=9), None))
 
     def _build_ship(self) -> None:
-        self._divider(top=12, bottom=8)
+        self.layout_ = self.tab_layouts["ship"]
+        self._hint(tr(
+            "SHIP показывает состояние корабля и список модулей. Шкала в строке "
+            "модуля никогда не режется: если блок узкий, сначала уходит номер "
+            "слота, потом заметка, потом клетки шкалы, и только в конце "
+            "укорачивается имя модуля. Процент прочности виден всегда."))
         self._section(tr("Блоки корабля (SHIP):"))
         self.ship_widgets: Dict[str, QCheckBox] = {}
         holder = QWidget()
@@ -1801,7 +1877,7 @@ class OverlayPage(QWidget):
         self.layout_.addWidget(holder)
 
     def _build_content(self) -> None:
-        self._divider()
+        self.layout_ = self.tab_layouts["content"]
         self._section(tr("Отображаемые данные по оверлеям"))
         self.content_tabs = QTabWidget()
         self.content_widgets: Dict[str, QCheckBox] = {}
@@ -1819,7 +1895,7 @@ class OverlayPage(QWidget):
                 self.content_widgets[setting] = check
             if block_key == "ship":
                 tab_layout.addWidget(label(tr(
-                    "Показатели и режим списка модулей настраиваются выше."),
+                    "Показатели и режим списка модулей настраиваются на вкладке «Корабль»."),
                     role="muted", size=9, wrap=True))
             if block_key == "carrier":
                 labels = [text for _mode, text in self.state.carrier_filters]
@@ -1842,10 +1918,14 @@ class OverlayPage(QWidget):
                     "Фильтр меняет список, но не общие итоги. Без потребности стройки "
                     "режимы материалов и недостачи пусты."), role="muted", size=9, wrap=True))
             self.content_tabs.addTab(tab, block_title)
+        # Список галочек не резиновый: пусть занимает свою высоту, а не
+        # половину вкладки пустым полем.
+        self.content_tabs.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                        QSizePolicy.Policy.Maximum)
         self.layout_.addWidget(self.content_tabs)
 
     def _build_layout(self) -> None:
-        self._divider()
+        self.layout_ = self.tab_layouts["layout"]
         self._section(tr("Раскладка и привязка"))
         self._hint(tr(
             "Блоки прилипают к краям и углам области. Область — весь экран, либо экран с "
@@ -1917,19 +1997,22 @@ class OverlayPage(QWidget):
         return action_button(tr("Сбросить позиции"), self._reset_positions, height=30)
 
     def _build_hotkeys(self) -> None:
-        self._divider()
+        self.layout_ = self.tab_layouts["keys"]
         self._section(tr("Горячие клавиши"))
-        self.hotkey_hint_label = label(self.state.hotkey_hint, role="muted", size=9, wrap=True)
-        self.layout_.addWidget(self.hotkey_hint_label)
+        # Та же строка «назначено», что и в шапке: в справке она нужна рядом с
+        # описанием, а не только наверху страницы.
+        self.hotkey_hint_tab_label = label(self.state.hotkey_hint, role="muted",
+                                          size=9, wrap=True)
+        self.layout_.addWidget(self.hotkey_hint_tab_label)
         self.layout_.addWidget(label(tr(
             "Управление оверлеями:\n"
             "  • UL в шапке — блок откреплён: тяните за заголовок или «::», размер — за угол\n"
             "  • LK в шапке — блок закреплён: не двигается, клики мыши уходят в игру\n"
-            "  • Закрепить/открепить все — клавиша из «Поведения оверлея» (Ctrl+F12)\n"
+            "  • Закрепить/открепить все — клавиша из раздела «Блоки» (Ctrl+F12)\n"
             "  • ··· в шапке — меню: закрепить, отвязать от игры, экран, якорь, размер,\n"
             "    прозрачность, шрифт\n"
             "  • Голубая полоса сверху — блок отвязан от игры и виден всегда\n"
-            "  • Клавиши из таблицы выше — показать/скрыть конкретный блок\n"
+            "  • Клавиши из таблицы блоков — показать/скрыть конкретный блок\n"
             "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей"),
             role="muted", size=9, wrap=True))
 
@@ -2122,6 +2205,8 @@ class OverlayPage(QWidget):
 
     def set_hotkey_hint_text(self, text: str) -> None:
         self.hotkey_hint_label.setText(str(text))
+        if getattr(self, "hotkey_hint_tab_label", None) is not None:
+            self.hotkey_hint_tab_label.setText(str(text))
 
 
 # ===========================================================================

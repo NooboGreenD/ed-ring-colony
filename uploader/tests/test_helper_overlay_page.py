@@ -9,6 +9,7 @@ sys.path.insert(0, str(HERE.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import (QComboBox, QLabel, QLineEdit, QPushButton,
                                    QSlider, QTabWidget)
 
@@ -290,6 +291,77 @@ class OverlayPageTests(unittest.TestCase):
         self.assertEqual(page.block_widgets, {})
         self.assertEqual(page.profiles(), [])
         self.assertIsInstance(page.toggle_btn, QPushButton)
+
+
+class OverlayPageStructureTests(unittest.TestCase):
+    """Раздел «Оверлей» разложен по вкладкам, а не одной простынёй."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = ensure_app()
+
+    def setUp(self):
+        self.page = helper_pages.OverlayPage(_state(), helper_pages.OverlayPageActions())
+        self.addCleanup(self.page.close)
+
+    def test_every_section_has_its_own_tab(self):
+        keys = [key for key, _title in helper_pages.OverlayPage.TABS]
+        self.assertEqual(keys, ["general", "blocks", "ship", "content", "layout", "keys"])
+        self.assertEqual(self.page.tabs.count(), len(keys))
+        for index, (_key, title) in enumerate(helper_pages.OverlayPage.TABS):
+            self.assertEqual(self.page.tabs.tabText(index), title)
+
+    def test_controls_live_in_their_section(self):
+        """Каждая настройка лежит в своей вкладке, а не свалена в один скролл."""
+        expected = {
+            "general": ("alpha_slider", "font_combo", "font_size_slider", "all_size_combo"),
+            "blocks": ("block_table", "lock_all_btn", "auto_rules_check", "idle_combo"),
+            "ship": ("ship_modules_buttons", "ship_widgets"),
+            "content": ("content_tabs",),
+            "layout": ("profile_combo", "margin_slider", "anchor_widgets"),
+            "keys": (),
+        }
+        for key, names in expected.items():
+            page = self.page.tabs.widget(self.page.tab_index(key)).widget()
+            for name in names:
+                widget = getattr(self.page, name)
+                widget = list(widget.values())[0] if isinstance(widget, dict) else widget
+                self.assertTrue(page.isAncestorOf(widget),
+                                f"{name} не на вкладке «{key}»")
+
+    def test_header_stays_visible_on_every_tab(self):
+        """Кнопка включения и строка состояния — вне вкладок, всегда на виду."""
+        for widget in (self.page.toggle_btn, self.page.reset_btn,
+                       self.page.screens_label, self.page.hotkey_hint_label):
+            self.assertFalse(self.page.tabs.isAncestorOf(widget),
+                             "шапка не должна прятаться внутрь вкладки")
+            self.assertTrue(self.page.isAncestorOf(widget))
+
+    def test_assigned_keys_are_repeated_on_the_keys_tab(self):
+        """Подпись назначенных клавиш видна и в шапке, и в справке раздела."""
+        page = self.page.tabs.widget(self.page.tab_index("keys")).widget()
+        texts = [widget.text() for widget in page.findChildren(QLabel)]
+        self.assertIn(self.page.hotkey_hint_label.text(), texts)
+        self.page.set_hotkey_hint_text("Назначено: F12 — Корабль")
+        self.assertIn("F12", " ".join(widget.text() for widget in page.findChildren(QLabel)))
+
+    def test_tab_layouts_are_scrollable(self):
+        from PySide6.QtWidgets import QScrollArea
+
+        for index in range(self.page.tabs.count()):
+            self.assertIsInstance(self.page.tabs.widget(index), QScrollArea,
+                                  "каждый раздел прокручивается сам")
+
+    def test_block_table_has_no_nested_scroll(self):
+        from PySide6.QtWidgets import QScrollArea
+
+        page = self.page.tabs.widget(self.page.tab_index("blocks")).widget()
+        inner = [area for area in page.findChildren(QScrollArea)
+                 if area.isAncestorOf(self.page.block_table)]
+        self.assertEqual(len(inner), 1)
+        self.assertEqual(inner[0].verticalScrollBarPolicy(),
+                         Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+                         "вложенный вертикальный скролл перехватывал бы колесо мыши")
 
 
 class OverlayPageHostTests(unittest.TestCase):
