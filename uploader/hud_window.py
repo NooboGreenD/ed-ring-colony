@@ -62,6 +62,7 @@ OVERLAY_META = {
     "events": ("06", "EVENT LOG"),
     "exobio": ("07", "ANALYSIS"),
     "carrier": ("08", "FLEET CARRIER"),
+    "footmap": ("09", "SURFACE"),
 }
 
 #: Шрифт по умолчанию: моноширинный, чтобы колонки цифр не «плыли».

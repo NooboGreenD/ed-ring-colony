@@ -51,6 +51,13 @@ CONTENT_OPTIONS = {
         'planets': ('Поиск планет', ('planet_separator', 'planets_header', 'planets_label')),
         'value': ('Примечание к прогнозу', ('footer_label',)),
     },
+    'footmap': {
+        'body': ('Тело под ногами', ('body_label',)),
+        'coords': ('Координаты', ('coords_label',)),
+        'map': ('Карта, след и точки', ('canvas',)),
+        'target': ('Расстояние до корабля', ('ship_label',)),
+        'vitals': ('Кислород, здоровье и гравитация', ('vitals_label',)),
+    },
     'events': {key: (label, ()) for key, label in (
         ('timestamps', 'Время события'), ('info', 'Информация'),
         ('success', 'Успешные события'), ('warn', 'Предупреждения'), ('error', 'Ошибки'))},

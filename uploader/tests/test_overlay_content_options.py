@@ -15,6 +15,7 @@ from overlay import (
     CargoOverlay,
     CarrierOverlay,
     ExobiologyOverlay,
+    FootMapOverlay,
     OverlayManager,
     RouteOverlay,
     SessionEventsOverlay,
@@ -133,7 +134,7 @@ class CarrierFilterTests(unittest.TestCase):
 
 
 class ContentSettingsTests(unittest.TestCase):
-    def test_all_eight_blocks_have_persisted_preferences(self):
+    def test_all_nine_blocks_have_persisted_preferences(self):
         self.assertEqual(set(CONTENT_OPTIONS), set(OverlayManager.BLOCKS))
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'config.json'
@@ -153,7 +154,8 @@ class ContentSettingsTests(unittest.TestCase):
         """Выключенный раздел скрывается, включённый — возвращается на место."""
         blocks = {"route": RouteOverlay, "status": StatusOverlay, "ship": ShipOverlay,
                   "cargo": CargoOverlay, "carrier": CarrierOverlay,
-                  "session": SessionOverlay, "exobio": ExobiologyOverlay}
+                  "session": SessionOverlay, "exobio": ExobiologyOverlay,
+                  "footmap": FootMapOverlay}
         self.assertEqual(set(blocks), set(CONTENT_OPTIONS) - {"events"})
         for block, overlay_class in blocks.items():
             with self.subTest(block=block):

@@ -506,6 +506,81 @@ class CarrierBlockRegistrationTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+class FootMapBlockRegistrationTests(unittest.TestCase):
+    """Блок FOOTMAP зарегистрирован во всех реестрах оверлея."""
+
+    def test_block_is_known_everywhere(self):
+        from overlay import (AUTO_RULES, AUTO_RULE_LABELS, BLOCK_LABELS, DEFAULT_SETTINGS,
+                             DEFAULT_BLOCK_POSITIONS, OVERLAY_META, OverlayManager)
+
+        self.assertIn("footmap", OverlayManager.BLOCKS)
+        self.assertIn("footmap", BLOCK_LABELS)
+        self.assertIn("footmap", DEFAULT_BLOCK_POSITIONS)
+        self.assertIn("footmap", OVERLAY_META)
+        self.assertEqual(OVERLAY_META["footmap"][0], "09")
+        self.assertIn("show_footmap", DEFAULT_SETTINGS)
+        for suffix in ("x", "y", "width", "height", "locked", "anchor", "auto_rule"):
+            self.assertIn(f"footmap_{suffix}", DEFAULT_SETTINGS,
+                          "без ключа в DEFAULT_SETTINGS настройка не сохранится")
+        # Миникарта нужна только пешеходу, поэтому правило по умолчанию — OnFoot.
+        self.assertEqual(DEFAULT_SETTINGS["footmap_auto_rule"], "on_foot")
+        self.assertIn("on_foot", AUTO_RULES)
+        self.assertIn("on_foot", AUTO_RULE_LABELS)
+
+    def test_settings_persist_footmap_prefix(self):
+        """save_overlay_settings копирует в конфиг только известные префиксы."""
+        import inspect
+
+        import overlay
+
+        source = inspect.getsource(overlay.save_overlay_settings)
+        self.assertIn('"footmap_"', source,
+                      "настройки блока FOOTMAP должны попадать в конфиг")
+
+    def test_on_foot_rule(self):
+        from overlay import auto_rule_matches
+
+        self.assertTrue(auto_rule_matches("on_foot", {"flags": {"OnFoot"}}))
+        self.assertFalse(auto_rule_matches("on_foot", {"flags": {"Docked"}}))
+        self.assertFalse(auto_rule_matches("on_foot", {}))
+
+    def test_block_starts_hidden_until_the_pilot_walks(self):
+        """При включённых автоправилах блок появляется только пешком."""
+        import tempfile
+        from pathlib import Path as _Path
+
+        from overlay import OverlayManager
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = OverlayManager(_FakeMaster(), _Path(tmp) / "config.json")
+            manager.settings["auto_rules_enabled"] = True
+            walking = manager.evaluate_block_visibility(
+                {"game_running": True, "flags": {"OnFoot"}})
+            flying = manager.evaluate_block_visibility(
+                {"game_running": True, "flags": set()})
+            self.assertTrue(walking["footmap"])
+            self.assertFalse(flying["footmap"])
+            manager._stop.set()
+
+    def test_hash_includes_footmap_data(self):
+        """Иначе блок замирал: журнал молчит, а командир идёт."""
+        import tempfile
+        from pathlib import Path as _Path
+
+        from overlay import OverlayManager
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = OverlayManager(_FakeMaster(), _Path(tmp) / "config.json")
+            base = {"footmap": {"known": True, "lat": 1.0, "lon": 2.0, "heading": 10.0,
+                                "trail": [], "pois": [], "ship": None}}
+            moved = {"footmap": dict(base["footmap"], lat=1.0002)}
+            turned = {"footmap": dict(base["footmap"], heading=90.0)}
+            self.assertNotEqual(manager._hash_data(base), manager._hash_data(moved))
+            self.assertNotEqual(manager._hash_data(base), manager._hash_data(turned))
+            manager._stop.set()
+
+
+# ---------------------------------------------------------------------------
 class SizeProbeTests(_OverlayCase):
     """size() отдаёт реальный размер окна, сохранённый — только как запас."""
 

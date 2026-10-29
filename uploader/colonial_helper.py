@@ -76,6 +76,7 @@ from edsm_api import EDSMAPI
 from eddn_api import EddnClient
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
+from foot_map import FootMap
 from pilot_equipment import PilotEquipment
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
@@ -124,7 +125,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.18.35"
+VERSION = "2.18.36"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -232,6 +233,8 @@ class ColonialHelperApp:
         self.route = RouteTracker(
             self.config_path.with_name(".colonial_helper_route_hints.json"))
         self.ship = ShipTracker()
+        # Миникарта пешехода: позиция из Status.json, точки интереса из журнала.
+        self.foot_map = FootMap()
         # Снаряжение на ногах: наборы, оружие, модификации и рюкзак. Кэш рядом
         # с конфигом — снаряжение видно сразу после запуска, до чтения истории.
         self.equipment = PilotEquipment(
@@ -3302,6 +3305,13 @@ class ColonialHelperApp:
         data["carrier"] = self.carrier.get_state_dict(
             need, need_label=need_label, need_source=need_source)
         data["last_delivery_system"] = self._last_delivery_system
+        # Миникарта пешехода: Status.json перечитывается только при изменении
+        # файла, поэтому тик оверлея не превращается в поток чтений с диска.
+        try:
+            self.foot_map.poll(self.journal_path)
+        except Exception:
+            pass
+        data["footmap"] = self.foot_map.state()
         return data
 
     # ============================================================
@@ -7152,6 +7162,11 @@ class ColonialHelperApp:
         self._feed_construction_site(ev, live=live)
         # Карта системы: тела, станции, стройплощадки и где сейчас пилот.
         self._feed_system_map(ev, live=live)
+        # Миникарта: где приземлился корабль, какие поселения рядом.
+        try:
+            self.foot_map.handle(ev)
+        except Exception as exc:
+            self.log(f"Миникарта: {exc}", "error")
         # Снаряжение на ногах: костюм, оружие, рюкзак (только журнал).
         try:
             if self.equipment.handle(ev):
