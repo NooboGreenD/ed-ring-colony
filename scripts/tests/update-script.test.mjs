@@ -127,6 +127,18 @@ function setup() {
     // Диагностика «кто держит базу»: отдаём одну залипшую сессию, чтобы
     // проверить не только текст причины, но и готовую команду снятия.
     // Брошенный pg_dump: сессия выполняет COPY ... TO stdout уже 1:42:17.
+    // Сверка схемы: psql БЕЗ -tA печатает заголовок и рамку даже на пустом
+    // результате. Так выглядел живой прогон 21:22 29.10.2026 — и проверка
+    // принимала «?column?» за пропавший объект.
+    '    if printf "%s" "$input" | grep -q "information_schema"; then',
+    '      if [ -n "${STUB_MISSING_TABLE:-}" ]; then',
+    '        echo "таблица $STUB_MISSING_TABLE"; exit 0',
+    '      fi',
+    '      case " $* " in',
+    '        *" -tA "*) exit 0 ;;',
+    '        *) printf " ?column?\\n----------\\n(0 rows)\\n"; exit 0 ;;',
+    '      esac',
+    '    fi',
     '    if printf "%s" "$*" | grep -q "COPY %TO stdout%"; then',
     '      echo "2029069|01:42:17|COPY public.galaxy_systems (id, id64) TO stdout";',
     '      exit 0',
@@ -924,6 +936,34 @@ test('снятие брошенных дампов можно выключить
     const run = ctx.run({ UPDATE_CLEAR_STALE_DUMPS: '0' });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     assert.doesNotMatch(run.stdout, /снято дампов/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('сверка схемы не путает заголовок psql с пропавшими объектами', { skip }, () => {
+  // Живой случай 21:22 29.10.2026: миграция применилась, а прогон упал на
+  // «в базе нет объектов: ?column?, ----------, (0 rows)» — это рамка psql,
+  // а не схема. Обновление не должно останавливаться, когда всё на месте.
+  const ctx = setup();
+  try {
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.doesNotMatch(run.stdout, /схема базы не совпадает/);
+    assert.doesNotMatch(run.stdout, /\?column\?|---/);
+    assert.equal(events(run.stdout).pop().stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('сверка схемы всё ещё видит реально пропавшую таблицу', { skip }, () => {
+  const ctx = setup();
+  try {
+    const run = ctx.run({ STUB_MISSING_TABLE: 'helper_settings' });
+    assert.notEqual(run.status, 0, 'пропавшая таблица — остановка до переключения');
+    assert.match(run.stdout, /в базе нет объектов, которые нужны новому коду/);
+    assert.match(run.stdout, /таблица helper_settings/);
   } finally {
     ctx.cleanup();
   }

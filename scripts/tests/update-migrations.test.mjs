@@ -57,6 +57,14 @@ test('занятая база не валит обновление: повтор
   assert.match(source, /UPDATE_MIGRATION_LOCK_RETRIES/);
 });
 
+test('сверка схемы читает psql без заголовка и рамки', () => {
+  // Без -tA psql печатает «?column?», «----------», «(0 rows)» — и проверка
+  // принимала их за пропавшие объекты (живой прогон 21:22 29.10.2026).
+  assert.match(source, /schema_audit_sql \| run_sql -tA/);
+  // И вторая страховка: пропавшими считаются только строки-ответы запроса.
+  assert.match(source, /grep -E '\^\(таблица\|колонка\) '/);
+});
+
 test('сверка схемы идёт после миграций и до переключения контейнеров', () => {
   const migrate = source.indexOf('# ── 4b. применяю миграции');
   const audit = source.indexOf('if ! schema_audit; then');
