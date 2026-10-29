@@ -608,6 +608,9 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
           # (--single-transaction), поэтому повтор безопасен: он идемпотентен.
           if [ "$lock_try" -lt "$MIGRATION_LOCK_RETRIES" ]; then
             say "  ⚠ $base: база занята другой транзакцией (замки не дались за $MIGRATION_LOCK_TIMEOUT) — попытка $lock_try из $MIGRATION_LOCK_RETRIES, повтор через ${MIGRATION_LOCK_RETRY_DELAY}с"
+            # Сразу показываем, кто держит базу: иначе видно только «lock
+            # timeout», и непонятно, ждать дальше или снимать сессию.
+            if [ "$lock_try" = "1" ]; then describe_db_sessions || true; fi
             sleep "$MIGRATION_LOCK_RETRY_DELAY"
             lock_try=$((lock_try + 1))
             continue
