@@ -18168,9 +18168,13 @@ CREATE TRIGGER trg_protect_profile_privileged_columns
 -- ────────────────────────────────────────────────────────────────────
 -- 4. Публичное представление: сайт читает имена авторов, составов и
 --    поиска пилотов отсюда, а не из закрытой таблицы.
+--
+--    Обновляем, а НЕ пересоздаём: от `public.public_profiles` зависит
+--    `public.squadron_member_detail`, и `DROP VIEW` на базе, где он уже
+--    есть, падает с «cannot drop view public_profiles because other objects
+--    depend on it» (SQLSTATE 2BP01).
 -- ────────────────────────────────────────────────────────────────────
-DROP VIEW IF EXISTS public.public_profiles;
-CREATE VIEW public.public_profiles AS
+CREATE OR REPLACE VIEW public.public_profiles AS
 SELECT
   p.id,
   p.cmdr_name,

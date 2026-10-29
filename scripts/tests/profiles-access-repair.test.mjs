@@ -97,14 +97,28 @@ test.before(async () => {
   // ── «Сломанное» состояние: так выглядит база, где доступ пропал ──
   //  • у authenticated снят SELECT — клиент не читает даже свою строку;
   //  • политика profiles_select потеряна;
-  //  • представления public_profiles нет — имена авторов пустые;
   //  • триггер защиты роли отсутствует.
+  //
+  //  Представления при этом ОСТАЮТСЯ — как на живой базе после
+  //  20261015000000 (public_profiles) и 20261016000000, который перевёл
+  //  squadron_member_detail на public_profiles. Раньше ремонт делал
+  //  `DROP VIEW public_profiles` и падал на зависимости
+  //  («cannot drop view public_profiles because other objects depend on it»,
+  //  SQLSTATE 2BP01) — обновление останавливалось. Теперь накат обязан
+  //  проходить именно на такой базе, поэтому она и воспроизводится здесь.
   await db.exec(`
     REVOKE ALL ON public.profiles FROM authenticated;
     REVOKE ALL ON public.profiles FROM anon;
     DROP POLICY IF EXISTS profiles_select ON public.profiles;
     DROP POLICY IF EXISTS profiles_update ON public.profiles;
-    DROP VIEW IF EXISTS public.public_profiles;
+
+    CREATE VIEW public.public_profiles AS
+      SELECT id, cmdr_name, avatar_url, squadron, created_at, updated_at, forum_posts_count
+      FROM public.profiles;
+    CREATE VIEW public.squadron_member_detail WITH (security_invoker = true) AS
+      SELECT p.cmdr_name, p.squadron FROM public.public_profiles p;
+    GRANT SELECT ON public.public_profiles TO anon, authenticated;
+    GRANT SELECT ON public.squadron_member_detail TO anon, authenticated;
   `);
 });
 
@@ -209,5 +223,35 @@ test('таблицы админки снова читаются, а отсутс
     assert.deepEqual(restored, [{ cmdr_name: 'noprofile', role: 'user', email: 'noprofile@example.com' }]);
   } finally {
     await signOut();
+  }
+});
+
+test('накат на живой базе: squadron_member_detail зависит от public_profiles', async () => {
+  // Регрессия: ремонт не должен удалять представление, на котором висят
+  // другие объекты. Именно на этом падала миграция (SQLSTATE 2BP01), и
+  // обновление проекта останавливалось на «SQL миграция, код 1».
+  await db.exec(repairSql());
+  const rows = (await db.query(
+    'SELECT cmdr_name FROM public.squadron_member_detail ORDER BY cmdr_name',
+  )).rows;
+  // Состав важнее точных подписей: выше по файлу пилот переименовывал себя.
+  const names = rows.map((r) => r.cmdr_name);
+  assert.equal(names.length, 4, 'зависимое представление живо и отдаёт все строки');
+  for (const expected of ['CMDR Bob', 'CMDR Staff', 'noprofile']) {
+    assert.ok(names.includes(expected), `в представлении есть ${expected}`);
+  }
+});
+
+test('накат не оставляет базу без представления, если оно уже было', async () => {
+  // После ремонта public_profiles обязан существовать и читаться обеими
+  // ролями — даже если до наката он уже был.
+  await db.exec('SET ROLE anon');
+  try {
+    const n = (await db.query('SELECT count(*)::int AS n FROM public.public_profiles')).rows;
+    assert.equal(n[0].n, 4);
+    const dep = (await db.query('SELECT count(*)::int AS n FROM public.squadron_member_detail')).rows;
+    assert.equal(dep[0].n, 4);
+  } finally {
+    await db.exec('RESET ROLE');
   }
 });
