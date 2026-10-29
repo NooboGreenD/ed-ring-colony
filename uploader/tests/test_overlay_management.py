@@ -143,7 +143,7 @@ class BlockSettingHelpersTests(unittest.TestCase):
         self.assertEqual(set(OVERLAY_META), set(OverlayManager.BLOCKS))
         codes = [OVERLAY_META[key][0] for key in OverlayManager.BLOCKS]
         self.assertEqual(len(codes), len(set(codes)))
-        self.assertEqual(codes, [f"{index:02d}" for index in range(1, 9)])
+        self.assertEqual(codes, [f"{index:02d}" for index in range(1, 10)])
 
     def test_section_caption_keeps_dynamic_value_case(self):
         from overlay import _section_text

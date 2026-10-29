@@ -7,12 +7,23 @@
 """
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Sequence
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QTextCharFormat, QTextCursor
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFontMetricsF,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPolygonF,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -25,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import foot_map
 import route_hint
 import ship_hud
 from exobiology import estimate_value, format_credits
@@ -53,7 +65,7 @@ from hud_window import (
     hud_separator,
     paint,
 )
-from i18n import tr
+from i18n import current_locale, tr
 from overlay_options import filter_carrier_rows, option_key
 
 
@@ -1420,6 +1432,394 @@ class CarrierOverlay(HudWindow):
 # ============================================================
 #  EXOBIO
 # ============================================================
+# ============================================================
+#  FOOTMAP — миникарта пешехода
+# ============================================================
+#: Языки с запятой в дробях: так же, как в игре на этих языках.
+DECIMAL_COMMA_LOCALES = ("ru", "de", "it")
+
+
+def foot_distance_text(meters: float) -> str:
+    """Расстояние для HUD: «12 м», «1,2 км» — в записи текущего языка."""
+    value, unit = foot_map.split_distance(meters)
+    text = f"{value:g}"
+    if current_locale() in DECIMAL_COMMA_LOCALES:
+        text = text.replace(".", ",")
+    return tr("{n} м", n=text) if unit == "m" else tr("{n} км", n=text)
+
+
+def foot_coordinate(value: float, positive: str, negative: str) -> str:
+    """Координата как на карте игры: ``12.3456°N``."""
+    number = float(value or 0.0)
+    return f"{abs(number):.4f}°{positive if number >= 0 else negative}"
+
+
+class FootMapCanvas(QWidget):
+    """Круглая миникарта: след, корабль, поселения и сам командир в центре.
+
+    Карта развёрнута по курсу — впереди всегда верх экрана; север показывает
+    буква на кольце. Масштаб подбирает `foot_map` по дальности корабля и
+    длине следа, поэтому далёкая стоянка не выкидывает карту за край.
+    """
+
+    PADDING = 9
+    #: Цвет точки по её виду.
+    POI_COLORS = {
+        foot_map.POI_SHIP: COLOR_ACCENT,
+        foot_map.POI_SETTLEMENT: COLOR_CYAN,
+        foot_map.POI_STATION: COLOR_GREEN_TEXT,
+    }
+    #: Сколько подписей у точек рисуем: остальные — только метки.
+    POI_LABELS = 3
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(140)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(f"background:{COLOR_SURFACE};border:1px solid {COLOR_LINE};")
+        self._state: Dict[str, Any] = foot_map.empty_state()
+        self._family = "Consolas"
+        self._size = 8
+        self._empty_text = ""
+
+    def set_font_spec(self, family: Optional[str], size: int) -> None:
+        self._family = str(family or "Consolas")
+        self._size = max(6, int(size))
+        self.update()
+
+    def set_empty_text(self, text: str) -> None:
+        self._empty_text = str(text or "")
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        self._state = dict(state or foot_map.empty_state())
+        self.update()
+
+    def state(self) -> Dict[str, Any]:
+        return self._state
+
+    # -- рисование ---------------------------------------------------------
+    def paintEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        painter.fillRect(rect, QColor(COLOR_SURFACE))
+        painter.setPen(QPen(QColor(COLOR_LINE), 1))
+        painter.drawRect(rect)
+
+        state = self._state or {}
+        if not state.get("known"):
+            painter.setPen(QPen(QColor(COLOR_TEXT_MUTED), 1))
+            painter.setFont(hud_font(self._family, self._size))
+            painter.drawText(rect.adjusted(10, 0, -10, 0),
+                             Qt.AlignCenter | Qt.TextWordWrap, self._empty_text)
+            return
+
+        size = min(rect.width(), rect.height()) - 2 * self.PADDING
+        if size <= 20:
+            return
+        radius = size / 2.0
+        center = QPointF(rect.center().x() + 0.5, rect.center().y() + 0.5)
+        scale = max(1.0, float(state.get("scale") or 100))
+        px_per_m = radius / scale
+        heading = float(state.get("heading") or 0.0)
+
+        painter.save()
+        painter.setClipRect(rect.adjusted(1, 1, -1, -1))
+        # Диск радара чуть светлее фона: карта читается как отдельный прибор.
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(COLOR_PANEL)))
+        painter.drawEllipse(center, radius, radius)
+        painter.setBrush(Qt.NoBrush)
+        self._draw_grid(painter, center, radius)
+        self._draw_trail(painter, center, radius, px_per_m, heading, state)
+        self._draw_pois(painter, center, radius, px_per_m, heading, state)
+        self._draw_north(painter, center, radius, heading)
+        self._draw_readouts(painter, center, radius, scale, state)
+        self._draw_pilot(painter, center)
+        painter.restore()
+
+    def _chip(self, painter: QPainter, right: float, baseline: float, text: str,
+              align_right: bool = False) -> None:
+        """Плашка с числом: подпись читается и поверх линий и меток."""
+        if not text:
+            return
+        font = hud_font(self._family, self._size - 1)
+        painter.setFont(font)
+        width = QFontMetricsF(font).horizontalAdvance(text) + 10
+        left = right - width if align_right else right
+        box = QRectF(left, baseline - 13, width, 13)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(COLOR_PANEL)))
+        painter.drawRoundedRect(box, 3, 3)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(COLOR_TEXT_MUTED), 1))
+        painter.drawText(box, Qt.AlignCenter, text)
+
+    def _draw_readouts(self, painter: QPainter, center: QPointF, radius: float,
+                       scale: float, state: Dict[str, Any]) -> None:
+        """Мелкие цифры по углам диска: курс, высота и масштаб кольца.
+
+        Курс и высота — подписи состояния, масштаб — радиус внешнего кольца:
+        без него карта не отвечает на вопрос «а это сколько метров?».
+        """
+        left = center.x() - radius + 5
+        right = center.x() + radius - 5
+        self._chip(painter, left, center.y() - radius + 17,
+                   tr("курс {value}°", value=f"{float(state.get('heading') or 0):.0f}"))
+        self._chip(painter, right, center.y() + radius - 4,
+                   foot_distance_text(scale), align_right=True)
+        altitude = state.get("altitude")
+        if altitude is not None:
+            self._chip(painter, left, center.y() + radius - 4,
+                       tr("высота {value} м", value=f"{float(altitude):.0f}"))
+
+    def _draw_grid(self, painter: QPainter, center: QPointF, radius: float) -> None:
+        """Концентрические кольца и перекрестье по курсу."""
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(COLOR_LINE), 1))
+        for fraction in (0.25, 0.5, 0.75, 1.0):
+            ring = radius * fraction
+            painter.drawEllipse(center, ring, ring)
+        painter.setPen(QPen(QColor(COLOR_LINE), 1, Qt.DashLine))
+        painter.drawLine(QPointF(center.x() - radius, center.y()),
+                         QPointF(center.x() + radius, center.y()))
+        painter.drawLine(QPointF(center.x(), center.y() - radius),
+                         QPointF(center.x(), center.y() + radius))
+
+
+    def _draw_trail(self, painter: QPainter, center: QPointF, radius: float,
+                    px_per_m: float, heading: float, state: Dict[str, Any]) -> None:
+        """След прогулки: тонкая линия от старых точек к текущей."""
+        points = state.get("trail") or []
+        if len(points) < 2:
+            return
+        path = QPainterPath()
+        started = False
+        for east, north in points:
+            x, y = foot_map.to_screen(east, north, heading, px_per_m, center.x(), center.y())
+            if started:
+                path.lineTo(QPointF(x, y))
+            else:
+                path.moveTo(QPointF(x, y))
+                started = True
+        if started:
+            # Последний отрезок — от запомненной точки до самого командира.
+            path.lineTo(center)
+        color = QColor(COLOR_CYAN)
+        color.setAlpha(150)
+        painter.setPen(QPen(color, 1.4))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
+
+    def _draw_pois(self, painter: QPainter, center: QPointF, radius: float,
+                   px_per_m: float, heading: float,
+                   state: Dict[str, Any]) -> None:
+        """Корабль, поселения и порты: метка плюс подпись у ближайших."""
+        metrics = QFontMetricsF(hud_font(self._family, self._size - 1))
+        labelled = 0
+        # Плашки курса, высоты и масштаба рисуются поверх карты: подписи точек
+        # в их полосы не заходят, иначе текст обрезается плашкой.
+        band = 18.0
+        taken: List[QRectF] = [
+            QRectF(center.x() - radius, center.y() - radius, 2 * radius, band),
+            QRectF(center.x() - radius, center.y() + radius - band, 2 * radius, band),
+            # И сам командир в центре: подпись поверх стрелки читается хуже метки.
+            QRectF(center.x() - 14, center.y() - 12, 28, 22),
+        ]
+        for poi in state.get("pois") or []:
+            east = float(poi.get("east") or 0.0)
+            north = float(poi.get("north") or 0.0)
+            x, y = foot_map.to_screen(east, north, heading, px_per_m, center.x(), center.y())
+            if math.hypot(x - center.x(), y - center.y()) > radius - 3:
+                # Точка за кольцом: масштаб её не вмещает — не рисуем вовсе.
+                continue
+            color = QColor(self.POI_COLORS.get(poi.get("kind"), COLOR_TEXT))
+            painter.setPen(QPen(color, 1.2))
+            painter.setBrush(QBrush(color))
+            kind = poi.get("kind")
+            if kind == foot_map.POI_SHIP:
+                self._draw_ship_marker(painter, x, y, color)
+            elif kind == foot_map.POI_STATION:
+                painter.drawRect(QRectF(x - 2.5, y - 2.5, 5, 5))
+            else:
+                painter.drawEllipse(QPointF(x, y), 2.4, 2.4)
+            painter.setBrush(Qt.NoBrush)
+
+            if labelled >= self.POI_LABELS:
+                continue
+            caption = str(poi.get("name") or "")
+            if not caption:
+                caption = foot_distance_text(float(poi.get("distance") or 0.0))
+            limit = max(30.0, 2 * radius - 12)
+            text = metrics.elidedText(caption, Qt.ElideRight, limit)
+            width = metrics.horizontalAdvance(text) + 2
+            left = x + 6 if x + 6 + width <= center.x() + radius else x - 6 - width
+            painter.setPen(QPen(color, 1))
+            painter.setFont(hud_font(self._family, self._size - 1))
+            # Подписи не должны налезать друг на друга: сдвигаем по вертикали,
+            # пока место не освободится, и только потом отступаемся.
+            for shift in (0.0, -11.0, 11.0, -22.0, 22.0, -33.0):
+                box = QRectF(left, y + shift - 9, width, 12)
+                if not any(box.intersects(other) for other in taken):
+                    painter.drawText(QPointF(left, y + shift + 4), text)
+                    taken.append(box)
+                    labelled += 1
+                    break
+
+    @staticmethod
+    def _draw_ship_marker(painter: QPainter, x: float, y: float, color: QColor) -> None:
+        """Корабль — домик-треугольник: его ищут в первую очередь."""
+        triangle = QPolygonF([QPointF(x, y - 4.5), QPointF(x + 4.0, y + 3.0),
+                              QPointF(x - 4.0, y + 3.0)])
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(triangle)
+        painter.setBrush(Qt.NoBrush)
+
+    def _draw_north(self, painter: QPainter, center: QPointF, radius: float,
+                    heading: float) -> None:
+        """Буква «север» на кольце: карта повёрнута по курсу."""
+        angle = math.radians(heading)
+        x = center.x() - math.sin(angle) * (radius - 8)
+        y = center.y() - math.cos(angle) * (radius - 8)
+        painter.setPen(QPen(QColor(COLOR_TEXT_MUTED), 1))
+        painter.setFont(hud_font(self._family, self._size - 1, bold=True))
+        painter.drawText(QRectF(x - 8, y - 8, 16, 16), Qt.AlignCenter, tr("С"))
+
+    def _draw_pilot(self, painter: QPainter, center: QPointF) -> None:
+        """Командир в центре: стрелка вперёд, потому что карта по курсу."""
+        arrow = QPolygonF([QPointF(center.x(), center.y() - 7.5),
+                           QPointF(center.x() + 5.5, center.y() + 5.5),
+                           QPointF(center.x(), center.y() + 2.5),
+                           QPointF(center.x() - 5.5, center.y() + 5.5)])
+        painter.setPen(QPen(QColor(COLOR_SURFACE), 1.4))
+        painter.setBrush(QBrush(QColor(COLOR_ACCENT)))
+        painter.drawPolygon(arrow)
+        painter.setBrush(Qt.NoBrush)
+
+
+class FootMapOverlay(HudWindow):
+    """Миникарта пешехода: где командир, где корабль и что рядом.
+
+    Позицию и точки интереса считает `foot_map`, а здесь только печать:
+    тело, координаты, сама карта, расстояние до корабля и показатели
+    скафандра.
+    """
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        height = max(settings.get("footmap_height", 400), 220)
+        super().__init__(
+            master, "FOOTMAP",
+            settings.get("footmap_x", 770), settings.get("footmap_y", 650),
+            settings.get("footmap_width", 340), height, settings, "footmap",
+        )
+        self._ff = self._font_family
+        self._fs = self._font_size
+        self._state: Dict[str, Any] = foot_map.empty_state()
+        self._render_key: Optional[tuple] = None
+        self._paints = 0
+
+        self.body_label = self.make_label(self.content, tr("ПОВЕРХНОСТЬ НЕ ИЗВЕСТНА"),
+                                          color=COLOR_ACCENT, dp=1, bold=True)
+        self.body_label.setWordWrap(False)
+        self.body.addWidget(self.body_label)
+
+        self.coords_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED, dp=-2)
+        self.body.addWidget(self.coords_label)
+
+        self.canvas = FootMapCanvas(self.content)
+        self.canvas.set_empty_text(tr("Позиция с поверхности не получена. "
+                                      "Выйдите из корабля на ногах."))
+        self.canvas.set_font_spec(self._ff, max(6, int(self._fs) - 2))
+        self.body.addWidget(self.canvas, 1)
+
+        self.ship_label = self.make_label(self.content, "", color=COLOR_TEXT, dp=-2)
+        self.body.addWidget(self.ship_label)
+
+        self.vitals_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED, dp=-2)
+        self.body.addWidget(self.vitals_label)
+
+    # -- данные ------------------------------------------------------------
+    @staticmethod
+    def _vitals_text(state: Dict[str, Any]) -> str:
+        """Показатели скафандра: кислород, здоровье, температура, гравитация."""
+        parts = []
+        oxygen = state.get("oxygen")
+        if oxygen is not None:
+            parts.append(tr("O₂ {value}%", value=f"{float(oxygen):.0f}"))
+        health = state.get("health")
+        if health is not None:
+            parts.append(tr("HP {value}%", value=f"{float(health):.0f}"))
+        temperature = state.get("temperature")
+        if temperature is not None:
+            parts.append(tr("{value} K", value=f"{float(temperature):.0f}"))
+        gravity = state.get("gravity")
+        if gravity is not None:
+            parts.append(tr("{value} g", value=f"{float(gravity):.2f}".rstrip("0").rstrip(".")))
+        return "  ·  ".join(parts)
+
+    @staticmethod
+    def _vitals_color(state: Dict[str, Any]) -> str:
+        """Цвет строки показателей: красный ниже 25 %, жёлтый ниже 50 %."""
+        levels = [float(state[key]) for key in ("oxygen", "health")
+                  if state.get(key) is not None]
+        if not levels:
+            return COLOR_TEXT_MUTED
+        low = min(levels)
+        if low <= 25:
+            return COLOR_RED_TEXT
+        if low <= 50:
+            return COLOR_YELLOW
+        return COLOR_TEXT_MUTED
+
+    def update_footmap(self, state: Optional[Dict[str, Any]], force: bool = False) -> None:
+        """Нарисовать миникарту по состоянию `foot_map.FootMap.state()`."""
+        state = dict(state or foot_map.empty_state())
+        self._state = state
+        known = bool(state.get("known"))
+        body = str(state.get("body") or "").strip()
+        self.body_label.setText(body.upper() if body else tr("ПОВЕРХНОСТЬ НЕ ИЗВЕСТНА"))
+
+        if known:
+            coords = [
+                foot_coordinate(float(state.get("lat") or 0.0), "N", "S"),
+                foot_coordinate(float(state.get("lon") or 0.0), "E", "W"),
+            ]
+            # Высота и курс уже написаны на диске: строка остаётся координатами.
+            self.coords_label.setText("  ·  ".join(coords))
+        else:
+            self.coords_label.setText("")
+
+        ship = state.get("ship") or None
+        self.ship_label.setText(
+            tr("корабль: {distance}", distance=foot_distance_text(ship["distance"]))
+            if ship else "")
+        self.vitals_label.setText(self._vitals_text(state) if known else "")
+        paint(self.vitals_label, color=self._vitals_color(state) if known else COLOR_TEXT_MUTED)
+
+        key = (known, body, self.coords_label.text(), self.ship_label.text(),
+               self.vitals_label.text(), self.width(), self.height(), int(self._fs))
+        if not force and key == self._render_key:
+            return
+        self._render_key = key
+        self._paints += 1
+        self.canvas.set_state(state)
+
+    def apply_data_options(self) -> None:
+        """Скрыть выключенные разделы блока (карта, координаты, показатели)."""
+        super().apply_data_options()
+        self.canvas.set_font_spec(self._ff, max(6, int(self._fs) - 2))
+
+    def on_font_changed(self) -> None:
+        self.canvas.set_font_spec(self._ff, max(6, int(self._fs) - 2))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - имя из Qt
+        super().resizeEvent(event)
+        # Карта должна перерисоваться под новый размер кольца.
+        self._render_key = None
+        if self._state:
+            self.canvas.set_state(self._state)
+
+
 class ExobiologyOverlay(HudWindow):
     """Экзобиология: тело, образцы с обратным отсчётом, роды и тела системы.
 

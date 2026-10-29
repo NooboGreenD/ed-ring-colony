@@ -62,6 +62,7 @@ from overlay_blocks import (  # noqa: F401 — имена живут здесь 
     CargoOverlay,
     CarrierOverlay,
     ExobiologyOverlay,
+    FootMapOverlay,
     RouteOverlay,
     SessionEventsOverlay,
     SessionOverlay,
@@ -119,7 +120,8 @@ from ship_tracker import decode_status_flags
 __all__ = [
     # окна
     "OverlayWindow", "RouteOverlay", "StatusOverlay", "ShipOverlay",
-    "CargoOverlay", "CarrierOverlay", "ExobiologyOverlay", "SessionOverlay",
+    "CargoOverlay", "CarrierOverlay", "ExobiologyOverlay", "FootMapOverlay",
+    "SessionOverlay",
     "SessionEventsOverlay", "OverlayManager",
     # раскладка и настройки блоков
     "ANCHOR_KEYS", "ANCHOR_LABELS", "AUTO_RULES", "AUTO_RULE_LABELS",
@@ -153,7 +155,8 @@ __all__ = [
 
 class OverlayManager:
     #: Блоки HUD: ключ -> (настройка видимости, класс окна)
-    BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio", "carrier")
+    BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio",
+              "carrier", "footmap")
 
     #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
     DEFAULT_POSITIONS = DEFAULT_BLOCK_POSITIONS
@@ -175,6 +178,7 @@ class OverlayManager:
         self.events_overlay: Optional[SessionEventsOverlay] = None
         self.exobio_overlay: Optional[ExobiologyOverlay] = None
         self.carrier_overlay: Optional[CarrierOverlay] = None
+        self.footmap_overlay: Optional[FootMapOverlay] = None
         self.enabled = False
         self._update_callback: Optional[Callable] = None
         self._thread: Optional[threading.Thread] = None
@@ -230,6 +234,7 @@ class OverlayManager:
         self.events_overlay = SessionEventsOverlay(self.master, self.settings)
         self.exobio_overlay = ExobiologyOverlay(self.master, self.settings)
         self.carrier_overlay = CarrierOverlay(self.master, self.settings)
+        self.footmap_overlay = FootMapOverlay(self.master, self.settings)
 
         for key, ov in self._blocks():
             self._wire_block(key, ov)
@@ -285,6 +290,7 @@ class OverlayManager:
             "events": self.events_overlay,
             "exobio": self.exobio_overlay,
             "carrier": self.carrier_overlay,
+            "footmap": self.footmap_overlay,
         }
         return [(key, mapping.get(key)) for key in self.BLOCKS if mapping.get(key) is not None]
 
@@ -875,7 +881,31 @@ class OverlayManager:
         parts.append(self._exobiology_fingerprint(data.get("exobiology")))
         # Груз авианосца: тоннаж, товары и остаток до потребности площадки.
         parts.append(str(data.get("carrier", {})))
+        # Миникарта: каждое движение и поворот меняют кадр, а журнал при этом
+        # молчит — без этих полей блок замирал на месте стоянки.
+        parts.append(self._footmap_fingerprint(data.get("footmap")))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+    @staticmethod
+    def _footmap_fingerprint(state) -> str:
+        """Часть хеша по миникарте: позиция, курс, след и точки интереса."""
+        if not isinstance(state, dict):
+            return ""
+        return "|".join((
+            str(state.get("body") or ""),
+            str(state.get("lat") or ""),
+            str(state.get("lon") or ""),
+            str(state.get("heading") or ""),
+            str(state.get("altitude") or ""),
+            str(state.get("scale") or ""),
+            str(len(state.get("trail") or [])),
+            str(state.get("oxygen") or ""),
+            str(state.get("health") or ""),
+            str(state.get("temperature") or ""),
+            str(state.get("gravity") or ""),
+            str(state.get("ship") or ""),
+            str(state.get("pois") or ""),
+        ))
 
     @staticmethod
     def _exobiology_fingerprint(state) -> str:
@@ -942,6 +972,11 @@ class OverlayManager:
             # (смена командира, разгруженный носитель) в нём продолжали
             # висеть старые строки груза.
             self.carrier_overlay.update_carrier(data.get("carrier") or {})
+
+        if self.footmap_overlay:
+            # Позиция на поверхности приходит из Status.json, поэтому блок
+            # обновляем всегда: пустое состояние тоже информация.
+            self.footmap_overlay.update_footmap(data.get("footmap") or {})
 
         if self.session_overlay:
             current_sys = data.get("current", "-")
@@ -1648,6 +1683,7 @@ DEFAULT_SETTINGS = {
     "show_events": True,
     "show_exobio": True,
     "show_carrier": True,
+    "show_footmap": True,
     "show_flags": True,
     "show_pips": True,
     "show_hull": True,
@@ -1696,6 +1732,11 @@ DEFAULT_SETTINGS = {
     "exobio_planet_limit": 6,
     "carrier_locked": False,
     "carrier_anchor": "custom",
+    "footmap_locked": False,
+    "footmap_anchor": "custom",
+    # Миникарта нужна только на поверхности: правило «пешком (OnFoot)»
+    # срабатывает, как только включены автоправила на вкладке «Оверлей».
+    "footmap_auto_rule": "on_foot",
     # Привязка к игре: блоки видны только пока игра в фокусе. Блок, у
     # которого <ключ>_detached = True, отвязан — виден всегда и может жить
     # на другом экране (ключи по умолчанию добавляет цикл ниже).
@@ -1774,7 +1815,7 @@ def save_overlay_settings(config_path: Path, settings: dict):
         overlay_keys = set(DEFAULT_SETTINGS)
         overlay_keys.update(key for key in settings if key.startswith((
             "route_", "status_", "ship_", "cargo_", "session_", "events_", "exobio_",
-            "carrier_",
+            "carrier_", "footmap_",
         )))
         existing.update({key: settings[key] for key in overlay_keys if key in settings})
         # Удаление ключа — тоже изменение. Общий конфиг пишут два владельца:
