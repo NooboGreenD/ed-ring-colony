@@ -49,6 +49,7 @@
 | [uploader/README.md](uploader/README.md) | Что умеет программа, установка, сборка, как обновляется, заметки к версиям |
 | [uploader/CHANGES.md](uploader/CHANGES.md) | Подробный журнал по «раундам». **Первый раздел — заметки текущего релиза** (их берёт `build_bundle.py`) |
 | [UPLOADER-UPDATE-STRUCTURE.md](UPLOADER-UPDATE-STRUCTURE.md) | Канал обновлений: лаунчер + пакет кода, подпись Ed25519, публикация из админки |
+| [HELPER-LAUNCHER-LINK.md](HELPER-LAUNCHER-LINK.md) | Лаунчер: возврат после Helper, профиль пилота в правом верхнем углу, привязка учётной записи кодом, перенос раскладки оверлея, загрузка установщика Setup в админке |
 
 ## База данных
 

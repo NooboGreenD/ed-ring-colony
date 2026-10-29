@@ -7,3 +7,9 @@
 export const LAUNCHER_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 export const MIN_LAUNCHER_UPLOAD_CHUNK_BYTES = 1 * 1024 * 1024;
 export const MAX_LAUNCHER_UPLOAD_BYTES = 128 * 1024 * 1024;
+/**
+ * Установщик `ColonialHelperSetup.exe` заметно больше базовой сборки: внутрь
+ * упакованы Python, PySide6 и встроенная копия кода Helper. Тот же протокол
+ * частей, но с другим потолком размера.
+ */
+export const MAX_SETUP_UPLOAD_BYTES = 320 * 1024 * 1024;

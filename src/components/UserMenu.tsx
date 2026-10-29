@@ -310,7 +310,9 @@ export default function UserMenu() {
                 <IconStore size={15} />
                 <span className="user-menu-item-label">{t('account.shop')}</span>
               </Link>
-              <a href="/api/uploader/launcher/win64" download className="user-menu-item" onClick={close} role="menuitem">
+              {/* Постоянная ссылка на установщик: адрес не меняется от версии
+                  к версии и ведёт на файл, загруженный в админке. */}
+              <a href="/api/uploader/download?platform=win64" download className="user-menu-item" onClick={close} role="menuitem">
                 <IconDownload size={15} />
                 <span className="user-menu-item-label">{t('account.downloadColonialHelper')}</span>
               </a>

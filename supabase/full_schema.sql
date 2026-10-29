@@ -17985,3 +17985,48 @@ REVOKE ALL ON public.helper_route_inbox FROM PUBLIC, anon, authenticated;
 GRANT ALL ON public.helper_route_inbox TO service_role;
 
 NOTIFY pgrst, 'reload schema';
+
+-- ┌────────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261104090000_helper_device_linking.sql                    │
+-- └────────────────────────────────────────────────────────────────────┘
+
+CREATE TABLE IF NOT EXISTS public.helper_devices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT '',
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS helper_devices_user_idx
+  ON public.helper_devices (user_id, created_at DESC);
+ALTER TABLE public.helper_devices ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.helper_devices FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.helper_devices TO service_role;
+
+CREATE TABLE IF NOT EXISTS public.helper_link_codes (
+  code_hash TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  device_id UUID REFERENCES public.helper_devices(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS helper_link_codes_user_idx
+  ON public.helper_link_codes (user_id, created_at DESC);
+ALTER TABLE public.helper_link_codes ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.helper_link_codes FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.helper_link_codes TO service_role;
+
+CREATE TABLE IF NOT EXISTS public.helper_settings (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  device_name TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.helper_settings ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.helper_settings FROM PUBLIC, anon, authenticated;
+GRANT ALL ON public.helper_settings TO service_role;
+
+NOTIFY pgrst, 'reload schema';

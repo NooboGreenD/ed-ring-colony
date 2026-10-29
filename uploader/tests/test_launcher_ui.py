@@ -110,6 +110,17 @@ class LauncherUiTests(unittest.TestCase):
         self.assertIn("…", markup)
         self.assertLess(len(markup), 1400)
 
+    def test_show_launcher_reports_a_broken_window_instead_of_launching(self):
+        """Не построили окно — возвращаем None: bootstrapper запустит Helper сам."""
+        import launcher_ui
+        import ui_qt
+
+        fake_launcher = mock.Mock()
+        fake_launcher.choose_version.side_effect = RuntimeError("нет GUI")
+        with mock.patch.object(launcher_ui, "_launcher_runtime", return_value=fake_launcher), \
+             mock.patch.object(ui_qt, "ensure_app", side_effect=RuntimeError("нет Qt")):
+            self.assertIsNone(launcher_ui.show_launcher(Path("/tmp/root"), None, None))
+
     def test_show_launcher_runs_the_qt_window_and_returns_its_choice(self):
         import launcher_ui
         import launcher_window
@@ -120,8 +131,9 @@ class LauncherUiTests(unittest.TestCase):
         class FakeWindow:
             launch_requested = True
 
-            def __init__(self, install_root, version, channel):
+            def __init__(self, install_root, version, channel, *, notice=""):
                 self.args = (install_root, version, channel)
+                self.notice = notice
                 instances.append(self)
 
             def show(self):
@@ -141,6 +153,36 @@ class LauncherUiTests(unittest.TestCase):
         self.assertEqual(len(instances), 1)
         self.assertEqual(instances[0].args[1], "9.9.9")
         self.assertTrue(getattr(instances[0], "shown", False))
+        self.assertEqual(instances[0].notice, "")
+
+    def test_show_launcher_passes_the_reason_it_opened_again(self):
+        import launcher_ui
+        import launcher_window
+        import ui_qt
+
+        seen = []
+
+        class FakeWindow:
+            launch_requested = False
+
+            def __init__(self, install_root, version, channel, *, notice=""):
+                seen.append(notice)
+
+            def show(self):
+                pass
+
+        class FakeApp:
+            def exec(self):
+                return 0
+
+        fake_launcher = mock.Mock()
+        fake_launcher.choose_version.return_value = "9.9.9"
+        with mock.patch.object(launcher_ui, "_launcher_runtime", return_value=fake_launcher), \
+             mock.patch.object(launcher_window, "LauncherWindow", FakeWindow), \
+             mock.patch.object(ui_qt, "ensure_app", return_value=FakeApp()):
+            self.assertFalse(launcher_ui.show_launcher(Path("/tmp/root"), None, None,
+                                                      notice="closed"))
+        self.assertEqual(seen, ["closed"])
 
     def test_article_links_use_existing_site_routes(self):
         self.assertEqual(launcher_ui._article_url("news", {"id": "42"}),

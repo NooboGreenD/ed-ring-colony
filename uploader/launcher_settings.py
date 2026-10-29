@@ -34,14 +34,18 @@ def read_site_locale(path: Optional[Path] = None) -> str:
     return normalize_locale(load_settings(path).get("site_locale"))
 
 
-def save_site_locale(locale: str, path: Optional[Path] = None) -> str:
-    """Persist the chosen language together with all existing settings."""
+def save_settings(payload: Dict[str, Any], path: Optional[Path] = None) -> bool:
+    """Write the whole settings file atomically, keeping it private.
+
+    Пишем через временный файл и `os.replace`: оборванная запись не должна
+    оставить половину JSON, из которого потом не читается ни язык, ни канал
+    обновлений. Права 0600 выставляются до записи — в файле лежит токен
+    привязанного устройства.
+    """
     target = settings_path(path)
-    code = normalize_locale(locale)
-    payload = load_settings(target)
-    payload["site_locale"] = code
     temporary = target.with_suffix(target.suffix + ".tmp")
     try:
+        target.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, PRIVATE_MODE)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, ensure_ascii=False, indent=2)
@@ -52,9 +56,19 @@ def save_site_locale(locale: str, path: Optional[Path] = None) -> str:
         except OSError:
             pass
         temporary.replace(target)
+        return True
     except OSError:
         # A read-only profile must not block launching the program.
-        pass
+        return False
+
+
+def save_site_locale(locale: str, path: Optional[Path] = None) -> str:
+    """Persist the chosen language together with all existing settings."""
+    target = settings_path(path)
+    code = normalize_locale(locale)
+    payload = load_settings(target)
+    payload["site_locale"] = code
+    save_settings(payload, target)
     return code
 
 
@@ -77,5 +91,6 @@ def active_version(install_root: Optional[Path] = None) -> str:
 
 __all__ = [
     "DEFAULT_LOCALE", "DEFAULT_PATH", "active_version", "load_settings",
-    "read_site_locale", "save_site_locale", "settings_path", "update_channel",
+    "read_site_locale", "save_settings", "save_site_locale", "settings_path",
+    "update_channel",
 ]

@@ -14,6 +14,7 @@ import { BgsSnapshotCollector } from "@/lib/bgsJournal";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
 import AccountPremiumPanel from "@/components/Cosmetics/AccountPremiumPanel";
+import HelperLinkPanel from "@/components/Account/HelperLinkPanel";
 import CarrierPanel from "@/components/Carriers/CarrierPanel";
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
 import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
@@ -902,6 +903,11 @@ export default function AccountPage() {
             <button type="button" onClick={saveLanguage} className="btn btn-cyan">{t('account.saveLanguage')}</button>
           </div>
 
+          <h2 style={{ marginTop: 32 }}>{t('account.helperLinkTitle')}</h2>
+          {/* Привязка лаунчера: код на десять минут вместо пароля и список
+              устройств, с которых раскладка оверлея ездит за пилотом. */}
+          <HelperLinkPanel />
+
           <h2 style={{ marginTop: 32 }}>{t('account.privacyTitle')}</h2>
           <p style={{ color: '#9ca3af', fontSize: 13, lineHeight: 1.6, maxWidth: 640 }}>
             {t('account.privacyDesc')}
@@ -1121,10 +1127,11 @@ export default function AccountPage() {
               <input type="file" multiple accept=".log" style={{ display: "none" }} onChange={(e) => setFiles(e.target.files)} />
             </label>
             <button disabled={busy || !files?.length} onClick={upload} className="btn btn-orange">{busy ? t('account.processing') : t('account.uploadAndParse')}</button>
-            {/* Актуальная базовая сборка хранится на нашем сервере. Обычные
-                обновления после установки приходят маленькими пакетами кода. */}
+            {/* Установщик публикуется в админке (админка → Обновления Helper).
+                Обычные обновления после установки приходят маленькими пакетами
+                кода, поэтому качать установщик нужно редко. */}
             <a
-              href="/api/uploader/launcher/win64"
+              href="/api/uploader/download?platform=win64"
               download
               className="btn btn-cyan"
               style={{ fontSize: 12 }}

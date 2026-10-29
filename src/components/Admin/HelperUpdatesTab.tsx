@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { IconAlert, IconCheckCircle, IconRefresh, IconXCircle } from '@/components/Icons';
 import type { HelperReleaseJob } from '@/types/helperRelease';
 import { uploadLauncherInChunks } from '@/lib/launcherChunkUpload';
+import { uploadSetupInChunks, type SetupInfo } from '@/lib/setupChunkUpload';
 import { authFetch } from '@/lib/supabaseClient';
 
 /**
@@ -154,6 +155,13 @@ export default function HelperUpdatesTab() {
   const [releaseFiles, setReleaseFiles] = useState<File[]>([]);
   const [launcherVersion, setLauncherVersion] = useState('1.0.0');
   const [launcherFile, setLauncherFile] = useState<File | null>(null);
+  // Установщик для первичной установки: именно его качают с сайта в профиле
+  // и в меню профиля, поэтому он публикуется отдельно от базовой сборки.
+  const [setupInfo, setSetupInfo] = useState<SetupInfo | null>(null);
+  const [setupDownloadUrl, setSetupDownloadUrl] = useState('');
+  const [setupFile, setSetupFile] = useState<File | null>(null);
+  const [setupVersion, setSetupVersion] = useState('');
+  const [setupBusy, setSetupBusy] = useState(false);
   // Секрет, который показывается ровно один раз (приватный ключ / токен).
   const [secret, setSecret] = useState<{ title: string; value: string; note: string } | null>(null);
   // Публикация выполняется как серверная задача. Состояние и журнал лежат на
@@ -173,6 +181,17 @@ export default function HelperUpdatesTab() {
       setStore(data.store ?? null);
       setChannels(data.channels ?? {});
       setVersions(data.versions ?? []);
+      const setupResponse = await authFetch('/api/admin/uploader/setup', { cache: 'no-store' });
+      const setupData = (await setupResponse.json().catch(() => ({}))) as {
+        ok?: boolean;
+        setup?: SetupInfo | null;
+        downloadUrl?: string;
+      };
+      if (setupResponse.ok && setupData.ok) {
+        setSetupInfo(setupData.setup ?? null);
+        setSetupDownloadUrl(setupData.downloadUrl ?? '');
+        setSetupVersion((current) => current || setupData.setup?.version || '');
+      }
       setError('');
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Не удалось получить список версий');
@@ -555,6 +574,56 @@ export default function HelperUpdatesTab() {
       setBusy(false);
     }
   }, [launcherFile, launcherVersion, releaseJob]);
+
+  const publishSetup = useCallback(async () => {
+    if (!setupFile || !setupVersion.trim()) return;
+    if (setupFile.name !== 'ColonialHelperSetup.exe') {
+      setError('Нужен файл ColonialHelperSetup.exe — это установщик для первичной установки. Базовая сборка ColonialHelper.exe публикуется выше, в канал обновлений.');
+      return;
+    }
+    setSetupBusy(true);
+    setError('');
+    setMessage('Загружаю установщик частями…');
+    try {
+      const result = await uploadSetupInChunks({
+        file: setupFile,
+        version: setupVersion.trim(),
+        platform: 'win64',
+        fetcher: authFetch,
+        onProgress: (uploadedBytes, totalBytes, completedChunks, totalChunks) => {
+          const percent = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
+          setMessage(`Загрузка ColonialHelperSetup.exe: ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)} (${percent}%, часть ${completedChunks}/${totalChunks})`);
+        },
+      });
+      setSetupInfo(result.setup);
+      setSetupDownloadUrl(result.downloadUrl);
+      setSetupFile(null);
+      setMessage(`Установщик ${result.setup?.version ?? setupVersion} опубликован — ссылки в профиле и меню профиля уже ведут на него.`);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Не удалось загрузить установщик');
+      setMessage('');
+    } finally {
+      setSetupBusy(false);
+    }
+  }, [setupFile, setupVersion]);
+
+  const removeSetupFile = useCallback(async () => {
+    if (!confirm('Убрать установщик с раздачи? Ссылки в профиле и меню профиля перестанут отдавать файл.')) return;
+    setSetupBusy(true);
+    setError('');
+    try {
+      const response = await authFetch('/api/admin/uploader/setup?platform=win64', { method: 'DELETE' });
+      const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setSetupInfo(null);
+      setSetupDownloadUrl('');
+      setMessage('Установщик убран с раздачи.');
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Не удалось убрать установщик');
+    } finally {
+      setSetupBusy(false);
+    }
+  }, []);
 
   const releaseBusy = busy || releaseJob?.active === true;
 
@@ -965,6 +1034,73 @@ export default function HelperUpdatesTab() {
             <input type="file" accept=".exe,application/vnd.microsoft.portable-executable" onChange={(event) => setLauncherFile(event.target.files?.[0] ?? null)} style={{ color: '#9ca3af', fontSize: 12 }} />
             {launcherFile && <span style={{ color: launcherFile.name === 'ColonialHelper.exe' ? '#9ca3af' : '#fca5a5', fontSize: 11 }}>{launcherFile.name} — требуется файл ColonialHelper.exe</span>}
             <button className="btn" disabled={releaseBusy || !launcherFile || launcherFile.name !== 'ColonialHelper.exe' || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить ColonialHelper.exe для обновлений</button>
+          </div>
+        </div>
+
+        <div style={{ borderTop: '1px solid #2d3033', marginTop: 16, paddingTop: 12 }}>
+          <strong>Установщик для пилотов: ColonialHelperSetup.exe</strong>
+          <p style={{ color: '#9ca3af', fontSize: 12, margin: '4px 0 8px', maxWidth: 760, lineHeight: 1.6 }}>
+            Именно этот файл скачивают с сайта: постоянная ссылка{' '}
+            <code style={{ color: '#38bdf8' }}>/api/uploader/download?platform=win64</code>{' '}
+            стоит в меню профиля и в профиле пилота. Загруженный установщик заменяет прежний,
+            канал обновлений при этом не меняется — он живёт выше, в базовой сборке.
+          </p>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ background: '#1e2124', border: '1px solid #2d3033', borderRadius: 8, padding: '8px 12px', minWidth: 250 }}>
+              {setupInfo ? (
+                <>
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>Опубликован установщик</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: '#38bdf8' }}>v{setupInfo.version}</div>
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                    {formatBytes(setupInfo.size)} · {formatDate(setupInfo.updated_at ?? '')}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#6b7280', fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
+                    {setupInfo.sha256.slice(0, 24)}…
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: '#f1c40f' }}>
+                  Установщик не загружен: ссылки «Скачать Colonial Helper» на сайте пока отвечают 404.
+                </div>
+              )}
+            </div>
+            {setupDownloadUrl && (
+              <a className="btn btn-cyan" style={{ fontSize: 12 }} href={setupDownloadUrl} download>
+                Скачать текущий установщик
+              </a>
+            )}
+            {setupInfo && (
+              <button className="btn" disabled={setupBusy} onClick={() => void removeSetupFile()}>
+                Убрать с раздачи
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingTop: 9, borderTop: '1px dashed #2d3033' }}>
+            <input
+              value={setupVersion}
+              onChange={(event) => setSetupVersion(event.target.value)}
+              placeholder="2.18.36"
+              aria-label="Версия установщика"
+              style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }}
+            />
+            <input
+              type="file"
+              accept=".exe,application/vnd.microsoft.portable-executable"
+              onChange={(event) => setSetupFile(event.target.files?.[0] ?? null)}
+              style={{ color: '#9ca3af', fontSize: 12 }}
+            />
+            {setupFile && (
+              <span style={{ color: setupFile.name === 'ColonialHelperSetup.exe' ? '#9ca3af' : '#fca5a5', fontSize: 11 }}>
+                {setupFile.name} — требуется файл ColonialHelperSetup.exe
+              </span>
+            )}
+            <button
+              className="btn btn-orange"
+              disabled={setupBusy || !setupFile || setupFile.name !== 'ColonialHelperSetup.exe' || !setupVersion.trim()}
+              onClick={() => void publishSetup()}
+            >
+              {setupBusy ? 'Загрузка…' : 'Загрузить установщик для сайта'}
+            </button>
           </div>
         </div>
       </div>
