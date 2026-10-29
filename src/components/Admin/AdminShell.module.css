@@ -31,6 +31,10 @@
 .secondaryAction:hover { background: color-mix(in srgb, var(--cyan) 8%, transparent); }
 .dangerAction { border-color: var(--red); color: var(--red); background: transparent; }
 .dangerAction:hover { background: color-mix(in srgb, var(--red) 8%, transparent); }
+/* Роль подтверждена сервером, но браузер до базы не достаёт: доступ оставляем,
+   а причину показываем — иначе «половина страницы пустая» выглядит как новый баг. */
+.notice { margin: 0 0 16px; padding: 10px 12px; border: 1px solid var(--orange); border-left-width: 3px; border-radius: 2px; background: color-mix(in srgb, var(--orange) 8%, transparent); color: var(--text); font-size: 12px; line-height: 1.5; }
+.notice code { color: var(--orange); font: 11px ui-monospace, monospace; word-break: break-word; }
 @media (max-width: 1050px) {
   .groupNavigation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

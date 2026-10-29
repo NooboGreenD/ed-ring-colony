@@ -303,15 +303,102 @@ elif command -v psql >/dev/null 2>&1 && [ -n "$DB_URL" ]; then
   DB_PSQL="url"
 fi
 
-run_sql() { # SQL на stdin
+run_sql() { # SQL на stdin; "$@" — доп. аргументы psql (например, --single-transaction)
   if [ "$DB_PSQL" = "container" ]; then
-    docker exec -i -e PGOPTIONS='-c client_min_messages=warning' "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1
+    docker exec -i -e PGOPTIONS='-c client_min_messages=warning' "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1 "$@"
   elif [ "$DB_PSQL" = "url" ]; then
-    PGOPTIONS='-c client_min_messages=warning' psql "$DB_URL" -q -v ON_ERROR_STOP=1
+    PGOPTIONS='-c client_min_messages=warning' psql "$DB_URL" -q -v ON_ERROR_STOP=1 "$@"
   else
     return 1
   fi
 }
+
+# Что код сайта считает обязательным в базе. Проверяется ПОСЛЕ миграций и ДО
+# переключения контейнеров: «обновление прошло, а половина проекта не работает»
+# — это почти всегда несовпадение схемы с кодом, и лучше остановиться на нём,
+# оставив работать старый образ, чем показать пользователю сломанный новый.
+REQUIRED_TABLES="profiles app_flags helper_devices helper_link_codes helper_settings"
+REQUIRED_COLUMNS="profiles.role profiles.email app_flags.value helper_settings.payload"
+
+schema_audit_sql() {
+  local tables="" cols="" t c
+  for t in $REQUIRED_TABLES; do tables="$tables ('$t'),"; done
+  for c in $REQUIRED_COLUMNS; do
+    cols="$cols ('${c%%.*}','${c#*.}'),"
+  done
+  printf '%s\n' "
+with req_tables(name) as (values ${tables%,}),
+     req_columns(tbl, col) as (values ${cols%,})
+select 'таблица ' || name from req_tables r
+ where not exists (select 1 from information_schema.tables i
+                    where i.table_schema = 'public' and i.table_name = r.name)
+union all
+select 'колонка ' || tbl || '.' || col from req_columns r
+ where not exists (select 1 from information_schema.columns i
+                    where i.table_schema = 'public' and i.table_name = r.tbl and i.column_name = r.col)
+order by 1;"
+}
+
+# Пустой вывод — схема соответствует коду. Иначе печатаем, чего не хватает.
+schema_audit() {
+  [ -n "$DB_PSQL" ] || return 0
+  local missing
+  missing="$(schema_audit_sql | run_sql 2>&1)" || {
+    say "⚠ не удалось сверить схему базы с кодом: $(printf '%s' "$missing" | tail -n 3)"
+    return 0
+  }
+  missing="$(printf '%s\n' "$missing" | sed '/^\s*$/d')"
+  [ -z "$missing" ] && return 0
+  say "⚠ в базе нет объектов, которые нужны новому коду:"
+  printf '%s\n' "$missing" | while IFS= read -r line; do say "  • $line"; done
+  say "  миграции не применены или применились не полностью"
+  say "  разбор: bash deploy/diag-after-update.sh"
+  return 1
+}
+# ── сеть Supabase: web обязан быть в ней ─────────────────────────────
+# Если её потерять, браузер перестаёт видеть Supabase через шлюз /api/supabase:
+# вход «есть», а profiles не читается — админка отвечает «Доступ запрещён»,
+# половина страниц пустая. База при этом цела (psql на хосте работает), и само
+# это не проходит. Самая частая причина — пересоздание web обычным
+# `docker compose up` без доп. `-f deploy/compose.supabase-net.yml`.
+supabase_internal_host() { # docker-имя из env (kong/db/…), или пусто
+  local url host
+  url="$(grep -hE '^(SUPABASE_INTERNAL_URL|DATABASE_URL|SUPABASE_DB_URL)=' "$ENV_FILE" 2>/dev/null \
+    | grep -v '=$' | tail -n1 | cut -d= -f2- || true)"
+  [ -n "$url" ] || return 0
+  host="${url#*://}"
+  host="${host%%/*}"
+  case "$host" in
+    *@*) host="${host##*@}" ;;   # user:password@ — учётные данные не часть хоста
+  esac
+  host="${host%%\?*}"
+  host="${host%%:*}"
+  # Публичное имя (есть точка) или IP в отдельной сети — общая docker-сеть не нужна.
+  case "$host" in
+    '' | *.* | *[0-9].[0-9]*) return 0 ;;
+  esac
+  printf '%s\n' "$host"
+}
+
+# Контейнер web в compose называется <проект>-web-1, а не `web`: искать его
+# по имени нельзя, иначе проверка «сети нет» срабатывает на здоровом стенде.
+web_container() {
+  local id
+  command -v docker >/dev/null 2>&1 || return 0
+  id="$(docker ps -q --filter label=com.docker.compose.service=web 2>/dev/null | head -n1 || true)"
+  [ -n "$id" ] || id="$(docker ps -q --filter name=web 2>/dev/null | head -n1 || true)"
+  printf '%s\n' "$id"
+}
+
+supabase_net_ready() { # 1 — web резолвит внутренний хост
+  local host cid
+  host="$(supabase_internal_host)"
+  [ -n "$host" ] || return 0
+  cid="$(web_container)"
+  [ -n "$cid" ] || return 1
+  docker exec "$cid" getent hosts "$host" >/dev/null 2>&1
+}
+
 MARK_FILE="$STATE_DIR/migrations.mark"
 is_marked() { [ -f "$MARK_FILE" ] && grep -qxF "$1" "$MARK_FILE"; }
 mark_done() { printf '%s\n' "$1" >> "$MARK_FILE"; }
@@ -456,7 +543,11 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
       else
         say "  ▶ применяю $base (не была применена раньше)"
       fi
-      if psql_out="$(run_sql < "$f" 2>&1)"; then
+      # Один файл — одна транзакция. Без этого ошибка в середине файла
+      # оставляла базу в промежуточном состоянии, а обновление всё равно
+      # шло дальше («половина проекта не работает» при формально успешном
+      # прогоне). С --single-transaction неудачный файл откатывается целиком.
+      if psql_out="$(run_sql --single-transaction < "$f" 2>&1)"; then
         mark_done "$base"
         MIGRATIONS_APPLIED=$((MIGRATIONS_APPLIED + 1))
       elif printf '%s' "$psql_out" | grep -qiE 'already exists|уже существует'; then
@@ -466,6 +557,7 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
         # применённым и идём дальше. Любой другой сбой по-прежнему валит
         # обновление ДО переключения кода.
         say "  ⚠ $base — объекты уже существуют (миграция применялась ранее) — отмечаю как применённую"
+        say "    файл откатан целиком: частично применённых миграций после этой проверки не остаётся"
         mark_done "$base"
       else
         printf '%s\n' "$psql_out" | tail -n 20 >&2
@@ -474,6 +566,11 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
     done
     say "применено миграций: $MIGRATIONS_APPLIED"
   fi
+fi
+
+# ── 4c. сверка схемы: код и база должны совпадать ────────────────────
+if ! schema_audit; then
+  die "схема базы не совпадает с кодом — образ не переключаю (сайт продолжает работать на прежней версии)"
 fi
 
 # ── 4d. режим «только миграции»: база трогается, сборка — нет ───────
@@ -533,6 +630,17 @@ if [ "$MODE" = "compose" ]; then
   if declare -F edrc_prepare_legacy_build >/dev/null 2>&1; then
     EDRC_LEGACY_BUILD="$(edrc_prepare_legacy_build "$PROJECT_DIR")"
     [ -n "$EDRC_LEGACY_BUILD" ] && say "⚠ BuildKit недоступен — web собирается без кэш-маунтов (медленнее; поставьте плагин buildx или пересоберите агента, чтобы вернуть скорость)"
+  fi
+  # Не собираем образ, который заведомо окажется без сети Supabase: повторный
+  # прогон из-за этого стоит часа, а причина видна сразу.
+  if [ -z "$EDRC_EXTRA_COMPOSE_FILES" ] && [ -f "$PROJECT_DIR/deploy/compose.supabase-net.yml" ] \
+     && [ -n "$(supabase_internal_host)" ]; then
+    say "⚠ сеть Supabase не определилась (docker недоступен или сеть ещё не создана) — пробую ещё раз"
+    sleep 3
+    EDRC_EXTRA_COMPOSE_FILES="$(edrc_extra_compose_files "$PROJECT_DIR" "$ENV_FILE")"
+    if [ -z "$EDRC_EXTRA_COMPOSE_FILES" ]; then
+      die "в $ENV_FILE задан внутренний адрес Supabase ($(supabase_internal_host)), но docker-сеть Supabase не найдена. Обновление остановлено ДО сборки и переключения: иначе web поднимется без неё, и сайт потеряет доступ к базе (админка будет отвечать «Доступ запрещён»). Проверьте, что контейнер supabase-db запущен и виден: docker ps | grep supabase-db; docker network ls | grep supabase"
+    fi
   fi
   COMPOSE_ARGS="-f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES $EDRC_LEGACY_BUILD --profile monitoring"
   if [ -f "$ENV_FILE" ]; then
@@ -596,6 +704,29 @@ if [ "$MODE" = "compose" ]; then
     run_step "переключение контейнеров" edrc_compose_switch compose $COMPOSE_ARGS -- $COMPOSE_SERVICES
   else
     run_step "переключение контейнеров" compose $COMPOSE_ARGS up -d --no-build $COMPOSE_SERVICES
+  fi
+  # Переключение могло пересоздать web без сети Supabase (например, её не было
+  # в момент вычисления списка -f). Проверяем по факту и лечим тем же up, но с
+  # доп. файлом — иначе сайт потеряет базу до следующего ручного вмешательства.
+  if ! supabase_net_ready; then
+    say "⚠ web не видит Supabase ($(supabase_internal_host)) — пересоздаю с сетью Supabase"
+    EDRC_EXTRA_COMPOSE_FILES="$(edrc_extra_compose_files "$PROJECT_DIR" "$ENV_FILE")"
+    if [ -n "$EDRC_EXTRA_COMPOSE_FILES" ]; then
+      COMPOSE_ARGS="-f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES $EDRC_LEGACY_BUILD --profile monitoring"
+      if [ -f "$ENV_FILE" ]; then COMPOSE_ARGS="--env-file $ENV_FILE $COMPOSE_ARGS"; fi
+      if declare -F edrc_compose_switch >/dev/null 2>&1; then
+        run_step "переключение с сетью Supabase" edrc_compose_switch compose $COMPOSE_ARGS -- web
+      else
+        run_step "переключение с сетью Supabase" compose $COMPOSE_ARGS up -d --no-build web
+      fi
+    fi
+    if supabase_net_ready; then
+      say "✓ web снова видит Supabase"
+    else
+      say "⚠ web по-прежнему не видит Supabase ($(supabase_internal_host))"
+      say "  сайт работает, но браузер не сможет читать базу: админка скажет «Доступ запрещён»"
+      say "  исправление одной командой: docker compose --env-file $ENV_FILE -f docker-compose.yml -f deploy/compose.supabase-net.yml up -d web"
+    fi
   fi
   report switch 85 "Убираю мусор сборки: кэш BuildKit, висячие образы"
   # Каждая пересборка оставляет гигабайты кэша BuildKit (инвалидируется слой

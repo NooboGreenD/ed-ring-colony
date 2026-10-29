@@ -7,6 +7,35 @@ import dynamic from "next/dynamic";
 import { readAllRows } from '@/lib/readAllRows';
 import { RoutePagination, useRoutePagination } from '@/components/Admin/RoutePagination';
 import AdminNavigation, { ADMIN_ONLY_TABS, isAdminTab, type AdminTab } from "@/components/Admin/AdminNavigation";
+import { decideAccess, type AccessHint } from '@/lib/adminAccess';
+
+/** Какая подсказка соответствует причине отказа (ключи i18n). */
+const ACCESS_HINT_KEYS: Record<AccessHint, string> = {
+  none: 'admin.accessDenied',
+  session: 'admin.accessCheckSession',
+  schema: 'admin.accessCheckSchema',
+  grant: 'admin.accessCheckGrant',
+  'missing-row': 'admin.accessCheckMissingRow',
+  'missing-table': 'admin.accessCheckMissingTable',
+  network: 'admin.accessCheckNetwork',
+  unknown: 'admin.accessCheckUnknown',
+};
+
+/**
+ * Роль от сервера: сервисный ключ читает профиль без RLS, поэтому ответ верен
+ * даже тогда, когда браузерный запрос к PostgREST падает.
+ */
+async function fetchAdminAccess(): Promise<
+  { role: string; staff: boolean; serverMessage?: string; profile?: { cmdr_name?: string | null } | null } | null
+> {
+  try {
+    const res = await fetch('/api/admin/access', { cache: 'no-store' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
 import adminStyles from "@/components/Admin/AdminShell.module.css";
 
 import { supabase, authFetch } from "@/lib/supabaseClient";
@@ -84,6 +113,12 @@ function LangInputs({ label, values, onChange, textarea = false, placeholder }: 
 export default function AdminPage() {
   const { t } = useI18n();
   const [role, setRole] = useState<string | null>(null);
+  // Почему доступа нет — и что именно ответил сервер. Без этого отказ выглядел
+  // одинаково и при обычной роли, и при сломанном чтении профиля.
+  const [accessIssue, setAccessIssue] = useState<{ hint: AccessHint; message: string } | null>(null);
+  // Роль подтверждена сервером, но браузер до базы не достаёт: данные вкладок
+  // могут не загрузиться — об этом честно предупреждаем, доступ не отбираем.
+  const [accessWarning, setAccessWarning] = useState('');
   const [tab, setTab] = useState<AdminTab>('billing');
   const selectTab = (next: AdminTab) => {
     setTab(next);
@@ -143,10 +178,24 @@ export default function AdminPage() {
     try {
       const { data: u } = await supabase.auth.getUser();
       if (u?.user) {
-        const { data: p } = await supabase.from('profiles').select('*').eq('id', u.user.id).single();
-        setMe(p);
-        setRole(p?.role ?? 'user');
-        if (!['admin', 'moderator', 'support_manager'].includes(p?.role ?? '')) return;
+        const { data: p, error: profileError } = await supabase
+          .from('profiles').select('*').eq('id', u.user.id).maybeSingle();
+        let decision = decideAccess({ userId: u.user.id, profile: p, error: profileError });
+        const browserFailure = decision.reason === 'query-failed' ? decision.serverMessage : '';
+        setMe(p ?? null);
+        // Браузерный путь сломан (кэш схемы PostgREST, грант, сеть) — спрашиваем
+        // сервер: он читает профиль сервисным ключом и отвечает правду о базе.
+        if (decision.reason === 'query-failed') {
+          const remote = await fetchAdminAccess();
+          if (remote?.staff) {
+            decision = { role: remote.role, staff: true, reason: 'staff', hint: 'none', serverMessage: remote.serverMessage ?? '' };
+            setMe((prev: any) => prev ?? { id: u.user!.id, role: remote.role, cmdr_name: remote.profile?.cmdr_name ?? null });
+          }
+        }
+        setAccessWarning(decision.staff ? browserFailure : '');
+        setAccessIssue(decision.staff ? null : { hint: decision.hint, message: decision.serverMessage });
+        setRole(decision.role);
+        if (!decision.staff) return;
       } else {
         // In local development / preview environment without Supabase backend credentials,
         // provide dev admin preview access so the admin dashboard and billing suite can be inspected.
@@ -200,7 +249,14 @@ export default function AdminPage() {
       if (process.env.NODE_ENV !== 'production' && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         setRole('admin');
         setMe({ id: 'preview-user-guest', cmdr_name: 'CMDR Admin (Preview)', role: 'admin' });
-      } else setRole('guest');
+      } else {
+        setRole('guest');
+        // Молчаливый отказ — то, из-за чего «пропали права» выглядели необъяснимо.
+        setAccessIssue({
+          hint: 'unknown',
+          message: error instanceof Error ? error.message : 'Admin access check failed',
+        });
+      }
     }
   };
 
@@ -281,7 +337,24 @@ export default function AdminPage() {
 
   if (role === null) return <section className="card"><p>{t('common.loading')}</p></section>;
   if (!['admin', 'moderator', 'support_manager'].includes(role))
-    return <section className="card"><p>{t('admin.accessDenied')}</p></section>;
+    return (
+      <section className="card">
+        <p>{t('admin.accessDenied')}</p>
+        {accessIssue && (
+          <div role="alert">
+            <p>{t(ACCESS_HINT_KEYS[accessIssue.hint])}</p>
+            {accessIssue.message && <p><code>{accessIssue.message}</code></p>}
+          </div>
+        )}
+        <button
+          type="button"
+          className={adminStyles.secondaryAction}
+          onClick={() => { setRole(null); setAccessIssue(null); setAccessWarning(''); void load(); }}
+        >
+          {t('admin.accessRetry')}
+        </button>
+      </section>
+    );
 
   // Переводы лежат в колонках `<field>_<lang>`, но читатели (и старая схема БД)
   // смотрят базовую колонку. Пишем и то, и другое: русская колонка становится
@@ -570,6 +643,11 @@ export default function AdminPage() {
           <a href="/m-admin" className={adminStyles.mobileLink}><IconExternalLink size={14} /> Мобильная панель / Android</a>
         </div>
       </header>
+      {accessWarning && (
+        <p role="alert" className={adminStyles.notice}>
+          {t('admin.accessBrowserBroken')} <code>{accessWarning}</code>
+        </p>
+      )}
       <AdminNavigation tab={tab} role={role} onSelect={selectTab} />
       <div className={adminStyles.content}>
       {tab === 'content' && (
