@@ -11,3 +11,19 @@ export function getSiteUrl(value = process.env.NEXT_PUBLIC_SITE_URL || DEFAULT_S
   }
   return url.origin;
 }
+
+/**
+ * Публичный origin для ссылок, которые уезжают клиенту в ответе API.
+ *
+ * Адрес берётся из настройки, а не из запроса: за nginx `Host` приходит
+ * `0.0.0.0:3000` (так `proxy_pass` подставляет `$proxy_host`), и ссылка
+ * «скачать» уводила пилота на `https://0.0.0.0:3000/...`. Если настройка
+ * испорчена, отдаём адрес проекта, а не внутренний адрес контейнера.
+ */
+export function publicOrigin(): string {
+  try {
+    return getSiteUrl();
+  } catch {
+    return DEFAULT_SITE_URL;
+  }
+}

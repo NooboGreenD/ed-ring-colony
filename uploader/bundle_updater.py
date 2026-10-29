@@ -33,6 +33,7 @@ import sys
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urljoin, urlsplit
 
 from i18n import tr
 
@@ -52,6 +53,37 @@ TIMEOUT = (10, 30)
 DOWNLOAD_CHUNK = 1024 * 256
 MAX_ATTEMPTS = 3
 PLATFORM = "win64" if sys.platform.startswith("win") else sys.platform
+
+#: Адреса, по которым сборку не скачать снаружи: так выглядит `Host` за nginx
+#: (`proxy_pass` подставляет `$proxy_host` = `0.0.0.0:3000`) и локальная отладка.
+INTERNAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::1"}
+
+
+def launcher_url(url: str, base: str = "") -> str:
+    """Абсолютный публичный адрес базовой сборки из ответа сервера.
+
+    Сервер может отдать относительный путь (`/api/uploader/launcher/win64`) или
+    адрес контейнера (`https://0.0.0.0:3000/...`). Докачивать по ним нельзя:
+    относительный `requests` не примет вовсе, а внутренний адрес недоступен с
+    машины пилота. Поэтому такой адрес заменяется каноническим на нашей базе
+    обновлений — подпись и sha256 всё равно проверяются после скачивания.
+    """
+    api = update_base(base)
+    raw = str(url or "").strip()
+    parsed = urlsplit(raw)
+    if parsed.scheme in ("http", "https"):
+        host = (parsed.hostname or "").lower()
+        if host and host not in INTERNAL_HOSTS:
+            return raw
+        return f"{api}/launcher/{PLATFORM}"
+    if raw.startswith("/"):
+        # Абсолютный путь сервера (`/api/uploader/launcher/win64`): домен берём
+        # от базы обновлений, путь — из ответа.
+        origin = urlsplit(api)
+        return f"{origin.scheme}://{origin.netloc}{raw}"
+    if raw:
+        return urljoin(f"{api}/", raw)
+    return f"{api}/launcher/{PLATFORM}"
 
 
 def update_base(override: str = "") -> str:
@@ -463,7 +495,7 @@ def check_launcher(launcher_version: str, session=None, base: str = "") -> Dict[
         return result
     result["ok"] = True
     result["version"] = str(payload.get("version") or "")
-    result["url"] = str(payload.get("url") or "")
+    result["url"] = launcher_url(str(payload.get("url") or ""), base)
     result["sha256"] = str(payload.get("sha256") or "").lower()
     result["size"] = int(payload.get("size") or 0)
     if not result["url"]:
@@ -477,7 +509,7 @@ def check_launcher(launcher_version: str, session=None, base: str = "") -> Dict[
 def download_launcher(info: Dict[str, Any], dest_dir, progress=None, session=None) -> Dict[str, Any]:
     """Скачать новую базовую сборку в указанную папку (пишем через .part)."""
     result: Dict[str, Any] = {"ok": False, "path": "", "size": 0, "error": None}
-    url = str((info or {}).get("url") or "")
+    url = launcher_url(str((info or {}).get("url") or ""))
     if not url:
         result["error"] = tr("нет ссылки на сборку")
         return result

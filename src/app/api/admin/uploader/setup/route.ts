@@ -12,6 +12,7 @@ import {
   writeLauncherUploadChunk,
 } from '@/lib/launcherUploadSessions';
 import { LAUNCHER_UPLOAD_CHUNK_BYTES } from '@/lib/launcherUploadProtocol';
+import { publicOrigin } from '@/lib/siteUrl';
 import { readSetup, removeSetup, saveSetupBinary } from '@/lib/uploaderStore';
 
 export const dynamic = 'force-dynamic';
@@ -29,11 +30,15 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  * Файл большой, поэтому принимается теми же частями по 4 МиБ, что и базовая
  * сборка: одиночное тело в 200+ МиБ не проходит через прокси.
  */
-function publicSetupUrl(request: Request, platform: string): string {
-  const forwardedHost = request.headers.get('x-forwarded-host') ?? request.headers.get('host');
-  const forwardedProto = request.headers.get('x-forwarded-proto') ?? 'https';
-  const origin = forwardedHost ? `${forwardedProto}://${forwardedHost}` : new URL(request.url).origin;
-  return `${origin}/api/uploader/setup/${encodeURIComponent(platform)}`;
+/**
+ * Адрес установщика для пилотов.
+ *
+ * Строится от настроенного публичного адреса сайта (`NEXT_PUBLIC_SITE_URL`), а
+ * не от `Host` запроса: за nginx там приходит `0.0.0.0:3000`, и эта ссылка
+ * уезжала в админку, а после загрузки файла — ещё и в метаданные установщика.
+ */
+function publicSetupUrl(_request: Request, platform: string): string {
+  return `${publicOrigin()}/api/uploader/setup/${encodeURIComponent(platform)}`;
 }
 
 function jsonError(error: unknown, fallback = 'Загрузка установщика не выполнена') {

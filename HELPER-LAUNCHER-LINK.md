@@ -132,10 +132,15 @@
   платформа, версия, размер (до 320 МиБ) и заголовок `MZ`; файл без заголовка
   Windows PE отклоняется.
 * **Раздача** — `GET /api/uploader/setup/<platform>` отдаёт вложение
-  `ColonialHelperSetup-<version>.exe` с `ETag` = sha256.
+  `ColonialHelperSetup-<version>.exe` с `ETag` = sha256 потоком (установщик
+  весит 200–300 МиБ, в память его целиком не читаем).
   `GET /api/uploader/download?platform=win64` — постоянная ссылка (302 на
   установщик, 404 если он не загружен). Именно она стоит в профиле пилота
   (`/account?tab=journals`) и в меню профиля.
+  `Location` у редиректа **относительный**, а публичные адреса в админке и
+  метаданных строятся от `NEXT_PUBLIC_SITE_URL` (`publicOrigin()`): за nginx
+  `Host` — это `0.0.0.0:3000` (так `proxy_pass` подставляет `$proxy_host`),
+  и ссылка «скачать» уводила пилота на `https://0.0.0.0:3000/...`.
 * **Канал обновлений не меняется**: `/api/uploader/launcher/win64` и манифест
   по-прежнему отдают `ColonialHelper.exe`.
 
