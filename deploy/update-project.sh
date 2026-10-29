@@ -303,14 +303,57 @@ elif command -v psql >/dev/null 2>&1 && [ -n "$DB_URL" ]; then
   DB_PSQL="url"
 fi
 
-run_sql() { # SQL на stdin
+run_sql() { # SQL на stdin; "$@" — доп. аргументы psql (например, --single-transaction)
   if [ "$DB_PSQL" = "container" ]; then
-    docker exec -i -e PGOPTIONS='-c client_min_messages=warning' "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1
+    docker exec -i -e PGOPTIONS='-c client_min_messages=warning' "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1 "$@"
   elif [ "$DB_PSQL" = "url" ]; then
-    PGOPTIONS='-c client_min_messages=warning' psql "$DB_URL" -q -v ON_ERROR_STOP=1
+    PGOPTIONS='-c client_min_messages=warning' psql "$DB_URL" -q -v ON_ERROR_STOP=1 "$@"
   else
     return 1
   fi
+}
+
+# Что код сайта считает обязательным в базе. Проверяется ПОСЛЕ миграций и ДО
+# переключения контейнеров: «обновление прошло, а половина проекта не работает»
+# — это почти всегда несовпадение схемы с кодом, и лучше остановиться на нём,
+# оставив работать старый образ, чем показать пользователю сломанный новый.
+REQUIRED_TABLES="profiles app_flags helper_devices helper_link_codes helper_settings"
+REQUIRED_COLUMNS="profiles.role profiles.email app_flags.value helper_settings.payload"
+
+schema_audit_sql() {
+  local tables="" cols="" t c
+  for t in $REQUIRED_TABLES; do tables="$tables ('$t'),"; done
+  for c in $REQUIRED_COLUMNS; do
+    cols="$cols ('${c%%.*}','${c#*.}'),"
+  done
+  printf '%s\n' "
+with req_tables(name) as (values ${tables%,}),
+     req_columns(tbl, col) as (values ${cols%,})
+select 'таблица ' || name from req_tables r
+ where not exists (select 1 from information_schema.tables i
+                    where i.table_schema = 'public' and i.table_name = r.name)
+union all
+select 'колонка ' || tbl || '.' || col from req_columns r
+ where not exists (select 1 from information_schema.columns i
+                    where i.table_schema = 'public' and i.table_name = r.tbl and i.column_name = r.col)
+order by 1;"
+}
+
+# Пустой вывод — схема соответствует коду. Иначе печатаем, чего не хватает.
+schema_audit() {
+  [ -n "$DB_PSQL" ] || return 0
+  local missing
+  missing="$(schema_audit_sql | run_sql 2>&1)" || {
+    say "⚠ не удалось сверить схему базы с кодом: $(printf '%s' "$missing" | tail -n 3)"
+    return 0
+  }
+  missing="$(printf '%s\n' "$missing" | sed '/^\s*$/d')"
+  [ -z "$missing" ] && return 0
+  say "⚠ в базе нет объектов, которые нужны новому коду:"
+  printf '%s\n' "$missing" | while IFS= read -r line; do say "  • $line"; done
+  say "  миграции не применены или применились не полностью"
+  say "  разбор: bash deploy/diag-after-update.sh"
+  return 1
 }
 MARK_FILE="$STATE_DIR/migrations.mark"
 is_marked() { [ -f "$MARK_FILE" ] && grep -qxF "$1" "$MARK_FILE"; }
@@ -456,7 +499,11 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
       else
         say "  ▶ применяю $base (не была применена раньше)"
       fi
-      if psql_out="$(run_sql < "$f" 2>&1)"; then
+      # Один файл — одна транзакция. Без этого ошибка в середине файла
+      # оставляла базу в промежуточном состоянии, а обновление всё равно
+      # шло дальше («половина проекта не работает» при формально успешном
+      # прогоне). С --single-transaction неудачный файл откатывается целиком.
+      if psql_out="$(run_sql --single-transaction < "$f" 2>&1)"; then
         mark_done "$base"
         MIGRATIONS_APPLIED=$((MIGRATIONS_APPLIED + 1))
       elif printf '%s' "$psql_out" | grep -qiE 'already exists|уже существует'; then
@@ -466,6 +513,7 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
         # применённым и идём дальше. Любой другой сбой по-прежнему валит
         # обновление ДО переключения кода.
         say "  ⚠ $base — объекты уже существуют (миграция применялась ранее) — отмечаю как применённую"
+        say "    файл откатан целиком: частично применённых миграций после этой проверки не остаётся"
         mark_done "$base"
       else
         printf '%s\n' "$psql_out" | tail -n 20 >&2
@@ -474,6 +522,11 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
     done
     say "применено миграций: $MIGRATIONS_APPLIED"
   fi
+fi
+
+# ── 4c. сверка схемы: код и база должны совпадать ────────────────────
+if ! schema_audit; then
+  die "схема базы не совпадает с кодом — образ не переключаю (сайт продолжает работать на прежней версии)"
 fi
 
 # ── 4d. режим «только миграции»: база трогается, сборка — нет ───────
