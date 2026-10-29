@@ -64,7 +64,7 @@ def launcher_version() -> str:
     module = sys.modules.get("__main__")
     if not hasattr(module, "LAUNCHER_VERSION"):
         module = sys.modules.get("launcher")
-    return str(getattr(module, "LAUNCHER_VERSION", "1.3.0"))
+    return str(getattr(module, "LAUNCHER_VERSION", "1.4.0"))
 
 
 class LauncherWindow(FramelessWindow):
@@ -290,6 +290,14 @@ class LauncherWindow(FramelessWindow):
             tr("ED RING COLONY   /   СООБЩЕСТВО ИССЛЕДОВАТЕЛЕЙ ГАЛАКТИКИ"),
             role="mono", size=8, color=MUTED)
         layout.addWidget(self.footer_label)
+        layout.addSpacing(12)
+        # Версия самого лаунчера рядом с версией программы: без неё не понять,
+        # почему после обновления пакета экран остался прежним (старая
+        # базовая сборка).
+        self.launcher_label = label(
+            tr("лаунчер {version}", version=launcher_version()),
+            role="mono", size=8, color=MUTED)
+        layout.addWidget(self.launcher_label)
         layout.addStretch(1)
         self.connection_indicator = label(
             self._connection_text(), role="mono", size=8, bold=True, color=GREEN)
@@ -393,6 +401,7 @@ class LauncherWindow(FramelessWindow):
         self.notice_label.setVisible(bool(self._notice_text()))
         self.footer_label.setText(
             tr("ED RING COLONY   /   СООБЩЕСТВО ИССЛЕДОВАТЕЛЕЙ ГАЛАКТИКИ"))
+        self.launcher_label.setText(tr("лаунчер {version}", version=launcher_version()))
         self.feed_status.setText(self._feed_status_text())
         self.connection_indicator.setText(self._connection_text())
         self.profile_badge.reload()

@@ -46,12 +46,14 @@ if str(HERE) not in sys.path:
 
 import bundle  # noqa: E402
 
-#: Что в пакет не попадает: инструменты сборки и сам лаунчер (он внутри exe).
+#: Что в пакет не попадает: инструменты сборки и сам загрузчик (`launcher.py`
+#: внутри exe). `launcher_ui.py` здесь БОЛЬШЕ НЕТ: стартовый экран едет
+#: пакетом, иначе любая правка лаунчера требовала новой базовой сборки.
 #: `updater.py` держим в списке и для старых каталогов, где он ещё лежит:
 #: обновления теперь идут только через сервер проекта, и модуль GitHub API
 #: в пакет пилоту не нужен.
 EXCLUDE = {"build_exe.py", "build_bundle.py", "build_installer.py", "installer.py",
-           "launcher.py", "launcher_ui.py", "updater.py"}
+           "launcher.py", "updater.py"}
 
 #: Переменные окружения для CI.
 KEY_ENV = "UPLOADER_SIGN_KEY"

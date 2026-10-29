@@ -79,6 +79,17 @@ class LauncherWindowTests(unittest.TestCase):
         self.app.processEvents()
         return window
 
+    def test_footer_shows_the_launcher_version(self):
+        """Версия лаунчера видна в окне: по ней понятно, почему экран прежний.
+
+        Экран приезжает пакетом кода, но само окно собирает загрузчик из exe.
+        Без этой подписи «обновилось, а окно старое» невозможно отличить от
+        «пакет не встал».
+        """
+        window = self._window()
+        self.assertIn(launcher_window.launcher_version(), window.launcher_label.text())
+        window.close()
+
     # ------------------------------------------------------------------ frame
     def test_window_is_visible_with_custom_frameless_title_bar(self):
         window = self._window()

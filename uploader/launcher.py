@@ -39,7 +39,7 @@ from i18n import tr
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.3.0"
+LAUNCHER_VERSION = "1.4.0"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
@@ -51,6 +51,16 @@ ENV_ROOT = "COLONIAL_HELPER_HOME"
 
 #: Модули, которые обязаны перечитаться из пакета, а не остаться копией из exe.
 RELOAD_MODULES = ("bundle", "bundle_updater")
+
+#: Модули стартового экрана. Они лежат в пакете кода, а не в exe: правка
+#: лаунчера (профиль пилота, привязка устройства, канал обновлений) должна
+#: доезжать тем же пакетом на 5–130 КиБ, а не новой базовой сборкой на 43 МиБ.
+#: В exe остаётся запасная копия — каталог `app_bundle`, из него экран
+#: берётся, пока пакет не установлен.
+DASHBOARD_MODULES = (
+    "launcher_ui", "launcher_window", "launcher_content", "launcher_settings",
+    "launcher_profile", "launcher_account", "ui_qt",
+)
 
 
 def log_path(root) -> Path:
@@ -314,7 +324,7 @@ def apply_saved_locale() -> None:
     настроек не должна мешать запуску — остаётся русский оригинал.
     """
     try:
-        from launcher_settings import read_site_locale
+        read_site_locale = import_dashboard("launcher_settings").read_site_locale
 
         i18n.set_locale(read_site_locale())
     except Exception:
@@ -327,7 +337,8 @@ def report_failure(root, message: str, details: str = "") -> None:
     if details:
         log(root, details)
     try:
-        from ui_qt import ensure_app, show_error_dialog
+        ui = import_dashboard("ui_qt")
+        ensure_app, show_error_dialog = ui.ensure_app, ui.show_error_dialog
 
         ensure_app()
         show_error_dialog(
@@ -343,6 +354,7 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     root = bundle.install_root()
     embedded_dir, embedded_manifest = embedded_bundle()
+    use_fallback(embedded_dir)
 
     if "--launcher-version" in args:
         print(LAUNCHER_VERSION)
@@ -439,18 +451,130 @@ NOTICE_CLOSED = "closed"
 NOTICE_FAILED = "failed"
 
 
+def dashboard_candidates(root, version: str,
+                         embedded_dir: Optional[Path] = None) -> List[Path]:
+    """Каталоги, где может лежать код стартового экрана, по порядку.
+
+    Установленный пакет (``app/<версия>``) → встроенная копия из exe
+    (``app_bundle``). Пустой список — экран придётся брать из exe (так
+    работают базовые сборки, где модули экрана ещё заморожены).
+    """
+    found: List[Path] = []
+    if version:
+        try:
+            found.append(bundle.version_dir(root, version))
+        except Exception:                          # некорректный номер версии
+            pass
+    if embedded_dir is not None:
+        found.append(Path(embedded_dir))
+    out: List[Path] = []
+    for folder in found:
+        try:
+            if (folder / "launcher_ui.py").is_file() and folder not in out:
+                out.append(folder)
+        except OSError:
+            continue
+    return out
+
+
+def dashboard_folder(root, version: str, embedded_dir: Optional[Path] = None) -> Optional[Path]:
+    """Первый каталог экрана (см. `dashboard_candidates`); `None` — копия из exe."""
+    candidates = dashboard_candidates(root, version, embedded_dir)
+    return candidates[0] if candidates else None
+
+
+def fallback_dir() -> Optional[Path]:
+    """Встроенная в exe копия пакета кода (`app_bundle`), если она есть."""
+    folder = frozen_dir() / EMBEDDED_DIR
+    return folder if folder.is_dir() else None
+
+
+def import_dashboard(name: str):
+    """Импортировать модуль стартового экрана из подключённого каталога.
+
+    Через `importlib`, а не `from ... import`, намеренно: статический импорт
+    PyInstaller замечает и замораживает модуль внутрь exe, а замороженная копия
+    ищется раньше пути на диске — тогда экран снова перестал бы обновляться
+    пакетом. Условие закреплено тестом `test_launcher_modules_are_not_frozen`.
+    """
+    return importlib.import_module(name)
+
+
+def use_fallback(embedded_dir: Optional[Path]) -> None:
+    """Добавить встроенную копию кода в конец `sys.path`.
+
+    Экран и вспомогательные модули (`ui_qt`, `launcher_settings`) больше не
+    заморожены в exe — до первого обновления пакета их берём из `app_bundle`.
+    Конец списка, а не начало: установленный пакет всегда важнее копии из exe.
+    """
+    if embedded_dir is None:
+        return
+    path = str(embedded_dir)
+    if path not in sys.path:
+        sys.path.append(path)
+
+
+def use_dashboard(folder: Optional[Path]) -> None:
+    """Подключить каталог экрана: первым в `sys.path` и без старых копий в кэше."""
+    if folder is None:
+        return
+    path = str(folder)
+    while path in sys.path:
+        sys.path.remove(path)
+    sys.path.insert(0, path)
+    for name in DASHBOARD_MODULES:
+        sys.modules.pop(name, None)
+
+
+def drop_dashboard(folder: Optional[Path]) -> None:
+    """Отключить каталог экрана (сломанный пакет не должен ломать запуск)."""
+    if folder is not None:
+        path = str(folder)
+        while path in sys.path:
+            sys.path.remove(path)
+    for name in DASHBOARD_MODULES:
+        sys.modules.pop(name, None)
+
+
 def show_dashboard(root, embedded_dir, embedded_manifest,
                    notice: str = "") -> Optional[bool]:
     """Показать стартовый экран.
 
     ``True`` — пользователь просит запустить Helper, ``False`` — закрыл
     лаунчер, ``None`` — окно построить не удалось (GUI сломан или его нет).
+
+    Экран берётся из установленного пакета, а не из exe: иначе исправление
+    лаунчера можно было доставить только новой базовой сборкой — именно
+    поэтому «профиль в правом верхнем углу» и привязка устройства не доехали
+    к пилотам вместе с пакетом кода. Порядок попыток: пакет → встроенная
+    копия → замороженная копия в exe; сломанный пакет не оставляет без окна.
     """
+    # Ничего не устанавливаем и не отмечаем: показ окна не должен менять
+    # установку — этим занимается `choose_version` при запуске Helper. Здесь
+    # нужно только узнать, какой пакет уже лежит на диске.
     try:
-        from launcher_ui import show_launcher
-    except Exception as exc:
-        log(root, f"стартовый экран не загрузился: {exc}; запускаем Helper напрямую")
-        return None
+        version = str(bundle.load_state(root).get("current") or "")
+    except Exception as exc:                       # порча установки — не повод падать
+        log(root, f"не удалось прочитать состояние установки: {exc}")
+        version = ""
+
+    show_launcher = None
+    attempts: List[Optional[Path]] = [
+        *dashboard_candidates(root, version, embedded_dir),
+        None,                                      # запасная копия внутри exe
+    ]
+    for folder in attempts:
+        try:
+            use_dashboard(folder)
+            show_launcher = import_dashboard("launcher_ui").show_launcher
+            break
+        except Exception as exc:
+            drop_dashboard(folder)
+            if folder is None:
+                log(root, f"стартовый экран не загрузился: {exc}; запускаем Helper напрямую")
+                return None
+            log(root, f"стартовый экран из {folder.name} не загрузился ({exc}) — беру запасной")
+
     result = show_launcher(root, embedded_dir, embedded_manifest, notice=notice)
     return None if result is None else bool(result)
 
@@ -492,6 +616,9 @@ def run_dashboard_loop(root, embedded_dir, embedded_manifest,
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # До первого сообщения пользователю: язык из настроек и диалог ошибки
+    # лежат в пакете кода, поэтому запасной каталог нужен уже здесь.
+    use_fallback(fallback_dir())
     apply_saved_locale()
     args = list(sys.argv[1:] if argv is None else argv)
     direct_flags = {"--run-helper", "--repair", "--reinstall", "--launcher-version", "--bundle-info"}
@@ -501,6 +628,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     root = bundle.install_root()
     embedded_dir, embedded_manifest = embedded_bundle()
+    use_fallback(embedded_dir)
     return run_dashboard_loop(root, embedded_dir, embedded_manifest, args)
 
 

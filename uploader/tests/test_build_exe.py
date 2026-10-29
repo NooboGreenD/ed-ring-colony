@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))
+UPLOADER = HERE.parent
+sys.path.insert(0, str(UPLOADER))
 
 import build_exe  # noqa: E402
 
@@ -22,9 +23,50 @@ class BuildExeTests(unittest.TestCase):
         for module in ("PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "shiboken6"):
             self.assertIn(module, build_exe.ALWAYS_INCLUDE)
 
-    def test_native_launcher_windows_are_frozen_into_the_launcher(self):
-        for module in ("ui_qt", "launcher_window", "launcher_content", "launcher_settings"):
+    def test_start_screen_is_not_frozen_so_it_can_arrive_with_the_package(self):
+        """Экран лаунчера — в пакете, а не в exe.
+
+        Замороженный модуль ищется раньше пути на диске, поэтому заморозка
+        экрана означала: правка лаунчера (профиль пилота, привязка устройства,
+        синхронизация раскладки) доезжает только новой базовой сборкой на
+        43 МиБ. Пилоты при этом видели старый экран при свежем пакете.
+        """
+        for module in ("launcher_ui", "launcher_window", "launcher_profile",
+                       "launcher_account", "launcher_content", "launcher_settings", "ui_qt"):
+            self.assertNotIn(module, build_exe.LAUNCHER_MODULES)
+        # Механизм запуска и переводы ошибок остаются в exe: программа обязана
+        # открыться, даже если пакет не установлен.
+        for module in ("bundle", "bundle_updater", "i18n", "i18n_catalogs"):
             self.assertIn(module, build_exe.LAUNCHER_MODULES)
+
+    def test_launcher_modules_are_not_frozen(self):
+        """`launcher.py` не должен импортировать экран статически.
+
+        PyInstaller разворачивает и `from launcher_ui import show_launcher`, и
+        `importlib.import_module("launcher_ui")`. Первое замораживает модуль в
+        exe, а замороженная копия ищется раньше пути на диске — экран перестал
+        бы обновляться пакетом. Поэтому такие импорты идут через
+        `launcher.import_dashboard()`.
+        """
+        import ast
+        tree = ast.parse((UPLOADER / "launcher.py").read_text(encoding="utf-8"))
+        own = {path.stem for path in UPLOADER.glob("*.py")}
+        screen = own - set(build_exe.LAUNCHER_MODULES)
+        static: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                static += [alias.name for alias in node.names if alias.name in screen]
+            elif isinstance(node, ast.ImportFrom) and node.module in screen:
+                static.append(node.module)
+        self.assertEqual(static, [], "статический импорт экрана заморозит его в exe: "
+                                   + ", ".join(sorted(set(static))))
+
+    def test_start_screen_ships_inside_the_executable_as_a_fallback(self):
+        """Запасная копия экрана лежит в exe каталогом `app_bundle`."""
+        import inspect
+        source = inspect.getsource(build_exe.main)
+        self.assertIn('--add-data', source)
+        self.assertIn('app_bundle', source)
 
     def test_translation_catalog_is_frozen_into_the_launcher(self):
         # Сообщения об ошибках запуска идут через `tr()`, и они должны быть

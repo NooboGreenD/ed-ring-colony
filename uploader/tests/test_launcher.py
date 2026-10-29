@@ -355,6 +355,84 @@ class LauncherTests(unittest.TestCase):
             launcher.main(["--launcher-version"])
         self.assertEqual(stream.getvalue().strip(), launcher.LAUNCHER_VERSION)
 
+    # -- стартовый экран приезжает пакетом -------------------------------
+    def make_screen(self, folder: Path, marker: str = "ok") -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "launcher_ui.py").write_text(
+            f'MARKER = "{marker}"\n'
+            "def show_launcher(*args, **kwargs):\n"
+            "    return False\n",
+            encoding="utf-8")
+        return folder
+
+    def test_dashboard_folder_prefers_the_installed_package(self):
+        """"Экран берётся из установленного пакета, а не из exe.
+
+        Иначе правка лаунчера (профиль пилота, привязка) не доедет пакетом:
+        замороженный в exe модуль ищется раньше пути на диске.
+        """
+        installed = bundle.version_dir(self.root, "1.0.0")
+        installed.mkdir(parents=True, exist_ok=True)
+        self.make_screen(installed)
+        self.make_screen(self.embedded)
+        self.assertEqual(launcher.dashboard_folder(self.root, "1.0.0", self.embedded), installed)
+
+    def test_dashboard_folder_falls_back_to_the_embedded_copy(self):
+        self.make_screen(self.embedded)
+        self.assertEqual(launcher.dashboard_folder(self.root, "", self.embedded), self.embedded)
+        self.assertIsNone(launcher.dashboard_folder(self.root, "", None))
+
+    def test_show_dashboard_runs_the_screen_from_the_package(self):
+        installed = bundle.version_dir(self.root, "1.0.0")
+        installed.mkdir(parents=True, exist_ok=True)
+        self.make_screen(installed)
+        module = None
+        try:
+            with mock.patch.object(bundle, "load_state", return_value={"current": "1.0.0"}), \
+                 mock.patch.object(launcher, "log"):
+                self.assertFalse(launcher.show_dashboard(self.root, None, None))
+            module = sys.modules.get("launcher_ui")
+            self.assertIsNotNone(module)
+            self.assertEqual(Path(module.__file__).parent, installed)
+        finally:
+            sys.modules.pop("launcher_ui", None)
+            while str(installed) in sys.path:
+                sys.path.remove(str(installed))
+
+    def test_broken_package_screen_falls_back_to_the_embedded_copy(self):
+        """Сломанный экран в пакете не должен оставить пилота без окна."""
+        installed = bundle.version_dir(self.root, "1.0.0")
+        installed.mkdir(parents=True, exist_ok=True)
+        (installed / "launcher_ui.py").write_text("raise ImportError('битый пакет')\n",
+                                                  encoding="utf-8")
+        embedded = self.make_screen(self.embedded, marker="embedded")
+        try:
+            with mock.patch.object(bundle, "load_state", return_value={"current": "1.0.0"}), \
+                 mock.patch.object(launcher, "log"):
+                self.assertFalse(launcher.show_dashboard(self.root, embedded, None))
+            module = sys.modules.get("launcher_ui")
+            self.assertEqual(Path(module.__file__).parent, embedded)
+            self.assertEqual(module.MARKER, "embedded")
+        finally:
+            sys.modules.pop("launcher_ui", None)
+            for path in (str(installed), str(embedded)):
+                while path in sys.path:
+                    sys.path.remove(path)
+
+    def test_embedded_copy_is_a_fallback_not_a_replacement(self):
+        """Копия из exe стоит в конце `sys.path`: пакет всегда важнее."""
+        installed = bundle.version_dir(self.root, "1.0.0")
+        installed.mkdir(parents=True, exist_ok=True)
+        launcher.use_fallback(self.embedded)
+        launcher.use_dashboard(installed)
+        try:
+            self.assertEqual(sys.path.index(str(installed)), 0)
+            self.assertEqual(sys.path[-1], str(self.embedded))
+        finally:
+            launcher.drop_dashboard(installed)
+            while str(self.embedded) in sys.path:
+                sys.path.remove(str(self.embedded))
+
     def test_log_is_written_next_to_the_installation(self):
         launcher.log(self.root, "проверка журнала")
         self.assertIn("проверка журнала",
