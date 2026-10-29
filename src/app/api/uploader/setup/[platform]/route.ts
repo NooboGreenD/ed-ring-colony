@@ -1,6 +1,10 @@
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { Readable } from 'node:stream';
+
 import { NextResponse } from 'next/server';
 
-import { readSetup, readSetupBinary } from '@/lib/uploaderStore';
+import { readSetup, setupBinaryFile } from '@/lib/uploaderStore';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,15 +18,26 @@ export const runtime = 'nodejs';
  *
  * Адрес не зависит от версии: `setup/win64` остаётся тем же, меняется только
  * файл за ним. Поэтому кэш короткий, а имя файла содержит номер версии.
+ *
+ * Файл отдаётся потоком, а не буфером целиком: установщик весит 200–300 МиБ,
+ * и чтение его в память на контейнере с ограниченным лимитом заканчивалось
+ * ответом 500 вместо загрузки. Размер берём из метаданных, чтобы `Content-Length`
+ * совпадал с тем, что лежит на диске.
  */
 export async function GET(_request: Request, context: { params: Promise<{ platform: string }> }) {
   const { platform } = await context.params;
   const normalized = String(platform ?? '').trim().toLowerCase();
-  const [data, info] = await Promise.all([
-    readSetupBinary(normalized),
-    readSetup(normalized),
-  ]);
-  if (!data || !info) {
+  const info = await readSetup(normalized);
+  const file = setupBinaryFile(normalized);
+  let size = 0;
+  if (info && file) {
+    try {
+      size = (await stat(file)).size;
+    } catch {
+      size = 0;
+    }
+  }
+  if (!info || !file || !size) {
     return NextResponse.json(
       {
         ok: false,
@@ -32,10 +47,11 @@ export async function GET(_request: Request, context: { params: Promise<{ platfo
       { status: 404, headers: { 'Cache-Control': 'no-store' } },
     );
   }
-  return new NextResponse(new Uint8Array(data), {
+  const body = Readable.toWeb(createReadStream(file)) as ReadableStream<Uint8Array>;
+  return new NextResponse(body, {
     headers: {
       'Content-Type': 'application/vnd.microsoft.portable-executable',
-      'Content-Length': String(data.length),
+      'Content-Length': String(size),
       'Content-Disposition': `attachment; filename="ColonialHelperSetup-${info.version}.exe"`,
       'Cache-Control': 'public, max-age=300, stale-while-revalidate=900',
       ETag: `"${info.sha256}"`,

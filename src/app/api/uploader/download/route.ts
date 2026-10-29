@@ -16,6 +16,13 @@ export const runtime = 'nodejs';
  *
  * Редирект временный (302): куда он указывает, зависит от того, что сейчас
  * опубликовано, и кэшировать это навсегда нельзя.
+ *
+ * `Location` намеренно относительный. Абсолютный адрес пришлось бы собирать
+ * из запроса, а за nginx `Host` — это `0.0.0.0:3000` (`proxy_pass` подставляет
+ * `$proxy_host`): ссылка «Скачать Colonial Helper» из меню профиля уводила
+ * пилота на `https://0.0.0.0:3000/api/uploader/setup/win64`, и загрузка не
+ * начиналась. Относительный `Location` оставляет браузер на том домене, с
+ * которого он пришёл, — и на localhost, и на боевом сервере.
  */
 export async function GET(request: Request) {
   const platform = (new URL(request.url).searchParams.get('platform') ?? 'win64').trim().toLowerCase();
@@ -27,8 +34,11 @@ export async function GET(request: Request) {
     );
   }
 
-  return NextResponse.redirect(
-    new URL(`/api/uploader/setup/${encodeURIComponent(platform)}`, request.url),
-    { status: 302, headers: { 'Cache-Control': 'no-store' } },
-  );
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: `/api/uploader/setup/${encodeURIComponent(platform)}`,
+      'Cache-Control': 'no-store',
+    },
+  });
 }

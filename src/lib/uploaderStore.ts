@@ -705,6 +705,19 @@ export async function readSetup(platform: string): Promise<SetupInfo | null> {
   return readJson<SetupInfo>(setupPath(platform));
 }
 
+/**
+ * Путь к файлу установщика — для отдачи потоком.
+ *
+ * Читать 200–300 МиБ в память только чтобы отдать их клиенту незачем: на
+ * контейнере с ограниченной памятью это и есть ответ 500 вместо файла.
+ * Платформа проверяется тем же шаблоном, что и везде, — путь не собирается
+ * из произвольной строки.
+ */
+export function setupBinaryFile(platform: string): string | null {
+  if (!PLATFORM.test(platform)) return null;
+  return setupBinaryPath(platform);
+}
+
 export async function readSetupBinary(platform: string): Promise<Buffer | null> {
   if (!PLATFORM.test(platform)) return null;
   try {

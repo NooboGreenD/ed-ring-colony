@@ -289,6 +289,41 @@ class BundleUpdateTests(unittest.TestCase):
         self.assertFalse(bad["ok"])
         self.assertIn("хеш", str(bad["error"]))
 
+    def test_launcher_url_is_always_absolute_and_public(self):
+        """Ссылка на сборку из ответа сервера должна быть рабочей с машины пилота.
+
+        Сервер за nginx отдавал `https://0.0.0.0:3000/...` (так `proxy_pass`
+        подставляет `$proxy_host`), а канал мог отдать относительный путь.
+        `requests` по относительному адресу падает, по `0.0.0.0` — не достучится.
+        """
+        base = "https://colony.test/api/uploader"
+        self.assertEqual(bundle_updater.launcher_url("/api/uploader/launcher/win64", base),
+                         "https://colony.test/api/uploader/launcher/win64")
+        self.assertEqual(bundle_updater.launcher_url("https://0.0.0.0:3000/api/x/win64", base),
+                         f"https://colony.test/api/uploader/launcher/{bundle_updater.PLATFORM}")
+        self.assertEqual(bundle_updater.launcher_url("http://localhost:3000/api/x/win64", base),
+                         f"https://colony.test/api/uploader/launcher/{bundle_updater.PLATFORM}")
+        self.assertEqual(
+            bundle_updater.launcher_url("https://cdn.example.test/ColonialHelper.exe", base),
+            "https://cdn.example.test/ColonialHelper.exe")
+
+    def test_launcher_download_accepts_the_url_from_the_channel(self):
+        """Канал отдаёт относительный адрес — качаем по нему же, но абсолютному."""
+        payload = b"MZ" + b"\x00" * 100
+        digest = bundle.sha256_bytes(payload)
+        seen = []
+
+        class _Http:
+            def get(self, url, **kwargs):
+                seen.append(url)
+                return _Response(payload, headers={"Content-Length": str(len(payload))})
+
+        result = bundle_updater.download_launcher(
+            {"url": "/api/uploader/launcher/win64", "sha256": digest},
+            self.work / "downloads3", session=_Http())
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertTrue(seen and seen[0].startswith("https://"), seen)
+
     # -- адрес канала ------------------------------------------------------
     def test_update_base_is_pinned_but_overridable(self):
         self.assertTrue(bundle_updater.update_base().endswith("/api/uploader"))

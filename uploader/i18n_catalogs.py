@@ -44,6 +44,14 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "zh": "已安装版本",
         "ja": "インストール済みバージョン",
     },
+    "лаунчер {version}": {
+        "en": "launcher {version}",
+        "de": "Launcher {version}",
+        "it": "launcher {version}",
+        "ko": "런처 {version}",
+        "zh": "启动器 {version}",
+        "ja": "ランチャー {version}",
+    },
     "Канал обновлений: {channel}": {
         "en": "Update channel: {channel}",
         "de": "Update-Kanal: {channel}",

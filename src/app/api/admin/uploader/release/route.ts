@@ -21,6 +21,7 @@ import {
   writeLauncherUploadChunk,
 } from '@/lib/launcherUploadSessions';
 import { LAUNCHER_UPLOAD_CHUNK_BYTES } from '@/lib/launcherUploadProtocol';
+import { publicOrigin } from '@/lib/siteUrl';
 import {
   CHANNELS,
   createServerRelease,
@@ -68,11 +69,14 @@ function jsonError(error: unknown, fallback = 'Публикация не вып�
   return NextResponse.json({ ok: false, error: message }, { status, ...NO_STORE });
 }
 
-function publicLauncherUrl(request: Request, platform: string): string {
-  const forwardedHost = request.headers.get('x-forwarded-host') ?? request.headers.get('host');
-  const forwardedProto = request.headers.get('x-forwarded-proto') ?? 'https';
-  const origin = forwardedHost ? `${forwardedProto}://${forwardedHost}` : new URL(request.url).origin;
-  return `${origin}/api/uploader/launcher/${encodeURIComponent(platform)}`;
+/**
+ * Адрес базовой сборки — тот, что уезжает в канал и в метаданные.
+ *
+ * Только настроенный публичный адрес сайта: `Host` за nginx — это
+ * `0.0.0.0:3000`, а по этой ссылке лаунчер скачивает новый exe.
+ */
+function publicLauncherUrl(_request: Request, platform: string): string {
+  return `${publicOrigin()}/api/uploader/launcher/${encodeURIComponent(platform)}`;
 }
 
 async function readChunkBody(request: Request): Promise<Buffer> {

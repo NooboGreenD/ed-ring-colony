@@ -156,6 +156,10 @@ maybe('админка показывает статус установщика �
   assert.equal(payload.ok, true);
   assert.equal(payload.setup.version, '2.18.40');
   assert.match(payload.downloadUrl, /\/api\/uploader\/setup\/win64$/);
+  // Адрес — публичный, а не из `Host` запроса: за nginx там `0.0.0.0:3000`
+  // (`proxy_pass` подставляет `$proxy_host`), и ссылка никуда не вела.
+  assert.equal(payload.downloadUrl, 'https://edringcolony.ru/api/uploader/setup/win64');
+  assert.doesNotMatch(payload.downloadUrl, /0\.0\.0\.0|localhost|127\.0\.0\.1/);
 
   const missing = await routes.adminGET(new Request(
     'https://edringcolony.ru/api/admin/uploader/setup?platform=win64',
@@ -181,7 +185,9 @@ maybe('ссылка в профиле и меню профиля ведёт на
     new Request('https://edringcolony.ru/api/uploader/download?platform=win64'),
   );
   assert.equal(response.status, 302);
-  assert.match(response.headers.get('location'), /\/api\/uploader\/setup\/win64$/);
+  // Только путь: абсолютный адрес собирался из `request.url`, а там за nginx
+  // `https://0.0.0.0:3000`, и браузер уходил в никуда.
+  assert.equal(response.headers.get('location'), '/api/uploader/setup/win64');
 });
 
 maybe('без установщика ссылка отвечает 404, а не пустым файлом', async () => {
@@ -198,6 +204,21 @@ maybe('без установщика ссылка отвечает 404, а не 
     new Request('https://edringcolony.ru/api/uploader/download?platform=win64'),
   );
   assert.equal(redirect.status, 404);
+});
+
+maybe('метаданные без файла отвечают 404, а не 500', async () => {
+  // Так выглядит половина неудачной загрузки: json записан, .exe — нет.
+  // Раньше роут читал файл целиком и падал уже после проверки метаданных.
+  const data = fakeSetup(2 * 1024 * 1024 + 512);
+  assert.equal((await routes.saveSetupBinary('win64', '2.18.42', data, 'https://edringcolony.ru/api')).ok, true);
+  rmSync(join(process.env.UPLOADER_STORE_DIR, 'setup', 'win64.exe'), { force: true });
+  const response = await routes.setupGET(
+    new Request('https://edringcolony.ru/api/uploader/setup/win64'),
+    { params: Promise.resolve({ platform: 'win64' }) },
+  );
+  assert.equal(response.status, 404);
+  assert.equal((await response.json()).ok, false);
+  await routes.removeSetup('win64');
 });
 
 maybe('не Windows-файл не публикуется', async () => {
