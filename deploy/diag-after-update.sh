@@ -61,6 +61,12 @@ docker_ok() { have docker && docker info >/dev/null 2>&1; }
 head2 "1. Контейнеры"
 psql_mode=""
 if docker_ok; then
+  # compose зовёт контейнер <проект>-web-1: без поиска по метке проверки
+  # «web не отвечает» срабатывали бы на здоровом стенде.
+  if ! docker inspect "$WEB_CONTAINER" >/dev/null 2>&1; then
+    resolved="$(docker ps -q --filter label=com.docker.compose.service=web 2>/dev/null | head -n1 || true)"
+    [ -n "$resolved" ] && WEB_CONTAINER="$resolved"
+  fi
   running="$(docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null || true)"
   for name in "$SUPA_CONTAINER" "$REST_CONTAINER" web; do
     line="$(printf '%s\n' "$running" | grep -E "^${name}[[:space:]]" || true)"
