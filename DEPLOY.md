@@ -533,7 +533,41 @@ sudo bash deploy/diag-after-update.sh
 серверным маршрутом `/api/admin/access` (сервисный ключ, вне RLS) — поэтому
 сломанный браузерный доступ к базе больше не выглядит как «пропали права».
 
-### Если в админку войти нельзя, а сервер трогать не хочется
+### ### Если обновление встало на «SQL миграция, код 1»
+
+Так падал `20261105090000_profiles_access_repair.sql` (версии сайта до 2.26.2):
+он делал `DROP VIEW public.public_profiles`, а от этого представления зависит
+`public.squadron_member_detail` — PostgreSQL отвечает
+`cannot drop view public_profiles because other objects depend on it`
+(SQLSTATE `2BP01`), `psql` выходит с кодом 1. Обновление при этом
+останавливается **до** переключения кода, сайт продолжает работать на прежней
+версии, а `migrations.mark` файл не получает.
+
+С версии 2.26.2 файл обновляет представление (`CREATE OR REPLACE VIEW`) и
+проходит на живой базе. Проверить, что именно эта зависимость мешала:
+
+```bash
+sudo docker exec supabase-db psql -U postgres -d postgres -tAc "
+select string_agg(distinct dependent.relname, ', ')
+from pg_depend d
+join pg_rewrite r on r.oid = d.objid
+join pg_class dependent on dependent.oid = r.ev_class
+join pg_class referenced on referenced.oid = d.refobjid
+where referenced.relname = 'public_profiles' and referenced.relnamespace = 'public'::regnamespace
+  and dependent.relname <> 'public_profiles';"
+```
+
+Если обновление уже упало, после установки 2.26.2 достаточно запустить его
+снова: файл идемпотентен и применится сам. Если база чинилась вручную через
+SQL Editor (тот же SQL, но без `DROP VIEW`), допишите имя файла в
+`migrations.mark`, иначе прогон снова возьмёт версию из репозитория:
+
+```bash
+MARK=$(sudo ls -d /var/lib/docker/volumes/*update-state*/_data | head -n1)/migrations.mark
+echo "20261105090000_profiles_access_repair.sql" | sudo tee -a "$MARK"
+```
+
+Если в админку войти нельзя, а сервер трогать не хочется
 
 Права можно вернуть **одним SQL**, без shell: откройте SQL Editor Supabase и
 выполните файл `supabase/migrations/20261105090000_profiles_access_repair.sql`
