@@ -12,6 +12,8 @@
  *   bundles/<version>.zip    полный пакет (первая установка и «ремонт»)
  *   channels/<channel>.json  указатель канала: какая версия сейчас текущая
  *   launcher/<platform>.json метаданные базовой сборки (exe)
+ *   setup/<platform>.json    метаданные установщика Setup для первичной установки
+ *   setup/<platform>.exe     сам установщик, который качают с сайта
  *
  * Файлы адресуются хешем, поэтому один и тот же модуль между версиями лежит
  * на диске ровно один раз, а его URL можно кэшировать вечно.
@@ -35,7 +37,7 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { deflateRaw, gzip } from 'node:zlib';
 
-import { MAX_LAUNCHER_UPLOAD_BYTES } from './launcherUploadProtocol';
+import { MAX_LAUNCHER_UPLOAD_BYTES, MAX_SETUP_UPLOAD_BYTES } from './launcherUploadProtocol';
 
 const gzipAsync = promisify(gzip);
 const deflateRawAsync = promisify(deflateRaw);
@@ -99,6 +101,23 @@ export interface BundleManifest {
   [key: string]: unknown;
 }
 
+/**
+ * Установщик для первичной установки (`ColonialHelperSetup.exe`).
+ *
+ * Базовая сборка (`LauncherInfo`) нужна установленной программе для редких
+ * обновлений рантайма. Пилоту же с сайта должен уезжать установщик: он
+ * раскладывает лаунчер, создаёт ярлыки и запускает Helper. Это два разных
+ * файла, поэтому и метаданные, и место на диске у них свои.
+ */
+export interface SetupInfo {
+  platform: string;
+  version: string;
+  url: string;
+  sha256: string;
+  size: number;
+  updated_at?: string;
+}
+
 export interface LauncherInfo {
   platform: string;
   version: string;
@@ -138,6 +157,14 @@ function launcherPath(platform: string): string {
 
 function launcherBinaryPath(platform: string): string {
   return join(storeRoot(), 'launcher', `${platform}.exe`);
+}
+
+function setupPath(platform: string): string {
+  return join(storeRoot(), 'setup', `${platform}.json`);
+}
+
+function setupBinaryPath(platform: string): string {
+  return join(storeRoot(), 'setup', `${platform}.exe`);
 }
 
 function configPath(): string {
@@ -668,6 +695,99 @@ export async function readLauncherBinary(platform: string): Promise<Buffer | nul
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+//  Установщик Setup: первичная установка с сайта
+// ---------------------------------------------------------------------------
+export async function readSetup(platform: string): Promise<SetupInfo | null> {
+  if (!PLATFORM.test(platform)) return null;
+  return readJson<SetupInfo>(setupPath(platform));
+}
+
+export async function readSetupBinary(platform: string): Promise<Buffer | null> {
+  if (!PLATFORM.test(platform)) return null;
+  try {
+    return await readFile(setupBinaryPath(platform));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Сохранить загруженный установщик.
+ *
+ * Проверки те же, что у базовой сборки: платформа, номер версии, размер и
+ * заголовок `MZ`. Файл без заголовка Windows PE — это не установщик, и
+ * отдавать его пилотам нельзя: он «скачается», но не запустится.
+ */
+export async function saveSetupBinary(
+  platform: string,
+  version: string,
+  data: Buffer,
+  publicUrl: string,
+  onProgress?: HelperReleaseProgressHandler,
+): Promise<PublishResult> {
+  await onProgress?.({
+    stage: 'validate', percent: 6, message: 'Проверяю версию и заголовок Windows PE',
+    stats: { files: 1, totalBytes: data.length },
+  });
+  if (!PLATFORM.test(platform)) return { ok: false, error: 'плохая платформа' };
+  if (!VERSION.test(version)) return { ok: false, error: 'плохая версия установщика' };
+  if (data.length < 1024 || data.length > MAX_SETUP_UPLOAD_BYTES) {
+    return { ok: false, error: 'некорректный размер установщика' };
+  }
+  if (data[0] !== 0x4d || data[1] !== 0x5a) {
+    return { ok: false, error: 'файл не похож на Windows PE (нет заголовка MZ)' };
+  }
+  await onProgress?.({
+    stage: 'hash', percent: 42, message: 'Считаю SHA-256 установщика',
+    stats: { files: 1, totalBytes: data.length },
+  });
+  const sha256 = createHash('sha256').update(data).digest('hex');
+  await onProgress?.({
+    stage: 'publish', percent: 74, message: 'Сохраняю установщик в хранилище',
+    stats: { files: 1, totalBytes: data.length },
+  });
+  await writeAtomic(setupBinaryPath(platform), data);
+  await writeAtomic(
+    setupPath(platform),
+    JSON.stringify({
+      platform,
+      version,
+      url: publicUrl,
+      sha256,
+      size: data.length,
+      updated_at: new Date().toISOString(),
+    }, null, 2),
+  );
+  await onProgress?.({
+    stage: 'complete', percent: 100, message: 'Установщик опубликован',
+    stats: { files: 1, totalBytes: data.length },
+  });
+  return { ok: true, version };
+}
+
+/**
+ * Убрать установщик с раздачи: файл и метаданные.
+ *
+ * Ссылки в меню и профиле остаются прежними — они просто начнут отвечать
+ * «установщик не опубликован», а не отдавать удалённый файл.
+ */
+export async function removeSetup(platform: string): Promise<PublishResult> {
+  if (!PLATFORM.test(platform)) return { ok: false, error: 'плохая платформа' };
+  // Массив, а не перечисление через запятую: `(a, b)` в JS — это одно
+  // значение `b`, и цикл `for…of` по строке пошёл бы по её символам.
+  for (const target of [setupPath(platform), setupBinaryPath(platform)]) {
+    try {
+      await unlink(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        return { ok: false, error: (error as Error).message };
+      }
+    }
+  }
+  return { ok: true };
 }
 
 export async function listVersions(): Promise<string[]> {

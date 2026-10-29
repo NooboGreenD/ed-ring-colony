@@ -64,8 +64,17 @@ def _launcher_runtime():
 
 
 def show_launcher(install_root: Path, embedded_dir: Optional[Path],
-                  embedded_manifest: Optional[Dict[str, Any]]) -> bool:
-    """Prepare/verify a runnable local version, then show the news dashboard."""
+                  embedded_manifest: Optional[Dict[str, Any]],
+                  notice: str = "") -> Optional[bool]:
+    """Prepare/verify a runnable local version, then show the news dashboard.
+
+    ``notice`` — почему стартовый экран открылся снова (``closed`` — Helper
+    закрыли, ``failed`` — Helper не запустился). Пусто при обычном запуске.
+
+    Возвращает выбор пользователя (``False`` — закрыл лаунчер) или ``None``,
+    если окно построить не удалось: тогда bootstrapper запускает Helper
+    напрямую и не пытается открыть лаунчер снова.
+    """
     launcher = _launcher_runtime()
     launcher.configure_tls_ca_bundle(install_root)
     try:
@@ -79,11 +88,12 @@ def show_launcher(install_root: Path, embedded_dir: Optional[Path],
         from ui_qt import ensure_app
 
         app = ensure_app()
-        window = LauncherWindow(install_root, version or "—", update_channel())
+        window = LauncherWindow(install_root, version or "—", update_channel(),
+                                notice=notice)
         window.show()
         app.exec()
         return window.launch_requested
     except Exception as exc:
         # A damaged/missing GUI runtime must not strand the user outside Helper.
         launcher.log(install_root, f"не удалось открыть стартовый экран: {exc}; запускаем Helper напрямую")
-        return True
+        return None

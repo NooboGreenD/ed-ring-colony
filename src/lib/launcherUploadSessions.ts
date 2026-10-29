@@ -10,6 +10,7 @@ import {
 import {
   LAUNCHER_UPLOAD_CHUNK_BYTES,
   MAX_LAUNCHER_UPLOAD_BYTES,
+  MAX_SETUP_UPLOAD_BYTES,
   MIN_LAUNCHER_UPLOAD_CHUNK_BYTES,
 } from '@/lib/launcherUploadProtocol';
 
@@ -18,8 +19,12 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_ACTIVE_SESSIONS = 4;
 
+/** Что именно загружают части: базовую сборку лаунчера или установщик Setup. */
+export type UploadKind = 'launcher' | 'setup';
+
 export interface LauncherUploadSession {
   id: string;
+  kind: UploadKind;
   platform: string;
   version: string;
   size: number;
@@ -84,13 +89,16 @@ function parseSession(id: string, value: unknown): LauncherUploadSession {
     throw new LauncherUploadError('Повреждена сессия загрузки', 500);
   }
   const session = value as Partial<LauncherUploadSession>;
+  const kind: UploadKind = session.kind === 'setup' ? 'setup' : 'launcher';
+  const limit = kind === 'setup' ? MAX_SETUP_UPLOAD_BYTES : MAX_LAUNCHER_UPLOAD_BYTES;
   if (
     session.id !== id
+    || (session.kind !== undefined && session.kind !== 'launcher' && session.kind !== 'setup')
     || !isValidLauncherPlatform(String(session.platform ?? ''))
     || !isValidLauncherVersion(String(session.version ?? ''))
     || !Number.isSafeInteger(session.size)
     || Number(session.size) < 1024
-    || Number(session.size) > MAX_LAUNCHER_UPLOAD_BYTES
+    || Number(session.size) > limit
     || !Number.isSafeInteger(session.chunkSize)
     || Number(session.chunkSize) < MIN_LAUNCHER_UPLOAD_CHUNK_BYTES
     || Number(session.chunkSize) > LAUNCHER_UPLOAD_CHUNK_BYTES
@@ -100,7 +108,8 @@ function parseSession(id: string, value: unknown): LauncherUploadSession {
   ) {
     throw new LauncherUploadError('Повреждена сессия загрузки', 500);
   }
-  return session as LauncherUploadSession;
+  // Сессии, записанные до появления установщика, считаются базовой сборкой.
+  return { ...(session as LauncherUploadSession), kind };
 }
 
 async function readSession(id: string): Promise<LauncherUploadSession> {
@@ -166,17 +175,23 @@ export async function createLauncherUpload(input: {
   version: string;
   size: number;
   chunkSize?: number;
+  kind?: UploadKind;
 }): Promise<LauncherUploadSession> {
   const platform = input.platform.trim().toLowerCase();
   const version = input.version.trim();
+  const kind: UploadKind = input.kind === 'setup' ? 'setup' : 'launcher';
+  const limit = kind === 'setup' ? MAX_SETUP_UPLOAD_BYTES : MAX_LAUNCHER_UPLOAD_BYTES;
+  const limitLabel = kind === 'setup'
+    ? `${Math.round(MAX_SETUP_UPLOAD_BYTES / (1024 * 1024))} МиБ`
+    : '128 МиБ';
   const chunkSize = input.chunkSize ?? LAUNCHER_UPLOAD_CHUNK_BYTES;
   if (!isValidLauncherPlatform(platform)) throw new LauncherUploadError('Плохая платформа', 400);
   if (!isValidLauncherVersion(version)) throw new LauncherUploadError('Плохая версия лаунчера', 400);
   if (!Number.isSafeInteger(input.size) || input.size < 1024) {
     throw new LauncherUploadError('Некорректный размер exe', 400);
   }
-  if (input.size > MAX_LAUNCHER_UPLOAD_BYTES) {
-    throw new LauncherUploadError('Размер exe превышает 128 МиБ', 413);
+  if (input.size > limit) {
+    throw new LauncherUploadError(`Размер файла превышает ${limitLabel}`, 413);
   }
   if (
     !Number.isSafeInteger(chunkSize)
@@ -195,6 +210,7 @@ export async function createLauncherUpload(input: {
   const id = randomUUID();
   const session: LauncherUploadSession = {
     id,
+    kind,
     platform,
     version,
     size: input.size,

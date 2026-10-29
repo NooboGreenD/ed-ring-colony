@@ -39,7 +39,7 @@ from i18n import tr
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.2.0"
+LAUNCHER_VERSION = "1.3.0"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
@@ -434,6 +434,63 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
     return 1
 
 
+#: Что показать в лаунчере, когда он открылся снова после Helper.
+NOTICE_CLOSED = "closed"
+NOTICE_FAILED = "failed"
+
+
+def show_dashboard(root, embedded_dir, embedded_manifest,
+                   notice: str = "") -> Optional[bool]:
+    """Показать стартовый экран.
+
+    ``True`` — пользователь просит запустить Helper, ``False`` — закрыл
+    лаунчер, ``None`` — окно построить не удалось (GUI сломан или его нет).
+    """
+    try:
+        from launcher_ui import show_launcher
+    except Exception as exc:
+        log(root, f"стартовый экран не загрузился: {exc}; запускаем Helper напрямую")
+        return None
+    result = show_launcher(root, embedded_dir, embedded_manifest, notice=notice)
+    return None if result is None else bool(result)
+
+
+def helper_exit_code(run) -> int:
+    """Код возврата Helper: он мог закрыться штатно, упасть или вызвать exit()."""
+    try:
+        return int(run() or 0)
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else (0 if code is None else 1)
+    except Exception as exc:                       # падение в коде программы
+        log(bundle.install_root(), f"Helper завершился с ошибкой: {exc}")
+        log(bundle.install_root(), traceback.format_exc())
+        return 1
+
+
+def run_dashboard_loop(root, embedded_dir, embedded_manifest,
+                       args: Optional[List[str]] = None) -> int:
+    """Лаунчер → Helper → снова лаунчер, пока пользователь не закроет лаунчер.
+
+    Окно Helper закрывается по-разному: крестиком, пунктом меню, падением в
+    коде. Во всех случаях человек должен остаться при управлении, а не перед
+    пустым рабочим столом, поэтому после любого завершения Helper стартовый
+    экран открывается заново. Выход — закрытие самого лаунчера.
+    """
+    reminder = ""
+    while True:
+        request = show_dashboard(root, embedded_dir, embedded_manifest, reminder)
+        if request is None:
+            # Окна нет — запускаем Helper и на этом всё: повторять нечего,
+            # иначе сломанный GUI превратился бы в бесконечный перезапуск.
+            return run_helper(args)
+        if not request:
+            return 0
+        code = helper_exit_code(lambda: run_helper(args))
+        log(root, f"Helper завершён (код {code}) — открываем лаунчер заново")
+        reminder = NOTICE_CLOSED if code == 0 else NOTICE_FAILED
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     apply_saved_locale()
     args = list(sys.argv[1:] if argv is None else argv)
@@ -444,13 +501,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     root = bundle.install_root()
     embedded_dir, embedded_manifest = embedded_bundle()
-    try:
-        from launcher_ui import show_launcher
-        launch_requested = show_launcher(root, embedded_dir, embedded_manifest)
-    except Exception as exc:
-        log(root, f"стартовый экран не загрузился: {exc}; запускаем Helper напрямую")
-        launch_requested = True
-    return run_helper(args) if launch_requested else 0
+    return run_dashboard_loop(root, embedded_dir, embedded_manifest, args)
 
 
 if __name__ == "__main__":

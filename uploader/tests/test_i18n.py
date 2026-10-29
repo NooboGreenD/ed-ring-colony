@@ -29,7 +29,8 @@ PLACEHOLDER = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 #: Модули, у которых весь пользовательский текст уже идёт через ``tr()``.
 TRANSLATED_MODULES = ("launcher_window.py", "installer_window.py",
-                      "helper_shell.py", "ui_qt.py")
+                      "helper_shell.py", "ui_qt.py", "launcher_profile.py",
+                      "launcher_account.py")
 
 #: Уже переведённые части Helper: страница «Подключение» и её обработчики.
 AUTH_PAGE_CLASSES = ("AuthPageState", "AuthPage")

@@ -241,7 +241,89 @@ class LauncherTests(unittest.TestCase):
             with mock.patch.object(launcher, "embedded_bundle", return_value=(None, None)):
                 with mock.patch.dict(sys.modules, {"launcher_ui": dashboard}):
                     self.assertEqual(launcher.main([]), 0)
-        dashboard.show_launcher.assert_called_once_with(self.root, None, None)
+        dashboard.show_launcher.assert_called_once_with(self.root, None, None, notice="")
+
+    def test_closing_helper_brings_the_launcher_back(self):
+        """Окно Helper закрыли — управление снова у лаунчера, а не пустой стол."""
+        dashboard = mock.Mock()
+        # Первый показ — «запустить», второй — «закрыть лаунчер».
+        dashboard.show_launcher.side_effect = [True, False]
+        calls = []
+
+        def fake_helper(args=None):
+            calls.append(args)
+            return 0
+
+        with mock.patch.object(bundle, "install_root", return_value=self.root), \
+             mock.patch.object(launcher, "embedded_bundle", return_value=(None, None)), \
+             mock.patch.object(launcher, "run_helper", side_effect=fake_helper), \
+             mock.patch.dict(sys.modules, {"launcher_ui": dashboard}), \
+             mock.patch.object(launcher, "log"):
+            self.assertEqual(launcher.main([]), 0)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(dashboard.show_launcher.call_count, 2)
+        self.assertEqual(dashboard.show_launcher.call_args_list[0].kwargs["notice"], "")
+        self.assertEqual(dashboard.show_launcher.call_args_list[1].kwargs["notice"],
+                         launcher.NOTICE_CLOSED)
+
+    def test_crashed_helper_also_returns_to_the_launcher(self):
+        dashboard = mock.Mock()
+        dashboard.show_launcher.side_effect = [True, False]
+        with mock.patch.object(bundle, "install_root", return_value=self.root), \
+             mock.patch.object(launcher, "embedded_bundle", return_value=(None, None)), \
+             mock.patch.object(launcher, "run_helper", side_effect=RuntimeError("падение")), \
+             mock.patch.dict(sys.modules, {"launcher_ui": dashboard}), \
+             mock.patch.object(launcher, "log"):
+            self.assertEqual(launcher.main([]), 0)
+        self.assertEqual(dashboard.show_launcher.call_args_list[1].kwargs["notice"],
+                         launcher.NOTICE_FAILED)
+
+    def test_helper_exit_code_survives_sys_exit(self):
+        self.assertEqual(launcher.helper_exit_code(lambda: None), 0)
+        self.assertEqual(launcher.helper_exit_code(lambda: 3), 3)
+
+        def quit_with_code():
+            raise SystemExit(2)
+
+        def quit_cleanly():
+            raise SystemExit()
+
+        self.assertEqual(launcher.helper_exit_code(quit_with_code), 2)
+        self.assertEqual(launcher.helper_exit_code(quit_cleanly), 0)
+
+    def test_helper_exit_code_reports_a_crash(self):
+        def boom():
+            raise RuntimeError("нет соединения")
+
+        with mock.patch.object(launcher, "log") as logged:
+            self.assertEqual(launcher.helper_exit_code(boom), 1)
+        self.assertTrue(logged.called)
+
+    def test_launcher_that_fails_to_open_still_starts_helper(self):
+        """Сломанный стартовый экран не должен оставить без программы.
+
+        И не должен превратиться в бесконечный перезапуск: Helper запускается
+        один раз, лаунчер больше не пробуем открыть.
+        """
+        with mock.patch.object(bundle, "install_root", return_value=self.root), \
+             mock.patch.object(launcher, "embedded_bundle", return_value=(None, None)), \
+             mock.patch.dict(sys.modules, {"launcher_ui": None}), \
+             mock.patch.object(launcher, "run_helper", return_value=0) as helper, \
+             mock.patch.object(launcher, "log"):
+            self.assertEqual(launcher.main([]), 0)
+        helper.assert_called_once()
+
+    def test_broken_start_screen_is_not_retried_forever(self):
+        """Окно лаунчера не открылось — Helper запускается без цикла."""
+        dashboard = mock.Mock()
+        dashboard.show_launcher.return_value = None
+        with mock.patch.object(launcher, "run_helper", return_value=0) as helper, \
+             mock.patch.dict(sys.modules, {"launcher_ui": dashboard}), \
+             mock.patch.object(launcher, "log"):
+            self.assertEqual(launcher.run_dashboard_loop(self.root, None, None), 0)
+        helper.assert_called_once()
+        dashboard.show_launcher.assert_called_once()
 
     def test_main_runs_the_installed_code(self):
         manifest = json.loads((self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8"))

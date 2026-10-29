@@ -33,7 +33,9 @@ from PySide6.QtWidgets import (
 import bundle
 import bundle_updater
 import i18n
+import launcher_account
 import launcher_content as content
+import launcher_profile
 import launcher_settings
 from i18n import tr
 from locale_config import DEFAULT_LOCALE, SUPPORTED_LOCALES, localized_url
@@ -62,7 +64,7 @@ def launcher_version() -> str:
     module = sys.modules.get("__main__")
     if not hasattr(module, "LAUNCHER_VERSION"):
         module = sys.modules.get("launcher")
-    return str(getattr(module, "LAUNCHER_VERSION", "1.2.0"))
+    return str(getattr(module, "LAUNCHER_VERSION", "1.3.0"))
 
 
 class LauncherWindow(FramelessWindow):
@@ -72,6 +74,7 @@ class LauncherWindow(FramelessWindow):
                  settings_path: Optional[Path] = None,
                  fetcher: Optional[Callable[..., Dict[str, List[Dict[str, str]]]]] = None,
                  autostart: bool = True,
+                 notice: str = "",
                  parent: Optional[QWidget] = None) -> None:
         # Язык нужен до первой строки: заголовок окна тоже переводится.
         settings = launcher_settings.settings_path(settings_path)
@@ -83,6 +86,8 @@ class LauncherWindow(FramelessWindow):
         self.channel = str(channel or "stable")
         self.settings_path = settings
         self.site_locale = locale
+        # Почему лаунчер открылся снова: Helper закрыли или он не запустился.
+        self.notice = str(notice or "")
         self._fetch = fetcher or self._fetch_from_site
         self.launch_requested = False
         self.feed_data: Dict[str, List[Dict[str, str]]] = {"news": [], "galnet": []}
@@ -100,6 +105,10 @@ class LauncherWindow(FramelessWindow):
         self._feed_state: Dict[str, Any] = {"kind": "idle", "news": 0, "galnet": 0}
         self._connection_state = "offline"
         self._update_state: Dict[str, Any] = {"kind": "idle"}
+        # Окно привязки открывается по кнопке в шапке; ссылку держим, чтобы
+        # модальное окно не собрал сборщик мусора сразу после показа.
+        self._account_dialog: Optional[launcher_profile.AccountDialog] = None
+        self._account_state: Dict[str, Any] = launcher_account.read_account(settings)
 
         self.setMinimumSize(900, 610)
         self.resize(1120, 730)
@@ -109,12 +118,18 @@ class LauncherWindow(FramelessWindow):
         if autostart:
             QTimer.singleShot(250, self.refresh_news)
             QTimer.singleShot(450, self.check_updates)
+            # Привязка и настройки — после окна: сеть не должна задерживать
+            # показ лаунчера, а неудачный запрос не должен мешать запуску.
+            QTimer.singleShot(600, self.sync_account)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
         self.body_layout.setContentsMargins(22, 18, 22, 18)
         self.body_layout.setSpacing(14)
         self.body_layout.addWidget(self._header())
+        self.notice_label = label("", role="muted", size=9, wrap=True)
+        self.notice_label.setVisible(bool(self.notice))
+        self.body_layout.addWidget(self.notice_label)
         middle = QWidget()
         middle_layout = QHBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
@@ -143,7 +158,10 @@ class LauncherWindow(FramelessWindow):
         identity_layout.addWidget(heading("COLONIAL HELPER", size=20))
         layout.addWidget(identity)
         layout.addStretch(1)
-        layout.addWidget(label("DESKTOP COMMAND", role="mono", size=9, bold=True))
+        # Профиль пилота в правом верхнем углу: тот же, что на сайте проекта.
+        self.profile_badge = launcher_profile.ProfileBadge(
+            self.open_account, self.settings_path)
+        layout.addWidget(self.profile_badge)
         return header
 
     def _sidebar(self) -> QWidget:
@@ -278,6 +296,57 @@ class LauncherWindow(FramelessWindow):
         layout.addWidget(self.connection_indicator)
         return footer
 
+    def _notice_text(self) -> str:
+        """Строка «почему лаунчер снова здесь» — пусто при обычном запуске."""
+        if self.notice == "closed":
+            return tr("Colonial Helper закрыт — лаунчер снова открыт. Можно запустить его ещё раз.")
+        if self.notice == "failed":
+            return tr("Colonial Helper завершился с ошибкой — лаунчер открыт снова. "
+                      "Подробности в журнале Helper.")
+        return ""
+
+    # --------------------------------------------------------------- профиль
+    def open_account(self) -> None:
+        """Открыть окно привязки и обмена раскладкой."""
+        dialog = self._account_dialog
+        if dialog is not None and dialog.isVisible():
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        self._account_dialog = launcher_profile.open_account_dialog(
+            self.settings_path, on_changed=self.account_changed, parent=self)
+
+    def account_changed(self) -> None:
+        """Привязка изменилась — перерисовать значок в шапке."""
+        self._account_state = launcher_account.read_account(self.settings_path)
+        self.profile_badge.reload()
+        if self._account_state.get("token"):
+            self.profile_badge.load_avatar()
+
+    def sync_account(self) -> None:
+        """При запуске: обновить профиль и подтянуть раскладку с сайта.
+
+        Забираем настройки, только если на сайте лежит что-то новее того, что
+        этот компьютер уже видел, — иначе локальная правка раскладки
+        затиралась бы при каждом открытии лаунчера.
+        """
+        if not launcher_account.is_linked(self.settings_path):
+            return
+        run_async(self, lambda: launcher_account.refresh_profile(self.settings_path),
+                  self._account_refreshed, lambda _error: None)
+        run_async(self, lambda: launcher_account.auto_pull(self.settings_path),
+                  self._settings_pulled, lambda _error: None)
+
+    def _account_refreshed(self, account: Dict[str, Any]) -> None:
+        self._account_state = account or {}
+        self.profile_badge.reload()
+        self.profile_badge.load_avatar()
+
+    def _settings_pulled(self, changed: Optional[int]) -> None:
+        if changed:
+            self._log_problem(f"раскладка получена с сайта: {changed} ключей")
+            self.profile_badge.reload()
+
     # ------------------------------------------------------------- переводы
     @staticmethod
     def _tab_title(key: str) -> str:
@@ -320,10 +389,13 @@ class LauncherWindow(FramelessWindow):
         self.refresh_button.setText(tr("↻  Обновить ленту"))
         for key, button in self.tab_buttons.items():
             button.setText(self._tab_title(key))
+        self.notice_label.setText(self._notice_text())
+        self.notice_label.setVisible(bool(self._notice_text()))
         self.footer_label.setText(
             tr("ED RING COLONY   /   СООБЩЕСТВО ИССЛЕДОВАТЕЛЕЙ ГАЛАКТИКИ"))
         self.feed_status.setText(self._feed_status_text())
         self.connection_indicator.setText(self._connection_text())
+        self.profile_badge.reload()
         self._render_update_state()
         self._render_feed()
 
