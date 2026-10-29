@@ -255,3 +255,44 @@ test('накат не оставляет базу без представлен�
     await db.exec('RESET ROLE');
   }
 });
+
+test('представление, которое уже правильное, не пересоздаётся (замка на него нет)', async () => {
+  // Живая база: public_profiles создала 20261015000000, и он ровно такой.
+  // Пересоздание = исключительный замок на представление, которое читает весь
+  // сайт; именно из-за него 29.10.2026 обновление получило deadlock. OID
+  // остаётся прежним только если представление не трогали.
+  const oidOf = async () => (await db.query("SELECT 'public.public_profiles'::regclass::oid::int AS oid")).rows[0].oid;
+  const before = await oidOf();
+  await db.exec(repairSql());
+  const after = await oidOf();
+  assert.equal(after, before, 'представление не пересоздавалось: замка на него не было');
+});
+
+test('чужое представление без зависимых объектов чинится пересозданием', async () => {
+  // Обратный случай: в базе представление с другими колонками, и от него
+  // ничего не зависит. Ремонт обязан вернуть публичный набор колонок —
+  // и именно пересозданием: CREATE OR REPLACE не умеет переименовывать
+  // колонки («cannot change name of view column»).
+  await db.exec(`
+    DROP VIEW IF EXISTS public.squadron_member_detail;
+    DROP VIEW IF EXISTS public.public_profiles;
+    CREATE VIEW public.public_profiles AS SELECT id, email, cmdr_name FROM public.profiles;
+  `);
+
+  await db.exec(repairSql());
+  const cols = (await db.query(`
+    SELECT string_agg(attname, ',' ORDER BY attnum) AS c
+    FROM pg_attribute
+    WHERE attrelid = 'public.public_profiles'::regclass AND attnum > 0
+  `)).rows[0].c;
+  assert.equal(cols, 'id,cmdr_name,avatar_url,squadron,created_at,updated_at,forum_posts_count');
+
+  // Возвращаем «живую» схему: squadron_member_detail снова зависит от
+  // публичного представления, как на сервере.
+  await db.exec(`
+    CREATE VIEW public.squadron_member_detail WITH (security_invoker = true) AS
+      SELECT p.cmdr_name, p.squadron FROM public.public_profiles p;
+    GRANT SELECT ON public.squadron_member_detail TO anon, authenticated;
+    GRANT SELECT ON public.public_profiles TO anon, authenticated;
+  `);
+});

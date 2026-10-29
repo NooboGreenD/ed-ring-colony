@@ -37,10 +37,24 @@ test('скрипт обновления синтаксически коррек�
 });
 
 test('каждый файл миграции применяется одной транзакцией', () => {
-  const line = source.split('\n').find((row) => row.includes('run_sql --single-transaction < "$f"'));
-  assert.ok(line, 'миграции должны идти через run_sql --single-transaction');
-  // Без этого флага ошибка в середине файла оставляла частичные изменения.
+  const line = source.split('\n').find((row) => row.includes('run_sql_migration < "$f"'));
+  assert.ok(line, 'миграции должны идти через run_sql_migration');
+  // Обёртка обязана сохранять --single-transaction: без него ошибка в середине
+  // файла оставляла частичные изменения. Там же — ограниченное ожидание
+  // замков (живой сайт держит profiles, см. lock_timeout в самих файлах).
+  assert.match(source, /run_sql_migration\(\) \{\s*\n\s*EDRC_PGOPTIONS="[^"]*lock_timeout=\$MIGRATION_LOCK_TIMEOUT"[^\n]*\n\s*run_sql --single-transaction/);
   assert.doesNotMatch(source, /psql_out="\$\(run_sql < "\$f"/);
+});
+
+test('занятая база не валит обновление: повтор и понятная причина', () => {
+  // Живой сайт держит замки на profiles: Postgres отвечает «lock timeout» или
+  // «deadlock detected». Это не ошибка схемы — файл повторяется, а если не
+  // вышло, журнал называет сессию-виновника и команду её снятия.
+  assert.match(source, /migration_lock_conflict\(\)/);
+  assert.match(source, /deadlock detected\|lock timeout/);
+  assert.match(source, /describe_db_sessions/);
+  assert.match(source, /pg_terminate_backend/);
+  assert.match(source, /UPDATE_MIGRATION_LOCK_RETRIES/);
 });
 
 test('сверка схемы идёт после миграций и до переключения контейнеров', () => {
