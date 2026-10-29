@@ -126,8 +126,24 @@ function setup() {
     '    fi',
     // Диагностика «кто держит базу»: отдаём одну залипшую сессию, чтобы
     // проверить не только текст причины, но и готовую команду снятия.
-    '    if printf "%s" "$*" | grep -q "pg_stat_activity"; then',
-    '      echo "4242|idle in transaction (aborted)|00:12:33|SELECT 1 FROM public.profiles";',
+    // Брошенный pg_dump: сессия выполняет COPY ... TO stdout уже 1:42:17.
+    '    if printf "%s" "$*" | grep -q "COPY %TO stdout%"; then',
+    '      echo "2029069|01:42:17|COPY public.galaxy_systems (id, id64) TO stdout";',
+    '      exit 0',
+    '    fi',
+    '    if printf "%s" "$*" | grep -q "pg_terminate_backend"; then',
+    '      echo "t";',
+    '      exit 0',
+    '    fi',
+    '    if printf "%s" "$*" | grep -q "pg_blocking_pids"; then',
+    '      echo "4242|idle in transaction (aborted)|00:12:33|SELECT 1 FROM public.profiles|t";',
+    '      exit 0',
+    '    fi',
+    // STUB_SKIP_LOCK=1 — файл сам решил не трогать занятую базу и пометил
+    // это в предупреждении (edrc:skipped-lock): обновление должно пойти
+    // дальше, но НЕ отмечать файл применённым.
+    '    if [ "${STUB_SKIP_LOCK:-0}" = "1" ] && [ -n "$input" ] && ! printf "%s" "$input" | grep -q "information_schema"; then',
+    '      echo "WARNING:  edrc:skipped-lock profiles: база занята, правка пропущена" >&2',
     '      exit 0',
     '    fi',
     '    if [ -f "$STUB_FAIL_ON" ] && printf "%s" "$input" | grep -qf "$STUB_FAIL_ON"; then',
@@ -845,12 +861,69 @@ test('замки не дались ни разу: обновление стои�
     // Журнал должен называть виновника, а не только «deadlock detected»:
     // pid, состояние и готовую команду снятия сессии.
     assert.match(run.stdout, /pid 4242 · idle in transaction/, 'назван держатель замков');
-    assert.match(run.stdout, /pg_terminate_backend\(4242\)/, 'есть готовая команда снятия сессии');
+    assert.match(run.stdout, /это он держит замок: SELECT pg_terminate_backend\(4242\)/, 'есть готовая команда снятия сессии');
     assert.equal(events(run.stdout).some((event) => event.stage === 'done'), false);
     // Ни сборки, ни переключения контейнеров: база не тронута, сайт живёт дальше.
     const calls = readFileSync(ctx.log, 'utf8');
     assert.equal(/docker\] build/.test(calls), false, 'сборка не начиналась');
     assert.equal(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8').includes('20260930000003_stuck.sql'), false);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('база занята: правка пропущена, обновление идёт, файл не отмечен применённым', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'supabase/migrations/20260930000004_busy.sql': '-- busy\nSELECT 1;\n' });
+    const run = ctx.run({ STUB_SKIP_LOCK: '1' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    // Пропуск виден в журнале вместе с текстом предупреждения файла.
+    assert.match(run.stdout, /часть правок пропущена \(база занята\)/);
+    assert.match(run.stdout, /WARNING:.*edrc:skipped-lock/);
+    const done = events(run.stdout).pop();
+    assert.equal(done.stage, 'done', 'обновление не должно стоять из-за занятой базы');
+    assert.equal(done.migrationsApplied, 0, 'пропущенная правка не считается применённой');
+    // Главное: файл обязан повториться следующим прогоном, иначе ремонт
+    // потеряется навсегда (отметка = «больше не трогать»).
+    assert.equal(
+      readFileSync(join(ctx.state, 'migrations.mark'), 'utf8').includes('20260930000004_busy.sql'),
+      false,
+      'файл не отмечен — повторится',
+    );
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('брошенный pg_dump снимается до миграций: иначе DDL никогда не возьмёт замок', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Живой случай 21:11 29.10.2026: три дампа прошлых прогонов висели по
+    // 40–100 минут. pg_dump идёт одной транзакцией и держит ACCESS SHARE на
+    // всех таблицах — политики и триггеры на profiles не могут взять замок.
+    ctx.release({ 'supabase/migrations/20260930000005_after_dump.sql': '-- x\nSELECT 1;\n' });
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /найдены брошенные pg_dump/);
+    assert.match(run.stdout, /pid 2029069 · дамп идёт 01:42:17/);
+    assert.match(run.stdout, /снято дампов: 1/);
+    // Дамп снимается ДО применения миграций — иначе смысла в этом нет.
+    const out = run.stdout;
+    assert.ok(out.indexOf('снято дампов') < out.indexOf('применяю 20260930000005_after_dump.sql'),
+      'снятие дампа идёт раньше миграций');
+    assert.equal(events(run.stdout).pop().stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('снятие брошенных дампов можно выключить флажком', { skip }, () => {
+  const ctx = setup();
+  try {
+    const run = ctx.run({ UPDATE_CLEAR_STALE_DUMPS: '0' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.doesNotMatch(run.stdout, /снято дампов/);
   } finally {
     ctx.cleanup();
   }

@@ -335,3 +335,35 @@ test('сломанная политика пересоздаётся, а не о
   assert.doesNotMatch(qual, /^true$/);
 });
 
+test('страховка «безопасность в порядке» видит дыры и не пропускает их', async () => {
+  // Если база занята и DDL не прошёл, файл пропускает правку ТОЛЬКО когда
+  // защиты на месте. Проверяем саму страховку: она создаётся миграцией
+  // (pg_temp), поэтому сначала накатываем файл.
+  await db.exec(repairSql());
+  const ok = async () => (await db.query('SELECT pg_temp.edrc_security_ok() AS ok')).rows[0].ok;
+  assert.equal(await ok(), true, 'на здоровой базе дыры нет');
+
+  // 1. RLS выключен — политики бесполезны.
+  await db.exec('ALTER TABLE public.profiles DISABLE ROW LEVEL SECURITY');
+  assert.equal(await ok(), false, 'выключенный RLS — дыра');
+  await db.exec('ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY');
+  assert.equal(await ok(), true);
+
+  // 2. Политика «пускать всех».
+  await db.exec(`
+    DROP POLICY profiles_select ON public.profiles;
+    CREATE POLICY profiles_select ON public.profiles FOR SELECT TO authenticated USING (true);
+  `);
+  assert.equal(await ok(), false, 'USING (true) — дыра');
+  await db.exec('DROP POLICY profiles_select ON public.profiles');
+  assert.equal(await ok(), false, 'без SELECT-политики тоже дыра');
+
+  // 3. Нет триггера защиты role/email — можно выписать себе админа.
+  await db.exec(repairSql());
+  assert.equal(await ok(), true, 'ремонт вернул политики и триггер');
+  await db.exec('DROP TRIGGER trg_protect_profile_privileged_columns ON public.profiles');
+  assert.equal(await ok(), false, 'без триггера — дыра');
+  await db.exec(repairSql());
+  assert.equal(await ok(), true, 'и снова в порядке');
+});
+

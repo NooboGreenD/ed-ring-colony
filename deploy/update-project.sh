@@ -79,6 +79,13 @@ HEALTH_TRIES="${HEALTH_TRIES:-60}"
 MIGRATION_LOCK_TIMEOUT="${UPDATE_MIGRATION_LOCK_TIMEOUT:-15s}"
 MIGRATION_LOCK_RETRIES="${UPDATE_MIGRATION_LOCK_RETRIES:-5}"
 MIGRATION_LOCK_RETRY_DELAY="${UPDATE_MIGRATION_LOCK_RETRY_DELAY:-15}"
+# Брошенные pg_dump прошлых прогонов: дамп идёт одной транзакцией и держит
+# ACCESS SHARE на ВСЕХ таблицах (включая profiles) часами. Пока он жив, любое
+# DDL (политики, триггеры, представления) не может взять замок — 21:11:29.10.2026
+# обновление именно на этом и останавливалось: три таких дампа висели по 40–100
+# минут. Такие «хвосты» снимаются перед бэкапом и перед миграциями.
+CLEAR_STALE_DUMPS="${UPDATE_CLEAR_STALE_DUMPS:-1}"
+STALE_DUMP_MINUTES="${UPDATE_STALE_DUMP_MINUTES:-30}"
 
 # ── прогресс и журнал ────────────────────────────────────────────────
 json_safe() { printf '%s' "${1:-}" | tr -d '"\\' | tr '\n\r' '  ' | cut -c1-200; }
@@ -336,20 +343,36 @@ migration_lock_conflict() {
 # Кто держит базу: на живой базе «залипшая» сессия в транзакции блокирует
 # DDL бесконечно. Показываем pid и готовую команду, а не «deadlock detected».
 describe_db_sessions() {
-  run_sql -tA -c "SELECT pid || '|' || state || '|' ||
-      coalesce(to_char(now() - xact_start, 'HH24:MI:SS'), '-') || '|' ||
-      left(regexp_replace(coalesce(query, ''), '\s+', ' ', 'g'), 100)
-    FROM pg_stat_activity
-    WHERE datname = current_database() AND pid <> pg_backend_pid()
-      AND (state LIKE 'idle in transaction%'
-           OR (xact_start IS NOT NULL AND now() - xact_start > interval '30 seconds'))
-    ORDER BY xact_start NULLS LAST
-    LIMIT 5" 2>/dev/null | while IFS='|' read -r pid state age query; do
+  # Кто блокирует — считается по pg_blocking_pids, а не «самая старая
+  # транзакция»: 21:11 журнал назвал импорт галактики, хотя держал замок
+  # другой сеанс. Сначала настоящие блокировщики, затем долгие транзакции.
+  run_sql -tA -c "WITH blockers AS (
+      SELECT DISTINCT unnest(pg_blocking_pids(w.pid)) AS pid
+      FROM pg_stat_activity w
+      WHERE cardinality(pg_blocking_pids(w.pid)) > 0
+    ), long_tx AS (
+      SELECT pid FROM pg_stat_activity
+      WHERE datname = current_database() AND pid <> pg_backend_pid()
+        AND (state LIKE 'idle in transaction%'
+             OR (xact_start IS NOT NULL AND now() - xact_start > interval '30 seconds'))
+    )
+    SELECT DISTINCT a.pid, a.state, coalesce(to_char(now() - a.xact_start, 'HH24:MI:SS'), '-'),
+           left(regexp_replace(coalesce(a.query, ''), '\\s+', ' ', 'g'), 110),
+           (a.pid IN (SELECT pid FROM blockers)) AS is_blocker
+    FROM pg_stat_activity a
+    WHERE a.pid IN (SELECT pid FROM blockers) OR a.pid IN (SELECT pid FROM long_tx)
+    ORDER BY is_blocker DESC, a.xact_start NULLS LAST
+    LIMIT 8" 2>/dev/null | while IFS='|' read -r pid state age query blocker; do
     [ -n "$pid" ] || continue
-    say "    pid $pid · $state · в транзакции $age · $query"
-    say "    снять вручную: SELECT pg_terminate_backend($pid);"
+    if [ "$blocker" = "t" ]; then
+      say "    🔒 pid $pid · $state · в транзакции $age · $query"
+      say "       это он держит замок: SELECT pg_terminate_backend($pid);"
+    else
+      say "    pid $pid · $state · в транзакции $age · $query"
+    fi
   done
 }
+
 
 # Что код сайта считает обязательным в базе. Проверяется ПОСЛЕ миграций и ДО
 # переключения контейнеров: «обновление прошло, а половина проекта не работает»
@@ -524,11 +547,41 @@ else
   say "неприменённых миграций нет"
 fi
 
+clear_stale_dumps() {
+  [ "$CLEAR_STALE_DUMPS" = "1" ] || return 0
+  [ -n "$DB_PSQL" ] || return 0
+  local rows pid age query killed=0
+  rows="$(run_sql -tA -c "SELECT pid || '|' ||
+        coalesce(to_char(now() - xact_start, 'HH24:MI:SS'), '-') || '|' ||
+        left(regexp_replace(coalesce(query, ''), '\\s+', ' ', 'g'), 90)
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND pid <> pg_backend_pid()
+        AND query LIKE 'COPY %TO stdout%'
+        AND xact_start IS NOT NULL
+        AND now() - xact_start > interval '${STALE_DUMP_MINUTES} minutes'
+      ORDER BY xact_start" 2>/dev/null)" || return 0
+  [ -n "$rows" ] || return 0
+  say "⚠ найдены брошенные pg_dump (держат замки на всех таблицах — из-за них не встают политики и миграции):"
+  while IFS='|' read -r pid age query; do
+    [ -n "$pid" ] || continue
+    say "    pid $pid · дамп идёт $age · $query"
+    if run_sql -tA -c "SELECT pg_terminate_backend($pid)" >/dev/null 2>&1; then
+      killed=$((killed + 1))
+    fi
+  done <<EOF_ROWS
+$rows
+EOF_ROWS
+  [ "$killed" -gt 0 ] && say "  снято дампов: $killed (UPDATE_CLEAR_STALE_DUMPS=0 отключает это)"
+  return 0
+}
+
 DUMP=""
 # Дамп делается по флажку «с бэкапом БД» (UPDATE_BACKUP_BEFORE), а не только
 # перед миграциями: админ выбирает, нужна ли копия именно в этом прогоне.
 if [ "$BACKUP_BEFORE" = "1" ] && [ -n "$DB_PSQL" ]; then
   report backup 45 "Резервная копия базы данных"
+  clear_stale_dumps
   # Каталог может оказаться недоступен (апдейтер в контейнере с read-only
   # rootfs) — тогда пишем в каталог состояния, а не бросаем обновление.
   if ! mkdir -p "$BACKUP_DIR" 2>/dev/null || [ ! -w "$BACKUP_DIR" ]; then
@@ -547,7 +600,14 @@ if [ "$BACKUP_BEFORE" = "1" ] && [ -n "$DB_PSQL" ]; then
     fi
   fi
   if [ "$DB_PSQL" = "container" ] && [ -n "$DUMP" ]; then
-    docker exec "$SUPA_CONTAINER" pg_dump -U postgres -d postgres "${DUMP_ARGS[@]}" > "$DUMP" 2>/dev/null || DUMP=""
+    # `timeout`: прерванный прогон больше не оставляет дамп-транзакцию жить
+    # часами. 0 — без ограничения (UPDATE_BACKUP_TIMEOUT=0).
+    DUMP_TIMEOUT="${UPDATE_BACKUP_TIMEOUT:-1800}"
+    if [ "$DUMP_TIMEOUT" != "0" ] && command -v timeout >/dev/null 2>&1; then
+      timeout "$DUMP_TIMEOUT" docker exec "$SUPA_CONTAINER" pg_dump -U postgres -d postgres "${DUMP_ARGS[@]}" > "$DUMP" 2>/dev/null || DUMP=""
+    else
+      docker exec "$SUPA_CONTAINER" pg_dump -U postgres -d postgres "${DUMP_ARGS[@]}" > "$DUMP" 2>/dev/null || DUMP=""
+    fi
   elif [ -n "$DUMP" ] && command -v pg_dump >/dev/null 2>&1; then
     pg_dump "$DB_URL" "${DUMP_ARGS[@]}" -f "$DUMP" 2>/dev/null || DUMP=""
   else
@@ -573,6 +633,7 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
     say "  примените миграции вручную: docker exec -i supabase-db psql -U postgres -d postgres < ФАЙЛ"
   else
     report migrate 55 "Применяю недостающие миграции базы данных"
+    clear_stale_dumps
     for f in $PENDING_MIGRATIONS; do
       base="$(basename "$f")"
       if [ ! -f "$f" ]; then say "  ⚠ $base нет в дереве — пропуск"; continue; fi
@@ -588,6 +649,19 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
       lock_try=1
       while :; do
         if psql_out="$(run_sql_migration < "$f" 2>&1)"; then
+          # Предупреждения файла не теряем: именно там написано, ЧЕМ политики
+          # отличаются от нужных и что часть правок пропущена из-за занятой базы.
+          # `|| true` обязателен: set -e + pipefail, а grep без совпадений
+          # возвращает 1 — иначе успешная миграция считалась бы сбоем.
+          { printf '%s\n' "$psql_out" | grep -E '^(WARNING|NOTICE)' | head -n 6 || true; } \
+            | while IFS= read -r line; do say "  $line"; done || true
+          if printf '%s' "$psql_out" | grep -q 'edrc:skipped-lock'; then
+            # База была занята: правки прав не применились, но и не сломаны.
+            # Файл НЕ отмечаем — иначе он больше никогда не повторится, и
+            # ремонт молча потеряется. Следующий прогон доберёт его сам.
+            say "  ⚠ $base — часть правок пропущена (база занята), отметки нет: файл повторится следующим обновлением"
+            break
+          fi
           mark_done "$base"
           MIGRATIONS_APPLIED=$((MIGRATIONS_APPLIED + 1))
           break
@@ -646,6 +720,10 @@ if [ "$MIGRATIONS_ONLY" = "1" ]; then
   exit 0
 fi
 
+
+# Брошенные дампы: pg_dump держит ACCESS SHARE на всех таблицах, пока идёт.
+# Проверяем по pg_stat_activity: дамп — это сессия, которая сейчас выполняет
+# `COPY ... TO stdout` внутри долгой транзакции.
 
 # ── 5. сборка и переключение ─────────────────────────────────────────
 # Метаданные ревизии нужны ОБЕИМ режимам: их читает docker-compose.yml

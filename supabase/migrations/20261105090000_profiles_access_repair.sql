@@ -69,6 +69,43 @@ AS $$
 $$;
 
 -- ────────────────────────────────────────────────────────────────────
+-- 0в. «Безопасность в порядке?» — по фактическому состоянию каталога, а не
+--     по тексту файла. Нужна там, где правильный DDL не удаётся применить
+--     из-за занятой базы: пропускать правку можно, только если дыры в
+--     доступе при этом не открываются.
+--     Проверки: RLS на profiles включён; есть SELECT-политика, которая
+--     смотрит на auth.uid(); нет политики «пускать всех» (USING (true));
+--     триггер защиты role/email на месте.
+-- ────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION pg_temp.edrc_security_ok()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    coalesce((SELECT c.relrowsecurity FROM pg_class c WHERE c.oid = 'public.profiles'::regclass), false)
+    AND EXISTS (
+      SELECT 1 FROM pg_policies p
+      WHERE p.schemaname = 'public' AND p.tablename = 'profiles'
+        AND p.cmd IN ('SELECT', 'ALL')
+        AND pg_temp.edrc_norm_sql(p.qual) LIKE '%auth.uid%'
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM pg_policies p
+      WHERE p.schemaname = 'public' AND p.tablename = 'profiles'
+        AND (pg_temp.edrc_norm_sql(p.qual) IN ('true', '1=1')
+             OR pg_temp.edrc_norm_sql(p.with_check) IN ('true', '1=1'))
+    )
+    AND EXISTS (
+      SELECT 1 FROM pg_trigger t
+      WHERE t.tgrelid = 'public.profiles'::regclass
+        AND t.tgname = 'trg_protect_profile_privileged_columns'
+        AND NOT t.tgisinternal
+    );
+$$;
+
+
+-- ────────────────────────────────────────────────────────────────────
 -- 1. Функции персонала: SECURITY DEFINER, поэтому политики не заходят в
 --    profiles рекурсивно (именно рекурсия раньше давала «нет прав»).
 -- ────────────────────────────────────────────────────────────────────
@@ -225,6 +262,7 @@ DECLARE
   cur_qual text;
   cur_wc text;
   need boolean := false;
+  diff text := '';
 BEGIN
   FOR spec IN
     SELECT * FROM (VALUES
@@ -245,13 +283,17 @@ BEGIN
        AND p.tablename = 'profiles'
        AND p.policyname = spec.name;
 
-    IF cur_cmd IS NULL
-       OR cur_cmd <> spec.cmd
+    IF cur_cmd IS NULL THEN
+      need := true;
+      diff := diff || spec.name || ' отсутствует; ';
+    ELSIF cur_cmd <> spec.cmd
        OR cur_roles IS DISTINCT FROM ARRAY['authenticated']::name[]
        OR pg_temp.edrc_norm_sql(cur_qual) IS DISTINCT FROM pg_temp.edrc_norm_sql(spec.qual)
        OR pg_temp.edrc_norm_sql(cur_wc) IS DISTINCT FROM pg_temp.edrc_norm_sql(spec.wc) THEN
       need := true;
-      EXIT;
+      diff := diff || spec.name || ' = ' || spec.cmd || ' TO ' || array_to_string(cur_roles, ',')
+              || ' USING ' || coalesce(btrim(cur_qual), '-')
+              || ' WITH CHECK ' || coalesce(btrim(cur_wc), '-') || '; ';
     END IF;
   END LOOP;
 
@@ -259,21 +301,43 @@ BEGIN
     RETURN;
   END IF;
 
-  EXECUTE 'DROP POLICY IF EXISTS profiles_select ON public.profiles';
-  EXECUTE 'CREATE POLICY profiles_select ON public.profiles
-             FOR SELECT TO authenticated
-             USING (id = auth.uid() OR public.request_is_staff())';
+  RAISE WARNING 'profiles: политики отличаются от нужных → %', left(diff, 600);
 
-  EXECUTE 'DROP POLICY IF EXISTS profiles_insert ON public.profiles';
-  EXECUTE 'CREATE POLICY profiles_insert ON public.profiles
-             FOR INSERT TO authenticated
-             WITH CHECK (id = auth.uid())';
+  BEGIN
+    -- Исключительный замок на profiles: любой читающий сайт держит ACCESS
+    -- SHARE, и ожидание здесь — это часы простоя сайта. Ограничиваем.
+    EXECUTE 'SET LOCAL lock_timeout = ''8s''';
 
-  EXECUTE 'DROP POLICY IF EXISTS profiles_update ON public.profiles';
-  EXECUTE 'CREATE POLICY profiles_update ON public.profiles
-             FOR UPDATE TO authenticated
-             USING (id = auth.uid() OR public.request_is_admin())
-             WITH CHECK (id = auth.uid() OR public.request_is_admin())';
+    EXECUTE 'DROP POLICY IF EXISTS profiles_select ON public.profiles';
+    EXECUTE 'CREATE POLICY profiles_select ON public.profiles
+               FOR SELECT TO authenticated
+               USING (id = auth.uid() OR public.request_is_staff())';
+
+    EXECUTE 'DROP POLICY IF EXISTS profiles_insert ON public.profiles';
+    EXECUTE 'CREATE POLICY profiles_insert ON public.profiles
+               FOR INSERT TO authenticated
+               WITH CHECK (id = auth.uid())';
+
+    EXECUTE 'DROP POLICY IF EXISTS profiles_update ON public.profiles';
+    EXECUTE 'CREATE POLICY profiles_update ON public.profiles
+               FOR UPDATE TO authenticated
+               USING (id = auth.uid() OR public.request_is_admin())
+               WITH CHECK (id = auth.uid() OR public.request_is_admin())';
+  EXCEPTION
+    WHEN lock_not_available OR deadlock_detected THEN
+      -- База занята (21:11:23.10.2026 — импорт галактики держал её часами).
+      -- Главное — не оставить базу без защиты и не блокировать обновление
+      -- навсегда: если дыры нет, переносим косметическую правку на
+      -- следующий прогон (файл идемпотентен и доберёт её сам).
+      IF pg_temp.edrc_security_ok() THEN
+        RAISE WARNING 'edrc:skipped-lock profiles: база занята, политики не переписаны — '
+                      'текущие безопасны, файл не будет отмечен применённым и повторится '
+                      'следующим обновлением';
+        RETURN;
+      END IF;
+      RAISE EXCEPTION 'profiles: база занята, а политики НЕ безопасны — '
+                      'освободите базу (pg_stat_activity) и повторите обновление. %', left(diff, 600);
+  END;
 END
 $policies$;
 
@@ -314,8 +378,10 @@ $$;
 --    EXCLUSIVE), поэтому правильный триггер не трогаем: проверяем по
 --    каталогу — момент срабатывания (BEFORE INSERT OR UPDATE) и функция.
 DO $trigger$
+DECLARE
+  has_trigger boolean;
 BEGIN
-  IF EXISTS (
+  SELECT EXISTS (
     SELECT 1
     FROM pg_trigger t
     WHERE t.tgrelid = 'public.profiles'::regclass
@@ -325,15 +391,27 @@ BEGIN
       AND (t.tgtype & 2) = 2   -- BEFORE
       AND (t.tgtype & 4) = 4   -- INSERT
       AND (t.tgtype & 16) = 16 -- UPDATE
-  ) THEN
+  ) INTO has_trigger;
+
+  IF has_trigger THEN
     RETURN;
   END IF;
 
-  EXECUTE 'DROP TRIGGER IF EXISTS trg_protect_profile_privileged_columns ON public.profiles';
-  EXECUTE 'CREATE TRIGGER trg_protect_profile_privileged_columns
-             BEFORE INSERT OR UPDATE OF role, email ON public.profiles
-             FOR EACH ROW
-             EXECUTE FUNCTION public.protect_profile_privileged_columns()';
+  BEGIN
+    EXECUTE 'SET LOCAL lock_timeout = ''8s''';
+    EXECUTE 'DROP TRIGGER IF EXISTS trg_protect_profile_privileged_columns ON public.profiles';
+    EXECUTE 'CREATE TRIGGER trg_protect_profile_privileged_columns
+               BEFORE INSERT OR UPDATE OF role, email ON public.profiles
+               FOR EACH ROW
+               EXECUTE FUNCTION public.protect_profile_privileged_columns()';
+  EXCEPTION
+    WHEN lock_not_available OR deadlock_detected THEN
+      -- Триггер — защита от самоназначения админом: его отсутствие это дыра,
+      -- поэтому здесь пропуск допустим только если триггер всё-таки есть
+      -- (проверка выше его не нашла — значит, его правда нет).
+      RAISE EXCEPTION 'profiles: база занята, триггер защиты role/email не создан. '
+                      'Освободите базу (pg_stat_activity) и повторите обновление';
+  END;
 END
 $trigger$;
 
