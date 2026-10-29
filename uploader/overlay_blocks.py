@@ -1623,6 +1623,8 @@ class FootMapCanvas(QWidget):
         taken: List[QRectF] = [
             QRectF(center.x() - radius, center.y() - radius, 2 * radius, band),
             QRectF(center.x() - radius, center.y() + radius - band, 2 * radius, band),
+            # И сам командир в центре: подпись поверх стрелки читается хуже метки.
+            QRectF(center.x() - 14, center.y() - 12, 28, 22),
         ]
         for poi in state.get("pois") or []:
             east = float(poi.get("east") or 0.0)
