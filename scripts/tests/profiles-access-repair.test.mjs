@@ -296,3 +296,42 @@ test('чужое представление без зависимых объек
     GRANT SELECT ON public.public_profiles TO anon, authenticated;
   `);
 });
+
+test('правильные политики и триггер не пересоздаются: замка на profiles нет', async () => {
+  // Самая дорогая часть ремонта — исключительный замок на profiles (политики)
+  // и SHARE ROW EXCLUSIVE (триггер). На живой базе, где права целы, оба шага
+  // обязаны быть пустыми: иначе обновление снова ждёт сайт и падает
+  // «lock timeout» / «deadlock detected».
+  const oids = async () => ({
+    policies: (await db.query('SELECT oid::int AS oid, polname FROM pg_policy ORDER BY polname')).rows,
+    trigger: (await db.query(
+      "SELECT oid::int AS oid FROM pg_trigger WHERE tgname = 'trg_protect_profile_privileged_columns'",
+    )).rows,
+  });
+  const before = await oids();
+  assert.equal(before.policies.length, 3, 'три политики на месте');
+  assert.equal(before.trigger.length, 1, 'триггер на месте');
+
+  await db.exec(repairSql());
+
+  const after = await oids();
+  assert.deepEqual(after.policies, before.policies, 'политики не пересоздавались');
+  assert.deepEqual(after.trigger, before.trigger, 'триггер не пересоздавался');
+});
+
+test('сломанная политика пересоздаётся, а не остаётся как была', async () => {
+  // Обратный случай: политика есть, но пускает всех — ремонт обязан её
+  // заменить (и это единственный шаг, которому нужен исключительный замок).
+  await db.exec(`
+    DROP POLICY profiles_select ON public.profiles;
+    CREATE POLICY profiles_select ON public.profiles FOR SELECT TO authenticated USING (true);
+  `);
+  await db.exec(repairSql());
+  const qual = (await db.query(
+    "SELECT qual FROM pg_policies WHERE schemaname = 'public' AND tablename = 'profiles' AND policyname = 'profiles_select'",
+  )).rows[0].qual.replace(/\s+/g, ' ');
+  assert.match(qual, /auth\.uid\(\)/);
+  assert.match(qual, /request_is_staff\(\)/);
+  assert.doesNotMatch(qual, /^true$/);
+});
+

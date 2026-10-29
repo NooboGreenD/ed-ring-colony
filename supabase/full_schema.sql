@@ -18086,6 +18086,26 @@ NOTIFY pgrst, 'reload schema';
 SET lock_timeout = '8s';
 
 -- ────────────────────────────────────────────────────────────────────
+-- 0б. Помощник сравнения: приводит выражение политики к «плоскому» виду,
+--     чтобы `(id = auth.uid()) OR request_is_staff()` и
+--     `id = auth.uid() OR public.request_is_staff()` считались одним и тем же.
+--     Функция временная (pg_temp): в базе после наката ничего не остаётся,
+--     и на живые объекты она не влияет.
+-- ────────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION pg_temp.edrc_norm_sql(t text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT btrim(regexp_replace(regexp_replace(regexp_replace(regexp_replace(
+    lower(coalesce(t, '')),
+    '"[^"]*"', '', 'g'),
+    '\mpublic\.', '', 'g'),
+    '\s+', '', 'g'),
+    '[()]', '', 'g'));
+$$;
+
+-- ────────────────────────────────────────────────────────────────────
 -- 1. Функции персонала: SECURITY DEFINER, поэтому политики не заходят в
 --    profiles рекурсивно (именно рекурсия раньше давала «нет прав»).
 -- ────────────────────────────────────────────────────────────────────
@@ -18226,22 +18246,73 @@ REVOKE SELECT ON public.profiles FROM anon;
 -- ────────────────────────────────────────────────────────────────────
 -- 5. Политики profiles: владелец строки и персонал; запись роли — только
 --    администратор (и сервер через service_role / psql, где auth.uid()=NULL).
+--
+--    Пересоздание политики = исключительный замок на `profiles`, который
+--    держит весь сайт. Поэтому сначала сверяем то, что уже есть: если все три
+--    политики ровно такие, шаг не делает ничего (на живой базе это так, и
+--    именно этот замок 29.10.2026 превратился в deadlock). Сверяем не текст
+--    файла, а разобранные выражения из pg_policies — Postgres печатает их
+--    по-своему, но `pg_temp.edrc_norm_sql` уравнивает скобки и схему.
 -- ────────────────────────────────────────────────────────────────────
-DROP POLICY IF EXISTS profiles_select ON public.profiles;
-CREATE POLICY profiles_select ON public.profiles
-  FOR SELECT TO authenticated
-  USING (id = auth.uid() OR public.request_is_staff());
+DO $policies$
+DECLARE
+  spec record;
+  cur_cmd text;
+  cur_roles name[];
+  cur_qual text;
+  cur_wc text;
+  need boolean := false;
+BEGIN
+  FOR spec IN
+    SELECT * FROM (VALUES
+      ('profiles_select', 'SELECT',
+       'id = auth.uid() OR public.request_is_staff()', NULL),
+      ('profiles_insert', 'INSERT',
+       NULL, 'id = auth.uid()'),
+      ('profiles_update', 'UPDATE',
+       'id = auth.uid() OR public.request_is_admin()',
+       'id = auth.uid() OR public.request_is_admin()')
+    ) AS v(name, cmd, qual, wc)
+  LOOP
+    cur_cmd := NULL; cur_roles := NULL; cur_qual := NULL; cur_wc := NULL;
+    SELECT p.cmd, p.roles, p.qual, p.with_check
+      INTO cur_cmd, cur_roles, cur_qual, cur_wc
+      FROM pg_policies p
+     WHERE p.schemaname = 'public'
+       AND p.tablename = 'profiles'
+       AND p.policyname = spec.name;
 
-DROP POLICY IF EXISTS profiles_insert ON public.profiles;
-CREATE POLICY profiles_insert ON public.profiles
-  FOR INSERT TO authenticated
-  WITH CHECK (id = auth.uid());
+    IF cur_cmd IS NULL
+       OR cur_cmd <> spec.cmd
+       OR cur_roles IS DISTINCT FROM ARRAY['authenticated']::name[]
+       OR pg_temp.edrc_norm_sql(cur_qual) IS DISTINCT FROM pg_temp.edrc_norm_sql(spec.qual)
+       OR pg_temp.edrc_norm_sql(cur_wc) IS DISTINCT FROM pg_temp.edrc_norm_sql(spec.wc) THEN
+      need := true;
+      EXIT;
+    END IF;
+  END LOOP;
 
-DROP POLICY IF EXISTS profiles_update ON public.profiles;
-CREATE POLICY profiles_update ON public.profiles
-  FOR UPDATE TO authenticated
-  USING (id = auth.uid() OR public.request_is_admin())
-  WITH CHECK (id = auth.uid() OR public.request_is_admin());
+  IF NOT need THEN
+    RETURN;
+  END IF;
+
+  EXECUTE 'DROP POLICY IF EXISTS profiles_select ON public.profiles';
+  EXECUTE 'CREATE POLICY profiles_select ON public.profiles
+             FOR SELECT TO authenticated
+             USING (id = auth.uid() OR public.request_is_staff())';
+
+  EXECUTE 'DROP POLICY IF EXISTS profiles_insert ON public.profiles';
+  EXECUTE 'CREATE POLICY profiles_insert ON public.profiles
+             FOR INSERT TO authenticated
+             WITH CHECK (id = auth.uid())';
+
+  EXECUTE 'DROP POLICY IF EXISTS profiles_update ON public.profiles';
+  EXECUTE 'CREATE POLICY profiles_update ON public.profiles
+             FOR UPDATE TO authenticated
+             USING (id = auth.uid() OR public.request_is_admin())
+             WITH CHECK (id = auth.uid() OR public.request_is_admin())';
+END
+$policies$;
 
 -- ────────────────────────────────────────────────────────────────────
 -- 6. Триггер защиты role/email: без него любой вошедший снова мог бы
@@ -18275,11 +18346,33 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_protect_profile_privileged_columns ON public.profiles;
-CREATE TRIGGER trg_protect_profile_privileged_columns
-  BEFORE INSERT OR UPDATE OF role, email ON public.profiles
-  FOR EACH ROW
-  EXECUTE FUNCTION public.protect_profile_privileged_columns();
+
+--    Пересоздание триггера тоже берёт замок на `profiles` (SHARE ROW
+--    EXCLUSIVE), поэтому правильный триггер не трогаем: проверяем по
+--    каталогу — момент срабатывания (BEFORE INSERT OR UPDATE) и функция.
+DO $trigger$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_trigger t
+    WHERE t.tgrelid = 'public.profiles'::regclass
+      AND t.tgname = 'trg_protect_profile_privileged_columns'
+      AND NOT t.tgisinternal
+      AND t.tgfoid = 'public.protect_profile_privileged_columns()'::regprocedure
+      AND (t.tgtype & 2) = 2   -- BEFORE
+      AND (t.tgtype & 4) = 4   -- INSERT
+      AND (t.tgtype & 16) = 16 -- UPDATE
+  ) THEN
+    RETURN;
+  END IF;
+
+  EXECUTE 'DROP TRIGGER IF EXISTS trg_protect_profile_privileged_columns ON public.profiles';
+  EXECUTE 'CREATE TRIGGER trg_protect_profile_privileged_columns
+             BEFORE INSERT OR UPDATE OF role, email ON public.profiles
+             FOR EACH ROW
+             EXECUTE FUNCTION public.protect_profile_privileged_columns()';
+END
+$trigger$;
 
 -- ────────────────────────────────────────────────────────────────────
 -- 7. Таблицы, без чтения которых админка выглядит пустой, а «половина
