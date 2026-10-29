@@ -113,6 +113,23 @@ function setup() {
   '    exit 0 ;;',
   '  *psql*)',
     '    input=$(cat)',
+    // STUB_LOCK_FAILS=N — первые N попыток psql отвечают «lock timeout»:
+    // так воспроизводится живая база, где миграция попала в чужую транзакцию.
+    // Только для настоящей миграции (stdin — файл): проба базы присылает
+    // `SELECT 1`, а диагностика замков идёт через `-c` и мешать им нельзя.
+    '    if [ -n "${STUB_LOCK_FAILS:-}" ] && [ -n "$input" ] && [ "$(printf "%s" "$input" | tr -d "[:space:]")" != "SELECT1" ]; then',
+    '      count="$(cat "$STUB_LOCK_COUNT" 2>/dev/null || echo 0)"',
+    '      printf "%s" "$((count + 1))" > "$STUB_LOCK_COUNT"',
+    '      if [ "$count" -lt "$STUB_LOCK_FAILS" ]; then',
+    '        echo "ERROR: canceling statement due to lock timeout" >&2; exit 3',
+    '      fi',
+    '    fi',
+    // Диагностика «кто держит базу»: отдаём одну залипшую сессию, чтобы
+    // проверить не только текст причины, но и готовую команду снятия.
+    '    if printf "%s" "$*" | grep -q "pg_stat_activity"; then',
+    '      echo "4242|idle in transaction (aborted)|00:12:33|SELECT 1 FROM public.profiles";',
+    '      exit 0',
+    '    fi',
     '    if [ -f "$STUB_FAIL_ON" ] && printf "%s" "$input" | grep -qf "$STUB_FAIL_ON"; then',
     '      echo "${STUB_FAIL_MSG:-ERROR: syntax error at or near}" >&2; exit 3',
     '    fi',
@@ -156,6 +173,9 @@ function setup() {
     UPDATE_APPLY_MIGRATIONS: '1',
     // Пауза между попытками сборки нужна живому демону, а не тесту.
     UPDATE_BUILD_RETRY_DELAY: '0',
+    // Замки миграции: пауза между повторами — тоже только для живого сервера.
+    UPDATE_MIGRATION_LOCK_RETRY_DELAY: '0',
+    STUB_LOCK_COUNT: join(work, 'lock-attempts'),
   };
 
   spawnSync('git', ['init', '-q', '--initial-branch=main', '--bare', origin], { encoding: 'utf8' });
@@ -409,7 +429,9 @@ test('повторный запуск: пересборка без перемо�
     const calls = readFileSync(ctx.log, 'utf8');
     assert.match(calls, /build --build-arg RUN_TESTS=1 web\n/, 'повторный прогон всё равно пересобирает');
     assert.match(calls, /up -d --no-build web jobs monitor-agent/, 'и переключает контейнеры на новый образ');
-    assert.equal(calls.includes('psql'), false, 'отмеченная миграция не накатывается второй раз');
+    // Сверка схемы тоже ходит в psql, но только читает: смотрим именно на
+    // накат (--single-transaction), а не на любой вызов psql.
+    assert.equal(/--single-transaction/.test(calls), false, 'отмеченная миграция не накатывается второй раз');
     // Дамп больше не привязан к наличию миграций: его решает флажок
     // «с бэкапом БД» (UPDATE_BACKUP_BEFORE), включённый по умолчанию.
     assert.match(calls, /pg_dump/, 'бэкап по умолчанию включён, даже когда миграций нет');
@@ -785,6 +807,50 @@ test('миграция с «already exists» помечается применё
     assert.equal(done.stage, 'done');
     assert.equal(done.migrationsApplied, 0, 'уже существующая миграция не считается свеженакатанной');
     assert.match(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8'), /20260930000001_legacy\.sql/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('миграция попала в чужую транзакцию: повтор после lock timeout проходит', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Живая база: ремонт прав берёт исключительный замок на profiles, а запрос
+    // сайта держит его же. Первая попытка получает «lock timeout» — это не
+    // ошибка схемы, и прогон обязан повторить файл, а не упасть.
+    ctx.release({ 'supabase/migrations/20260930000002_busy.sql': '-- busy\nSELECT 1;\n' });
+    const run = ctx.run({ STUB_LOCK_FAILS: '1' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /база занята другой транзакцией/);
+    assert.match(run.stdout, /попытка 1 из 5/);
+    const done = events(run.stdout).pop();
+    assert.equal(done.stage, 'done');
+    assert.equal(done.migrationsApplied, 1, 'миграция зачтена после повтора');
+    assert.match(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8'), /20260930000002_busy\.sql/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('замки не дались ни разу: обновление стоит, причина названа, сборки нет', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'supabase/migrations/20260930000003_stuck.sql': '-- stuck\nSELECT 1;\n' });
+    const run = ctx.run({
+      STUB_LOCK_FAILS: '99',
+      UPDATE_MIGRATION_LOCK_RETRIES: '3',
+    });
+    assert.notEqual(run.status, 0, 'обновление не должно считаться успешным');
+    assert.match(run.stdout, /замки не дались за 3 попыток/);
+    // Журнал должен называть виновника, а не только «deadlock detected»:
+    // pid, состояние и готовую команду снятия сессии.
+    assert.match(run.stdout, /pid 4242 · idle in transaction/, 'назван держатель замков');
+    assert.match(run.stdout, /pg_terminate_backend\(4242\)/, 'есть готовая команда снятия сессии');
+    assert.equal(events(run.stdout).some((event) => event.stage === 'done'), false);
+    // Ни сборки, ни переключения контейнеров: база не тронута, сайт живёт дальше.
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.equal(/docker\] build/.test(calls), false, 'сборка не начиналась');
+    assert.equal(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8').includes('20260930000003_stuck.sql'), false);
   } finally {
     ctx.cleanup();
   }

@@ -71,6 +71,14 @@ APP_DIR="${APP_DIR:-/opt/ed-ring-colony/app}"
 COMPOSE_SERVICES="${COMPOSE_SERVICES:-web jobs monitor-agent}"
 ENV_FILE="${ENV_FILE:-.env.production}"
 HEALTH_TRIES="${HEALTH_TRIES:-60}"
+# Миграция накатывается на живой сайт. Если она попала в чужую транзакцию,
+# Postgres отвечает «lock timeout» / «deadlock detected» — это не ошибка схемы.
+# Один файл = одна попытка ждать замки MIGRATION_LOCK_TIMEOUT; не вышло —
+# повторяем, а не валим обновление: 29.10.2026 прогон провисел 54 минуты и
+# упал дедлоком именно на ожидании замков.
+MIGRATION_LOCK_TIMEOUT="${UPDATE_MIGRATION_LOCK_TIMEOUT:-15s}"
+MIGRATION_LOCK_RETRIES="${UPDATE_MIGRATION_LOCK_RETRIES:-5}"
+MIGRATION_LOCK_RETRY_DELAY="${UPDATE_MIGRATION_LOCK_RETRY_DELAY:-15}"
 
 # ── прогресс и журнал ────────────────────────────────────────────────
 json_safe() { printf '%s' "${1:-}" | tr -d '"\\' | tr '\n\r' '  ' | cut -c1-200; }
@@ -304,13 +312,43 @@ elif command -v psql >/dev/null 2>&1 && [ -n "$DB_URL" ]; then
 fi
 
 run_sql() { # SQL на stdin; "$@" — доп. аргументы psql (например, --single-transaction)
+  local opts="${EDRC_PGOPTIONS:--c client_min_messages=warning}"
   if [ "$DB_PSQL" = "container" ]; then
-    docker exec -i -e PGOPTIONS='-c client_min_messages=warning' "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1 "$@"
+    docker exec -i -e PGOPTIONS="$opts" "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1 "$@"
   elif [ "$DB_PSQL" = "url" ]; then
-    PGOPTIONS='-c client_min_messages=warning' psql "$DB_URL" -q -v ON_ERROR_STOP=1 "$@"
+    PGOPTIONS="$opts" psql "$DB_URL" -q -v ON_ERROR_STOP=1 "$@"
   else
     return 1
   fi
+}
+
+# Миграция ждёт замки ограниченно (сам файл может задать своё, меньшее).
+run_sql_migration() {
+  EDRC_PGOPTIONS="-c client_min_messages=warning -c lock_timeout=$MIGRATION_LOCK_TIMEOUT" \
+    run_sql --single-transaction "$@"
+}
+
+# Замки не дались — это не ошибка схемы, а занятая база: ждём и повторяем.
+migration_lock_conflict() {
+  printf '%s' "${1:-}" | grep -qiE 'deadlock detected|lock timeout|could not obtain lock|not available now'
+}
+
+# Кто держит базу: на живой базе «залипшая» сессия в транзакции блокирует
+# DDL бесконечно. Показываем pid и готовую команду, а не «deadlock detected».
+describe_db_sessions() {
+  run_sql -tA -c "SELECT pid || '|' || state || '|' ||
+      coalesce(to_char(now() - xact_start, 'HH24:MI:SS'), '-') || '|' ||
+      left(regexp_replace(coalesce(query, ''), '\s+', ' ', 'g'), 100)
+    FROM pg_stat_activity
+    WHERE datname = current_database() AND pid <> pg_backend_pid()
+      AND (state LIKE 'idle in transaction%'
+           OR (xact_start IS NOT NULL AND now() - xact_start > interval '30 seconds'))
+    ORDER BY xact_start NULLS LAST
+    LIMIT 5" 2>/dev/null | while IFS='|' read -r pid state age query; do
+    [ -n "$pid" ] || continue
+    say "    pid $pid · $state · в транзакции $age · $query"
+    say "    снять вручную: SELECT pg_terminate_backend($pid);"
+  done
 }
 
 # Что код сайта считает обязательным в базе. Проверяется ПОСЛЕ миграций и ДО
@@ -547,22 +585,41 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
       # оставляла базу в промежуточном состоянии, а обновление всё равно
       # шло дальше («половина проекта не работает» при формально успешном
       # прогоне). С --single-transaction неудачный файл откатывается целиком.
-      if psql_out="$(run_sql --single-transaction < "$f" 2>&1)"; then
-        mark_done "$base"
-        MIGRATIONS_APPLIED=$((MIGRATIONS_APPLIED + 1))
-      elif printf '%s' "$psql_out" | grep -qiE 'already exists|уже существует'; then
-        # База, залитая снимком supabase/full_schema.sql или чинённая руками,
-        # уже содержит объекты миграции: повторный накат получает «already
-        # exists» на первом же таком объекте. Это НЕ ошибка — отмечаем файл
-        # применённым и идём дальше. Любой другой сбой по-прежнему валит
-        # обновление ДО переключения кода.
-        say "  ⚠ $base — объекты уже существуют (миграция применялась ранее) — отмечаю как применённую"
-        say "    файл откатан целиком: частично применённых миграций после этой проверки не остаётся"
-        mark_done "$base"
-      else
+      lock_try=1
+      while :; do
+        if psql_out="$(run_sql_migration < "$f" 2>&1)"; then
+          mark_done "$base"
+          MIGRATIONS_APPLIED=$((MIGRATIONS_APPLIED + 1))
+          break
+        fi
+        if printf '%s' "$psql_out" | grep -qiE 'already exists|уже существует'; then
+          # База, залитая снимком supabase/full_schema.sql или чинённая руками,
+          # уже содержит объекты миграции: повторный накат получает «already
+          # exists» на первом же таком объекте. Это НЕ ошибка — отмечаем файл
+          # применённым и идём дальше. Любой другой сбой по-прежнему валит
+          # обновление ДО переключения кода.
+          say "  ⚠ $base — объекты уже существуют (миграция применялась ранее) — отмечаю как применённую"
+          say "    файл откатан целиком: частично применённых миграций после этой проверки не остаётся"
+          mark_done "$base"
+          break
+        fi
+        if migration_lock_conflict "$psql_out"; then
+          # Замки держит живой сайт или залипшая сессия. Файл откатан целиком
+          # (--single-transaction), поэтому повтор безопасен: он идемпотентен.
+          if [ "$lock_try" -lt "$MIGRATION_LOCK_RETRIES" ]; then
+            say "  ⚠ $base: база занята другой транзакцией (замки не дались за $MIGRATION_LOCK_TIMEOUT) — попытка $lock_try из $MIGRATION_LOCK_RETRIES, повтор через ${MIGRATION_LOCK_RETRY_DELAY}с"
+            sleep "$MIGRATION_LOCK_RETRY_DELAY"
+            lock_try=$((lock_try + 1))
+            continue
+          fi
+          say "  ⚠ $base: замки не дались за $MIGRATION_LOCK_RETRIES попыток — кто держит базу:"
+          describe_db_sessions || true
+          printf '%s\n' "$psql_out" | tail -n 20 >&2
+          die "миграция $base не смогла взять замки за $MIGRATION_LOCK_RETRIES попыток (сайт не останавливаю: сначала закройте блокирующую сессию) — код сайта ещё не переключался"
+        fi
         printf '%s\n' "$psql_out" | tail -n 20 >&2
         die "миграция $base завершилась с ошибкой — код сайта ещё не переключался"
-      fi
+      done
     done
     say "применено миграций: $MIGRATIONS_APPLIED"
   fi
