@@ -32,10 +32,19 @@ POI_MAX_DRAW_M = 40000.0
 DEFAULT_PLANET_RADIUS = 6_371_000.0
 
 #: Виды точек на карте.
+#:
+#: Вид точки — это ещё и значок: в игре поселение, планетарный порт, корабль и
+#: ровер выглядят по-разному, и на карте они должны отличаться так же, иначе
+#: «квадратик» ничего не говорит о том, что там на самом деле.
 POI_SHIP = "ship"
 POI_SRV = "srv"
 POI_SETTLEMENT = "settlement"
 POI_STATION = "station"
+
+#: Ближе этого командир считается стоящим в поселении или порту. Внутри
+#: поселения его точка на карте — под самой стрелкой в центре, и без строки
+#: «вы в поселении» карта молчала бы о том, где он находится.
+PLACE_NEAR_M = 500.0
 
 #: Сколько точек интереса храним (поселения вокруг — не бесконечны).
 POI_LIMIT = 24
@@ -201,6 +210,30 @@ def to_screen(east: float, north: float, heading: float,
     return center_x + right * px_per_m, center_y - forward * px_per_m
 
 
+def settlement_kind(station_type: Any) -> str:
+    """Поселение или планетарный порт — по `StationType` из журнала.
+
+    Игра называет пешее поселение Одиссеи ``OnFootSettlement``, а планетарный
+    порт с площадкой для корабля — ``CraterPort``, ``Planetary Port``,
+    ``Planetary Outpost``. Раньше вид решало наличие имени, и любое поселение с
+    именем рисовалось портом; теперь значок тот, что в игре. Пустая строка —
+    тип не пришёл, вид точки решает вызывающий.
+    """
+    text = " ".join(str(station_type or "").casefold().replace("_", " ").split())
+    if not text:
+        return ""
+    return POI_SETTLEMENT if "settlement" in text else POI_STATION
+
+
+def _pad_number(value: Any) -> Optional[int]:
+    """Номер посадочной площадки из `Docked` (``LandingPad``); 0 — не площадка."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def pick_scale(reach_m: float) -> int:
     """Радиус обзора миникарты: ближайшая ступень не меньше достигнутого."""
     reach = max(0.0, float(reach_m or 0.0))
@@ -248,6 +281,7 @@ def empty_state() -> Dict[str, Any]:
         "srv": None,
         "samples": [],
         "sample": None,
+        "place": None,
         "scale": pick_scale(100),
         "updated_at": "",
         "age_seconds": None,
@@ -477,7 +511,7 @@ class FootMap:
                                   int(pending["radius"]), self._lat, self._lon)
 
     def _take_poi(self, event: Dict[str, Any]) -> bool:
-        """Поселение или планетарный порт: имя и координаты на карту."""
+        """Поселение или планетарный порт: имя, вид и координаты на карту."""
         lat = _coordinate(event.get("Latitude"))
         lon = _coordinate(event.get("Longitude"))
         if lat is None or lon is None:
@@ -486,20 +520,27 @@ class FootMap:
         station_name = str(event.get("StationName_Localised")
                            or event.get("StationName") or "").strip()
         place_name = str(event.get("Name_Localised") or event.get("Name") or "").strip()
+        # Вид точки — из `StationType`: ``OnFootSettlement`` это пешее поселение,
+        # ``CraterPort`` и ``Planetary Outpost`` — порт с площадкой. Без типа
+        # остаётся прежнее правило: имя в StationName — порт.
+        kind = settlement_kind(event.get("StationType"))
         if station_name:
-            kind, name = POI_STATION, station_name
+            kind, name = kind or POI_STATION, station_name
         elif place_name:
-            kind, name = POI_SETTLEMENT, place_name
+            kind, name = kind or POI_SETTLEMENT, place_name
         elif event.get("MarketID") and str(event.get("event") or "") == "ApproachSettlement":
             # Имя не переведено — точка на карте всё равно нужна, подпись пустая.
-            kind, name = POI_SETTLEMENT, ""
+            kind, name = kind or POI_SETTLEMENT, ""
         else:
             # `Location` в космосе (без станции) — это не объект на поверхности.
             return False
         if name.startswith("$"):
             name = ""
+        # `Docked` приносит номер площадки: в игре это первое, что ищут глазами,
+        # а на карте у порта появляется подпись «площадка 7».
+        pad = _pad_number(event.get("LandingPad"))
         key = f"{kind}:{event.get('MarketID') or name or f'{lat:.5f},{lon:.5f}'}"
-        record = {"kind": kind, "name": name, "lat": lat, "lon": lon}
+        record = {"kind": kind, "name": name, "lat": lat, "lon": lon, "pad": pad}
         if self._pois.get(key) == record:
             return False
         if len(self._pois) >= POI_LIMIT and key not in self._pois:
@@ -662,8 +703,10 @@ class FootMap:
 
     # -- состояние для блока HUD -------------------------------------------
     def _refresh_signature(self) -> None:
+        pois = tuple(sorted((key, str(record.get("kind")), str(record.get("name")),
+                             record.get("pad")) for key, record in self._pois.items()))
         self._signature = (self._lat, self._lon, round(self._heading, 1),
-                           len(self._trail), len(self._pois), self._body,
+                           len(self._trail), pois, self._body,
                            self._on_foot, self._ship, self._oxygen, self._health,
                            self._temperature, self._gravity, self._weapon,
                            self._altitude, len(self._samples), self._sample_species,
@@ -708,6 +751,8 @@ class FootMap:
             state["ship"] = next((poi for poi in pois if poi["kind"] == POI_SHIP), None)
             state["srv"] = next((poi for poi in pois if poi["kind"] == POI_SRV), None)
 
+            state["place"] = self._place_summary(pois)
+
             samples = self._samples_list()
             state["samples"] = samples
             state["sample"] = self._sample_summary(samples)
@@ -721,6 +766,21 @@ class FootMap:
                 reach = max(reach, min(row["distance"] + row["radius"] for row in samples))
             state["scale"] = pick_scale(max(reach * 1.05, 60.0))
             return state
+
+    def _place_summary(self, pois: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Где стоит командир: поселение или порт, если он внутри него.
+
+        Пока он в поселении, его точка на карте — ровно под стрелкой в центре,
+        и по одной карте не видно, что это поселение. Строка «вы в поселении»
+        отвечает на вопрос, который в игре решает подпись на экране.
+        """
+        places = [poi for poi in pois if poi["kind"] in (POI_SETTLEMENT, POI_STATION)]
+        if not places:
+            return None
+        nearest = min(places, key=lambda poi: float(poi.get("distance") or 0.0))
+        if float(nearest.get("distance") or 0.0) > PLACE_NEAR_M:
+            return None
+        return dict(nearest)
 
     def _samples_list(self) -> List[Dict[str, Any]]:
         """Образцы в метрах от командира: точка, вид и радиус колонии."""
@@ -772,6 +832,7 @@ class FootMap:
             rows.append({
                 "kind": record["kind"],
                 "name": record.get("name") or "",
+                "pad": record.get("pad"),
                 "east": round(east, 1),
                 "north": round(north, 1),
                 "distance": round(math.hypot(east, north), 1),

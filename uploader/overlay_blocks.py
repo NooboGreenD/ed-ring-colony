@@ -1708,7 +1708,9 @@ class FootMapCanvas(QWidget):
             elif kind == foot_map.POI_SRV:
                 self._draw_srv_marker(painter, x, y, color)
             elif kind == foot_map.POI_STATION:
-                painter.drawRect(QRectF(x - 2.5, y - 2.5, 5, 5))
+                self._draw_port_marker(painter, x, y, color)
+            elif kind == foot_map.POI_SETTLEMENT:
+                self._draw_settlement_marker(painter, x, y, color)
             else:
                 painter.drawEllipse(QPointF(x, y), 2.4, 2.4)
             painter.setBrush(Qt.NoBrush)
@@ -1722,6 +1724,9 @@ class FootMapCanvas(QWidget):
             if not caption:
                 distance_text = foot_distance_text(float(poi.get("distance") or 0.0))
                 caption = f"{foot_poi_title(poi)} {distance_text}".strip()
+            if poi.get("pad"):
+                # Номер площадки — первое, что ищут глазами при посадке в порту.
+                caption = f"{caption} · {tr('площадка {pad}', pad=poi['pad'])}"
             limit = max(30.0, 2 * radius - 12)
             text = metrics.elidedText(caption, Qt.ElideRight, limit)
             width = metrics.horizontalAdvance(text) + 2
@@ -1745,6 +1750,35 @@ class FootMapCanvas(QWidget):
                              QPointF(x, y + 4.2), QPointF(x - 3.6, y)])
         painter.setBrush(QBrush(color))
         painter.drawPolygon(diamond)
+        painter.setBrush(Qt.NoBrush)
+
+    @staticmethod
+    def _draw_settlement_marker(painter: QPainter, x: float, y: float,
+                                color: QColor) -> None:
+        """Поселение — домик: стены и крыша, как на карте игры.
+
+        Контуром, а не заливкой: поселений вокруг много, и залитые домики
+        слились бы в пятно, закрыв собой ровер и корабль.
+        """
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(color, 1.2))
+        painter.drawRect(QRectF(x - 3.0, y - 1.4, 6.0, 5.0))
+        painter.drawPolygon(QPolygonF([QPointF(x - 4.2, y - 1.4), QPointF(x, y - 5.0),
+                                       QPointF(x + 4.2, y - 1.4)]))
+
+    @staticmethod
+    def _draw_port_marker(painter: QPainter, x: float, y: float, color: QColor) -> None:
+        """Планетарный порт — площадка в рамке: квадрат с точкой в центре.
+
+        Домик без крыши и точка внутри: порт от поселения отличает наличие
+        посадочной площадки, поэтому она и нарисована.
+        """
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(color, 1.2))
+        painter.drawRect(QRectF(x - 3.6, y - 3.6, 7.2, 7.2))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawEllipse(QPointF(x, y), 1.5, 1.5)
         painter.setBrush(Qt.NoBrush)
 
     @staticmethod
@@ -1807,6 +1841,12 @@ class FootMapOverlay(HudWindow):
         self.coords_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED, dp=-2)
         self.body.addWidget(self.coords_label)
 
+        # Где стоит командир: поселение или порт. Внутри поселения его точка на
+        # карте — ровно под стрелкой в центре, поэтому по одной карте не видно,
+        # что это поселение: строку даёт `foot_map` по расстоянию до точки.
+        self.place_label = self.make_label(self.content, "", color=COLOR_ACCENT, dp=-2)
+        self.body.addWidget(self.place_label)
+
         self.canvas = FootMapCanvas(self.content)
         self.canvas.set_empty_text(tr("Позиция с поверхности не получена. "
                                       "Выйдите из корабля на ногах."))
@@ -1864,18 +1904,41 @@ class FootMapOverlay(HudWindow):
     #: Сколько ближних точек перечисляем под картой.
     MAX_POINT_ROWS = 3
 
+    @staticmethod
+    def _place_text(state: Dict[str, Any]) -> str:
+        """Где стоит командир: «вы в поселении X» или «вы в порту X».
+
+        Строка появляется только когда командир внутри (`foot_map.PLACE_NEAR_M`):
+        иначе это была бы неправда, а ближние точки и так перечислены ниже.
+        """
+        place = state.get("place") or {}
+        if not place:
+            return ""
+        name = str(place.get("name") or "").strip()
+        if place.get("kind") == foot_map.POI_STATION:
+            return tr("вы в порту {name}", name=name) if name else tr("вы в порту")
+        return tr("вы в поселении {name}", name=name) if name else tr("вы в поселении")
+
     @classmethod
     def _points_text(cls, state: Dict[str, Any]) -> str:
         """Ближние важные точки строкой: ровер, поселения и порты.
 
         Корабль сюда не входит: у него своя строка с расстоянием.
         """
+        place = state.get("place") or {}
         rows = sorted(
             (poi for poi in state.get("pois") or []
              if poi.get("kind") != foot_map.POI_SHIP),
             key=lambda poi: float(poi.get("distance") or 0.0))
         parts = []
-        for poi in rows[:cls.MAX_POINT_ROWS]:
+        for poi in rows:
+            if place and poi.get("kind") == place.get("kind") \
+                    and poi.get("name") == place.get("name"):
+                # Это то самое поселение, где стоит командир: о нём уже
+                # сказано строкой выше, второй раз оно только занимает место.
+                continue
+            if len(parts) >= cls.MAX_POINT_ROWS:
+                break
             title = foot_poi_title(poi)
             if not title:
                 continue
@@ -1931,6 +1994,8 @@ class FootMapOverlay(HudWindow):
         else:
             self.coords_label.setText("")
 
+        self.place_label.setText(self._place_text(state) if known else "")
+
         ship = state.get("ship") or None
         self.ship_label.setText(
             tr("корабль: {distance}", distance=foot_distance_text(ship["distance"]))
@@ -1943,8 +2008,8 @@ class FootMapOverlay(HudWindow):
         self.vitals_label.setText(self._vitals_text(state) if known else "")
         paint(self.vitals_label, color=self._vitals_color(state) if known else COLOR_TEXT_MUTED)
 
-        key = (known, body, self.coords_label.text(), self.ship_label.text(),
-               self.points_label.text(), sample_text,
+        key = (known, body, self.coords_label.text(), self.place_label.text(),
+               self.ship_label.text(), self.points_label.text(), sample_text,
                self.vitals_label.text(), self.width(), self.height(), int(self._fs))
         if not force and key == self._render_key:
             return
