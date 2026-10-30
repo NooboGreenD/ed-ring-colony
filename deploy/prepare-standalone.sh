@@ -7,7 +7,10 @@
 #
 # По умолчанию кладёт результат в ./deploy-out.
 # Далее каталог можно целиком перенести на сервер (rsync/scp) и запустить:
-#   node server.js
+#   NODE_OPTIONS=--max-http-header-size=32768 node server.js
+# Предел заголовков поднят не зря: cookie сессии Supabase у пилота с несколькими
+# привязанными провайдерами перерастает умолчательные 16 КиБ, и сайт отвечает
+# 431 (COOKIE-SIZE-FIX.md).
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -36,4 +39,4 @@ echo "Перенос на сервер:"
 echo "  rsync -az --delete $DEST/ user@server:/opt/ed-ring-colony/app/"
 echo
 echo "Запуск на сервере:"
-echo "  cd /opt/ed-ring-colony/app && PORT=3000 node server.js"
+echo "  cd /opt/ed-ring-colony/app && PORT=3000 NODE_OPTIONS=--max-http-header-size=32768 node server.js"

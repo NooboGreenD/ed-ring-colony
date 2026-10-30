@@ -26,6 +26,10 @@ EnvironmentFile=/opt/ed-ring-colony/.env.production
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=HOSTNAME=127.0.0.1
+# 16 КиБ по умолчанию — предел Node на заголовки; cookie сессии Supabase у
+# пилота с несколькими провайдерами бывает крупнее, и сайт отвечал 431.
+# Значение совпадает с `large_client_header_buffers` в deploy/nginx.conf.
+Environment=NODE_OPTIONS=--max-http-header-size=32768
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5

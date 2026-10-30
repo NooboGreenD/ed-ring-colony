@@ -171,6 +171,12 @@ jobs → http://web:3000/api/cron/* with CRON_SECRET
    Which buttons are shown — Admin → Авторизация (`/api/admin/auth-providers`).
 2. Supabase Auth sets the session cookie; `src/proxy.ts` refreshes it on every
    page request (`supabase.auth.getUser()`), skipping the `/api/supabase/*` tunnel.
+   Session size matters: the cookie holds the whole session object chunked by
+   3180 characters, so a pilot with several linked providers crosses 8 KiB.
+   `src/lib/cookieBudget.ts` + `src/proxy.ts` drop provably dead chunks on
+   every request and reset an overgrown set (20 KiB) once; nginx
+   (`large_client_header_buffers 8 32k`) and Node (`--max-http-header-size`)
+   are raised to match — see [COOKIE-SIZE-FIX.md](COOKIE-SIZE-FIX.md).
 3. Server code reads the user with `authFromRequest` (cookie or Bearer JWT);
    routes that Colonial Helper calls use `resolveRequestUser` (session **or**
    API token `rc_…`, hashed lookup in `api_tokens`).

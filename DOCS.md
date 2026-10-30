@@ -17,6 +17,7 @@
 | Внешний вид: палитра, компоненты, иконки | [DESIGN.md](DESIGN.md) |
 | Обновить работающий сервер | [MONITORING.md](MONITORING.md) → «Ручное обновление проекта» (Админка → Мониторинг → «Обновить сейчас») |
 | Регистрация отвечает «временно закрыта», хотя SMTP настроен | [SIGNUP-DISABLED-FIX.md](SIGNUP-DISABLED-FIX.md) |
+| Сайт не открывается: «слишком длинные cookie» (400/431), инкогнито помогает | [COOKIE-SIZE-FIX.md](COOKIE-SIZE-FIX.md) — диагностика: `sh deploy/diag-cookies.sh` |
 | Поставить сервер с нуля | [SELFHOST.md](SELFHOST.md), [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md), [SERVER-SETUP.md](SERVER-SETUP.md) |
 | Все переменные окружения | [.env.example](.env.example) |
 | Схема базы и миграции | [supabase/DATABASE.md](supabase/DATABASE.md) |
@@ -117,6 +118,7 @@
 | [BUILD-KIT-KEYS-FIX.md](BUILD-KIT-KEYS-FIX.md) | 09.10 · #109 | Встраивание ключей в комплект первой сборки | Актуально |
 | [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md) | 09.10 · #105 | `colonisation_events` 12+ ГБ → `colonisation_sites` | **Действующая схема** |
 | [GALAXY-POINTS-PUBLISH-FIX.md](GALAXY-POINTS-PUBLISH-FIX.md) | 08.10 · #102 | Публикация облака точек при сбое хранилища | Актуально |
+| [COOKIE-SIZE-FIX.md](COOKIE-SIZE-FIX.md) | 31.10 · #243 | Сайт не открывается: заголовок Cookie длиннее пределов nginx (8 КБ) и Node (16 КБ) | Актуально |
 | [SIGNUP-DISABLED-FIX.md](SIGNUP-DISABLED-FIX.md) | 28.10 · #228 | `disable_signup=true` при рабочем SMTP: имя ключа `DISABLE_SIGNUP` и пересоздание `auth` | Актуально |
 | [DOCKER-TESTS-HERMETIC-FIX.md](DOCKER-TESTS-HERMETIC-FIX.md) | 02.10 · #86 | Тесты внутри `docker build` | Принцип актуален |
 | [DISK-LEAK-CONTAINER-CONFLICT-FIX.md](DISK-LEAK-CONTAINER-CONFLICT-FIX.md) | 02.10 · #84 | Конфликт имени контейнера и утечка диска | Актуально |

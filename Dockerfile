@@ -134,4 +134,10 @@ RUN chmod 0755 /usr/local/bin/web-entrypoint
 
 EXPOSE 3000
 ENTRYPOINT ["web-entrypoint"]
-CMD ["node", "server.js"]
+# Node по умолчанию рубит заголовки длиннее 16 КиБ и отвечает 431. Cookie
+# сессии Supabase — это access token, refresh token и профиль пилота целиком,
+# разрезанные по 3180 символов; у аккаунта с несколькими привязанными
+# провайдерами набор переходит за 16 КиБ, и сайт перестаёт открываться (в
+# инкогнито — открывается, cookies там нет). 32 КиБ совпадают с пределом
+# nginx из deploy/nginx.conf. Подробности: src/lib/cookieBudget.ts.
+CMD ["node", "--max-http-header-size=32768", "server.js"]

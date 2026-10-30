@@ -1,6 +1,16 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
+import {
+  COOKIE_WARN_BYTES,
+  RESET_MARKER_COOKIE,
+  RESET_MARKER_SECONDS,
+  cookieHeaderBytes,
+  deadCookieNames,
+  resetCookieNames,
+  shouldResetCookies,
+  type CookieLike,
+} from '@/lib/cookieBudget';
 import { readMaintenanceCached } from '@/lib/maintenanceEdge';
 import { isMaintenanceExemptPath } from '@/lib/maintenanceFlag';
 import { supabaseCookieOptions } from '@/lib/supabaseUrl';
@@ -12,7 +22,19 @@ const MAINTENANCE_RETRY_AFTER = '120';
 /** Разрешённые публичные API-маршруты Kong через туннель /api/supabase/* (без Supabase Studio и pg-meta). */
 const ALLOWED_SUPABASE_GATEWAY_PREFIX = /^\/api\/supabase\/(?:auth|rest|realtime|storage|functions|graphql)\/v1(?:\/|$)/;
 
+/**
+ * Точка входа Next: прежнее тело плюс уборка cookie.
+ *
+ * Заголовок `Cookie` разбирается один раз на входе и один раз на выходе, до
+ * того как ответ уйдёт в браузер: мёртвые куски сессии удаляются, а совсем
+ * разросшийся набор сбрасывается (см. `src/lib/cookieBudget.ts`).
+ */
 export async function proxy(request: NextRequest) {
+  const response = await handleRequest(request);
+  return applyCookieBudget(request, response);
+}
+
+async function handleRequest(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
   // The site-origin Supabase gateway is a transparent HTTP/WebSocket tunnel.
@@ -94,6 +116,75 @@ export async function proxy(request: NextRequest) {
     console.error('[Middleware] Supabase error:', err.message || err);
   }
 
+  return response;
+}
+
+/** Не чаще раза в минуту: иначе разросшийся заголовок зальёт журнал. */
+let warnedAt = 0;
+
+function warnOnce(size: number, note: string): void {
+  const now = Date.now();
+  if (now - warnedAt < 60_000) return;
+  warnedAt = now;
+  console.warn(`[proxy] заголовок Cookie ${size} Б — ${note}. `
+    + 'Пределы поднимают deploy/nginx.conf и Dockerfile (--max-http-header-size).');
+}
+
+function responseHasCookie(response: NextResponse, name: string): boolean {
+  const jar = response.cookies;
+  try {
+    if (typeof jar.get === 'function' && jar.get(name) !== undefined) return true;
+  } catch {
+    // `get` в заглушках бывает без реализации — тогда считаем, что не ставили.
+  }
+  return false;
+}
+
+function expireCookie(response: NextResponse, name: string): void {
+  response.cookies.set(name, '', { path: '/', maxAge: 0 });
+}
+
+/**
+ * Убрать мёртвые cookie и, если их слишком много, сбросить набор целиком.
+ *
+ * Сброс — переадресация на тот же адрес без «тяжёлых» cookie: вместо
+ * 400/431 (сайт не открывается, помогает только инкогнито) пилот получает
+ * обычную страницу и входит заново. Отметка `edrc-cookie-reset` не даёт
+ * зациклиться, если раздутый заголовок собран не нашими cookie.
+ */
+function applyCookieBudget(request: NextRequest, response: NextResponse): NextResponse {
+  const header = request.headers.get('cookie') || '';
+  const size = cookieHeaderBytes(header);
+  const cookies: CookieLike[] = request.cookies?.getAll?.() ?? [];
+  if (size > COOKIE_WARN_BYTES) {
+    warnOnce(size, `это выше предела nginx по умолчанию (${COOKIE_WARN_BYTES} Б)`);
+  }
+
+  const path = request.nextUrl?.pathname || '';
+  const method = request.method || 'GET';
+
+  if (shouldResetCookies({
+    headerBytes: size,
+    cookies,
+    marker: Boolean(request.cookies?.get?.(RESET_MARKER_COOKIE)),
+    method,
+    path,
+  })) {
+    console.warn(`[proxy] cookie ${size} Б — сброс набора: сессия требует повторного входа, `
+      + 'зато сайт открывается');
+    // Тот же адрес: `request.url` уже содержит путь и строку запроса.
+    const target = NextResponse.redirect(new URL(request.url));
+    for (const name of resetCookieNames(cookies)) expireCookie(target, name);
+    target.cookies.set(RESET_MARKER_COOKIE, '1',
+      { path: '/', maxAge: RESET_MARKER_SECONDS, sameSite: 'lax' });
+    return target;
+  }
+
+  for (const name of deadCookieNames(cookies)) {
+    // Свежий кусок сессии, который только что записал сам прокси, не трогаем.
+    if (responseHasCookie(response, name)) continue;
+    expireCookie(response, name);
+  }
   return response;
 }
 
