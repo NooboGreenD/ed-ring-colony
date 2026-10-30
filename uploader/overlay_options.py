@@ -54,6 +54,7 @@ CONTENT_OPTIONS = {
     'footmap': {
         'body': ('Тело под ногами', ('body_label',)),
         'coords': ('Координаты', ('coords_label',)),
+        'place': ('Где я: поселение или порт', ('place_label',)),
         'map': ('Карта, след и точки', ('canvas',)),
         'target': ('Расстояние до корабля', ('ship_label',)),
         'points': ('Ровер, поселения и порты', ('points_label',)),

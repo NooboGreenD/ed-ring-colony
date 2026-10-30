@@ -908,6 +908,7 @@ class OverlayManager:
             str(state.get("srv") or ""),
             str(state.get("samples") or ""),
             str(state.get("sample") or ""),
+            str(state.get("place") or ""),
         ))
 
     @staticmethod

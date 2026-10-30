@@ -494,6 +494,67 @@ class FootMapVehicleTests(unittest.TestCase):
         self.assertIsNone(self.map.state()["srv"])
 
 
+class FootMapPlaceTests(unittest.TestCase):
+    """Вид точки и «где я»: поселение от порта отличает `StationType`."""
+
+    def setUp(self):
+        self.map = FootMap()
+        self.map.update_status(status(Latitude=0.0, Longitude=0.0))
+
+    def poi(self, kind):
+        return next((row for row in self.map.state()["pois"] if row["kind"] == kind), None)
+
+    def test_settlement_type_beats_the_station_name(self):
+        """`OnFootSettlement` с именем в StationName — поселение, а не порт."""
+        self.map.handle({"event": "Location", "StationName": "Bhabha Terminal",
+                         "StationType": "OnFootSettlement",
+                         "Latitude": 0.01, "Longitude": 0.02})
+        self.assertEqual(self.poi(foot_map.POI_SETTLEMENT)["name"], "Bhabha Terminal")
+        self.assertIsNone(self.poi(foot_map.POI_STATION))
+
+    def test_planetary_port_keeps_the_port_kind(self):
+        self.map.handle({"event": "Docked", "StationName": "Vasco Terminal",
+                         "StationType": "CraterPort",
+                         "Latitude": 0.01, "Longitude": 0.02})
+        self.assertEqual(self.poi(foot_map.POI_STATION)["name"], "Vasco Terminal")
+        self.assertIsNone(self.poi(foot_map.POI_SETTLEMENT))
+
+    def test_approach_settlement_has_no_station_type_but_is_a_settlement(self):
+        self.map.handle({"event": "ApproachSettlement", "MarketID": 5,
+                         "Name": "Hutton Settlement",
+                         "Latitude": 0.01, "Longitude": 0.02})
+        self.assertEqual(self.poi(foot_map.POI_SETTLEMENT)["name"], "Hutton Settlement")
+
+    def test_landing_pad_comes_from_docked(self):
+        self.map.handle({"event": "Docked", "StationName": "Vasco Terminal",
+                         "StationType": "CraterPort", "LandingPad": 7,
+                         "Latitude": 0.01, "Longitude": 0.02})
+        self.assertEqual(self.poi(foot_map.POI_STATION)["pad"], 7)
+
+    def test_pad_zero_is_not_a_pad(self):
+        """``LandingPad: 0`` в журнале значит «без площадки», а не «площадка 0»."""
+        self.map.handle({"event": "Docked", "StationName": "Vasco Terminal",
+                         "LandingPad": 0, "Latitude": 0.01, "Longitude": 0.02})
+        self.assertIsNone(self.poi(foot_map.POI_STATION)["pad"])
+
+    def test_place_is_reported_while_standing_inside(self):
+        """Точка поселения под стрелкой: по одной карте не видно, что это оно."""
+        self.map.handle({"event": "ApproachSettlement", "MarketID": 5,
+                         "Name": "Hutton Settlement",
+                         "Latitude": 0.0, "Longitude": 0.005})   # ~550 м на экваторе
+        self.assertIsNone(self.map.state()["place"])              # ещё далеко
+        self.map.update_status(status(Latitude=0.0, Longitude=0.001))
+        place = self.map.state()["place"]
+        self.assertEqual(place["name"], "Hutton Settlement")
+        self.assertLess(place["distance"], foot_map.PLACE_NEAR_M)
+
+    def test_place_is_a_port_when_the_marker_is_a_port(self):
+        self.map.handle({"event": "Docked", "StationName": "Vasco Terminal",
+                         "StationType": "CraterPort", "LandingPad": 3,
+                         "Latitude": 0.0, "Longitude": 0.0})
+        self.assertEqual(self.map.state()["place"]["kind"], foot_map.POI_STATION)
+
+
 class FootMapPollTests(unittest.TestCase):
     """`poll` читает Status.json только когда файл изменился."""
 
@@ -588,6 +649,40 @@ class FootMapRenderingContractTests(unittest.TestCase):
                   if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
         self.assertIn("_draw_samples", called, "круги образцов не рисуются")
         self.assertIn("_draw_pois", called)
+
+    def test_each_kind_has_its_own_marker(self):
+        """У поселения и порта свои значки: в игре они тоже разные."""
+        import ast
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        canvas = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.ClassDef) and node.name == "FootMapCanvas")
+        methods = {item.name for item in canvas.body if isinstance(item, ast.FunctionDef)}
+        for marker in ("_draw_settlement_marker", "_draw_port_marker"):
+            self.assertIn(marker, methods)
+        draw_pois = next(item for item in canvas.body
+                         if isinstance(item, ast.FunctionDef) and item.name == "_draw_pois")
+        called = {node.attr for node in ast.walk(draw_pois)
+                  if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
+        self.assertIn("_draw_settlement_marker", called, "поселение рисуется точкой")
+        self.assertIn("_draw_port_marker", called, "порт рисуется точкой")
+
+    def test_place_line_has_its_own_section(self):
+        import ast
+
+        import overlay_options
+
+        self.assertIn("place", overlay_options.CONTENT_OPTIONS["footmap"])
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        overlay = next(node for node in ast.walk(tree)
+                       if isinstance(node, ast.ClassDef) and node.name == "FootMapOverlay")
+        methods = {item.name for item in overlay.body if isinstance(item, ast.FunctionDef)}
+        self.assertIn("_place_text", methods)
+        update = next(item for item in overlay.body
+                      if isinstance(item, ast.FunctionDef) and item.name == "update_footmap")
+        texts = {node.attr for node in ast.walk(update)
+                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
+        self.assertIn("place_label", texts, "строка «вы в поселении» не обновляется")
 
     def test_each_point_kind_has_a_colour_and_a_name(self):
         import ast
