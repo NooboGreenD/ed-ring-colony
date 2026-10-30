@@ -33,11 +33,101 @@ DEFAULT_PLANET_RADIUS = 6_371_000.0
 
 #: Виды точек на карте.
 POI_SHIP = "ship"
+POI_SRV = "srv"
 POI_SETTLEMENT = "settlement"
 POI_STATION = "station"
 
 #: Сколько точек интереса храним (поселения вокруг — не бесконечны).
 POI_LIMIT = 24
+#: Корабль и ровер не вытесняются новыми поселениями: к ним возвращаются.
+POI_KEEP = (POI_SHIP, POI_SRV)
+
+#: Образцов в полном комплекте: столько нужно, чтобы сдать вид в Vista.
+#: Больше трёх за раз игра не держит — комплект собран, канистра снимается.
+SAMPLES_PER_SPECIES = 3
+#: Ближе этого новая точка образца не ставится: это тот же куст, а не новый.
+SAMPLE_MIN_STEP_M = 5.0
+#: Сколько ждём координату для образца, снятого до первого `Status.json`.
+SAMPLE_PENDING_SECONDS = 30.0
+
+#: Радиус клональной колонии по роду, метры.
+#:
+#: Это ровно то расстояние, на которое надо отойти от прошлого образца того же
+#: вида, чтобы игра засчитала следующий: в Кодексе оно называется clonal
+#: colony range. Значения из таблицы Genetic Sampler; придумывать «на глаз»
+#: нельзя — ошибка в сотню метров превращает подсказку в неправду.
+CLONAL_RANGE_M: Dict[str, int] = {
+    "Aleoida": 150,
+    "Amphora Plant": 100,
+    "Anemone": 100,
+    "Bacterium": 500,
+    "Bark Mound": 100,
+    "Brain Tree": 100,
+    "Cactoida": 300,
+    "Clypeus": 150,
+    "Concha": 150,
+    "Crystalline Shard": 100,
+    "Electricae": 1000,
+    "Fonticulua": 500,
+    "Frutexa": 150,
+    "Fumerola": 100,
+    "Fungoida": 300,
+    "Osseus": 800,
+    "Recepta": 150,
+    "Sinuous Tuber": 100,
+    "Stratum": 500,
+    "Tubus": 800,
+    "Tussock": 200,
+}
+#: Род не из таблицы (новый патч, незнакомое имя) — самое частое значение.
+DEFAULT_CLONAL_RANGE_M = 500
+#: Игра называет часть родов во множественном числе (`Conchas`, `Brain Trees`),
+#: а в таблице они в единственном: сравниваем по этим парам.
+GENUS_ALIASES: Dict[str, str] = {
+    "conchas": "concha",
+    "brain trees": "brain tree",
+    "bark mounds": "bark mound",
+    "sinuous tubers": "sinuous tuber",
+    "crystalline shards": "crystalline shard",
+    "amphora plants": "amphora plant",
+}
+_CLONAL_BY_NAME = {name.casefold(): meters for name, meters in CLONAL_RANGE_M.items()}
+
+
+def codex_name(*values: Any) -> str:
+    """Название из Кодекса в читаемом виде; пусто — перевода нет.
+
+    Игра пишет ``$Codex_Ent_Bacterial_01_Name;`` — такую строку показывать
+    нельзя. Берём первое значение, которое не похоже на внутренний ключ.
+    """
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text.startswith("$"):
+            continue
+        return text
+    return ""
+
+
+def clonal_range(*names: Any) -> int:
+    """Радиус клональной колонии по названию рода или вида, метры.
+
+    Журнал даёт род в ``ScanOrganic.Genus`` (``Bacterium``) и вид в
+    ``Species`` (``Bacterium Cerbrus``); локальные названия родов в таблице не
+    встречаются, поэтому перебираем всё, что пришло, и сравниваем по началу
+    строки: вид начинается с рода.
+    """
+    for raw in names:
+        text = str(raw or "").strip()
+        if not text or text.startswith("$"):
+            continue
+        folded = " ".join(text.casefold().replace("_", " ").split())
+        for name, meters in _CLONAL_BY_NAME.items():
+            if folded == name or folded.startswith(name + " "):
+                return int(meters)
+        alias = GENUS_ALIASES.get(folded)
+        if alias and alias in _CLONAL_BY_NAME:
+            return int(_CLONAL_BY_NAME[alias])
+    return DEFAULT_CLONAL_RANGE_M
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +245,9 @@ def empty_state() -> Dict[str, Any]:
         "trail": [],
         "pois": [],
         "ship": None,
+        "srv": None,
+        "samples": [],
+        "sample": None,
         "scale": pick_scale(100),
         "updated_at": "",
         "age_seconds": None,
@@ -191,6 +284,15 @@ class FootMap:
         self._weapon = ""
         self._ship: Optional[Tuple[float, float]] = None
         self._pois: Dict[str, Dict[str, Any]] = {}
+        # Образцы биосигналов: игра держит комплект только одного вида, поэтому
+        # список всегда про текущий вид и обнуляется при смене вида.
+        self._samples: List[Dict[str, Any]] = []
+        self._sample_species = ""
+        self._sample_genus = ""
+        self._sample_radius = DEFAULT_CLONAL_RANGE_M
+        # Образец, снятый до первого `Status.json`: ждём координату.
+        self._pending_sample: Optional[Dict[str, Any]] = None
+        self._pending_at: Optional[float] = None
         self._updated_at = ""
         self._position_at: Optional[float] = None
         self._file_key: Optional[Tuple[float, int]] = None
@@ -217,6 +319,15 @@ class FootMap:
                 changed |= self._take_ship_point(event, lift_off=(name == "Liftoff"))
             if name in ("ApproachSettlement", "Docked", "Location"):
                 changed |= self._take_poi(event)
+            if name in ("Embark", "Disembark"):
+                # Вышел из ровера — запомнили, где он стоит; сел обратно —
+                # точка снята. Из корабля выходят там же, где он приземлился.
+                changed |= self._take_vehicle_point(event, boarding=(name == "Embark"))
+            if name == "DockSRV":
+                # Ровер убран в корабль: отдельной точки на карте больше нет.
+                changed |= self._forget_srv()
+            if name == "ScanOrganic":
+                changed |= self._take_sample(event)
             if name == "Disembark":
                 changed |= self._set_vehicle(on_foot=True)
             elif name == "Embark":
@@ -238,6 +349,7 @@ class FootMap:
             self._trail.clear()
             self._pois.clear()
             self._ship = None
+            self._forget_samples()
             changed = True
         return changed
 
@@ -258,6 +370,111 @@ class FootMap:
         self._ship = (lat, lon)
         self._pois[POI_SHIP] = {"kind": POI_SHIP, "name": "", "lat": lat, "lon": lon}
         return True
+
+    def _take_vehicle_point(self, event: Dict[str, Any], *, boarding: bool) -> bool:
+        """Ровер и корабль: где осталась машина, когда командир пошёл пешком."""
+        is_srv = bool(event.get("SRV"))
+        if boarding:
+            # Сел в ровер — он теперь под рукой, отдельная точка не нужна.
+            return self._forget_srv() if is_srv else False
+        lat = _coordinate(event.get("Latitude"))
+        lon = _coordinate(event.get("Longitude"))
+        if lat is None or lon is None:
+            # Координат в событии нет — остаётся то, что записал `Touchdown`.
+            return False
+        if not is_srv:
+            # Вышел из корабля: он стоит ровно здесь (`Touchdown` может не быть).
+            return self._set_poi(POI_SHIP, POI_SHIP, "", lat, lon)
+        return self._set_poi(POI_SRV, POI_SRV, "", lat, lon)
+
+    def _forget_srv(self) -> bool:
+        if POI_SRV not in self._pois:
+            return False
+        self._pois.pop(POI_SRV, None)
+        return True
+
+    def _set_poi(self, key: str, kind: str, name: str, lat: float, lon: float) -> bool:
+        """Поставить точку интереса, не плодя одинаковых записей."""
+        record = {"kind": kind, "name": name, "lat": lat, "lon": lon}
+        if self._pois.get(key) == record:
+            return False
+        if key not in self._pois and len(self._pois) >= POI_LIMIT:
+            self._drop_farthest_poi()
+        self._pois[key] = record
+        return True
+
+    def _take_sample(self, event: Dict[str, Any]) -> bool:
+        """Образец биосигнала: где снят и на сколько отойти до следующего.
+
+        Журнал присылает три события на один куст: `Log` (вид впервые в
+        Кодексе), `Sample` (собственно образец) и `Analyse` (анализ готов).
+        Точку ставит только `Sample` — иначе на карте было бы три метки в
+        одном месте.
+        """
+        if str(event.get("ScanType") or "") != "Sample":
+            return False
+        species = codex_name(event.get("Species_Localised"), event.get("Species"))
+        genus = codex_name(event.get("Genus_Localised"), event.get("Genus"))
+        if not species and not genus:
+            return False
+        radius = clonal_range(event.get("Genus"), event.get("Species"), genus, species)
+        if self._lat is None or self._lon is None:
+            # `Status.json` ещё не прочитан: запомним и поставим точку, как
+            # только появится координата (командир всё ещё стоит на месте).
+            self._pending_sample = {"species": species, "genus": genus, "radius": radius}
+            self._pending_at = time.monotonic()
+            return False
+        return self._place_sample(species, genus, radius, self._lat, self._lon)
+
+    def _place_sample(self, species: str, genus: str, radius: int,
+                      lat: float, lon: float) -> bool:
+        """Добавить точку образца к текущему комплекту."""
+        # Смена вида стирает недособранный комплект — так делает и игра.
+        if species and self._sample_species and species != self._sample_species:
+            self._samples.clear()
+        # Комплект собран: следующий образец того же вида начинает новый.
+        if len(self._samples) >= SAMPLES_PER_SPECIES:
+            self._samples.clear()
+        for row in self._samples:
+            if distance_m(row["lat"], row["lon"], lat, lon, self._radius) < SAMPLE_MIN_STEP_M:
+                return False                      # это тот же куст, а не новый
+        self._samples.append({"species": species, "genus": genus, "radius": int(radius),
+                              "lat": float(lat), "lon": float(lon)})
+        self._sample_species = species or self._sample_species
+        self._sample_genus = genus or self._sample_genus
+        self._sample_radius = int(radius)
+        return True
+
+    def _forget_samples(self, *, keep_pending: bool = True) -> None:
+        """Забыть образцы текущего тела.
+
+        Отложенный образец (снятый до первого `Status.json`) при смене тела
+        остаётся: он взят уже здесь, а координату как раз и ждём. Сбрасывается
+        он только вместе с установкой — при смерти, прыжке и новой сессии.
+        """
+        self._samples.clear()
+        self._sample_species = ""
+        self._sample_genus = ""
+        self._sample_radius = DEFAULT_CLONAL_RANGE_M
+        if not keep_pending:
+            self._pending_sample = None
+            self._pending_at = None
+
+    def _place_pending_sample(self) -> bool:
+        """Поставить отложенный образец, когда появилась координата."""
+        pending = self._pending_sample
+        if not pending:
+            return False
+        if self._pending_at is not None and \
+                time.monotonic() - self._pending_at > SAMPLE_PENDING_SECONDS:
+            self._pending_sample = None
+            return False
+        if self._lat is None or self._lon is None:
+            return False
+        self._pending_sample = None
+        self._pending_at = None
+        return self._place_sample(pending["species"], pending["genus"],
+                                  int(pending["radius"]), self._lat, self._lon)
 
     def _take_poi(self, event: Dict[str, Any]) -> bool:
         """Поселение или планетарный порт: имя и координаты на карту."""
@@ -294,12 +511,18 @@ class FootMap:
         return True
 
     def _drop_farthest_poi(self) -> None:
+        """Освободить место под новую точку самой дальней из старых.
+
+        Корабль и ровер не вытесняются: это точки, к которым возвращаются, и
+        потерять их из-за десятка поселений рядом — худшее, что может сделать
+        карта.
+        """
+        candidates = [key for key in self._pois if key not in POI_KEEP] or list(self._pois)
         if self._lat is None or self._lon is None:
-            for key in list(self._pois)[:1]:
-                self._pois.pop(key, None)
+            self._pois.pop(candidates[0], None)
             return
         farthest = max(
-            self._pois,
+            candidates,
             key=lambda key: distance_m(self._pois[key]["lat"], self._pois[key]["lon"],
                                        self._lat, self._lon, self._radius),
         )
@@ -322,6 +545,7 @@ class FootMap:
             self._trail.clear()
             self._pois.clear()
             self._ship = None
+            self._forget_samples(keep_pending=False)
             self._on_foot = False
             self._vehicle = ""
             self._oxygen = self._health = self._temperature = self._gravity = None
@@ -366,6 +590,8 @@ class FootMap:
                     changed = True
                 self._position_at = time.monotonic()
                 self._updated_at = str(timestamp or status.get("timestamp") or "")
+            if self._lat is not None and self._lon is not None:
+                changed |= self._place_pending_sample()
             changed |= self._take_vitals(status)
             if changed:
                 self._refresh_signature()
@@ -440,7 +666,8 @@ class FootMap:
                            len(self._trail), len(self._pois), self._body,
                            self._on_foot, self._ship, self._oxygen, self._health,
                            self._temperature, self._gravity, self._weapon,
-                           self._altitude)
+                           self._altitude, len(self._samples), self._sample_species,
+                           self._sample_radius, self._pois.get(POI_SRV))
 
     def state(self) -> Dict[str, Any]:
         """Всё, что рисует блок миникарты: позиция, след, точки, показатели."""
@@ -479,12 +706,63 @@ class FootMap:
             pois = self._pois_list()
             state["pois"] = pois
             state["ship"] = next((poi for poi in pois if poi["kind"] == POI_SHIP), None)
+            state["srv"] = next((poi for poi in pois if poi["kind"] == POI_SRV), None)
+
+            samples = self._samples_list()
+            state["samples"] = samples
+            state["sample"] = self._sample_summary(samples)
 
             reach = max((poi["distance"] for poi in pois
                          if poi["distance"] <= POI_MAX_DRAW_M), default=0.0)
             reach = max(reach, max((math.hypot(e, n) for e, n in trail), default=0.0))
+            # Пока комплект не собран, круг образца должен быть виден целиком:
+            # именно по нему видно, куда ещё нельзя ставить следующий образец.
+            if samples and not state["sample"]["complete"]:
+                reach = max(reach, min(row["distance"] + row["radius"] for row in samples))
             state["scale"] = pick_scale(max(reach * 1.05, 60.0))
             return state
+
+    def _samples_list(self) -> List[Dict[str, Any]]:
+        """Образцы в метрах от командира: точка, вид и радиус колонии."""
+        rows = []
+        for index, record in enumerate(self._samples, start=1):
+            east, north = local_offsets(record["lat"], record["lon"],
+                                        self._lat, self._lon, self._radius)
+            rows.append({
+                "index": index,
+                "species": record.get("species") or "",
+                "genus": record.get("genus") or "",
+                "radius": int(record.get("radius") or DEFAULT_CLONAL_RANGE_M),
+                "east": round(east, 1),
+                "north": round(north, 1),
+                "distance": round(math.hypot(east, north), 1),
+                "bearing": round(math.degrees(math.atan2(east, north)) % 360.0, 1),
+            })
+        rows.sort(key=lambda row: row["distance"])
+        return rows
+
+    def _sample_summary(self, rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Комплект текущего вида: сколько собрано и можно ли брать следующий.
+
+        ``allowed`` — командир уже вышел за радиус колонии всех прошлых
+        образцов; ``need_m`` — сколько метров до этого осталось.
+        """
+        if not rows and not self._sample_species:
+            return None
+        radius = int(self._sample_radius or DEFAULT_CLONAL_RANGE_M)
+        nearest = min((row["distance"] for row in rows), default=None)
+        allowed = nearest is None or nearest >= radius
+        return {
+            "species": self._sample_species,
+            "genus": self._sample_genus,
+            "radius": radius,
+            "count": len(rows),
+            "total": SAMPLES_PER_SPECIES,
+            "complete": len(rows) >= SAMPLES_PER_SPECIES,
+            "allowed": bool(allowed),
+            "need_m": 0.0 if allowed else round(radius - float(nearest), 1),
+            "nearest_m": nearest,
+        }
 
     def _pois_list(self) -> List[Dict[str, Any]]:
         rows = []
@@ -511,6 +789,11 @@ class FootMap:
     def poi_keys(self) -> Iterable[str]:
         with self._lock:
             return tuple(self._pois)
+
+    def sample_points(self) -> List[Dict[str, Any]]:
+        """Образцы как они есть (широта, долгота, вид, радиус) — для проверок."""
+        with self._lock:
+            return [dict(row) for row in self._samples]
 
 
 def trail_offsets(trail: Sequence[Tuple[float, float]], lat: float, lon: float,

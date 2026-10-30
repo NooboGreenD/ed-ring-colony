@@ -905,6 +905,9 @@ class OverlayManager:
             str(state.get("gravity") or ""),
             str(state.get("ship") or ""),
             str(state.get("pois") or ""),
+            str(state.get("srv") or ""),
+            str(state.get("samples") or ""),
+            str(state.get("sample") or ""),
         ))
 
     @staticmethod

@@ -293,6 +293,207 @@ class FootMapStatusTests(unittest.TestCase):
                             for poi in state["pois"]))
 
 
+class FootMapSampleTests(unittest.TestCase):
+    """Образцы биосигналов: где снят и докуда нельзя ставить следующий."""
+
+    def setUp(self):
+        self.map = FootMap()
+        self.map.update_status(status(Latitude=0.0, Longitude=0.0))
+
+    def sample(self, species="Bacterium Cerbrus", genus="Bacterium",
+               scan_type="Sample") -> bool:
+        return self.map.handle({
+            "event": "ScanOrganic", "ScanType": scan_type,
+            "Genus": f"$Codex_Ent_{genus}_Genus_Name;", "Genus_Localised": genus,
+            "Species": "$Codex_Ent_Bacterial_01_Name;", "Species_Localised": species,
+            "Body": 3,
+        })
+
+    def walk_to(self, meters: float) -> None:
+        """Отойти на север на `meters` метров: 1° широты ≈ 111,2 км."""
+        self.map.update_status(status(Latitude=meters / (math.pi / 180.0) / RADIUS,
+                                      Longitude=0.0))
+
+    # -- радиус колонии ----------------------------------------------------
+    def test_clonal_range_comes_from_the_codex_table(self):
+        self.assertEqual(foot_map.clonal_range("Bacterium"), 500)
+        self.assertEqual(foot_map.clonal_range("Osseus"), 800)
+        self.assertEqual(foot_map.clonal_range("Tussock"), 200)
+        self.assertEqual(foot_map.clonal_range("Electricae"), 1000)
+        self.assertEqual(foot_map.clonal_range("Amphora Plant"), 100)
+        # Вид начинается с рода, а часть родов игра пишет во множественном числе.
+        self.assertEqual(foot_map.clonal_range("Bacterium Cerbrus"), 500)
+        self.assertEqual(foot_map.clonal_range("Conchas"), 150)
+        self.assertEqual(foot_map.clonal_range("Brain Trees"), 100)
+
+    def test_unknown_genus_falls_back_to_the_common_value(self):
+        self.assertEqual(foot_map.clonal_range("$unknown;"),
+                         foot_map.DEFAULT_CLONAL_RANGE_M)
+        self.assertEqual(foot_map.clonal_range(None, ""), foot_map.DEFAULT_CLONAL_RANGE_M)
+
+    # -- точки образцов ----------------------------------------------------
+    def test_only_the_sample_event_places_a_point(self):
+        """`Log` — знакомство с видом, `Analyse` — итог: точка одна, на `Sample`."""
+        self.assertFalse(self.sample(scan_type="Log"))
+        self.assertEqual(self.map.sample_points(), [])
+        self.assertTrue(self.sample(scan_type="Sample"))
+        self.assertFalse(self.sample(scan_type="Analyse"))
+        self.assertEqual(len(self.map.sample_points()), 1)
+
+    def test_sample_keeps_genus_species_and_radius(self):
+        self.sample()
+        point = self.map.sample_points()[0]
+        self.assertEqual(point["species"], "Bacterium Cerbrus")
+        self.assertEqual(point["genus"], "Bacterium")
+        self.assertEqual(point["radius"], 500)
+        summary = self.map.state()["sample"]
+        self.assertEqual(summary["count"], 1)
+        self.assertEqual(summary["total"], foot_map.SAMPLES_PER_SPECIES)
+        self.assertFalse(summary["complete"])
+
+    def test_next_sample_needs_to_leave_the_colony_radius(self):
+        self.sample()
+        summary = self.map.state()["sample"]
+        self.assertFalse(summary["allowed"])
+        self.assertAlmostEqual(summary["need_m"], 500.0, delta=1.0)
+
+        self.walk_to(200.0)
+        summary = self.map.state()["sample"]
+        self.assertFalse(summary["allowed"])
+        self.assertAlmostEqual(summary["need_m"], 300.0, delta=1.0)
+
+        self.walk_to(600.0)
+        summary = self.map.state()["sample"]
+        self.assertTrue(summary["allowed"])
+        self.assertEqual(summary["need_m"], 0.0)
+
+    def test_same_bush_is_not_recorded_twice(self):
+        self.sample()
+        self.walk_to(2.0)                      # на два метра — тот же куст
+        self.assertFalse(self.sample())
+        self.assertEqual(len(self.map.sample_points()), 1)
+
+    def test_three_samples_complete_the_set_and_the_next_starts_a_new_one(self):
+        self.sample()
+        for step in (1, 2):
+            self.walk_to(600.0 * step)
+            self.assertTrue(self.sample())
+        summary = self.map.state()["sample"]
+        self.assertTrue(summary["complete"])
+        self.assertEqual(summary["count"], 3)
+
+        # Комплект собран: игра снимает канистру, четвёртый образец — новый набор.
+        self.walk_to(2000.0)
+        self.assertTrue(self.sample())
+        summary = self.map.state()["sample"]
+        self.assertEqual(summary["count"], 1)
+        self.assertFalse(summary["complete"])
+
+    def test_another_species_discards_the_unfinished_set(self):
+        """Генетический самплер держит один вид: смена вида стирает образцы."""
+        self.sample()
+        self.walk_to(600.0)
+        self.assertTrue(self.sample(species="Osseus Spiralis", genus="Osseus"))
+        points = self.map.sample_points()
+        self.assertEqual([row["species"] for row in points], ["Osseus Spiralis"])
+        self.assertEqual(points[0]["radius"], 800)
+
+    def test_sample_waits_for_the_first_status(self):
+        """Скан пришёл раньше `Status.json`: точка встанет, когда будет координата."""
+        map_ = FootMap()
+        self.assertFalse(map_.handle({"event": "ScanOrganic", "ScanType": "Sample",
+                                      "Species_Localised": "Tussock Cultro"}))
+        self.assertEqual(map_.sample_points(), [])
+        map_.update_status(status(Latitude=1.0, Longitude=2.0))
+        points = map_.sample_points()
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["species"], "Tussock Cultro")
+        self.assertEqual(points[0]["radius"], 200)
+
+    def test_samples_are_forgotten_on_another_body_and_on_a_jump(self):
+        self.sample()
+        self.map.handle({"event": "Location", "BodyName": "HIP 1 A 4 a",
+                         "Latitude": 5.0, "Longitude": 5.0})
+        self.assertEqual(self.map.sample_points(), [])
+        self.assertIsNone(self.map.state()["sample"])
+
+        self.sample()
+        self.map.handle({"event": "FSDJump"})
+        self.assertEqual(self.map.sample_points(), [])
+
+    def test_sample_circle_widens_the_scale(self):
+        """Круг образца должен помещаться в диск: иначе радиуса не видно."""
+        self.sample()                          # Bacterium: круг 500 м
+        self.assertEqual(self.map.state()["scale"], 1000)
+        far = FootMap()
+        far.update_status(status(Latitude=0.0, Longitude=0.0))
+        far.handle({"event": "ScanOrganic", "ScanType": "Sample",
+                    "Genus_Localised": "Electricae", "Species_Localised": "Electricae Pluma"})
+        self.assertEqual(far.state()["scale"], 2500)   # круг 1000 м
+
+    def test_completed_set_no_longer_widens_the_scale(self):
+        """Комплект собран — карта не держится на старых кругах."""
+        for step in range(3):
+            self.walk_to(6.0 * step)
+            self.assertTrue(self.sample())
+        self.assertTrue(self.map.state()["sample"]["complete"])
+        # Круги рядом, но масштаб теперь задаёт след, а не они.
+        self.assertEqual(self.map.state()["scale"], 100)
+
+
+class FootMapVehicleTests(unittest.TestCase):
+    """Корабль и ровер: к ним возвращаются, поэтому их точки не вытесняются."""
+
+    def setUp(self):
+        self.map = FootMap()
+        self.map.update_status(status(Latitude=0.0, Longitude=0.0))
+
+    def test_srv_point_appears_when_leaving_the_rover(self):
+        self.assertTrue(self.map.handle({"event": "Disembark", "SRV": True,
+                                         "Latitude": 0.002, "Longitude": 0.0}))
+        srv = self.map.state()["srv"]
+        self.assertEqual(srv["kind"], foot_map.POI_SRV)
+        self.assertGreater(srv["distance"], 100)
+
+    def test_getting_into_the_rover_clears_its_point(self):
+        self.map.handle({"event": "Disembark", "SRV": True,
+                         "Latitude": 0.002, "Longitude": 0.0})
+        self.assertTrue(self.map.handle({"event": "Embark", "SRV": True}))
+        self.assertIsNone(self.map.state()["srv"])
+
+    def test_docking_the_rover_in_the_ship_clears_the_point(self):
+        self.map.handle({"event": "Disembark", "SRV": True,
+                         "Latitude": 0.002, "Longitude": 0.0})
+        self.assertTrue(self.map.handle({"event": "DockSRV"}))
+        self.assertIsNone(self.map.state()["srv"])
+
+    def test_leaving_the_ship_marks_it_even_without_touchdown(self):
+        self.assertTrue(self.map.handle({"event": "Disembark", "SRV": False,
+                                         "Latitude": 0.003, "Longitude": 0.0}))
+        ship = self.map.state()["ship"]
+        self.assertIsNotNone(ship)
+        self.assertEqual(ship["kind"], foot_map.POI_SHIP)
+
+    def test_ship_and_rover_survive_a_crowd_of_settlements(self):
+        self.map.handle({"event": "Touchdown", "Latitude": 0.02, "Longitude": 0.0})
+        self.map.handle({"event": "Disembark", "SRV": True,
+                         "Latitude": 0.001, "Longitude": 0.0})
+        for index in range(foot_map.POI_LIMIT + 8):
+            self.map.handle({"event": "ApproachSettlement", "MarketID": 100 + index,
+                             "Name": f"P{index}", "Latitude": 0.01 + index * 0.01,
+                             "Longitude": 0.0})
+        state = self.map.state()
+        self.assertIsNotNone(state["ship"], "корабль вытеснили поселения")
+        self.assertIsNotNone(state["srv"], "ровер вытеснили поселения")
+        self.assertLessEqual(len(state["pois"]), foot_map.POI_LIMIT)
+
+    def test_reset_forgets_the_rover(self):
+        self.map.handle({"event": "Disembark", "SRV": True,
+                         "Latitude": 0.002, "Longitude": 0.0})
+        self.map.handle({"event": "Died"})
+        self.assertIsNone(self.map.state()["srv"])
+
+
 class FootMapPollTests(unittest.TestCase):
     """`poll` читает Status.json только когда файл изменился."""
 
@@ -330,6 +531,79 @@ class FootMapPollTests(unittest.TestCase):
         os.utime(self.dir / "Status.json", (1_000_002, 1_000_002))
         self.assertFalse(map_.poll(self.dir))
         self.assertTrue(map_.state()["known"])
+
+
+class FootMapRenderingContractTests(unittest.TestCase):
+    """Связка «состояние → блок HUD», которую видно без запуска Qt.
+
+    Сам холст рисуется настоящим `QPainter`, а в прогоне без графической
+    библиотеки Qt не поднимается вовсе. Поэтому здесь проверяется то, что
+    ломается тихо: новые данные дошли до блока, у каждой точки есть цвет и
+    метка, а новые разделы окна действительно скрываются настройкой.
+    """
+
+    @staticmethod
+    def _source(name: str) -> str:
+        return (Path(__file__).resolve().parent.parent / name).read_text(encoding="utf-8")
+
+    def test_every_footmap_section_points_to_a_real_widget(self):
+        import ast
+
+        import overlay_options
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        assigned = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "FootMapOverlay":
+                for item in ast.walk(node):
+                    if isinstance(item, ast.Assign):
+                        for target in item.targets:
+                            if isinstance(target, ast.Attribute) and \
+                                    isinstance(target.value, ast.Name) and \
+                                    target.value.id == "self":
+                                assigned.add(target.attr)
+        for section, (_label, attributes) in overlay_options.CONTENT_OPTIONS["footmap"].items():
+            for attribute in attributes:
+                self.assertIn(attribute, assigned, f"раздел {section}: нет виджета {attribute}")
+
+    def test_points_and_samples_have_their_own_sections(self):
+        import overlay_options
+
+        sections = overlay_options.CONTENT_OPTIONS["footmap"]
+        self.assertIn("points", sections)
+        self.assertIn("samples", sections)
+
+    def test_canvas_knows_the_rover_and_the_sample_circles(self):
+        import ast
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        canvas = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.ClassDef) and node.name == "FootMapCanvas")
+        methods = {item.name for item in canvas.body if isinstance(item, ast.FunctionDef)}
+        self.assertIn("_draw_samples", methods)
+        self.assertIn("_draw_srv_marker", methods)
+        paint = next(item for item in canvas.body
+                     if isinstance(item, ast.FunctionDef) and item.name == "paintEvent")
+        called = {node.attr for node in ast.walk(paint)
+                  if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
+        self.assertIn("_draw_samples", called, "круги образцов не рисуются")
+        self.assertIn("_draw_pois", called)
+
+    def test_each_point_kind_has_a_colour_and_a_name(self):
+        import ast
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        colours = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "FootMapCanvas":
+                for item in node.body:
+                    if isinstance(item, ast.Assign) and \
+                            getattr(item.targets[0], "id", "") == "POI_COLORS":
+                        colours = item.value
+        self.assertIsNotNone(colours)
+        kinds = {key.attr for key in colours.keys if isinstance(key, ast.Attribute)}
+        for kind in ("POI_SHIP", "POI_SRV", "POI_SETTLEMENT", "POI_STATION"):
+            self.assertIn(kind, kinds, f"у точки {kind} нет цвета")
 
 
 if __name__ == "__main__":
