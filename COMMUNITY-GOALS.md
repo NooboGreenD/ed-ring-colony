@@ -27,7 +27,7 @@
 |---|---|---|
 | Frontier public (`api.orerve.net/2.0/website/initiatives/list`) | `id`, `title`, `bulletin`, `objective`, `qty`/`target_qty`, `expiry`, `starsystem_name`, `market_name` — без авторизации | тиры, участников, награды, признак завершения |
 | Inara (`getCommunityGoalsRecent`) | `tierReached`/`tierMax`, `contributorsNum`, `contributionsTotal`, `isCompleted`, `goalRewardText`, `goalObjectiveText` | иногда нет `communitygoalGameID` (сшиваем по текстовому ключу) |
-| Frontier CAPI (`sync-capi`) | живые цели профиля: прогресс, тиры, награды | работает только при активной OAuth-привязке сайта |
+| Frontier CAPI (`sync-capi` в админке, синк пилота через `capi-sync`) | живые цели профиля: прогресс, тиры, награды | работает только при активной OAuth-привязке сайта или привязанном пилоте |
 | Журналы командиров (`CommunityGoal`) | `TierReached`, `TierMax`, `NumContributors`, `CurrentTotal`, `PlayerContribution`, `Expiry`, `IsComplete`, `PlayerInTopRank`, `PlayerPercentileBand` | только у тех, кто загружает журналы (Helper или импорт) |
 | Админка | ручное создание и правки (тир, награда, срок, завершённость) | — |
 
