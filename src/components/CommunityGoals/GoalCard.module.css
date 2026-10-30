@@ -6,7 +6,7 @@
   min-width: 0;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--cg-accent) 24%, var(--line));
-  border-radius: 10px;
+  border-radius: 4px;
   background:
     radial-gradient(ellipse at 96% 0%, color-mix(in srgb, var(--cg-accent) 10%, transparent), transparent 34%),
     linear-gradient(150deg, color-mix(in srgb, var(--panel) 96%, #101418), var(--panel));
@@ -40,19 +40,29 @@
 .expiry strong { color: var(--text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .sourceLink { padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--cg-cyan); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
 .sourceLink:hover { border-color: var(--cg-cyan); color: var(--text); }
-.goalInfo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "description task"; gap: 8px; margin-top: 12px; }
-.infoBlock { min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 88%, transparent), color-mix(in srgb, var(--bg) 70%, transparent)); }
+.goalInfo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "description task"; align-items: start; gap: 8px; margin-top: 12px; }
+.goalInfoSingle { grid-template-columns: minmax(0, 1fr); grid-template-areas: "task"; }
+.infoBlock { min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 4px; background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 88%, transparent), color-mix(in srgb, var(--bg) 70%, transparent)); }
 .descriptionBlock { grid-area: description; border-left: 2px solid var(--cg-accent); }
-.taskBlock { grid-area: task; border-left: 2px solid var(--cg-cyan); }
+/* Задача компактнее описания: половина прежней высоты за счёт отступов и
+   трёхстрочного ограничения (полный текст остаётся в title и в подсказке). */
+.taskBlock { grid-area: task; border-left: 2px solid var(--cg-cyan); padding: 7px 10px; }
+.taskBlock .infoTitle { font-size: 9px; }
+.taskBlock .infoIcon { font-size: 13px; }
+.taskBlock .objectiveText { margin-top: 4px; font-size: 11.5px; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
 .commodityLink { color: var(--cg-cyan); text-decoration: underline dotted; text-decoration-color: color-mix(in srgb, var(--cg-cyan) 65%, transparent); text-underline-offset: 2px; }
 .commodityLink:hover, .commodityLink:focus-visible { color: var(--text); text-decoration-style: solid; }
-.rewardBlock { grid-column: 1 / -1; border-left: 2px solid var(--cg-accent); background: linear-gradient(145deg, color-mix(in srgb, var(--cg-accent) 7%, var(--panel)), color-mix(in srgb, var(--bg) 70%, transparent)); }
 .infoTitle { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .11em; text-transform: uppercase; }
 .infoIcon { color: var(--cg-cyan); font-size: 15px; line-height: 1; }
-.rewardIcon { color: var(--cg-accent); font-size: 15px; line-height: 1; }
 .infoBlock p { margin: 8px 0 0; color: color-mix(in srgb, var(--text) 90%, var(--muted)); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-line; }
+/* Награды — самостоятельная секция под задачей. */
+.rewardSection { margin-top: 8px; padding: 9px 11px 10px; border: 1px solid color-mix(in srgb, var(--cg-accent) 26%, var(--line)); border-left: 2px solid var(--cg-accent); border-radius: 4px; background: linear-gradient(145deg, color-mix(in srgb, var(--cg-accent) 7%, var(--panel)), color-mix(in srgb, var(--bg) 70%, transparent)); }
+.rewardSection p { margin: 6px 0 0; color: color-mix(in srgb, var(--text) 92%, var(--muted)); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-line; }
+.rewardMissingState { border-left-color: var(--line); background: color-mix(in srgb, var(--bg) 46%, transparent); }
+.rewardMissingState p { color: var(--muted); font-size: 11px; }
+.rewardGlyph { color: var(--cg-accent); font-size: 13px; line-height: 1; }
 .dashboard { display: grid; grid-template-columns: minmax(230px, .85fr) minmax(260px, 1.15fr); gap: 9px; margin-top: 12px; }
-.progressPanel, .metricsPanel, .reportPanel, .historyPanel { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 86%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--bg) 42%, transparent); }
+.progressPanel, .metricsPanel, .reportPanel, .historyPanel { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 86%, transparent); border-radius: 4px; background: color-mix(in srgb, var(--bg) 42%, transparent); }
 .progressPanel, .metricsPanel { padding: 10px 12px; }
 .sectionHeading { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .13em; text-transform: uppercase; }
 .signal { width: 5px; height: 5px; border-radius: 50%; background: var(--cg-accent); box-shadow: 0 0 8px var(--cg-accent); }
@@ -80,17 +90,25 @@
 .extraData[open] > summary { margin-bottom: 5px; }
 .extraData[open] > summary::after { content: '−'; }
 
-.historyPanel { margin-top: 12px; padding: 14px; }
+.historyPanel { margin-top: 10px; padding: 10px 12px 8px; }
 .historyHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.historyHeader > strong { color: var(--cg-accent); font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
-.historyEmpty { margin: 14px 0 2px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-.historySvg { display: block; width: 100%; height: auto; margin-top: 8px; overflow: visible; }
+.historyMeta { display: flex; align-items: center; gap: 10px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.historyMeta > strong { color: var(--cg-accent); font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.historyMeta > span strong { color: var(--cg-cyan); }
+.historyEmpty { margin: 8px 0 2px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.historySvg { display: block; width: 100%; height: auto; max-height: 132px; margin-top: 4px; overflow: visible; }
 .historyGridline { stroke: var(--line); stroke-width: 1; }
-.historyAxisLabel { fill: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.historyAxisLabel { fill: var(--muted); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .historyLine { fill: none; stroke: var(--cg-cyan); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .historyPoint { fill: var(--cg-accent); stroke: var(--panel); stroke-width: 2; vector-effect: non-scaling-stroke; }
-.historyFootnote { margin-top: 2px; color: var(--muted); font-size: 9px; text-align: right; }
-.reportPanel { margin-top: 12px; padding: 12px 14px; }
+.historyTierStep rect { fill: var(--cg-accent); stroke: var(--panel); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.historyTierStep text { fill: var(--cg-accent); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
+.historyFootnote { margin-top: 1px; color: var(--muted); font-size: 9px; text-align: right; }
+.reportStats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 9px; }
+.reportStats > div { display: grid; gap: 3px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px; background: color-mix(in srgb, var(--bg) 52%, transparent); }
+.reportStats span { color: var(--muted); font-size: 9px; line-height: 1.3; }
+.reportStats strong { color: var(--text); font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.reportPanel { margin-top: 10px; padding: 10px 12px; }
 .reportHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .reportHeader > div { display: grid; gap: 3px; }
 .reportHeader small { color: var(--muted); font-size: 9px; }
@@ -114,7 +132,7 @@
 
 @media (max-width: 560px) {
   .goalInfo { grid-template-columns: minmax(0, 1fr); grid-template-areas: "description" "task"; }
-  .rewardBlock { grid-column: 1; }
+  .goalInfoSingle { grid-template-areas: "task"; }
 }
 
 @media (max-width: 480px) {

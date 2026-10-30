@@ -2,7 +2,13 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 import { normalizeCommunityGoals } from '@/lib/inara/community-goals.mjs';
-import { syncCommunityGoalsFromCapi, syncCommunityGoalsFromFrontier, upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
+import {
+  markExpiredCommunityGoalsComplete,
+  syncCommunityGoalsFromCapi,
+  syncCommunityGoalsFromFrontier,
+  upsertCommunityGoalCatalog,
+} from '@/lib/communityGoalCatalog';
+import { isCommunityGoalComplete } from '@/lib/communityGoalStatus';
 import { fetchFrontierPublicCommunityGoals } from '@/lib/frontierCommunityGoals.mjs';
 import { InaraClient } from '@/lib/inara/client';
 import { CapiError, describeCapiError } from '@/lib/capi/client';
@@ -124,8 +130,8 @@ export async function GET(req: Request) {
     goals: rows,
     counts: {
       all: rows.length,
-      active: rows.filter((row) => !row.is_complete).length,
-      completed: rows.filter((row) => row.is_complete).length,
+      active: rows.filter((row) => !isCommunityGoalComplete(row)).length,
+      completed: rows.filter((row) => isCommunityGoalComplete(row)).length,
       pending: rows.filter((row) => row.moderation_status === 'pending').length,
       pendingJournalActive: rows.filter((row) => row.source === 'journal'
         && row.moderation_status === 'pending'
@@ -250,6 +256,17 @@ export async function POST(req: Request) {
         fallbackSources: ['Frontier CAPI', 'commander journal uploads'],
       }, { status: 502, headers });
     }
+    // Истёкшие цели публичный фид уже не присылает — закрываем их сами.
+    let expired = 0;
+    try {
+      expired = await markExpiredCommunityGoalsComplete(svc);
+      results.expirySweep = { completed: expired };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[admin/community-goals] Expiry sweep failed:', message);
+      errors.push(`Expiry sweep: ${message}`);
+      results.expirySweep = { error: message };
+    }
     const inaraResult = results.inara && typeof results.inara === 'object' ? results.inara as Record<string, any> : {};
     return NextResponse.json({
       ok: errors.length === 0,
@@ -258,6 +275,7 @@ export async function POST(req: Request) {
       received: inaraResult.received ?? 0,
       synced: inaraResult.synced ?? 0,
       completed: inaraResult.completed ?? 0,
+      expired,
     }, { headers });
   }
 
@@ -279,7 +297,13 @@ export async function POST(req: Request) {
       const payload = await session.run((client) => client.getCommunityGoals());
       const received = Array.isArray(payload.goals) ? payload.goals.length : 0;
       const synced = await syncCommunityGoalsFromCapi(svc, payload);
-      return NextResponse.json({ ok: true, source: 'capi', received, synced }, { headers });
+      let expired = 0;
+      try {
+        expired = await markExpiredCommunityGoalsComplete(svc);
+      } catch (error) {
+        console.error('[admin/community-goals] Expiry sweep failed:', error);
+      }
+      return NextResponse.json({ ok: true, source: 'capi', received, synced, expired }, { headers });
     } catch (error) {
       const message = safeCapiDiagnostic(error instanceof CapiError
         ? describeCapiError(error)

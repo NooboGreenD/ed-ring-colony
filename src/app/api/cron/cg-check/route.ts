@@ -3,7 +3,11 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { InaraClient } from '@/lib/inara/client';
 import { normalizeCommunityGoals } from '@/lib/inara/community-goals.mjs';
-import { syncCommunityGoalsFromFrontier, upsertCommunityGoalCatalog } from '@/lib/communityGoalCatalog';
+import {
+  markExpiredCommunityGoalsComplete,
+  syncCommunityGoalsFromFrontier,
+  upsertCommunityGoalCatalog,
+} from '@/lib/communityGoalCatalog';
 import { fetchFrontierPublicCommunityGoals } from '@/lib/frontierCommunityGoals.mjs';
 
 export const dynamic = 'force-dynamic';
@@ -46,6 +50,18 @@ async function handle() {
     }
   } else {
     results.inara = { skipped: true, reason: 'INARA_API_KEY not configured' };
+  }
+
+  // Frontier перестаёт присылать истёкшие инициативы, поэтому закрываем их
+  // сами — иначе они навсегда остаются в фильтре «Активные».
+  try {
+    const expired = await markExpiredCommunityGoalsComplete(svc);
+    results.expirySweep = { completed: expired };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown expiry sweep error';
+    console.error('[Cron CG] Expiry sweep failed:', err);
+    errors.push(`Expiry sweep: ${message}`);
+    results.expirySweep = { error: message };
   }
 
   const succeeded = Object.values(results).some((result) =>

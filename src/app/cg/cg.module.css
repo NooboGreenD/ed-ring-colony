@@ -21,24 +21,24 @@
 .updatedAt { display: flex; align-items: center; gap: 7px; margin-left: auto; color: var(--muted); font-size: 10px; }
 .updatedAt time { color: var(--text); }
 .liveDot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--green); box-shadow: 0 0 9px var(--green); }
-.controlBar { display: flex; align-items: center; gap: 12px; min-height: 58px; margin-bottom: 13px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--panel) 82%, transparent); }
+.controlBar { display: flex; align-items: center; gap: 12px; min-height: 56px; margin-bottom: 14px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
 .filters { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
-.filterButton { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; margin: 0; padding: 7px 10px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
-.filterButton:hover { border-color: var(--line); background: rgba(255,255,255,.03); color: var(--text); }
-.filterActive { border-color: color-mix(in srgb, var(--orange) 38%, var(--line)); background: color-mix(in srgb, var(--orange) 11%, transparent); color: var(--orange); }
+.filterButton { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; margin: 0; padding: 7px 12px; border: 1px solid transparent; border-radius: 2px; background: transparent; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }
+.filterButton:hover { border-color: var(--line); background: color-mix(in srgb, var(--panel-hover) 70%, transparent); color: var(--text); }
+.filterActive { border-color: color-mix(in srgb, var(--orange) 45%, var(--line)); background: color-mix(in srgb, var(--orange) 10%, transparent); color: var(--orange); }
 .filterIndicator { width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; }
 .filterActive .filterIndicator { background: currentColor; box-shadow: 0 0 7px currentColor; }
-.search { display: flex; align-items: center; gap: 6px; width: min(300px, 100%); min-height: 36px; margin-left: auto; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: rgba(0,0,0,.12); }
+.search { display: flex; align-items: center; gap: 6px; width: min(300px, 100%); min-height: 36px; margin-left: auto; padding: 0 9px; border: 1px solid var(--line); border-radius: 2px; background: #25282b; }
 .search:focus-within { border-color: var(--cyan); box-shadow: 0 0 0 2px color-mix(in srgb, var(--cyan) 15%, transparent); }
 .searchIcon { color: var(--cyan); font-size: 21px; line-height: 1; transform: rotate(-20deg); }
 .search input { width: 100%; min-width: 0; height: 32px; margin: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 11px; box-shadow: none; }
 .search input:focus { box-shadow: none; }
 .search input::placeholder { color: var(--muted); opacity: .8; }
 .search button { width: 24px; height: 24px; margin: 0; padding: 0; border: 0; color: var(--muted); font-size: 17px; line-height: 1; }
-.resultsCount { flex: 0 0 auto; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.resultsCount { flex: 0 0 auto; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .1em; text-transform: uppercase; }
 .resultsCount strong { color: var(--text); }
-.goalGrid { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 12px; }
-.statePanel { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 14px; min-height: 180px; padding: 24px; border: 1px dashed var(--line); border-radius: 8px; background: color-mix(in srgb, var(--panel) 54%, transparent); color: var(--muted); text-align: center; }
+.goalGrid { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; }
+.statePanel { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 14px; min-height: 180px; padding: 24px; border: 1px dashed var(--line); border-radius: 4px; background: color-mix(in srgb, var(--panel) 54%, transparent); color: var(--muted); text-align: center; }
 .statePanel > div:not(.emptyGlyph) { max-width: 500px; }
 .statePanel p { margin: 5px 0 0; font-size: 12px; }
 .statePanel strong { color: var(--text); }

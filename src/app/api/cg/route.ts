@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { communityGoalIdentityKey } from '@/lib/inara/community-goals.mjs';
 import { effectiveCommunityGoal } from '@/lib/communityGoalAdmin';
+import { communityGoalMatchesFilter, withCommunityGoalCompletion } from '@/lib/communityGoalStatus';
 import { readAllRows } from '@/lib/readAllRows';
 
 export const dynamic = 'force-dynamic';
@@ -11,6 +12,9 @@ interface ContributionHistoryRow {
   snapshot_hour: string;
   observed_at: string;
   source: 'inara' | 'capi' | 'frontier';
+  tier_current: number | null;
+  tier_max: number | null;
+  contributors: number | null;
   contributions_total: number | string;
 }
 
@@ -31,8 +35,8 @@ function safeInteger(value: unknown): number | null {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const requestedFilter = url.searchParams.get('filter') || 'active';
-  const filter = ['active', 'colonisation', 'completed'].includes(requestedFilter)
-    ? requestedFilter
+  const filter = ['all', 'active', 'colonisation', 'completed'].includes(requestedFilter)
+    ? requestedFilter as 'all' | 'active' | 'colonisation' | 'completed'
     : 'active';
 
   const svc = createServiceClient();
@@ -44,14 +48,13 @@ export async function GET(req: Request) {
     .order('id', { ascending: true })
     .range(from, to));
   if (result.error) return NextResponse.json({ error: result.error.message }, { status: 500 });
+  // Завершённость считается по флагу источника и по сроку: публичный фид
+  // Frontier перестаёт присылать истёкшие инициативы, поэтому ждать
+  // `is_complete = true` только от источника нельзя.
+  const nowMs = Date.now();
   const allGoals: Record<string, any>[] = result.data.map((goal: unknown) =>
-    effectiveCommunityGoal(goal as Record<string, any>));
-  const goals = allGoals.filter((goal) => {
-    if (filter === 'active') return goal.is_complete !== true;
-    if (filter === 'colonisation') return goal.is_complete !== true && goal.is_colonisation_related === true;
-    if (filter === 'completed') return goal.is_complete === true;
-    return true;
-  });
+    withCommunityGoalCompletion(effectiveCommunityGoal(goal as Record<string, any>), nowMs));
+  const goals = allGoals.filter((goal) => communityGoalMatchesFilter(goal, filter, nowMs));
   const identityByGoalId = new Map<number, string>();
   for (const goal of goals) {
     const identityKey = goal.identity_key || communityGoalIdentityKey({
@@ -71,7 +74,7 @@ export async function GET(req: Request) {
   if (goalCatalogIds.length > 0) {
     const historyResult = await readAllRows((from, to) => svc
       .from('community_goal_progress_history')
-      .select('cg_id,snapshot_hour,observed_at,source,contributions_total')
+      .select('cg_id,snapshot_hour,observed_at,source,tier_current,tier_max,contributors,contributions_total')
       .in('cg_id', goalCatalogIds)
       .order('snapshot_hour', { ascending: true })
       .order('cg_id', { ascending: true })

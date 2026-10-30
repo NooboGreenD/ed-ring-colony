@@ -481,3 +481,92 @@ test('admin source sync uses public Frontier initiatives without an Inara key', 
     else process.env.INARA_API_KEY = previousInaraKey;
   }
 });
+
+test('expired goals are completed without a source flag and leave the active filter', async () => {
+  const svc = mod.createServiceClient();
+  const now = Date.now();
+  const past = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+  const future = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await svc.from('community_goals').insert([
+    { cg_id: 880001, title: 'Expired CG without a flag', source: 'manual', moderation_status: 'approved', is_complete: false, expiry_date: past },
+    { cg_id: 880002, title: 'Still running CG', source: 'manual', moderation_status: 'approved', is_complete: false, expiry_date: future },
+    { cg_id: 880003, title: 'CG without an expiry', source: 'manual', moderation_status: 'approved', is_complete: false, expiry_date: null },
+  ]);
+  assert.equal(error, null);
+
+  const active = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=active')));
+  const activeTitles = active.goals.map((goal) => goal.title);
+  assert.equal(activeTitles.includes('Expired CG without a flag'), false, 'expired goal is not active');
+  assert.equal(activeTitles.includes('Still running CG'), true);
+  assert.equal(activeTitles.includes('CG without an expiry'), true, 'a goal without a deadline stays active');
+
+  const completed = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=completed')));
+  const completedGoal = completed.goals.find((goal) => goal.title === 'Expired CG without a flag');
+  assert.ok(completedGoal, 'expired goal appears in the completed filter');
+  assert.equal(completedGoal.is_complete, true, 'the public payload reports the derived state');
+  assert.equal(completed.goals.some((goal) => goal.title === 'Still running CG'), false);
+
+  const all = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=all')));
+  assert.ok(all.goals.length >= active.goals.length + completed.goals.length - 1, 'filter=all returns both lists');
+
+  // The admin sync closes expired rows in the database instead of waiting for
+  // an upstream `is_complete` that Frontier never sends for dropped goals.
+  const syncResponse = await mod.adminRoute.POST(request('POST', { action: 'sync' }));
+  const syncResult = await body(syncResponse);
+  assert.equal(syncResponse.status, 200);
+  assert.ok(syncResult.expired >= 1, `expiry sweep reports the closed rows: ${JSON.stringify(syncResult)}`);
+  const stored = (await svc.from('community_goals').select('*').eq('cg_id', 880001).single()).data;
+  assert.equal(stored.is_complete, true);
+  const live = (await svc.from('community_goals').select('*').eq('cg_id', 880002).single()).data;
+  assert.equal(live.is_complete, false, 'running goals stay active');
+
+  const admin = await body(await mod.adminRoute.GET(request('GET')));
+  const expectedCompleted = admin.goals.filter((goal) => goal.is_complete === true
+    || (typeof goal.expiry_date === 'string' && Date.parse(goal.expiry_date) <= Date.now())).length;
+  assert.equal(admin.counts.completed, expectedCompleted, 'admin counters use the same completion rule as the public page');
+});
+
+test('tier-only progress updates are written to the contribution history', async () => {
+  const svc = mod.createServiceClient();
+  const base = {
+    cg_id: 882001,
+    title: 'Tier history CG',
+    system_name: 'Test System',
+    station_name: 'Test Port',
+    expiry_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  };
+  await mod.catalog.syncCommunityGoalsFromCapi(svc, { goals: [{
+    ...base,
+    contributions_total: 1000,
+    contributors: 10,
+  }] });
+
+  const stored = (await svc.from('community_goals').select('*').eq('game_cg_id', 882001).single()).data;
+  let history = (await svc.from('community_goal_progress_history').select('*').eq('cg_id', stored.cg_id)).data;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].tier_current, null);
+
+  // Same hour, same total: only the tier/participants moved. This is exactly
+  // the update that used to leave the chart flat.
+  await mod.catalog.syncCommunityGoalsFromCapi(svc, { goals: [{
+    ...base,
+    contributions_total: 1000,
+    contributors: 12,
+    tier_current: 3,
+    tier_max: 5,
+  }] });
+
+  history = (await svc.from('community_goal_progress_history').select('*').eq('cg_id', stored.cg_id)).data;
+  assert.equal(history.length, 1, 'snapshots inside one hour share a bucket');
+  assert.equal(history[0].tier_current, 3, 'the tier change is recorded without a new total');
+  assert.equal(history[0].tier_max, 5);
+  assert.equal(history[0].contributors, 12);
+  assert.equal(history[0].contributions_total, 1000, 'the existing total is carried into the snapshot');
+
+  const publicResult = await body(await mod.publicRoute.GET(new Request('https://example.test/api/cg?filter=active')));
+  const publicGoal = publicResult.goals.find((goal) => goal.cg_id === stored.cg_id);
+  assert.ok(publicGoal);
+  assert.equal(publicGoal.contribution_history.length, 1);
+  assert.equal(publicGoal.contribution_history[0].tier_current, 3, 'the public API exposes tiers for the chart');
+  assert.equal(publicGoal.contribution_history[0].contributions_total, 1000);
+});
