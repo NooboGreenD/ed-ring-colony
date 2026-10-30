@@ -58,6 +58,12 @@ SAMPLES_PER_SPECIES = 3
 SAMPLE_MIN_STEP_M = 5.0
 #: Сколько ждём координату для образца, снятого до первого `Status.json`.
 SAMPLE_PENDING_SECONDS = 30.0
+#: Стадии одного комплекта в журнале (`ScanOrganic.ScanType`). Игра пишет
+#: `Log` на первом образце вида, `Sample` — на следующих, а `Analyse` — когда
+#: комплект закрыт. Точку ставит каждая стадия: раньше учитывался только
+#: `Sample`, поэтому первый образец не попадал на карту, а комплект застревал
+#: на «1/3» даже после полного прохода.
+SAMPLE_STAGES = {"log": "first", "sample": "next", "analyse": "final"}
 
 #: Радиус клональной колонии по роду, метры.
 #:
@@ -210,6 +216,29 @@ def to_screen(east: float, north: float, heading: float,
     return center_x + right * px_per_m, center_y - forward * px_per_m
 
 
+#: Ближе этого к центру карты метку отодвигаем: под стрелкой её не видно.
+CENTER_GUARD_PX = 11.0
+
+
+def clamp_marker_offset(dx: float, dy: float, limit: float,
+                        guard: float = CENTER_GUARD_PX) -> Tuple[float, float, bool]:
+    """Смещение метки от центра карты и признак «за краем».
+
+    Точка, которая не влезает в диск, не должна исчезать с карты: рисуем её на
+    самом кольце (``edge=True``), чтобы было видно направление. Точка под самой
+    стрелкой командира (стоишь у корабля) отодвигается на ``guard`` пикселей —
+    иначе её закрывает стрелка.
+    """
+    offset = math.hypot(dx, dy)
+    guard = min(float(guard), float(limit))
+    if offset > limit and offset > 0.5:
+        return dx / offset * limit, dy / offset * limit, True
+    if offset < guard:
+        angle = math.atan2(dy, dx) if offset > 0.5 else -math.pi / 2
+        return math.cos(angle) * guard, math.sin(angle) * guard, False
+    return float(dx), float(dy), False
+
+
 def settlement_kind(station_type: Any) -> str:
     """Поселение или планетарный порт — по `StationType` из журнала.
 
@@ -340,10 +369,16 @@ class FootMap:
         name = str(event.get("event") or "")
         if name in ("LoadGame", "NewCommander", "Commander"):
             return self.reset()
-        if name in ("FSDJump", "SupercruiseExit", "SupercruiseEntry", "Died",
-                    "Resurrect", "Shutdown"):
+        if name in ("FSDJump", "Died", "Resurrect", "Shutdown"):
             # Смена системы или смерть: позиция и след больше не про это место.
             return self.reset()
+        if name in ("SupercruiseEntry", "SupercruiseExit"):
+            # Самплер в игре не сбрасывается от выхода в сверхкруиз: комплект
+            # образцов ждёт командира на том же теле. Карту без координаты
+            # прячем, но круги образцов не забываем — иначе после подъёма на
+            # орбиту и возврата игра требует отойти 500 м, а карта разрешает
+            # снимать образец на месте.
+            return self.reset(keep_samples=True)
         with self._lock:
             before = self._signature
             changed = False
@@ -371,20 +406,26 @@ class FootMap:
             return bool(changed and self._signature != before)
 
     def _take_place(self, event: Dict[str, Any]) -> bool:
-        """Система и тело: смена тела обнуляет след и точки интереса."""
+        """Система и тело: смена места обнуляет след, точки и образцы."""
         system = str(event.get("StarSystem") or "")
         body = str(event.get("BodyName") or event.get("Body") or "")
         changed = False
-        if system and system != self._system:
+        system_changed = bool(system) and system != self._system
+        body_changed = bool(body) and body != self._body
+        if system_changed:
             self._system = system
             changed = True
-        if body and body != self._body:
+        if body_changed:
             self._body = body
+            changed = True
+        # Тело с тем же именем бывает в другой системе («A 1» есть почти
+        # везде): сравнивать только имя мало — иначе корабль, поселения и
+        # образцы прошлой системы оставались бы на карте новой.
+        if system_changed or body_changed:
             self._trail.clear()
             self._pois.clear()
             self._ship = None
             self._forget_samples()
-            changed = True
         return changed
 
     def _take_ship_point(self, event: Dict[str, Any], *, lift_off: bool) -> bool:
@@ -440,12 +481,14 @@ class FootMap:
     def _take_sample(self, event: Dict[str, Any]) -> bool:
         """Образец биосигнала: где снят и на сколько отойти до следующего.
 
-        Журнал присылает три события на один куст: `Log` (вид впервые в
-        Кодексе), `Sample` (собственно образец) и `Analyse` (анализ готов).
-        Точку ставит только `Sample` — иначе на карте было бы три метки в
-        одном месте.
+        Один комплект вида — это три сканирования, и журнал подписывает их
+        по-разному: `Log` (первый образец), `Sample` (второй) и `Analyse`
+        (комплект закрыт). Точку ставит каждая стадия: иначе первый образец
+        пропадал с карты, а радиус его колонии не рисовался вовсе.
         """
-        if str(event.get("ScanType") or "") != "Sample":
+        stage = str(event.get("ScanType") or event.get("Type") or "").strip().casefold()
+        kind = SAMPLE_STAGES.get(stage)
+        if not kind:
             return False
         species = codex_name(event.get("Species_Localised"), event.get("Species"))
         genus = codex_name(event.get("Genus_Localised"), event.get("Genus"))
@@ -455,23 +498,37 @@ class FootMap:
         if self._lat is None or self._lon is None:
             # `Status.json` ещё не прочитан: запомним и поставим точку, как
             # только появится координата (командир всё ещё стоит на месте).
-            self._pending_sample = {"species": species, "genus": genus, "radius": radius}
+            self._pending_sample = {"species": species, "genus": genus,
+                                    "radius": radius, "stage": kind}
             self._pending_at = time.monotonic()
             return False
-        return self._place_sample(species, genus, radius, self._lat, self._lon)
+        return self._place_sample(species, genus, radius, self._lat, self._lon,
+                                  final=kind == "final")
 
     def _place_sample(self, species: str, genus: str, radius: int,
-                      lat: float, lon: float) -> bool:
+                      lat: float, lon: float, *, final: bool = False) -> bool:
         """Добавить точку образца к текущему комплекту."""
-        # Смена вида стирает недособранный комплект — так делает и игра.
         if species and self._sample_species and species != self._sample_species:
+            if final:
+                # Запоздавший `Analyse` чужого вида не трогает комплект,
+                # который командир собирает сейчас: игра ведёт их отдельно.
+                return False
+            # Смена вида стирает недособранный комплект — так делает и игра.
             self._samples.clear()
+        # Тот же куст: повторный скан или `Analyse` в той же точке. Проверяем
+        # это до «комплект собран», иначе запоздавший `Analyse` обнулял бы
+        # только что собранный комплект и начинал новый с одной точки.
+        for row in self._samples:
+            if distance_m(row["lat"], row["lon"], lat, lon, self._radius) < SAMPLE_MIN_STEP_M:
+                return False
+        if final and (not self._samples or len(self._samples) >= SAMPLES_PER_SPECIES):
+            # `Analyse` закрывает уже начатый комплект. Приходить он может с
+            # задержкой (и уже в другой системе), поэтому новую серию не
+            # начинает: без этой проверки он «съедал» бы чужой образец.
+            return False
         # Комплект собран: следующий образец того же вида начинает новый.
         if len(self._samples) >= SAMPLES_PER_SPECIES:
             self._samples.clear()
-        for row in self._samples:
-            if distance_m(row["lat"], row["lon"], lat, lon, self._radius) < SAMPLE_MIN_STEP_M:
-                return False                      # это тот же куст, а не новый
         self._samples.append({"species": species, "genus": genus, "radius": int(radius),
                               "lat": float(lat), "lon": float(lon)})
         self._sample_species = species or self._sample_species
@@ -508,7 +565,8 @@ class FootMap:
         self._pending_sample = None
         self._pending_at = None
         return self._place_sample(pending["species"], pending["genus"],
-                                  int(pending["radius"]), self._lat, self._lon)
+                                  int(pending["radius"]), self._lat, self._lon,
+                                  final=pending.get("stage") == "final")
 
     def _take_poi(self, event: Dict[str, Any]) -> bool:
         """Поселение или планетарный порт: имя, вид и координаты на карту."""
@@ -576,8 +634,12 @@ class FootMap:
         self._vehicle = "foot" if on_foot else ""
         return True
 
-    def reset(self) -> bool:
-        """Забыть поверхность (смена системы, новая сессия, смерть)."""
+    def reset(self, *, keep_samples: bool = False) -> bool:
+        """Забыть поверхность (смена системы, новая сессия, смерть).
+
+        ``keep_samples`` — выход в сверхкруиз и возврат: координаты и точки
+        интереса уже не про это место, а комплект образцов в игре остаётся.
+        """
         with self._lock:
             before = self._signature
             self._lat = self._lon = None
@@ -586,7 +648,8 @@ class FootMap:
             self._trail.clear()
             self._pois.clear()
             self._ship = None
-            self._forget_samples(keep_pending=False)
+            if not keep_samples:
+                self._forget_samples(keep_pending=False)
             self._on_foot = False
             self._vehicle = ""
             self._oxygen = self._health = self._temperature = self._gravity = None

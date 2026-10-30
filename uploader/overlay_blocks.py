@@ -1495,6 +1495,14 @@ class FootMapCanvas(QWidget):
     SAMPLE_COLOR = COLOR_GREEN_TEXT
     #: Сколько подписей у точек рисуем: остальные — только метки.
     POI_LABELS = 3
+    #: Отступ метки от кольца: значок должен читаться, а не срезаться краем.
+    EDGE_INSET = 7.0
+    #: Ближе этого к центру метку отодвигаем: под стрелкой её не видно.
+    CENTER_GUARD = 11.0
+    #: Меньше этого круг образца не рисуем: при масштабе в десятки километров
+    #: кольцо в 100 м — доли пикселя, и радиус «пропадал» с карты. Настоящий
+    #: радиус при этом написан строкой над картой.
+    SAMPLE_MIN_RADIUS_PX = 4.0
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -1657,7 +1665,8 @@ class FootMapCanvas(QWidget):
             x, y = foot_map.to_screen(float(row.get("east") or 0.0),
                                       float(row.get("north") or 0.0),
                                       heading, px_per_m, center.x(), center.y())
-            circle = max(2.0, float(row.get("radius") or 0.0) * px_per_m)
+            circle = max(self.SAMPLE_MIN_RADIUS_PX,
+                         float(row.get("radius") or 0.0) * px_per_m)
             color = QColor(self.SAMPLE_COLOR)
             color.setAlpha(160)
             painter.setPen(QPen(color, 1.0, Qt.DashLine))
@@ -1680,25 +1689,28 @@ class FootMapCanvas(QWidget):
     def _draw_pois(self, painter: QPainter, center: QPointF, radius: float,
                    px_per_m: float, heading: float,
                    state: Dict[str, Any]) -> None:
-        """Корабль, ровер, поселения и порты: метка плюс подпись у ближайших."""
-        metrics = QFontMetricsF(hud_font(self._family, self._size - 1))
-        labelled = 0
-        # Плашки курса, высоты и масштаба рисуются поверх карты: подписи точек
-        # в их полосы не заходят, иначе текст обрезается плашкой.
-        band = 18.0
-        taken: List[QRectF] = [
-            QRectF(center.x() - radius, center.y() - radius, 2 * radius, band),
-            QRectF(center.x() - radius, center.y() + radius - band, 2 * radius, band),
-            # И сам командир в центре: подпись поверх стрелки читается хуже метки.
-            QRectF(center.x() - 14, center.y() - 12, 28, 22),
-        ]
-        for poi in state.get("pois") or []:
+        """Корабль, ровер, поселения и порты: метка плюс подпись у ближайших.
+
+        Точка никогда не пропадает с карты молча: если масштаб не вмещает её,
+        метка ставится на само кольцо и обводится пунктиром — «дальше, за
+        краем». Раньше такие точки просто не рисовались, и корабль в 4 км
+        («корабль: 4,2 км» строкой ниже) на карте отсутствовал.
+        """
+        pois = state.get("pois") or []
+        if not pois:
+            return
+        limit = max(4.0, min(radius - self.EDGE_INSET, radius - 1.0))
+        # Корабль — поверх остальных меток: его ищут в первую очередь.
+        draw_order = {foot_map.POI_SHIP: 2, foot_map.POI_SRV: 1}
+        placed: List[tuple] = []
+        for poi in sorted(pois, key=lambda row: draw_order.get(row.get("kind"), 0)):
             east = float(poi.get("east") or 0.0)
             north = float(poi.get("north") or 0.0)
             x, y = foot_map.to_screen(east, north, heading, px_per_m, center.x(), center.y())
-            if math.hypot(x - center.x(), y - center.y()) > radius - 3:
-                # Точка за кольцом: масштаб её не вмещает — не рисуем вовсе.
-                continue
+            dx, dy, edge = foot_map.clamp_marker_offset(
+                x - center.x(), y - center.y(), limit, self.CENTER_GUARD)
+            x = center.x() + dx
+            y = center.y() + dy
             color = QColor(self.POI_COLORS.get(poi.get("kind"), COLOR_TEXT))
             painter.setPen(QPen(color, 1.2))
             painter.setBrush(QBrush(color))
@@ -1714,9 +1726,29 @@ class FootMapCanvas(QWidget):
             else:
                 painter.drawEllipse(QPointF(x, y), 2.4, 2.4)
             painter.setBrush(Qt.NoBrush)
+            if edge:
+                # Пунктирное кольцо: точка на самом деле дальше края карты.
+                painter.setPen(QPen(color, 1.0, Qt.DotLine))
+                painter.drawEllipse(QPointF(x, y), 6.0, 6.0)
+                painter.setPen(QPen(color, 1.2))
+            placed.append((poi, x, y))
 
+        metrics = QFontMetricsF(hud_font(self._family, self._size - 1))
+        labelled = 0
+        # Плашки курса, высоты и масштаба рисуются поверх карты: подписи точек
+        # в их полосы не заходят, иначе текст обрезается плашкой.
+        band = 18.0
+        taken: List[QRectF] = [
+            QRectF(center.x() - radius, center.y() - radius, 2 * radius, band),
+            QRectF(center.x() - radius, center.y() + radius - band, 2 * radius, band),
+            # И сам командир в центре: подпись поверх стрелки читается хуже метки.
+            QRectF(center.x() - 14, center.y() - 12, 28, 22),
+        ]
+        # Подписи — ближайшим точкам, как и раньше (order by distance).
+        for poi, x, y in sorted(placed, key=lambda item: float(item[0].get("distance") or 0.0)):
             if labelled >= self.POI_LABELS:
-                continue
+                break
+            color = QColor(self.POI_COLORS.get(poi.get("kind"), COLOR_TEXT))
             # У поселения и порта подпись — имя. У корабля и ровера имени нет,
             # поэтому пишем вид точки и расстояние: «ровер 45 м» понятнее
             # одинокой цифры у метки.
@@ -1727,8 +1759,8 @@ class FootMapCanvas(QWidget):
             if poi.get("pad"):
                 # Номер площадки — первое, что ищут глазами при посадке в порту.
                 caption = f"{caption} · {tr('площадка {pad}', pad=poi['pad'])}"
-            limit = max(30.0, 2 * radius - 12)
-            text = metrics.elidedText(caption, Qt.ElideRight, limit)
+            limit_text = max(30.0, 2 * radius - 12)
+            text = metrics.elidedText(caption, Qt.ElideRight, limit_text)
             width = metrics.horizontalAdvance(text) + 2
             left = x + 6 if x + 6 + width <= center.x() + radius else x - 6 - width
             painter.setPen(QPen(color, 1))
@@ -1960,12 +1992,17 @@ class FootMapOverlay(HudWindow):
         if summary.get("complete"):
             return tr("{species} · комплект собран · радиус {radius}",
                       species=species, radius=radius)
+        # Радиус колонии пишем всегда, а не только после сбора комплекта: по
+        # нему видно, докуда нельзя ставить следующий образец, и он же —
+        # радиус круга на карте.
         if summary.get("allowed"):
-            return tr("{species} · {done}/{total} · можно брать образец",
+            base = tr("{species} · {done}/{total} · можно брать образец",
                       species=species, done=done, total=total)
-        return tr("{species} · {done}/{total} · до следующего {distance}",
-                  species=species, done=done, total=total,
-                  distance=foot_distance_text(float(summary.get("need_m") or 0.0)))
+        else:
+            base = tr("{species} · {done}/{total} · до следующего {distance}",
+                      species=species, done=done, total=total,
+                      distance=foot_distance_text(float(summary.get("need_m") or 0.0)))
+        return f"{base} · {tr('радиус {radius}', radius=radius)}"
 
     @staticmethod
     def _sample_color(state: Dict[str, Any]) -> str:

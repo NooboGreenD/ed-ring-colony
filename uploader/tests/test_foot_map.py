@@ -332,13 +332,63 @@ class FootMapSampleTests(unittest.TestCase):
         self.assertEqual(foot_map.clonal_range(None, ""), foot_map.DEFAULT_CLONAL_RANGE_M)
 
     # -- точки образцов ----------------------------------------------------
-    def test_only_the_sample_event_places_a_point(self):
-        """`Log` — знакомство с видом, `Analyse` — итог: точка одна, на `Sample`."""
-        self.assertFalse(self.sample(scan_type="Log"))
-        self.assertEqual(self.map.sample_points(), [])
-        self.assertTrue(self.sample(scan_type="Sample"))
-        self.assertFalse(self.sample(scan_type="Analyse"))
+    def test_every_stage_of_the_set_places_its_own_point(self):
+        """Комплект — это `Log`, затем `Sample`, затем `Analyse`.
+
+        Раньше точка ставилась только на `Sample`: первый образец пропадал с
+        карты вместе с радиусом его колонии, а полный проход давал «1/3».
+        """
+        self.assertTrue(self.sample(scan_type="Log"))
         self.assertEqual(len(self.map.sample_points()), 1)
+        self.assertEqual(self.map.state()["sample"]["count"], 1)
+        self.walk_to(600.0)
+        self.assertTrue(self.sample(scan_type="Sample"))
+        self.walk_to(1200.0)
+        self.assertTrue(self.sample(scan_type="Analyse"))
+        summary = self.map.state()["sample"]
+        self.assertEqual(summary["count"], 3)
+        self.assertTrue(summary["complete"])
+        self.assertEqual([row["radius"] for row in self.map.state()["samples"]],
+                         [500, 500, 500])
+
+    def test_analyse_alone_does_not_start_a_set(self):
+        """Запоздавший `Analyse` (уже в другой системе) не создаёт точку."""
+        self.assertFalse(self.sample(scan_type="Analyse"))
+        self.assertEqual(self.map.sample_points(), [])
+        self.assertIsNone(self.map.state()["sample"])
+
+    def test_delayed_analyse_of_another_species_keeps_the_current_set(self):
+        """`Analyse` приходит с задержкой: он не должен стирать чужой комплект."""
+        self.sample(scan_type="Log", species="Bacterium Cerbrus", genus="Bacterium")
+        self.walk_to(600.0)
+        self.sample(scan_type="Sample", species="Bacterium Cerbrus", genus="Bacterium")
+        self.walk_to(1200.0)
+        self.sample(scan_type="Analyse", species="Tussock", genus="Tussock")
+        summary = self.map.state()["sample"]
+        self.assertEqual(summary["species"], "Bacterium Cerbrus")
+        self.assertEqual(summary["count"], 2)
+
+    def test_analyse_after_a_complete_set_keeps_the_counter(self):
+        """`Analyse` — итог комплекта, а не его четвёртый образец."""
+        for index, stage in enumerate(("Log", "Sample", "Analyse")):
+            if index:
+                self.walk_to(600.0 * index)
+            self.assertTrue(self.sample(scan_type=stage))
+        self.assertFalse(self.sample(scan_type="Analyse"))    # там же
+        self.walk_to(5000.0)
+        self.assertFalse(self.sample(scan_type="Analyse"))    # и даже в стороне
+        summary = self.map.state()["sample"]
+        self.assertEqual(summary["count"], 3)
+        self.assertTrue(summary["complete"])
+
+    def test_first_sample_shows_the_clonal_circle(self):
+        """После первого же сканирования виден радиус, а не пустая карта."""
+        self.sample(scan_type="Log")
+        samples = self.map.state()["samples"]
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["radius"], 500)
+        self.assertEqual(samples[0]["distance"], 0.0)
+        self.assertEqual(self.map.state()["sample"]["count"], 1)
 
     def test_sample_keeps_genus_species_and_radius(self):
         self.sample()
@@ -409,6 +459,32 @@ class FootMapSampleTests(unittest.TestCase):
         self.assertEqual(len(points), 1)
         self.assertEqual(points[0]["species"], "Tussock Cultro")
         self.assertEqual(points[0]["radius"], 200)
+
+    def test_supercruise_round_trip_keeps_the_sample_set(self):
+        """Игра не сбрасывает самплер от выхода в сверхкруиз — карта тоже."""
+        self.sample(scan_type="Log")
+        self.map.handle({"event": "SupercruiseEntry", "StarSystem": "Test"})
+        self.assertFalse(self.map.state()["known"])
+        self.map.handle({"event": "SupercruiseExit", "StarSystem": "Test",
+                         "BodyName": "Test 4 a"})
+        self.map.update_status(status(Latitude=0.0, Longitude=0.0))
+        summary = self.map.state()["sample"]
+        self.assertIsNotNone(summary, "круги образцов потерялись в сверхкруизе")
+        self.assertEqual(summary["count"], 1)
+
+    def test_same_body_name_in_another_system_is_a_new_place(self):
+        """«A 1» есть почти везде: старое место не переезжает в новую систему."""
+        self.sample(scan_type="Log")
+        self.map.handle({"event": "Touchdown", "StarSystem": "Test",
+                         "BodyName": "Test 4 a", "Latitude": 0.01, "Longitude": 0.0})
+        self.assertIsNotNone(self.map.state()["ship"])
+        self.map.update_status(status(StarSystem="Other", BodyName="Test 4 a",
+                                      Latitude=1.0, Longitude=1.0))
+        state = self.map.state()
+        self.assertEqual(state["system"], "Other")
+        self.assertIsNone(state["ship"], "корабль прошлой системы остался на карте")
+        self.assertEqual(state["sample"], None, "образцы прошлой системы остались на карте")
+        self.assertEqual(state["pois"], [])
 
     def test_samples_are_forgotten_on_another_body_and_on_a_jump(self):
         self.sample()
@@ -594,6 +670,32 @@ class FootMapPollTests(unittest.TestCase):
         self.assertTrue(map_.state()["known"])
 
 
+class FootMapMarkerGeometryTests(unittest.TestCase):
+    """Метка точки не должна исчезать с карты — ни у края, ни в центре."""
+
+    def test_point_outside_the_ring_lands_on_the_ring(self):
+        dx, dy, edge = foot_map.clamp_marker_offset(300.0, 400.0, 100.0)
+        self.assertTrue(edge)
+        self.assertAlmostEqual(math.hypot(dx, dy), 100.0, places=6)
+        self.assertAlmostEqual(dx / dy, 300.0 / 400.0, places=6)   # направление то же
+
+    def test_point_inside_the_ring_keeps_its_place(self):
+        dx, dy, edge = foot_map.clamp_marker_offset(40.0, -30.0, 100.0)
+        self.assertFalse(edge)
+        self.assertEqual((dx, dy), (40.0, -30.0))
+
+    def test_ship_right_under_the_pilot_is_moved_above_the_arrow(self):
+        dx, dy, edge = foot_map.clamp_marker_offset(0.0, 0.0, 100.0)
+        self.assertFalse(edge)
+        self.assertAlmostEqual(math.hypot(dx, dy), foot_map.CENTER_GUARD_PX, places=6)
+        self.assertLess(dy, 0, "метка должна уйти вверх, из-под стрелки")
+
+    def test_near_centre_marker_keeps_its_direction(self):
+        dx, dy, _edge = foot_map.clamp_marker_offset(3.0, 4.0, 100.0)
+        self.assertAlmostEqual(math.hypot(dx, dy), foot_map.CENTER_GUARD_PX, places=6)
+        self.assertAlmostEqual(dx / dy, 3.0 / 4.0, places=6)
+
+
 class FootMapRenderingContractTests(unittest.TestCase):
     """Связка «состояние → блок HUD», которую видно без запуска Qt.
 
@@ -649,6 +751,59 @@ class FootMapRenderingContractTests(unittest.TestCase):
                   if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
         self.assertIn("_draw_samples", called, "круги образцов не рисуются")
         self.assertIn("_draw_pois", called)
+
+    def test_markers_are_never_silently_dropped(self):
+        """Точка за кольцом ставится на кольцо, а не пропускается.
+
+        Корабль в 4 км давал строку «корабль: 4,2 км», но на самой карте его
+        метки не было: `_draw_pois` просто пропускал точки вне диска.
+        """
+        import ast
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        canvas = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.ClassDef) and node.name == "FootMapCanvas")
+        draw_pois = next(item for item in canvas.body
+                         if isinstance(item, ast.FunctionDef) and item.name == "_draw_pois")
+        called = {node.attr for node in ast.walk(draw_pois)
+                  if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
+        self.assertIn("clamp_marker_offset", called, "метка за краем не переносится на кольцо")
+        self.assertNotIn("hypot", called, "точки по-прежнему отбрасываются по расстоянию")
+
+    def test_sample_circle_stays_visible_at_a_coarse_scale(self):
+        """Кольцо в 100 м при масштабе 25 км не должно схлопнуться в точку."""
+        import ast
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        canvas = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.ClassDef) and node.name == "FootMapCanvas")
+        minimum = None
+        for item in canvas.body:
+            if isinstance(item, ast.Assign) and \
+                    getattr(item.targets[0], "id", "") == "SAMPLE_MIN_RADIUS_PX":
+                minimum = item.value.value
+        self.assertIsNotNone(minimum, "нет минимального радиуса круга образца")
+        self.assertGreaterEqual(minimum, 3.0)
+        draw_samples = next(item for item in canvas.body
+                            if isinstance(item, ast.FunctionDef) and item.name == "_draw_samples")
+        names = {node.id for node in ast.walk(draw_samples) if isinstance(node, ast.Name)}
+        used = {node.attr for node in ast.walk(draw_samples)
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
+        self.assertTrue("SAMPLE_MIN_RADIUS_PX" in names or "SAMPLE_MIN_RADIUS_PX" in used,
+                        "минимальный радиус не применяется")
+
+    def test_sample_line_always_names_the_clonal_radius(self):
+        """Радиус колонии — в строке образцов, а не только после сбора."""
+        import ast
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        overlay = next(node for node in ast.walk(tree)
+                       if isinstance(node, ast.ClassDef) and node.name == "FootMapOverlay")
+        sample_text = next(item for item in overlay.body
+                           if isinstance(item, ast.FunctionDef) and item.name == "_sample_text")
+        literals = {node.value for node in ast.walk(sample_text)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        self.assertIn("радиус {radius}", literals)
 
     def test_each_kind_has_its_own_marker(self):
         """У поселения и порта свои значки: в игре они тоже разные."""
