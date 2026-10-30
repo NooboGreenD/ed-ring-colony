@@ -570,3 +570,38 @@ test('tier-only progress updates are written to the contribution history', async
   assert.equal(publicGoal.contribution_history[0].tier_current, 3, 'the public API exposes tiers for the chart');
   assert.equal(publicGoal.contribution_history[0].contributions_total, 1000);
 });
+
+test('a sparse public feed does not block tiers from an older official observation', async () => {
+  const svc = mod.createServiceClient();
+  await mod.catalog.syncCommunityGoalsFromFrontier(svc, { activeInitiatives: [{
+    id: 883001,
+    title: 'Frontier progress first',
+    bulletin: 'Public bulletin.',
+    objective: 'Deliver supplies.',
+    qty: 500,
+    target_qty: 1000,
+    expiry: '2030-02-01 12:00:00',
+    starsystem_name: 'Test System',
+    market_name: 'Test Port',
+  }] });
+  const stored = (await svc.from('community_goals').select('*').eq('game_cg_id', 883001).single()).data;
+  assert.equal(stored.tier_current, null, 'the public feed carries no tiers');
+
+  // CAPI knows the tier but its observation is older than the public progress
+  // refresh; the missing tier must still be filled instead of staying empty.
+  const candidates = mod.catalog.normalizeCapiCommunityGoals({ goals: [{
+    cg_id: 883001,
+    title: 'Frontier progress first',
+    tier_current: 3,
+    tier_max: 5,
+    contributors: 40,
+  }] }, '2020-01-01T00:00:00Z');
+  await mod.catalog.upsertCommunityGoalCatalog(svc, candidates, 'capi');
+
+  const updated = (await svc.from('community_goals').select('*').eq('cg_id', stored.cg_id).single()).data;
+  assert.equal(updated.source, 'frontier', 'the canonical text source is unchanged');
+  assert.equal(updated.contributions_total, 500, 'an older total does not overwrite newer progress');
+  assert.equal(updated.tier_current, 3, 'the missing tier is filled from the official source');
+  assert.equal(updated.tier_max, 5);
+  assert.equal(updated.contributors, 40);
+});

@@ -109,10 +109,21 @@ function applyProgressSnapshot(
   let changed = false;
 
   for (const field of PROGRESS_FIELDS) {
-    if (mayUpdate && candidate[field] !== null && candidate[field] !== undefined && candidate[field] !== '') {
-      target[field] = candidate[field];
-    } else if (existing && existing[field] !== undefined) {
-      target[field] = existing[field];
+    const incoming = candidate[field];
+    const incomingIsSet = incoming !== null && incoming !== undefined && incoming !== '';
+    const current = existing?.[field];
+    const currentIsSet = current !== null && current !== undefined && current !== '';
+    if (mayUpdate && incomingIsSet) {
+      target[field] = incoming;
+    } else if (currentIsSet) {
+      target[field] = current;
+    } else if (incomingIsSet) {
+      // Публичный фид Frontier обновляет только объём вклада и не знает
+      // тиров/участников. Более старое по времени наблюдение всё равно
+      // полезнее пустого поля: иначе свежий frontier навсегда блокировал бы
+      // тир из Inara/CAPI.
+      target[field] = incoming;
+      changed = true;
     }
   }
 
