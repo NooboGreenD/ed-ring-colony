@@ -56,6 +56,8 @@ CONTENT_OPTIONS = {
         'coords': ('Координаты', ('coords_label',)),
         'map': ('Карта, след и точки', ('canvas',)),
         'target': ('Расстояние до корабля', ('ship_label',)),
+        'points': ('Ровер, поселения и порты', ('points_label',)),
+        'samples': ('Образцы и их радиус', ('sample_label',)),
         'vitals': ('Кислород, здоровье и гравитация', ('vitals_label',)),
     },
     'events': {key: (label, ()) for key, label in (

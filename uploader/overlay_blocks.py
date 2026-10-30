@@ -1454,8 +1454,29 @@ def foot_coordinate(value: float, positive: str, negative: str) -> str:
     return f"{abs(number):.4f}°{positive if number >= 0 else negative}"
 
 
+#: Как назвать точку, у которой нет имени: вид точки на текущем языке.
+POI_KIND_KEYS = {
+    foot_map.POI_SHIP: "корабль",
+    foot_map.POI_SRV: "ровер",
+    foot_map.POI_SETTLEMENT: "поселение",
+    foot_map.POI_STATION: "порт",
+}
+
+
+def foot_poi_title(poi: Dict[str, Any]) -> str:
+    """Подпись точки: её имя, а если имени нет — вид точки."""
+    name = str((poi or {}).get("name") or "").strip()
+    if name:
+        return name
+    key = POI_KIND_KEYS.get(str((poi or {}).get("kind") or ""), "")
+    return tr(key) if key else ""
+
+
 class FootMapCanvas(QWidget):
-    """Круглая миникарта: след, корабль, поселения и сам командир в центре.
+    """Круглая миникарта: след, корабль, ровер, поселения и образцы.
+
+    Круги образцов — не украшение: радиус круга равен клональной колонии рода,
+    и внутри него следующий образец того же вида игра не засчитает.
 
     Карта развёрнута по курсу — впереди всегда верх экрана; север показывает
     буква на кольце. Масштаб подбирает `foot_map` по дальности корабля и
@@ -1466,9 +1487,12 @@ class FootMapCanvas(QWidget):
     #: Цвет точки по её виду.
     POI_COLORS = {
         foot_map.POI_SHIP: COLOR_ACCENT,
+        foot_map.POI_SRV: COLOR_YELLOW,
         foot_map.POI_SETTLEMENT: COLOR_CYAN,
         foot_map.POI_STATION: COLOR_GREEN_TEXT,
     }
+    #: Круг образца: зелёный — биология, цвет тот же у всех родов.
+    SAMPLE_COLOR = COLOR_GREEN_TEXT
     #: Сколько подписей у точек рисуем: остальные — только метки.
     POI_LABELS = 3
 
@@ -1531,6 +1555,8 @@ class FootMapCanvas(QWidget):
         painter.drawEllipse(center, radius, radius)
         painter.setBrush(Qt.NoBrush)
         self._draw_grid(painter, center, radius)
+        # Круги образцов — под следом и метками: это фон, а не главное.
+        self._draw_samples(painter, center, radius, px_per_m, heading, state)
         self._draw_trail(painter, center, radius, px_per_m, heading, state)
         self._draw_pois(painter, center, radius, px_per_m, heading, state)
         self._draw_north(painter, center, radius, heading)
@@ -1611,10 +1637,50 @@ class FootMapCanvas(QWidget):
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
 
+    def _draw_samples(self, painter: QPainter, center: QPointF, radius: float,
+                      px_per_m: float, heading: float,
+                      state: Dict[str, Any]) -> None:
+        """Круги образцов: где снят образец и докуда нельзя ставить следующий.
+
+        Радиус круга — клональная колония рода (от 100 м у анемоны до 1000 м у
+        Electricae). Пока командир внутри круга, следующий образец того же вида
+        игра не засчитает, поэтому круг масштабный, а не декоративный.
+        """
+        samples = state.get("samples") or []
+        if not samples:
+            return
+        disc = QPainterPath()
+        disc.addEllipse(center, max(1.0, radius - 1), max(1.0, radius - 1))
+        painter.save()
+        painter.setClipPath(disc, Qt.IntersectClip)
+        for row in samples:
+            x, y = foot_map.to_screen(float(row.get("east") or 0.0),
+                                      float(row.get("north") or 0.0),
+                                      heading, px_per_m, center.x(), center.y())
+            circle = max(2.0, float(row.get("radius") or 0.0) * px_per_m)
+            color = QColor(self.SAMPLE_COLOR)
+            color.setAlpha(160)
+            painter.setPen(QPen(color, 1.0, Qt.DashLine))
+            if circle <= radius * 3:
+                # Огромный круг залил бы весь диск: тогда остаётся только кольцо.
+                fill = QColor(color)
+                fill.setAlpha(16)
+                painter.setBrush(QBrush(fill))
+            else:
+                painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPointF(x, y), circle, circle)
+            painter.setBrush(Qt.NoBrush)
+            # Сам образец — точка в центре: кольцо легко принять за что-то иное.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(color))
+            painter.drawEllipse(QPointF(x, y), 1.8, 1.8)
+            painter.setBrush(Qt.NoBrush)
+        painter.restore()
+
     def _draw_pois(self, painter: QPainter, center: QPointF, radius: float,
                    px_per_m: float, heading: float,
                    state: Dict[str, Any]) -> None:
-        """Корабль, поселения и порты: метка плюс подпись у ближайших."""
+        """Корабль, ровер, поселения и порты: метка плюс подпись у ближайших."""
         metrics = QFontMetricsF(hud_font(self._family, self._size - 1))
         labelled = 0
         # Плашки курса, высоты и масштаба рисуются поверх карты: подписи точек
@@ -1639,6 +1705,8 @@ class FootMapCanvas(QWidget):
             kind = poi.get("kind")
             if kind == foot_map.POI_SHIP:
                 self._draw_ship_marker(painter, x, y, color)
+            elif kind == foot_map.POI_SRV:
+                self._draw_srv_marker(painter, x, y, color)
             elif kind == foot_map.POI_STATION:
                 painter.drawRect(QRectF(x - 2.5, y - 2.5, 5, 5))
             else:
@@ -1647,9 +1715,13 @@ class FootMapCanvas(QWidget):
 
             if labelled >= self.POI_LABELS:
                 continue
-            caption = str(poi.get("name") or "")
+            # У поселения и порта подпись — имя. У корабля и ровера имени нет,
+            # поэтому пишем вид точки и расстояние: «ровер 45 м» понятнее
+            # одинокой цифры у метки.
+            caption = str(poi.get("name") or "").strip()
             if not caption:
-                caption = foot_distance_text(float(poi.get("distance") or 0.0))
+                distance_text = foot_distance_text(float(poi.get("distance") or 0.0))
+                caption = f"{foot_poi_title(poi)} {distance_text}".strip()
             limit = max(30.0, 2 * radius - 12)
             text = metrics.elidedText(caption, Qt.ElideRight, limit)
             width = metrics.horizontalAdvance(text) + 2
@@ -1665,6 +1737,15 @@ class FootMapCanvas(QWidget):
                     taken.append(box)
                     labelled += 1
                     break
+
+    @staticmethod
+    def _draw_srv_marker(painter: QPainter, x: float, y: float, color: QColor) -> None:
+        """Ровер — ромб: заметен и в толпе меток, и у края круга образца."""
+        diamond = QPolygonF([QPointF(x, y - 4.2), QPointF(x + 3.6, y),
+                             QPointF(x, y + 4.2), QPointF(x - 3.6, y)])
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(diamond)
+        painter.setBrush(Qt.NoBrush)
 
     @staticmethod
     def _draw_ship_marker(painter: QPainter, x: float, y: float, color: QColor) -> None:
@@ -1735,6 +1816,15 @@ class FootMapOverlay(HudWindow):
         self.ship_label = self.make_label(self.content, "", color=COLOR_TEXT, dp=-2)
         self.body.addWidget(self.ship_label)
 
+        # Ровер, поселения и порты: к ним возвращаются, поэтому они идут
+        # строкой под картой, а не только метками на кольце.
+        self.points_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED, dp=-2)
+        self.body.addWidget(self.points_label)
+
+        # Образцы: сколько собрано и можно ли брать следующий.
+        self.sample_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED, dp=-2)
+        self.body.addWidget(self.sample_label)
+
         self.vitals_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED, dp=-2)
         self.body.addWidget(self.vitals_label)
 
@@ -1771,6 +1861,58 @@ class FootMapOverlay(HudWindow):
             return COLOR_YELLOW
         return COLOR_TEXT_MUTED
 
+    #: Сколько ближних точек перечисляем под картой.
+    MAX_POINT_ROWS = 3
+
+    @classmethod
+    def _points_text(cls, state: Dict[str, Any]) -> str:
+        """Ближние важные точки строкой: ровер, поселения и порты.
+
+        Корабль сюда не входит: у него своя строка с расстоянием.
+        """
+        rows = sorted(
+            (poi for poi in state.get("pois") or []
+             if poi.get("kind") != foot_map.POI_SHIP),
+            key=lambda poi: float(poi.get("distance") or 0.0))
+        parts = []
+        for poi in rows[:cls.MAX_POINT_ROWS]:
+            title = foot_poi_title(poi)
+            if not title:
+                continue
+            distance = foot_distance_text(float(poi.get("distance") or 0.0))
+            parts.append(f"{title} {distance}")
+        return "  ·  ".join(parts)
+
+    @staticmethod
+    def _sample_text(state: Dict[str, Any]) -> str:
+        """Комплект образцов: сколько собрано и можно ли брать следующий."""
+        summary = state.get("sample") or {}
+        if not summary:
+            return ""
+        species = (str(summary.get("species") or "").strip()
+                   or str(summary.get("genus") or "").strip() or tr("образец"))
+        done = int(summary.get("count") or 0)
+        total = int(summary.get("total") or foot_map.SAMPLES_PER_SPECIES)
+        radius = foot_distance_text(float(summary.get("radius") or 0.0))
+        if summary.get("complete"):
+            return tr("{species} · комплект собран · радиус {radius}",
+                      species=species, radius=radius)
+        if summary.get("allowed"):
+            return tr("{species} · {done}/{total} · можно брать образец",
+                      species=species, done=done, total=total)
+        return tr("{species} · {done}/{total} · до следующего {distance}",
+                  species=species, done=done, total=total,
+                  distance=foot_distance_text(float(summary.get("need_m") or 0.0)))
+
+    @staticmethod
+    def _sample_color(state: Dict[str, Any]) -> str:
+        """Зелёный — образец возьмётся, жёлтый — надо отойти дальше."""
+        summary = state.get("sample") or {}
+        if not summary:
+            return COLOR_TEXT_MUTED
+        return COLOR_GREEN_TEXT if (summary.get("allowed") or summary.get("complete")) \
+            else COLOR_YELLOW
+
     def update_footmap(self, state: Optional[Dict[str, Any]], force: bool = False) -> None:
         """Нарисовать миникарту по состоянию `foot_map.FootMap.state()`."""
         state = dict(state or foot_map.empty_state())
@@ -1793,10 +1935,16 @@ class FootMapOverlay(HudWindow):
         self.ship_label.setText(
             tr("корабль: {distance}", distance=foot_distance_text(ship["distance"]))
             if ship else "")
+        self.points_label.setText(self._points_text(state) if known else "")
+        sample_text = self._sample_text(state) if known else ""
+        self.sample_label.setText(sample_text)
+        paint(self.sample_label,
+              color=self._sample_color(state) if sample_text else COLOR_TEXT_MUTED)
         self.vitals_label.setText(self._vitals_text(state) if known else "")
         paint(self.vitals_label, color=self._vitals_color(state) if known else COLOR_TEXT_MUTED)
 
         key = (known, body, self.coords_label.text(), self.ship_label.text(),
+               self.points_label.text(), sample_text,
                self.vitals_label.text(), self.width(), self.height(), int(self._fs))
         if not force and key == self._render_key:
             return
