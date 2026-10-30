@@ -18,11 +18,78 @@ const SOURCE_PRIORITY: Record<GoalSource | 'manual', number> = {
 };
 const MAX_CG_ID = 2_147_483_647;
 const PROGRESS_FIELDS = ['tier_current', 'tier_max', 'contributors', 'contributions_total'] as const;
+/** Источники, чьи снимки складываются в публичную историю прогресса. */
+const HISTORY_SOURCES: readonly GoalSource[] = ['inara', 'capi', 'frontier'];
 
 function hasContributionTotal(value: unknown): boolean {
   if (value === null || value === undefined || value === '') return false;
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) && parsed >= 0;
+}
+
+function hasValue(value: unknown): boolean {
+  return value !== null && value !== undefined && value !== '';
+}
+
+/**
+ * Завершённость строки при записи в каталог: флаг источника, ранее известная
+ * завершённость или прошедший срок. Истёкшие цели не должны навсегда остаться
+ * в фильтре «Активные» только потому, что источник перестал их присылать.
+ */
+export function catalogGoalIsComplete(
+  goal: Record<string, any> | null | undefined,
+  existing: Record<string, any> | null | undefined,
+  nowMs: number,
+): boolean {
+  if (goal?.is_complete === true || existing?.is_complete === true) return true;
+  const expiry = Date.parse(String(goal?.expiry_date ?? existing?.expiry_date ?? ''));
+  return Number.isFinite(expiry) && expiry <= nowMs;
+}
+
+/**
+ * Снимок прогресса для графика. Пишется и при неизменном
+ * `contributions_total`, если обновился тир или число участников: иначе тир
+ * «обновлялся» в карточке, но история оставалась плоской.
+ */
+function progressSnapshotRow(
+  target: Record<string, any>,
+  source: GoalSource,
+  observedAt: string,
+  snapshotHour: string,
+): Record<string, any> | null {
+  if (!HISTORY_SOURCES.includes(source)) return null;
+  if (!hasContributionTotal(target.contributions_total)) return null;
+  return {
+    cg_id: target.cg_id,
+    snapshot_hour: snapshotHour,
+    observed_at: observedAt,
+    source,
+    tier_current: hasValue(target.tier_current) ? Number(target.tier_current) : null,
+    tier_max: hasValue(target.tier_max) ? Number(target.tier_max) : null,
+    contributors: hasValue(target.contributors) ? Number(target.contributors) : null,
+    contributions_total: Number(target.contributions_total),
+  };
+}
+
+/**
+ * Пометить завершёнными все цели, у которых истёк срок. Вызывается после
+ * каждого синка (крон и админка), потому что публичный фид Frontier просто
+ * перестаёт присылать истёкшие инициативы.
+ */
+export async function markExpiredCommunityGoalsComplete(
+  svc: ServiceClient,
+  now: Date = new Date(),
+): Promise<number> {
+  const timestamp = now.toISOString();
+  const { data, error } = await svc
+    .from('community_goals')
+    .update({ is_complete: true, updated_at: timestamp })
+    .eq('is_complete', false)
+    // NULL-срок в SQL не проходит `<=`, поэтому бессрочные цели не задеваются.
+    .lte('expiry_date', timestamp)
+    .select('cg_id');
+  if (error) throw new Error(`Community Goal expiry sweep failed: ${error.message}`);
+  return Array.isArray(data) ? data.length : 0;
 }
 
 /** Keep high-priority catalog text, but let newer official snapshots refresh live progress values. */
@@ -42,10 +109,21 @@ function applyProgressSnapshot(
   let changed = false;
 
   for (const field of PROGRESS_FIELDS) {
-    if (mayUpdate && candidate[field] !== null && candidate[field] !== undefined && candidate[field] !== '') {
-      target[field] = candidate[field];
-    } else if (existing && existing[field] !== undefined) {
-      target[field] = existing[field];
+    const incoming = candidate[field];
+    const incomingIsSet = incoming !== null && incoming !== undefined && incoming !== '';
+    const current = existing?.[field];
+    const currentIsSet = current !== null && current !== undefined && current !== '';
+    if (mayUpdate && incomingIsSet) {
+      target[field] = incoming;
+    } else if (currentIsSet) {
+      target[field] = current;
+    } else if (incomingIsSet) {
+      // Публичный фид Frontier обновляет только объём вклада и не знает
+      // тиров/участников. Более старое по времени наблюдение всё равно
+      // полезнее пустого поля: иначе свежий frontier навсегда блокировал бы
+      // тир из Inara/CAPI.
+      target[field] = incoming;
+      changed = true;
     }
   }
 
@@ -238,7 +316,7 @@ export async function upsertCommunityGoalCatalog(
   const gameIds = Array.from(new Set(goals
     .map((goal) => Number(goal.game_cg_id))
     .filter((id) => Number.isSafeInteger(id) && id > 0)));
-  const selectColumns = 'cg_id,game_cg_id,identity_key,source,source_updated_at,progress_source,progress_updated_at,tier_current,tier_max,contributors,contributions_total,contributions_target,target_source,target_updated_at,moderation_status,title,description,system_name,station_name,objective,reward,expiry_date,inara_url,raw_data';
+  const selectColumns = 'cg_id,game_cg_id,identity_key,source,source_updated_at,progress_source,progress_updated_at,tier_current,tier_max,contributors,contributions_total,contributions_target,target_source,target_updated_at,moderation_status,is_complete,title,description,system_name,station_name,objective,reward,expiry_date,inara_url,raw_data';
   const { data: existingRows, error: lookupError } = await svc
     .from('community_goals')
     .select(selectColumns)
@@ -316,7 +394,8 @@ export async function upsertCommunityGoalCatalog(
   for (const row of Array.isArray(idRows) ? idRows : []) identityById.set(row.cg_id, row.identity_key || '');
 
   const rows = [];
-  const progressHistoryRows: Record<string, any>[] = [];
+  const nowMs = Date.parse(now);
+  const progressHistoryBuffer = new Map<string, Record<string, any>>();
   const snapshotTime = new Date(now);
   snapshotTime.setUTCMinutes(0, 0, 0);
   const reservedIds = new Set(identityById.keys());
@@ -348,21 +427,16 @@ export async function upsertCommunityGoalCatalog(
           changed = true;
         }
       }
+      const complete = catalogGoalIsComplete(goal, existing, nowMs);
+      if (complete !== (existing.is_complete === true)) {
+        enrichment.is_complete = complete;
+        changed = true;
+      }
       const progressChanged = applyProgressSnapshot(enrichment, goal, existing, source, now);
       if (progressChanged) {
         changed = true;
-        if ((source === 'inara' || source === 'capi' || source === 'frontier') && hasContributionTotal(goal.contributions_total)) {
-          progressHistoryRows.push({
-            cg_id: enrichment.cg_id,
-            snapshot_hour: snapshotTime.toISOString(),
-            observed_at: now,
-            source,
-            tier_current: enrichment.tier_current,
-            tier_max: enrichment.tier_max,
-            contributors: enrichment.contributors,
-            contributions_total: goal.contributions_total,
-          });
-        }
+        const snapshot = progressSnapshotRow(enrichment, source, now, snapshotTime.toISOString());
+        if (snapshot) progressHistoryBuffer.set(`${snapshot.cg_id}:${snapshot.snapshot_hour}`, snapshot);
       }
       if (changed) rows.push(enrichment);
       continue;
@@ -409,18 +483,11 @@ export async function upsertCommunityGoalCatalog(
       }
     }
     const progressChanged = applyProgressSnapshot(row, goal, existing, source, now);
-    if (progressChanged && (source === 'inara' || source === 'capi' || source === 'frontier') && hasContributionTotal(goal.contributions_total)) {
-      progressHistoryRows.push({
-        cg_id: row.cg_id,
-        snapshot_hour: snapshotTime.toISOString(),
-        observed_at: now,
-        source,
-        tier_current: row.tier_current,
-        tier_max: row.tier_max,
-        contributors: row.contributors,
-        contributions_total: goal.contributions_total,
-      });
+    if (progressChanged) {
+      const snapshot = progressSnapshotRow(row, source, now, snapshotTime.toISOString());
+      if (snapshot) progressHistoryBuffer.set(`${snapshot.cg_id}:${snapshot.snapshot_hour}`, snapshot);
     }
+    row.is_complete = catalogGoalIsComplete(goal, existing, nowMs);
     if (!existing) {
       row.moderation_status = source === 'journal' && options.pendingJournalGoals !== false ? 'pending' : 'approved';
     } else {
@@ -438,6 +505,7 @@ export async function upsertCommunityGoalCatalog(
   if (rows.length === 0) return 0;
   const { error } = await svc.from('community_goals').upsert(rows, { onConflict: 'cg_id' });
   if (error) throw new Error(`Community Goal catalog upsert failed: ${error.message}`);
+  const progressHistoryRows = Array.from(progressHistoryBuffer.values());
   if (progressHistoryRows.length > 0) {
     const { error: historyError } = await svc
       .from('community_goal_progress_history')

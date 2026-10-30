@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import GoalCard, { type CommunityGoal } from '@/components/CommunityGoals/GoalCard';
+import { communityGoalMatchesFilter, withCommunityGoalCompletion } from '@/lib/communityGoalStatus';
 import styles from './cg.module.css';
 
 type GoalFilter = 'active' | 'colonisation' | 'completed';
@@ -25,13 +26,17 @@ export default function CGPage() {
     setLoading(true);
     setError(false);
 
-    fetch(`/api/cg?filter=${filter}`, { signal: controller.signal, cache: 'no-store' })
+    // Берём весь каталог и фильтруем на клиенте: завершённость зависит от
+    // текущего времени, поэтому истёкшая цель не должна «залипать» в списке
+    // активных между обновлениями страницы.
+    fetch('/api/cg?filter=all', { signal: controller.signal, cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Community goals request failed: ${response.status}`);
         return response.json();
       })
       .then((data) => {
-        setGoals(Array.isArray(data.goals) ? data.goals : []);
+        const received: CommunityGoal[] = Array.isArray(data.goals) ? data.goals : [];
+        setGoals(received.map((goal) => withCommunityGoalCompletion(goal) as CommunityGoal));
         setUpdatedAt(typeof data.updatedAt === 'string' ? data.updatedAt : null);
         setLoading(false);
       })
@@ -46,13 +51,14 @@ export default function CGPage() {
       controller.abort();
       window.clearInterval(refreshTimer);
     };
-  }, [filter, reload]);
+  }, [reload]);
 
   const visibleGoals = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase(locale);
-    return goals.filter((goal) => !normalized || [goal.title, goal.system_name, goal.station_name, goal.objective]
-      .some((value) => value?.toLocaleLowerCase(locale).includes(normalized)));
-  }, [goals, locale, query]);
+    return goals.filter((goal) => communityGoalMatchesFilter(goal, filter)
+      && (!normalized || [goal.title, goal.system_name, goal.station_name, goal.objective]
+        .some((value) => value?.toLocaleLowerCase(locale).includes(normalized))));
+  }, [filter, goals, locale, query]);
 
   const filters: { key: GoalFilter; label: string }[] = [
     { key: 'active', label: t('cg.filter.active') },
@@ -60,8 +66,8 @@ export default function CGPage() {
     { key: 'completed', label: t('cg.filter.completed') },
   ];
   const updatedDate = updatedAt ? new Date(updatedAt) : null;
-  const totalParticipants = goals.reduce((sum, goal) => sum + (typeof goal.contributors === 'number' ? goal.contributors : 0), 0);
-  const totalReports = goals.reduce((sum, goal) => sum + (goal.commander_reports?.commander_count ?? 0), 0);
+  const totalParticipants = visibleGoals.reduce((sum, goal) => sum + (typeof goal.contributors === 'number' ? goal.contributors : 0), 0);
+  const totalReports = visibleGoals.reduce((sum, goal) => sum + (goal.commander_reports?.commander_count ?? 0), 0);
 
   return (
     <div className={styles.page}>
@@ -77,7 +83,7 @@ export default function CGPage() {
           <div className={styles.orbitCore}>CG<span>LIVE</span></div>
         </div>
         <div className={styles.heroFooter}>
-          <div className={styles.heroStat}><span>{t('cg.goalsVisible')}</span><strong>{goals.length.toLocaleString(locale)}</strong></div>
+          <div className={styles.heroStat}><span>{t('cg.goalsVisible')}</span><strong>{visibleGoals.length.toLocaleString(locale)}</strong></div>
           <div className={styles.heroDivider} />
           <div className={styles.heroStat}><span>{t('cg.contributors')}</span><strong>{totalParticipants.toLocaleString(locale)}</strong></div>
           <div className={styles.heroDivider} />

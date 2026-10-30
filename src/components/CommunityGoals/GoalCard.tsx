@@ -36,6 +36,9 @@ export interface CommunityGoal {
     snapshot_hour: string;
     observed_at: string;
     source: 'inara' | 'capi' | 'frontier';
+    tier_current?: number | null;
+    tier_max?: number | null;
+    contributors?: number | null;
     contributions_total: number | string;
   }[];
 }
@@ -82,7 +85,9 @@ function ContributionHistory({
   const points = history.flatMap((point) => {
     const value = finiteNonNegative(point.contributions_total);
     const time = Date.parse(point.observed_at || point.snapshot_hour);
-    return value === null || !Number.isFinite(time) ? [] : [{ time, value }];
+    return value === null || !Number.isFinite(time)
+      ? []
+      : [{ time, value, tier: finiteNonNegative(point.tier_current) }];
   }).sort((a, b) => a.time - b.time);
   const formatPointDate = (time: number, withTime = false) => new Date(time).toLocaleString(locale,
     withTime ? { dateStyle: 'medium', timeStyle: 'short' } : { day: 'numeric', month: 'short' },
@@ -92,7 +97,14 @@ function ContributionHistory({
     <section className={styles.historyPanel} aria-label={`${t('cg.historyTitle')}: ${title}`}>
       <div className={styles.historyHeader}>
         <div className={styles.sectionHeading}><span className={styles.signal} />{t('cg.historyTitle')}<span className={styles.sectionRule} /></div>
-        {points.length > 0 && <strong>{formatNumber(points[points.length - 1].value, locale)}</strong>}
+        {points.length > 0 && (
+          <div className={styles.historyMeta}>
+            {points[points.length - 1].tier !== null && (
+              <span>{t('cg.progress')} <strong>{points[points.length - 1].tier}</strong></span>
+            )}
+            <strong>{formatNumber(points[points.length - 1].value, locale)}</strong>
+          </div>
+        )}
       </div>
       {points.length < 2 ? (
         <p className={styles.historyEmpty}>
@@ -101,12 +113,14 @@ function ContributionHistory({
             : t('cg.historyNoData')}
         </p>
       ) : (() => {
+        // Компактный график: высота 128 вместо 220, чтобы блок всегда был
+        // виден в карточке и не растягивал её.
         const width = 760;
-        const height = 220;
-        const left = 78;
-        const right = 16;
-        const top = 16;
-        const bottom = 38;
+        const height = 128;
+        const left = 62;
+        const right = 14;
+        const top = 14;
+        const bottom = 26;
         const plotWidth = width - left - right;
         const plotHeight = height - top - bottom;
         const firstTime = points[0].time;
@@ -122,6 +136,10 @@ function ContributionHistory({
         const areaPath = `${linePath} L ${coords[coords.length - 1].x.toFixed(2)} ${(top + plotHeight).toFixed(2)} L ${coords[0].x.toFixed(2)} ${(top + plotHeight).toFixed(2)} Z`;
         const labelIndexes = new Set([0, Math.floor((coords.length - 1) / 2), coords.length - 1]);
         const labelPoints = coords.filter((_, index) => labelIndexes.has(index));
+        // Тир меняется скачками между снимками — отмечаем каждое повышение,
+        // чтобы динамика была видна даже на почти плоской линии вклада.
+        const tierSteps = coords.filter((point, index) =>
+          point.tier !== null && index > 0 && point.tier !== coords[index - 1].tier);
         const gradientId = `cg-history-gradient-${goalId}`;
 
         return (
@@ -138,7 +156,7 @@ function ContributionHistory({
                 return (
                   <g key={fraction}>
                     <line className={styles.historyGridline} x1={left} x2={width - right} y1={y} y2={y} />
-                    <text className={styles.historyAxisLabel} x={left - 9} y={y + 4} textAnchor="end">
+                    <text className={styles.historyAxisLabel} x={left - 8} y={y + 4} textAnchor="end">
                       {formatNumber(maxValue * fraction, locale)}
                     </text>
                   </g>
@@ -147,12 +165,19 @@ function ContributionHistory({
               <path d={areaPath} fill={`url(#${gradientId})`} />
               <path className={styles.historyLine} d={linePath} />
               {labelPoints.map((point) => (
-                <circle key={`${point.time}-${point.value}`} className={styles.historyPoint} cx={point.x} cy={point.y} r="3.5">
-                  <title>{`${formatPointDate(point.time, true)} · ${formatNumber(point.value, locale)}`}</title>
+                <circle key={`${point.time}-${point.value}`} className={styles.historyPoint} cx={point.x} cy={point.y} r="3">
+                  <title>{`${formatPointDate(point.time, true)} · ${formatNumber(point.value, locale)}${point.tier !== null ? ` · ${t('cg.progress')} ${point.tier}` : ''}`}</title>
                 </circle>
               ))}
-              <text className={styles.historyAxisLabel} x={left} y={height - 8} textAnchor="start">{formatPointDate(firstTime)}</text>
-              <text className={styles.historyAxisLabel} x={width - right} y={height - 8} textAnchor="end">{formatPointDate(lastTime)}</text>
+              {tierSteps.map((point) => (
+                <g key={`tier-${point.time}`} className={styles.historyTierStep}>
+                  <rect x={point.x - 3} y={point.y - 3} width="6" height="6" transform={`rotate(45 ${point.x} ${point.y})`} />
+                  <text x={point.x} y={point.y - 9} textAnchor="middle">{`T${point.tier}`}</text>
+                  <title>{`${formatPointDate(point.time, true)} · ${t('cg.progress')} ${point.tier}`}</title>
+                </g>
+              ))}
+              <text className={styles.historyAxisLabel} x={left} y={height - 7} textAnchor="start">{formatPointDate(firstTime)}</text>
+              <text className={styles.historyAxisLabel} x={width - right} y={height - 7} textAnchor="end">{formatPointDate(lastTime)}</text>
             </svg>
             <div className={styles.historyFootnote}>{t('cg.historySince')} {formatPointDate(firstTime, true)}</div>
           </>
@@ -230,8 +255,11 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           </div>
         </header>
 
-        {distinctDescription || objectiveText || goal.reward ? (
-          <section className={styles.goalInfo} aria-label={t('cg.goalInformation')}>
+        {(distinctDescription || objectiveText) && (
+          <section
+            className={`${styles.goalInfo}${distinctDescription && objectiveText ? '' : ` ${styles.goalInfoSingle}`}`}
+            aria-label={t('cg.goalInformation')}
+          >
             {distinctDescription && (
               <div className={`${styles.infoBlock} ${styles.descriptionBlock}`}>
                 <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">▤</span>{t('cg.details')}</div>
@@ -241,7 +269,7 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
             {objectiveText && (
               <div className={`${styles.infoBlock} ${styles.taskBlock}`}>
                 <div className={styles.infoTitle}><span className={styles.infoIcon} aria-hidden="true">◈</span>{t('cg.objective')}</div>
-                <p>
+                <p className={styles.objectiveText} title={objectiveText}>
                   {objectiveParts.map((part, index) => part.commodity && goal.system_name ? (
                     <a
                       key={`${index}-${part.text}`}
@@ -256,14 +284,16 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
                 </p>
               </div>
             )}
-            {goal.reward && (
-              <div className={`${styles.infoBlock} ${styles.rewardBlock}`}>
-                <div className={styles.infoTitle}><span className={styles.rewardIcon} aria-hidden="true">✦</span>{t('cg.reward')}</div>
-                <p>{goal.reward}</p>
-              </div>
-            )}
           </section>
-        ) : null}
+        )}
+
+        {/* Награда — отдельный блок под задачей, а не ячейка общей сетки. */}
+        <section className={`${styles.rewardSection}${goal.reward ? '' : ` ${styles.rewardMissingState}`}`} aria-label={t('cg.reward')}>
+          <div className={styles.sectionHeading}>
+            <span className={styles.rewardGlyph} aria-hidden="true">✦</span>{t('cg.reward')}<span className={styles.sectionRule} />
+          </div>
+          <p>{goal.reward || t('cg.rewardMissing')}</p>
+        </section>
 
         <div className={styles.dashboard}>
           <section className={styles.progressPanel} aria-label={t('cg.progress')}>
@@ -308,47 +338,57 @@ export default function GoalCard({ goal }: { goal: CommunityGoal }) {
           </section>
         </div>
 
-        <details className={styles.extraData}>
-          <summary>
-            <span>{t('cg.moreData')}</span>
-            {reportedCommanders !== null && <small>{formatNumber(reportedCommanders, locale)} · {t('cg.commanderReports')}</small>}
-          </summary>
-          <ContributionHistory
-            history={goal.contribution_history || []}
-            goalId={goal.cg_id}
-            title={goal.title}
-            locale={locale}
-          />
+        <ContributionHistory
+          history={goal.contribution_history || []}
+          goalId={goal.cg_id}
+          title={goal.title}
+          locale={locale}
+        />
 
-          {(journalTotal !== null || trackedContribution !== null) && (
-            <section className={styles.reportPanel}>
-              <div className={styles.reportHeader}>
-                <div><span className={styles.sectionHeading}><span className={styles.signal} />{t('cg.journalCompare')}</span><small>{t('cg.reportedContribution')}</small></div>
-                {reports?.reported_at && <time dateTime={reports.reported_at}>{new Date(reports.reported_at).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })}</time>}
+        {(journalTotal !== null || trackedContribution !== null || reportedCommanders !== null) && (
+          <details className={styles.extraData}>
+            <summary>
+              <span>{t('cg.reportsTitle')}</span>
+              {reportedCommanders !== null && <small>{formatNumber(reportedCommanders, locale)} · {t('cg.commanderReports')}</small>}
+            </summary>
+
+            {reportedCommanders !== null && (
+              <div className={styles.reportStats}>
+                <div><span>{t('cg.trackedCommanders')}</span><strong>{formatNumber(reportedCommanders, locale)}</strong></div>
+                <div><span>{t('cg.trackedContributionTotal')}</span><strong>{formatNumber(trackedContribution, locale)}</strong></div>
               </div>
-              {journalTotal !== null && total !== null && (
-                <div className={styles.compareChart}>
-                  <div className={styles.compareRow}>
-                    <span>{t('cg.journal')}</span>
-                    <div className={styles.compareTrack}><span className={styles.journalBar} style={{ width: `${journalWidth}%` }} /></div>
-                    <strong>{formatNumber(journalTotal, locale)}</strong>
-                  </div>
-                  <div className={styles.compareRow}>
-                    <span>{progressSourceLabel(goal.progress_source)}</span>
-                    <div className={styles.compareTrack}><span className={styles.sourceBar} style={{ width: `${sourceWidth}%` }} /></div>
-                    <strong>{formatNumber(total, locale)}{target !== null ? ` / ${formatNumber(target, locale)}` : ''}</strong>
-                  </div>
+            )}
+
+            {(journalTotal !== null || trackedContribution !== null) && (
+              <section className={styles.reportPanel}>
+                <div className={styles.reportHeader}>
+                  <div><span className={styles.sectionHeading}><span className={styles.signal} />{t('cg.journalCompare')}</span><small>{t('cg.reportedContribution')}</small></div>
+                  {reports?.reported_at && <time dateTime={reports.reported_at}>{new Date(reports.reported_at).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' })}</time>}
                 </div>
-              )}
-              {trackedContribution !== null && (
-                <div className={styles.trackedContribution}>
-                  <span>{t('cg.trackedContributionTotal')}</span>
-                  <strong>{formatNumber(trackedContribution, locale)}</strong>
-                </div>
-              )}
-            </section>
-          )}
-        </details>
+                {journalTotal !== null && total !== null && (
+                  <div className={styles.compareChart}>
+                    <div className={styles.compareRow}>
+                      <span>{t('cg.journal')}</span>
+                      <div className={styles.compareTrack}><span className={styles.journalBar} style={{ width: `${journalWidth}%` }} /></div>
+                      <strong>{formatNumber(journalTotal, locale)}</strong>
+                    </div>
+                    <div className={styles.compareRow}>
+                      <span>{progressSourceLabel(goal.progress_source)}</span>
+                      <div className={styles.compareTrack}><span className={styles.sourceBar} style={{ width: `${sourceWidth}%` }} /></div>
+                      <strong>{formatNumber(total, locale)}{target !== null ? ` / ${formatNumber(target, locale)}` : ''}</strong>
+                    </div>
+                  </div>
+                )}
+                {trackedContribution !== null && (
+                  <div className={styles.trackedContribution}>
+                    <span>{t('cg.trackedContributionTotal')}</span>
+                    <strong>{formatNumber(trackedContribution, locale)}</strong>
+                  </div>
+                )}
+              </section>
+            )}
+          </details>
+        )}
 
         {progressUpdated && (
           <footer className={styles.footer}>

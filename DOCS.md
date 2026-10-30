@@ -18,6 +18,7 @@
 | Обновить работающий сервер | [MONITORING.md](MONITORING.md) → «Ручное обновление проекта» (Админка → Мониторинг → «Обновить сейчас») |
 | Регистрация отвечает «временно закрыта», хотя SMTP настроен | [SIGNUP-DISABLED-FIX.md](SIGNUP-DISABLED-FIX.md) |
 | Сайт не открывается: «слишком длинные cookie» (400/431), инкогнито помогает | [COOKIE-SIZE-FIX.md](COOKIE-SIZE-FIX.md) — диагностика: `sh deploy/diag-cookies.sh` |
+| Цели сообщества: почему нет наград/тиров, куда уходят истёкшие CG | [COMMUNITY-GOALS.md](COMMUNITY-GOALS.md) |
 | Поставить сервер с нуля | [SELFHOST.md](SELFHOST.md), [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md), [SERVER-SETUP.md](SERVER-SETUP.md) |
 | Все переменные окружения | [.env.example](.env.example) |
 | Схема базы и миграции | [supabase/DATABASE.md](supabase/DATABASE.md) |
