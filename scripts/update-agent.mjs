@@ -26,11 +26,13 @@
  *   POST /smtp           → set one SMTP key { key, value }     (token)
  *   DELETE /smtp?key=NAME → remove one SMTP key                (token)
  *   POST /smtp/apply     → recreate auth + web so mail applies (token)
+ *   GET  /storage        → Supabase Storage health (read-only)  (token)
+ *   POST /storage/restart→ restart the storage service if down  (token)
  *
- * All jobs (update, backup, env apply, smtp apply) share ONE state machine
- * and one process slot: a database dump, a stack rebuild, an env change and
- * an SMTP change must never overlap, and the admin panel sees which of them
- * is running through the `kind` field.
+ * All jobs (update, backup, env apply, smtp apply, storage restart) share ONE
+ * state machine and one process slot: a database dump, a stack rebuild, an env
+ * change, an SMTP change and a Storage restart must never overlap, and the
+ * admin panel sees which of them is running through the `kind` field.
  *
  * Env-file keys are read back MASKED (length + last 4 chars only): the raw
  * value never travels to the browser, so editing an existing key means
@@ -64,6 +66,18 @@
  *   SUPABASE_ENV_FILE    default <SUPABASE_HOST_DIR>/.env (GoTrue SMTP keys)
  *   APPLY_SMTP_SCRIPT    default <PROJECT_DIR>/deploy/apply-smtp.sh
  *   SMTP_TIMEOUT_MINUTES default 10 (auth + web recreate and health checks)
+ *   STORAGE_REPAIR_SCRIPT  default <PROJECT_DIR>/deploy/storage-repair.sh
+ *                        (--check for GET /storage, --restart for the job)
+ *   STORAGE_CONTAINER    container name to look at (default supabase-storage)
+ *   STORAGE_INTERNAL_URL address of the Storage API as seen from this
+ *                        container (empty by default: this agent is not on the
+ *                        Supabase network, so the script checks the API from
+ *                        inside the storage container — no DNS/network needed)
+ *   STORAGE_WAIT_SECONDS default 90 (how long the script waits after a restart)
+ *   STORAGE_TIMEOUT_MINUTES default 10 (job limit)
+ *   STORAGE_WATCH_SECONDS  how often to look at Storage, 0 disables
+ *                        (default 300); a broken Storage is restarted through
+ *                        the shared job slot, at most 3 times per hour
  *   UPDATE_AGENT_SELF_RESTART  "1" by default; "0" disables only the
  *                        automatic restart after an update. POST /restart
  *                        remains available to an administrator.
@@ -82,6 +96,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   UPDATE_AGENT_PROTOCOL,
   UPDATE_LOG_LIMIT,
+  UPDATE_PROTOCOL,
   applyProgressEvent,
   emptyUpdateState,
   parseProgressLine,
@@ -219,6 +234,22 @@ export function updateAgentConfig(env = process.env) {
     supabaseEnvFile: resolve((env.SUPABASE_ENV_FILE || join(resolve((env.SUPABASE_HOST_DIR || '/opt/supabase').trim()), '.env')).trim()),
     applySmtpScript: (env.APPLY_SMTP_SCRIPT || join(projectDir, 'deploy', 'apply-smtp.sh')).trim(),
     smtpTimeoutMs: Math.max(60_000, (Number(env.SMTP_TIMEOUT_MINUTES) || 10) * 60_000),
+    /**
+     * Supabase Storage: отдельный стек на хосте, который обновление проекта
+     * не трогает. Один скрипт делает и проверку (`--check`), и перезапуск
+     * (`--restart`), чтобы панель и сторож смотрели на одно и то же.
+     */
+    storageScript: (env.STORAGE_REPAIR_SCRIPT || join(projectDir, 'deploy', 'storage-repair.sh')).trim(),
+    storageContainer: (env.STORAGE_CONTAINER || 'supabase-storage').trim(),
+    // Пусто по умолчанию: агент не подключён к сети Supabase, и проверка
+    // идёт изнутри контейнера Storage. Значение задают, если агента
+    // сознательно подключили к сети стека (тогда лишний docker exec не нужен).
+    storageInternalUrl: (env.STORAGE_INTERNAL_URL ?? '').trim(),
+    storageWaitSeconds: Math.min(600, Math.max(10, Number(env.STORAGE_WAIT_SECONDS) || 90)),
+    storageTimeoutMs: Math.max(60_000, (Number(env.STORAGE_TIMEOUT_MINUTES) || 10) * 60_000),
+    // Проверка — короткая операция (docker inspect + один запрос к API).
+    // 15 с: дольше ждать ответа Docker бессмысленно, а веб-запрос ждёт 20 с.
+    storageCheckTimeoutMs: Math.min(60_000, Math.max(5_000, (Number(env.STORAGE_CHECK_TIMEOUT_SECONDS) || 15) * 1_000)),
     branch: (env.PROJECT_UPDATE_BRANCH || 'main').trim(),
     repository: (env.PROJECT_REPOSITORY || 'NooboGreenD/ed-ring-colony').trim(),
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
@@ -366,6 +397,7 @@ export function createUpdateManager(config) {
         const limit = state.kind === 'backup' ? config.backupTimeoutMs
           : state.kind === 'env' ? config.envTimeoutMs
           : state.kind === 'smtp' ? config.smtpTimeoutMs
+          : state.kind === 'storage' ? config.storageTimeoutMs
           : STALE_RUNNING_LIMIT_MS;
         if (Date.now() - Date.parse(state.startedAt) > limit) {
           finish({
@@ -378,19 +410,28 @@ export function createUpdateManager(config) {
                 ? 'агент перезагружался во время применения ключей'
                 : state.kind === 'smtp'
                   ? 'агент перезагружался во время применения настроек почты'
-                  : 'агент перезагружался во время обновления',
+                  : state.kind === 'storage'
+                    ? 'агент перезагружался во время перезапуска Storage'
+                    : 'агент перезагружался во время обновления',
           });
         }
       }
       return sanitizeUpdateState(state);
     },
-    start({ applyMigrations, backup = true, runTests = true, migrationsOnly = false, kind = 'update', full = false, scope = 'web', authHealthUrl = '' } = {}) {
+    start({ applyMigrations, backup = true, runTests = true, migrationsOnly = false, kind = 'update', full = false, scope = 'web', authHealthUrl = '', reason: startReason = '' } = {}) {
       if (state.state === 'running' || state.state === 'queued') return { started: false, reason: 'already-running' };
       const isBackup = kind === 'backup';
       const envApply = kind === 'env';
       const smtpApply = kind === 'smtp';
-      const script = envApply ? config.applyEnvScript : smtpApply ? config.applySmtpScript : isBackup ? config.backupScript : config.script;
-      const jobLabel = envApply ? 'применение ключей' : smtpApply ? 'применение настроек почты' : isBackup ? 'резервное копирование' : 'обновление';
+      const storageRepair = kind === 'storage';
+      const script = envApply ? config.applyEnvScript
+        : smtpApply ? config.applySmtpScript
+          : storageRepair ? config.storageScript
+            : isBackup ? config.backupScript : config.script;
+      const jobLabel = envApply ? 'применение ключей'
+        : smtpApply ? 'применение настроек почты'
+          : storageRepair ? 'перезапуск Storage'
+            : isBackup ? 'резервное копирование' : 'обновление';
       // «Только миграции» без поддержки в скрипте — это молчаливая полная
       // пересборка прода вместо обещанного наката миграций. Такой прогон не
       // запускается вовсе: админ получит честную причину и починит клон.
@@ -406,15 +447,18 @@ export function createUpdateManager(config) {
       Object.assign(state, emptyUpdateState(nowIso), {
         state: 'running',
         kind,
-        stage: envApply ? 'env_prepare' : smtpApply ? 'smtp_prepare' : 'prepare',
+        stage: envApply ? 'env_prepare' : smtpApply ? 'smtp_prepare' : storageRepair ? 'storage_prepare' : 'prepare',
         // Опорный процент той же стадии из UPDATE_STAGES: панель не должна
         // видеть «stage=prepare, percent=0» до первой прогресс-строки скрипта
         // ( гонка «POST → GET» раньше времени роняла проверку «процент не
         // отстаёт от стадии»).
         percent: envApply ? 10 : 5,
-        message: envApply ? 'запускаю deploy/apply-env.sh' : smtpApply ? 'запускаю deploy/apply-smtp.sh' : isBackup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
-        mode: envApply ? scope : smtpApply ? 'smtp' : isBackup ? (full ? 'full' : 'fast') : updateMode,
-        branch: isBackup || envApply || smtpApply ? null : config.branch,
+        message: envApply ? 'запускаю deploy/apply-env.sh'
+          : smtpApply ? 'запускаю deploy/apply-smtp.sh'
+            : storageRepair ? 'запускаю deploy/storage-repair.sh'
+              : isBackup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
+        mode: envApply ? scope : smtpApply ? 'smtp' : storageRepair ? 'storage' : isBackup ? (full ? 'full' : 'fast') : updateMode,
+        branch: isBackup || envApply || smtpApply || storageRepair ? null : config.branch,
         startedAt: nowIso,
         log: [],
       });
@@ -424,13 +468,15 @@ export function createUpdateManager(config) {
         ? `env apply requested; scope=${scope} file=[файл окружения]`
         : smtpApply
           ? 'smtp apply requested; file=[.env стека Supabase]'
-          : isBackup
+          : storageRepair
+            ? `storage restart requested; container=${config.storageContainer}${startReason ? `; reason=${startReason}` : ''}`
+            : isBackup
             ? `backup requested; full=${full ? '1' : '0'} dir=${config.backupDir} keep=${config.backupKeep}`
             : `update requested; project=${config.repository} branch=${config.branch} mode=${updateMode} tests=${flag(runTests)} backup=${flag(backup)} migrations=${flag(applyMigrations)} only=${migrationsOnly ? '1' : '0'}`);
 
       let spawned;
       try {
-        spawned = spawn('bash', [script], {
+        spawned = spawn('bash', storageRepair ? [script, '--restart'] : [script], {
           cwd: config.projectDir,
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -457,7 +503,19 @@ export function createUpdateManager(config) {
                     UPDATE_HEALTH_URL: config.healthUrl,
                     PROJECT_DEPLOY_MODE: config.deployMode,
                   }
-                : isBackup
+                : storageRepair
+                ? {
+                    // Storage стека Supabase: скрипт сам решает, нужен ли
+                    // перезапуск (живой сервис он не трогает), поэтому адрес
+                    // API и имена контейнеров приходят из окружения агента.
+                    SUPABASE_HOST_DIR: config.supabaseDir,
+                    SUPABASE_ENV_FILE: config.supabaseEnvFile,
+                    SUPABASE_CONTAINER: (process.env.SUPABASE_CONTAINER || 'supabase-db').trim(),
+                    STORAGE_CONTAINER: config.storageContainer,
+                    STORAGE_INTERNAL_URL: config.storageInternalUrl,
+                    STORAGE_WAIT_SECONDS: String(config.storageWaitSeconds),
+                  }
+              : isBackup
                 ? {
                     // По умолчанию каталог систем в дамп не попадает: он
                     // восстанавливается импортом дампа Spansh, а весит десятки
@@ -513,7 +571,9 @@ export function createUpdateManager(config) {
       // базы + тесты + холодная сборка могут идти несколько часов. Таймеры
       // остаются только у отдельных ручных задач backup/env; остановка
       // обновления возможна лишь явной кнопкой администратора.
-      const timeoutMs = envApply ? config.envTimeoutMs : isBackup ? config.backupTimeoutMs : null;
+      const timeoutMs = envApply ? config.envTimeoutMs
+        : storageRepair ? config.storageTimeoutMs
+          : isBackup ? config.backupTimeoutMs : null;
       if (timeoutMs) {
         timer = setTimeout(() => {
           appendLog(`timeout — принудительно останавливаю ${jobLabel}`);
@@ -541,7 +601,7 @@ export function createUpdateManager(config) {
           // Обновление принесло новый код и самому агенту: перезапускаемся,
           // иначе следующий прогон снова пойдёт по старым правилам (именно
           // из-за этого флажки панели могли «не влиять» на сборку).
-          if (!isBackup && !envApply && !smtpApply && agentSourceInfo(config).stale) {
+          if (!isBackup && !envApply && !smtpApply && !storageRepair && agentSourceInfo(config).stale) {
             scheduleRestart('в клоне лежит более новая версия агента');
           }
         } else {
@@ -550,7 +610,10 @@ export function createUpdateManager(config) {
           // безликое «завершился с кодом N». Подпись текущей стадии
           // («Пересобираю docker-образы…») ошибкой больше не считается.
           const reason = state.error || errorFromTail();
-          const label = isBackup ? 'db-backup.sh' : envApply ? 'apply-env.sh' : smtpApply ? 'apply-smtp.sh' : 'update-project.sh';
+          const label = isBackup ? 'db-backup.sh'
+            : envApply ? 'apply-env.sh'
+              : smtpApply ? 'apply-smtp.sh'
+                : storageRepair ? 'storage-repair.sh' : 'update-project.sh';
           finish({
             state: 'failed',
             exitCode: code,
@@ -805,6 +868,233 @@ async function readJsonBody(request) {
   return parsed && typeof parsed === 'object' ? parsed : {};
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Supabase Storage: проверка и перезапуск (Админка → Мониторинг).
+ *
+ * Зачем отдельный путь. Storage живёт в собственном стеке
+ * (/opt/supabase), а не в compose сайта: обновление проекта, миграции и
+ * пересборка web его не касаются. Упавший контейнер Storage (OOM, сбой
+ * внутренних миграций, отвалившаяся база, права на том) сайт не роняет — он
+ * молча перестаёт принимать аватары и логотипы, а узнаётся это обычно от
+ * игроков. Раньше «починить» означало SSH и `docker compose up -d storage`.
+ *
+ * Здесь один и тот же скрипт (deploy/storage-repair.sh) делает и проверку, и
+ * перезапуск:
+ *   GET  /storage         — прочитать состояние (ничего не меняет);
+ *   POST /storage/restart — job kind=storage в общем слоте: скрипт сам решает,
+ *                           нужен ли рестарт, и живой сервис не трогает.
+ *
+ * Проверка намеренно НЕ считается «сломано», когда ответ API проверить нечем
+ * (нет node в образе Storage, нет общей docker-сети): ложный вердикт запускал
+ * бы бесконечные перезапуски рабочего сервиса.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+const STORAGE_STATES = new Set(['running', 'exited', 'restarting', 'created', 'paused', 'dead', 'missing', 'unknown']);
+const STORAGE_API = new Set(['ok', 'auth', 'failed', 'unknown']);
+const STORAGE_HEALTH = new Set(['healthy', 'unhealthy', 'starting', 'none']);
+const STORAGE_VIA = new Set(['agent', 'container', 'none']);
+
+/** Итог скрипта: последняя строка `::edrc::{"result": …}` в его выводе. */
+export function parseStorageReport(stdout) {
+  let report = null;
+  for (const line of String(stdout ?? '').split('\n')) {
+    const event = parseProgressLine(line);
+    if (event && event.result && typeof event.result === 'object' && !Array.isArray(event.result)) {
+      report = event.result;
+    }
+  }
+  return report;
+}
+
+/**
+ * Отчёт скрипта приводится к фиксированной форме: в браузер не должен
+ * попадать произвольный объект с хоста. Значения — только из allowlist,
+ * числа — с ограничениями, текст — через общий sanitizer журнала.
+ */
+export function sanitizeStorageReport(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : null;
+  if (!raw) return null;
+  const clamp = (value, min, max) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.min(max, Math.max(min, Math.round(parsed)));
+  };
+  return {
+    ok: raw.ok === true,
+    problem: raw.problem === true,
+    /** false — перезапуск заведомо не поможет (например, отказал ключ). */
+    restartable: raw.restartable !== false,
+    state: STORAGE_STATES.has(raw.state) ? raw.state : 'unknown',
+    health: STORAGE_HEALTH.has(raw.health) ? raw.health : 'none',
+    restarts: clamp(raw.restarts, 0, 1_000_000) ?? 0,
+    exitCode: raw.exitCode == null ? null : clamp(raw.exitCode, 0, 255),
+    oom: raw.oom === true,
+    api: STORAGE_API.has(raw.api) ? raw.api : 'unknown',
+    apiVia: STORAGE_VIA.has(raw.apiVia) ? raw.apiVia : 'none',
+    apiCode: /^[0-9]{3}$/.test(String(raw.apiCode ?? '')) ? String(raw.apiCode) : '000',
+    reason: sanitizeLogLine(typeof raw.reason === 'string' ? raw.reason.slice(0, 400) : '') ?? '',
+  };
+}
+
+/** Запуск `deploy/storage-repair.sh --check`: только чтение. */
+function runStorageScript(config, args) {
+  return new Promise((resolvePromise) => {
+    execFile('bash', [config.storageScript, ...args], {
+      cwd: config.projectDir,
+      timeout: config.storageCheckTimeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      env: {
+        ...process.env,
+        SUPABASE_HOST_DIR: config.supabaseDir,
+        SUPABASE_ENV_FILE: config.supabaseEnvFile,
+        SUPABASE_CONTAINER: (process.env.SUPABASE_CONTAINER || 'supabase-db').trim(),
+        STORAGE_CONTAINER: config.storageContainer,
+        STORAGE_INTERNAL_URL: config.storageInternalUrl,
+        STORAGE_WAIT_SECONDS: String(config.storageWaitSeconds),
+      },
+    }, (error, stdout, stderr) => {
+      resolvePromise({
+        error,
+        stdout: (stdout ?? '').toString(),
+        stderr: (stderr ?? '').toString(),
+      });
+    });
+  });
+}
+
+/**
+ * Проверка Storage без изменения состояния. Возвращает либо отчёт, либо
+ * честную причину, почему проверить не удалось (нет скрипта в клоне, нет
+ * Docker, таймаут) — панель показывает разное для этих случаев.
+ */
+export async function checkStorage({ config = updateAgentConfig(), run = runStorageScript } = {}) {
+  let result;
+  try {
+    result = await run(config, ['--check']);
+  } catch (error) {
+    return { available: false, reason: `проверка Storage не запустилась: ${error?.message || error}`, report: null, detail: [] };
+  }
+  const stdout = String(result?.stdout ?? '');
+  const stderr = String(result?.stderr ?? '');
+  const parsed = sanitizeStorageReport(parseStorageReport(stdout));
+  const detail = [];
+  for (const line of `${stdout}\n${stderr}`.split('\n')) {
+    if (!line.trim() || line.includes(UPDATE_PROTOCOL)) continue;
+    const clean = sanitizeLogLine(line);
+    if (clean) detail.push(clean);
+    if (detail.length >= 20) break;
+  }
+  if (!parsed) {
+    const missing = /No such file or directory/i.test(stderr);
+    return {
+      available: false,
+      reason: missing
+        ? 'скрипт deploy/storage-repair.sh не найден в клоне — обновите проект, чтобы появилась кнопка'
+        : `скрипт проверки Storage не вернул результат${stderr ? `: ${sanitizeLogLine(stderr.split('\n').find((line) => line.trim()) || '') ?? ''}` : ''}`,
+      report: null,
+      detail,
+    };
+  }
+  return { available: true, reason: null, report: parsed, detail };
+}
+
+/**
+ * Сторож Storage: раз в STORAGE_WATCH_SECONDS (по умолчанию 300) читает
+ * состояние, и если сервис действительно лежит — запускает job kind=storage.
+ * Именно job, а не прямой процесс: перезапуск идёт в общем слоте (не
+ * пересекается с обновлением и бэкапом) и целиком виден в журнале панели.
+ *
+ * Предохранители:
+ *  - проверка read-only и не запускает ничего, пока Storage здоров;
+ *  - `restartable=false` (отказ ключа) не лечится рестартом — сторож молчит;
+ *  - не больше STORAGE_WATCH_MAX_PER_HOUR (3) попыток в час, иначе плохой
+ *    том или нехватка памяти превращаются в бесконечный цикл перезапусков;
+ *  - во время любой другой задачи сторож пропускает тик.
+ */
+export function storageWatchdogConfig(env = process.env) {
+  const raw = (env.STORAGE_WATCH_SECONDS ?? '').toString().trim();
+  const seconds = raw === '' ? 300 : Number(raw);
+  const valid = Number.isFinite(seconds) && seconds > 0;
+  return {
+    enabled: valid,
+    // Нижняя граница — минута: чаще дёргать Docker-демон и Storage незачем.
+    intervalMs: valid ? Math.min(3_600, Math.max(60, seconds)) * 1_000 : 0,
+    maxPerHour: Math.min(24, Math.max(1, Number(env.STORAGE_WATCH_MAX_PER_HOUR) || 3)),
+  };
+}
+
+export function createStorageWatchdog({
+  config = storageWatchdogConfig(),
+  check = () => checkStorage(),
+  startJob = () => ({ started: false }),
+  isBusy = () => false,
+  log = (line) => console.log(line),
+  now = () => Date.now(),
+} = {}) {
+  let timer = null;
+  let running = false;
+  let attempts = [];
+  let quietUntil = 0;
+
+  async function tick() {
+    const summary = { skipped: true, checked: false, problem: false, started: false, report: null };
+    if (!config.enabled || running || isBusy()) return summary;
+    if (now() < quietUntil) return summary;
+    running = true;
+    try {
+      summary.skipped = false;
+      const result = await check();
+      summary.checked = true;
+      summary.report = result?.report ?? null;
+      const report = result?.report;
+      if (!report || report.problem !== true || report.restartable === false) return summary;
+      summary.problem = true;
+      const hourAgo = now() - 60 * 60 * 1000;
+      attempts = attempts.filter((at) => at > hourAgo);
+      if (attempts.length >= config.maxPerHour) {
+        quietUntil = now() + 60 * 60 * 1000;
+        attempts = [];
+        log(
+          `⚠ сторож Storage: ${config.maxPerHour} перезапуска за час не помогли — приостанавливаю попытки на час. ` +
+            `Причина: ${report.reason || report.state}. Смотрите docker logs storage, диск (df -h, df -i) и память.`,
+        );
+        return summary;
+      }
+      const started = startJob({ kind: 'storage', reason: 'storage-watch' });
+      summary.started = started?.started === true;
+      if (summary.started) {
+        attempts.push(now());
+        log(`сторож Storage: сервис не работает (${report.reason || report.state}) — запущен перезапуск из панели`);
+      }
+      return summary;
+    } finally {
+      running = false;
+    }
+  }
+
+  function start() {
+    if (!config.enabled || timer) return;
+    const safeTick = () => {
+      tick().catch((error) => log(`⚠ сторож Storage: проверка упала (${error?.message ?? error}) — продолжу по расписанию`));
+    };
+    // Первая проверка через минуту после старта агента: сразу после
+    // перезапуска хоста Storage может ещё подниматься, и рестарт был бы лишним.
+    const kickoff = setTimeout(safeTick, 60_000);
+    kickoff.unref?.();
+    timer = setInterval(safeTick, config.intervalMs);
+    timer.unref?.();
+  }
+
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  return { start, stop, tick };
+}
+
 export function createUpdateServer({ config = updateAgentConfig(), manager = createUpdateManager(config) } = {}) {
   return createServer(async (request, response) => {
     let url;
@@ -906,6 +1196,41 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
           error: scheduled ? null : 'Перезапуск update-agent уже запланирован',
           agent: agentSourceInfo(config, { startedAt: manager.startedAt ?? null }),
         });
+        return;
+      }
+      /**
+       * Storage стека Supabase — только чтение. Скрипт ничего не меняет:
+       * панель может опрашивать этот адрес сколько угодно, в отличие от
+       * `/storage/restart`, который занимает общий процессный слот.
+       */
+      if (request.method === 'GET' && url.pathname === '/storage') {
+        const result = await checkStorage({ config });
+        send(response, 200, {
+          ok: true,
+          available: result.available,
+          reason: result.reason,
+          report: result.report,
+          detail: result.detail,
+          // Перезапуск сейчас невозможен, если идёт обновление/бэкап: панель
+          // предупредит об этом до нажатия кнопки, а не после 409.
+          busy: manager.isBusy(),
+        });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/storage/restart') {
+        const result = manager.start({ kind: 'storage', reason: 'panel' });
+        if (!result.started) {
+          send(response, result.reason === 'already-running' ? 409 : 503, {
+            ok: false,
+            reason: result.reason,
+            error: result.reason === 'already-running'
+              ? 'Агент занят другой задачей (обновление, бэкап или применение ключей) — дождитесь её окончания'
+              : null,
+            update: manager.status(),
+          });
+          return;
+        }
+        send(response, 202, { ok: true, startedAt: manager.state.startedAt, update: manager.status() });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/env') {
@@ -1311,7 +1636,20 @@ export function startUpdateAgent(env = process.env) {
     isBusy: () => manager.isBusy(),
   });
   watchdog.start();
-  server.on('close', () => watchdog.stop());
+  // Второй сторож — Storage: отдельный стек, который обновление проекта не
+  // трогает. Проверка read-only, перезапуск идёт через тот же слот задач,
+  // поэтому виден в панели и не пересекается с обновлением.
+  const storageWatchdog = createStorageWatchdog({
+    config: storageWatchdogConfig(env),
+    check: () => checkStorage({ config }),
+    startJob: (options) => manager.start(options),
+    isBusy: () => manager.isBusy(),
+  });
+  storageWatchdog.start();
+  server.on('close', () => {
+    watchdog.stop();
+    storageWatchdog.stop();
+  });
   return server;
 }
 

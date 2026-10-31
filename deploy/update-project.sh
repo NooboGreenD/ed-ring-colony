@@ -719,7 +719,31 @@ fi
 # health не опрашивается: живой сайт мы не меняли). Финальный «done» сообщает
 # mode=migrations — панель по нему показывает свои стадии и подписи.
 if [ "$MIGRATIONS_ONLY" = "1" ]; then
-  printf '::edrc::{"stage":"done","percent":100,"mode":"migrations","branch":"%s","fromSha":"%s","toSha":"%s","migrationsApplied":%s,"message":"%s"}\n' \
+  # ── 7. Storage стека Supabase ────────────────────────────────────────
+# Обновление проекта Storage не касается: это отдельный стек (/opt/supabase).
+# Но именно после обновления его чаще всего и обнаруживают лежащим — контейнер
+# мог упасть раньше, а заметили по пропавшим аватаркам. Поэтому здесь только
+# ЧТЕНИЕ: провалившаяся проверка не должна ронять удачно собранное обновление.
+# Починка — кнопкой в панели (Админка → Мониторинг → «Хранилище файлов») или
+#   sudo bash deploy/storage-repair.sh --restart
+if [ -f "$PROJECT_DIR/deploy/storage-repair.sh" ] && command -v docker >/dev/null 2>&1; then
+  say "── проверка Supabase Storage ──"
+  STORAGE_OUT="$(bash "$PROJECT_DIR/deploy/storage-repair.sh" --check 2>&1 || true)"
+  STORAGE_RC=0
+  printf '%s\n' "$STORAGE_OUT" | grep -q '"problem":true' && STORAGE_RC=1
+  printf '%s\n' "$STORAGE_OUT" | grep -v '^::edrc::' | sed -e 's/^/  /' | head -n 12 || true
+  if [ "$STORAGE_RC" = "0" ]; then
+    say "✓ Storage работает: загрузки файлов идут в Storage"
+    printf '::edrc::{"message":"%s"}\n' "$(json_safe 'Storage проверен: работает')"
+  else
+    say "⚠ Storage НЕ работает — аватары и логотипы уйдут в резервную таблицу, файлы в Storage не пишутся"
+    say "  исправление: Админка → Мониторинг → «Хранилище файлов» → «Перезапустить Storage»"
+    say "  или на хосте: sudo bash deploy/storage-repair.sh --restart"
+    printf '::edrc::{"message":"%s"}\n' "$(json_safe '⚠ Storage не работает: перезапустите его в Админка → Мониторинг → «Хранилище файлов»')"
+  fi
+fi
+
+printf '::edrc::{"stage":"done","percent":100,"mode":"migrations","branch":"%s","fromSha":"%s","toSha":"%s","migrationsApplied":%s,"message":"%s"}\n' \
     "$(json_safe "$BRANCH")" "$CURRENT_SHA" "$NEW_SHA" "$MIGRATIONS_APPLIED" \
     "$(json_safe "миграции применены: $MIGRATIONS_APPLIED; сборка и переключение не выполнялись")"
   say "МИГРАЦИИ ПРИМЕНЕНЫ (без пересборки)"

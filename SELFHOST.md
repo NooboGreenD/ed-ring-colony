@@ -505,3 +505,9 @@ cd /opt/supabase && docker compose pull && docker compose up -d
 при недоступном Storage нужна миграция `20261024120000_profile_squadron_images.sql`.
 Порядок обновления и безопасная диагностика **Failed to retrieve buckets / Service
 Unavailable**: [STORAGE-UPLOAD-FIX.md](STORAGE-UPLOAD-FIX.md).
+
+Если Storage просто перестал отвечать (аватары не грузятся, старые файлы не
+открываются) — его не нужно искать по SSH: **Админка → Мониторинг → «Хранилище
+файлов»** показывает состояние контейнера и ответ API и перезапускает только
+сервис `storage`. Там же объяснение сторожа и проверки после обновления —
+[STORAGE-RESTART.md](STORAGE-RESTART.md).

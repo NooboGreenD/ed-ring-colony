@@ -236,6 +236,18 @@ services:
       # 0 — выключить; SUPABASE_NETWORK — подсказка на случай, когда
       # supabase-db в момент проверки перезапускается.
       SUPABASE_NETWORK: ${SUPABASE_NETWORK:-}
+      # Storage стека Supabase (Админка → Мониторинг → «Хранилище файлов»).
+      # Обновление проекта его не трогает, поэтому падение замечают по
+      # пропавшим аватаркам; скрипт deploy/storage-repair.sh проверяет
+      # контейнер и API /bucket, а по кнопке перезапускает только `storage`.
+      # STORAGE_WATCH_SECONDS: сторож раз в N секунд проверяет Storage и при
+      # доказанной поломке запускает перезапуск через слот задач (0 — выкл.).
+      STORAGE_CONTAINER: ${STORAGE_CONTAINER:-supabase-storage}
+      STORAGE_INTERNAL_URL: ${STORAGE_INTERNAL_URL:-}
+      STORAGE_WAIT_SECONDS: ${STORAGE_WAIT_SECONDS:-90}
+      STORAGE_TIMEOUT_MINUTES: ${STORAGE_TIMEOUT_MINUTES:-10}
+      STORAGE_WATCH_SECONDS: ${STORAGE_WATCH_SECONDS:-300}
+      STORAGE_WATCH_MAX_PER_HOUR: ${STORAGE_WATCH_MAX_PER_HOUR:-3}
       SUPABASE_NET_WATCH_SECONDS: ${SUPABASE_NET_WATCH_SECONDS:-60}
       SUPABASE_NET_WATCH_SERVICES: ${SUPABASE_NET_WATCH_SERVICES:-web,monitor-agent}
       # Manual weekly database backup (Админка → Бэкапы): where the dumps go

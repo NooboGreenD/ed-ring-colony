@@ -288,6 +288,11 @@ async function agentRequest<T extends Record<string, unknown>>(
   method: 'GET' | 'POST' | 'DELETE',
   path: string,
   body?: Record<string, unknown>,
+  // По умолчанию 8 с: столько занимают чтение статуса и запуск задачи. Проверка
+  // Storage идёт дольше (docker inspect + запрос к API внутри контейнера),
+  // поэтому ей нужен свой предел — иначе панель показывала бы «агент
+  // недоступен» на исправном агенте.
+  timeoutMs = 8_000,
 ): Promise<AgentResult<T>> {
   const config = configuredUpdateAgent();
   if (!config.configured || !config.url || !config.token) {
@@ -305,7 +310,7 @@ async function agentRequest<T extends Record<string, unknown>>(
       body: body ? JSON.stringify(body) : undefined,
       cache: 'no-store',
       redirect: 'error',
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const payload: unknown = await response.json().catch(() => null);
     invalidateUpdateAgentCache();
@@ -423,6 +428,66 @@ export function deleteSmtpKey(key: SmtpKeyName) {
  */
 export async function applySmtpSettings(authHealthUrl = '') {
   const result = await agentRequest<{ update?: unknown }>('POST', '/smtp/apply', { authHealthUrl });
+  return {
+    ok: result.ok,
+    status: result.status,
+    error: result.error,
+    update: result.payload && result.payload.update != null
+      ? sanitizeUpdateState(result.payload.update)
+      : null,
+  };
+}
+
+// ── Supabase Storage (Админка → Мониторинг → «Хранилище файлов») ────────────
+//
+// Storage — отдельный стек на хосте, а не сервис сайта: web-контейнеру он
+// доступен только по HTTP как клиенту. Поэтому «жив ли Storage» и «перезапусти
+// его» спрашивает тот же приватный агент, у которого есть Docker-сокет.
+
+/** Отчёт `deploy/storage-repair.sh --check` в том виде, в каком его видит панель. */
+export interface StorageReport {
+  ok: boolean;
+  problem: boolean;
+  /** false — перезапуск заведомо не поможет (например, отвергнут ключ). */
+  restartable: boolean;
+  state: 'running' | 'exited' | 'restarting' | 'created' | 'paused' | 'dead' | 'missing' | 'unknown';
+  health: 'healthy' | 'unhealthy' | 'starting' | 'none';
+  restarts: number;
+  exitCode: number | null;
+  oom: boolean;
+  api: 'ok' | 'auth' | 'failed' | 'unknown';
+  apiVia: 'agent' | 'container' | 'none';
+  apiCode: string;
+  reason: string;
+}
+
+export interface StorageHealth {
+  ok: boolean;
+  /** false — проверить не удалось (нет скрипта в клоне, агент без Docker). */
+  available: boolean;
+  reason: string | null;
+  report: StorageReport | null;
+  /** Человекочитаемые строки проверки (без секретов). */
+  detail: string[];
+  /** Идёт другая задача — перезапуск сейчас невозможен. */
+  busy: boolean;
+}
+
+/** Прочитать состояние Supabase Storage. Ничего не меняет. */
+export async function readStorageHealth() {
+  // 20 с: скрипт проверки сам ограничен 15 с (STORAGE_CHECK_TIMEOUT_SECONDS),
+  // плюс запас на передачу. Меньше — и медленный docker давал бы ложное
+  // «агент недоступен» вместо честного «Storage не отвечает».
+  return agentRequest<Omit<StorageHealth, 'ok'>>('GET', '/storage', undefined, 20_000);
+}
+
+/**
+ * Перезапустить Storage. Job `kind: 'storage'` (стадии STORAGE_STAGES) в общем
+ * процессном слоте: скрипт сам решает, нужен ли рестарт, поэтому здоровый
+ * сервис кнопка не трогает.
+ */
+export async function restartStorage() {
+  const result = await agentRequest<{ update?: unknown }>('POST', '/storage/restart', {});
   return {
     ok: result.ok,
     status: result.status,

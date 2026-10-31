@@ -49,8 +49,12 @@ COPY scripts/lib/update-state.mjs ./scripts/lib/
 COPY deploy/update-project.sh ./deploy/
 COPY deploy/apply-env.sh ./deploy/
 COPY deploy/apply-smtp.sh ./deploy/
+# Проверка и перезапуск Supabase Storage (Админка → Мониторинг): скрипт нужен
+# и агенту, и ручному запуску на хосте. Как и остальные, он берётся из клона
+# (PROJECT_DIR), а копия в образе — запасная.
+COPY deploy/storage-repair.sh ./deploy/
 COPY deploy/update-agent-entrypoint.sh ./deploy/
-RUN chmod +x /app/deploy/update-project.sh /app/deploy/apply-env.sh /app/deploy/apply-smtp.sh /app/deploy/update-agent-entrypoint.sh
+RUN chmod +x /app/deploy/update-project.sh /app/deploy/apply-env.sh /app/deploy/apply-smtp.sh /app/deploy/storage-repair.sh /app/deploy/update-agent-entrypoint.sh
 
 # UPDATE_SCRIPT по умолчанию = $PROJECT_DIR/deploy/update-project.sh, то есть
 # скрипт из обновляемого репозитория (его правки вступают сразу). Копия в

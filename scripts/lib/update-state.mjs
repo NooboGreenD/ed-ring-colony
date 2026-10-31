@@ -27,9 +27,11 @@ export const UPDATE_PROTOCOL = '::edrc::';
  * Поэтому агент сообщает свою версию в `/status`, а панель сверяет её со
  * своей и показывает предупреждение с кнопкой «Перезапустить агент».
  * Поднимайте число при изменении флагов запуска или возможностей управления
- * агентом (v3: ручной restart больше не зависит от автоперезапуска).
+ * агентом (v3: ручной restart больше не зависит от автоперезапуска;
+ * v4: управление Supabase Storage — GET /storage и POST /storage/restart,
+ * job kind=storage со своими этапами STORAGE_STAGES).
  */
-export const UPDATE_AGENT_PROTOCOL = 3;
+export const UPDATE_AGENT_PROTOCOL = 4;
 
 export const UPDATE_STAGES = [
   { id: 'prepare', label: 'Проверка блокировок и репозитория', percent: 5 },
@@ -88,10 +90,26 @@ export const SMTP_STAGES = [
   { id: 'done', label: 'Готово', percent: 100 },
 ];
 
+/**
+ * Этапы перезапуска Supabase Storage (Админка → Мониторинг → «Хранилище
+ * файлов»). Storage живёт в отдельном стеке, обновление проекта его не
+ * трогает — поэтому падение контейнера раньше замечали только по пропавшим
+ * аватаркам. Проценты обязаны совпадать с report-строками
+ * deploy/storage-repair.sh.
+ */
+export const STORAGE_STAGES = [
+  { id: 'storage_prepare', label: 'Проверка доступа к Docker и стеку Supabase', percent: 5 },
+  { id: 'storage_check', label: 'Проверка состояния Storage и ответа API', percent: 20 },
+  { id: 'storage_restart', label: 'Перезапуск сервиса storage', percent: 45 },
+  { id: 'storage_verify', label: 'Проверка, что бакеты снова читаются', percent: 75 },
+  { id: 'done', label: 'Готово', percent: 100 },
+];
+
 const STAGE_BY_ID = new Map([
   ...UPDATE_STAGES.map((stage) => [stage.id, stage]),
   ...ENV_STAGES.map((stage) => [stage.id, stage]),
   ...SMTP_STAGES.map((stage) => [stage.id, stage]),
+  ...STORAGE_STAGES.map((stage) => [stage.id, stage]),
 ]);
 
 export const UPDATE_LOG_LIMIT = 160;
@@ -195,7 +213,11 @@ export function sanitizeUpdateState(input) {
     // Одна машина состояний обслуживает обновление, резервную копию,
     // применение ключей и применение настроек почты: панель по этому полю
     // выбирает словарь этапов и тексты кнопок.
-    kind: raw.kind === 'backup' ? 'backup' : raw.kind === 'env' ? 'env' : raw.kind === 'smtp' ? 'smtp' : 'update',
+    kind: raw.kind === 'backup' ? 'backup'
+      : raw.kind === 'env' ? 'env'
+        : raw.kind === 'smtp' ? 'smtp'
+          : raw.kind === 'storage' ? 'storage'
+            : 'update',
     active: state === 'running' || state === 'queued',
     stage,
     stageLabel: stageLabel(stage),
