@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.request
 
@@ -356,6 +357,60 @@ def backup_storage(config, directory):
         archive.add(mount['source'], arcname='storage')
     target.chmod(0o600)
 
+def storage_state(context):
+    """(статус, health, перезапусков) контейнера storage или None, если его нет.
+
+    Читается через `docker ps`/`docker inspect`, без обращения к API Storage:
+    на этом шаге важно только, поднялся ли процесс после резервного копирования.
+    """
+    listed = subprocess.run(dc(context, 'ps', '-q', '-a', 'storage'),
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    ids = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    if listed.returncode or not ids:
+        return None
+    inspected = subprocess.run(
+        ['docker', 'inspect', '--format',
+         '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}', ids[0]],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if inspected.returncode:
+        return None
+    parts = (inspected.stdout.strip().split('|') + ['', '', ''])[:3]
+    try:
+        restarts = int(parts[2])
+    except ValueError:
+        restarts = 0
+    return parts[0], parts[1], restarts
+
+
+def verify_storage(context, seconds=90):
+    """Проверяет, что Storage действительно вернулся после резервного копирования.
+
+    Копия файлов Storage требует остановить его контейнер и поднять обратно в
+    `finally`. Раньше успешный код `docker compose up` считался доказательством
+    того, что Storage работает: если контейнер падал сразу после старта (нет
+    места на диске, права на том /var/lib/storage, недоступная база), сайт
+    оставался без загрузки файлов — а узнавали об этом по пропавшим аватаркам.
+    Проверка идёт до замены релиза, поэтому отказ ничего не ломает: старая
+    установка продолжает работать, а оператор получает конкретный следующий шаг.
+    """
+    deadline = time.monotonic() + seconds
+    state = None
+    while time.monotonic() < deadline:
+        state = storage_state(context)
+        if state and state[0] == 'running' and state[1] != 'unhealthy':
+            return state
+        # Остановившийся по кругу контейнер сам не «дозреет»: не ждём 90 с.
+        if state and state[0] in ('exited', 'dead'):
+            break
+        time.sleep(3)
+    reason = 'контейнер не найден' if state is None else 'состояние %s/%s, перезапусков %s' % state
+    raise UpgradeError(
+        'Supabase Storage не поднялся после резервного копирования (%s). Обновление остановлено до замены '
+        'контейнеров: установка осталась на прежней версии. Проверьте `docker compose -p %s logs storage`, '
+        'место на диске (`df -h`, `df -i`) и права на том /var/lib/storage, затем перезапустите '
+        'Storage: `sudo bash deploy/storage-repair.sh --restart` (или кнопкой в Админка → Мониторинг → '
+        '«Хранилище файлов»), после чего повторите обновление.' % (reason, context['project']))
+
 def existing_snapshot(config, containers, service, tag):
     result = copy.deepcopy(config)
     selected = [item for item in containers if (item['Config'].get('Labels') or {}).get('com.docker.compose.service') == service and
@@ -433,12 +488,20 @@ def apply(args, source, root):
                           and (item['Config'].get('Labels') or {}).get('com.docker.compose.service') == 'storage' for item in containers)
     if storage_running:
         run(dc(auth_context, 'stop', 'storage'))
+    backed_up = False
     try:
         backup_database(auth_context, directory)
         backup_storage(auth_old, directory)
+        backed_up = True
     finally:
         if storage_running:
             run(dc(auth_context, 'up', '-d', '--no-deps', 'storage'), logfile=directory / 'storage-restart.log')
+            # Код возврата `up` не доказывает, что Storage работает: контейнер
+            # мог подняться и сразу упасть. Проверяем делом — но только когда
+            # копия прошла: иначе проверка подменила бы настоящую ошибку бэкапа.
+            if backed_up:
+                verify_storage(auth_context)
+                print('Storage снова отвечает после копии файлов.')
     print('Архив БД прочитан pg_restore --list. Полный тест восстановления этим не заменяется.')
     env = dict(site_old['services']['web'].get('environment', {}))
     live = env_dict(web)

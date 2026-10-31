@@ -24,7 +24,7 @@ GitHub Actions** in the repository.
 | `web` | Next.js standalone (`Dockerfile`, `npm test` during the build unless `RUN_TESTS=0`), port `127.0.0.1:3000` behind nginx; bind mounts: Spansh/factions dumps (`GALAXY_DATA_HOST_DIR` → `/app/data/spansh`) and Helper releases (`UPLOADER_STORE_HOST_DIR` → `/data/uploader`) |
 | `jobs` | The only scheduler (`scripts/server-jobs.mjs` + `scripts/job-schedule.mjs`): calls `/api/cron/*` and `/api/galnet` inside the Docker network with `CRON_SECRET` — section 9 |
 | `monitor-agent` (profile `monitoring`) | Read-only Docker/disk agent for Admin → Мониторинг (`MONITOR_AGENT_TOKEN`) |
-| `update-agent` (profile `monitoring`) | The only process with git and a writable Docker socket: project update (`deploy/update-project.sh`), DB backup (`deploy/db-backup.sh`), env and SMTP changes (`UPDATE_AGENT_TOKEN`) — MONITORING.md |
+| `update-agent` (profile `monitoring`) | The only process with git and a writable Docker socket: project update (`deploy/update-project.sh`), DB backup (`deploy/db-backup.sh`), env and SMTP changes, Supabase Storage check/restart (`deploy/storage-repair.sh`) (`UPDATE_AGENT_TOKEN`) — MONITORING.md |
 
 Releases reach production through **Admin → Мониторинг → «Обновить сейчас»**:
 git fetch/merge of `PROJECT_UPDATE_BRANCH` (default `main`), optional pg_dump,
@@ -652,6 +652,7 @@ checks itself:
 | `/api/admin/powerplay/upload` | GET/POST/PUT · admin | Загрузка архива `powerPlay.json.gz` с компьютера: `start` → `PUT ?offset=` по 8 МиБ → `finish`/`cancel` (общий механизм с фракциями) |
 | `/api/admin/smtp` | GET/POST/DELETE · admin | Настройки SMTP для GoTrue (через update-agent) |
 | `/api/admin/smtp/apply` | POST · admin | Применить SMTP: пересоздать `auth` Supabase и `web` |
+| `/api/admin/storage` | GET/POST · admin | Supabase Storage: проверка (контейнер + ответ API `/bucket`) и перезапуск сервиса `storage` (`confirm: true`), см. STORAGE-RESTART.md |
 | `/api/admin/uploader/build-kit` | GET · admin | Комплект для первой Windows-сборки Helper (ключи встроены в `bundle.py`) |
 | `/api/admin/uploader/config` | GET/POST · admin | Канал обновлений Helper: ключи подписи, токен публикации |
 | `/api/admin/uploader/publish` | POST · токен публикации | Публикация пакета кода скриптом `uploader/build_bundle.py --publish` |
@@ -1188,8 +1189,10 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
   `UPDATE_AGENT_HOST:UPDATE_AGENT_PORT`, по умолчанию 127.0.0.1:8092, Bearer
   `UPDATE_AGENT_TOKEN`; вне loopback без токена не стартует). Контракт:
   `GET /health`, `GET /status[?full=1]`, `POST /update`, `POST /backup`,
-  `POST /abort`. Обновление и резервная копия делят один процессный слот:
-  состояние различается полем `kind` (`update` | `backup`).
+  `POST /abort`, `GET /storage`, `POST /storage/restart`. Обновление, резервная
+  копия, применение ключей, настройки почты и перезапуск Storage делят один
+  процессный слот: состояние различается полем `kind`
+  (`update` | `backup` | `env` | `smtp` | `storage`).
 - Фактическую работу делает `deploy/update-project.sh` (git fetch/merge,
   pg_dump, недостающие миграции по `migrations.mark`, пересборка
   Compose-профиля или standalone-выкладка, проверка живости). Отставание 0 от
@@ -1217,6 +1220,14 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
   сервисом `update-agent` или хостовый unit `ed-ring-colony-update.service`).
   `deploy/start-monitoring.sh` остаётся ответственным за read-only
   `monitor-agent`; сокет Docker на запись есть только у апдейтера.
+- Supabase Storage — чужой для сайта стек (`/opt/supabase`), который
+  `docker compose up` проекта не касается. `deploy/storage-repair.sh`
+  (`--check` — только чтение, `--restart` — перезапуск одного сервиса
+  `storage`) вызывается агентом по кнопке в Админка → Мониторинг →
+  «Хранилище файлов»; им же пользуются `deploy/update-project.sh` (проверка в
+  конце прогона), `deploy/diag-after-update.sh` и сторож в агенте
+  (`STORAGE_WATCH_SECONDS`, 300 с, максимум 3 перезапуска в час). Подробности —
+  [STORAGE-RESTART.md](STORAGE-RESTART.md).
 
 ### 8.11 Frontier Galnet
 - Источник: официальный Drupal JSON:API Frontier,

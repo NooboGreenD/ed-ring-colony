@@ -16,7 +16,8 @@ import {
   IconSync,
   IconXCircle,
 } from '@/components/Icons';
-import { BACKUP_STAGES, ENV_STAGES, SMTP_STAGES, UPDATE_STAGES } from '../../../scripts/lib/update-state.mjs';
+import { BACKUP_STAGES, ENV_STAGES, SMTP_STAGES, STORAGE_STAGES, UPDATE_STAGES } from '../../../scripts/lib/update-state.mjs';
+import StorageHealthPanel from '@/components/Admin/StorageHealthPanel';
 import { authFetch } from '@/lib/supabaseClient';
 import type {
   MonitorContainer,
@@ -216,8 +217,19 @@ const SMTP_STATE_META: Record<string, { label: string; level: MonitorLevel }> = 
   aborted: { label: 'Применение настроек почты остановлено', level: 'warning' },
 };
 
+// Job kind='storage': проверка и перезапуск сервиса Storage стека Supabase.
+// Он живёт вне compose сайта, поэтому у него свои подписи и свои этапы.
+const STORAGE_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
+  idle: { label: 'Storage не перезапускается', level: 'unknown' },
+  running: { label: 'Перезапускаю Storage', level: 'warning' },
+  succeeded: { label: 'Storage работает', level: 'healthy' },
+  failed: { label: 'Storage не поднялся', level: 'critical' },
+  aborted: { label: 'Перезапуск Storage остановлен', level: 'warning' },
+};
+
 function stateMetaFor(update: UpdateState | null): { label: string; level: MonitorLevel } {
   if (update?.kind === 'env') return ENV_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
+  if (update?.kind === 'storage') return STORAGE_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
   if (update?.kind === 'smtp') return SMTP_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
   if (update?.mode === 'migrations') return MIGRATIONS_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
   const table = UPDATE_STATE_META;
@@ -231,6 +243,7 @@ const MIGRATIONS_ONLY_STAGE_IDS = new Set(['prepare', 'fetch', 'compare', 'backu
 function stagesForKind(update: UpdateState | null): Array<{ id: string; label: string; percent: number }> {
   if (update?.kind === 'env') return ENV_STAGES;
   if (update?.kind === 'smtp') return SMTP_STAGES;
+  if (update?.kind === 'storage') return STORAGE_STAGES;
   if (update?.kind === 'backup') return BACKUP_STAGES;
   if (update?.mode === 'migrations') return UPDATE_STAGES.filter((stage) => MIGRATIONS_ONLY_STAGE_IDS.has(stage.id));
   return UPDATE_STAGES;
@@ -1118,6 +1131,8 @@ export default function ServerMonitorTab() {
                   <div><dt>Область</dt><dd>{update.mode === 'all' ? 'web + jobs + monitor-agent' : 'web'}</dd></div>
                 ) : update.kind === 'smtp' ? (
                   <div><dt>Область</dt><dd>auth (Supabase) + web</dd></div>
+                ) : update.kind === 'storage' ? (
+                  <div><dt>Область</dt><dd>сервис storage (стек Supabase)</dd></div>
                 ) : (
                   <>
                     <div><dt>Режим</dt><dd>{update.mode === 'migrations' ? 'только миграции (без сборки)' : update.mode || '—'}</dd></div>
@@ -1207,6 +1222,14 @@ export default function ServerMonitorTab() {
           </div>
         </section>
       </div>
+
+      <StorageHealthPanel
+        agentConfigured={updateConfigured}
+        agentConnected={updateConnected}
+        // Конец задачи kind=storage — повод перечитать состояние сразу.
+        refreshToken={update?.kind === 'storage' && update.active === false ? update.finishedAt : null}
+        onStarted={() => void loadUpdate()}
+      />
 
       <section className="ops-panel">
         <div className="ops-panel-head">

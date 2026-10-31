@@ -17,6 +17,8 @@
 #      нет новых таблиц, роуты отвечают 500 — остальной сайт жив.
 #   4. сайт застрял на заглушке «Ведутся технические работы»: признак лежит
 #      в public.app_flags и сам гаснет по expires_at.
+#   5. лежит Supabase Storage (отдельный стек): сайт жив, но аватары, логотипы
+#      и документы молча уходят в резервную таблицу.
 #
 # Вывод: разделы с ✓/✗ и итог с конкретным следующим шагом.
 # Значения, похожие на секреты, не печатаются: только имена, роли и коды.
@@ -259,8 +261,29 @@ else
   warn "нет доступа к Postgres (ни контейнер $SUPA_CONTAINER, ни DATABASE_URL) — проверки базы пропущены"
 fi
 
-# ── 5. логи web ──────────────────────────────────────────────────────
-head2 "6. Последние ошибки web"
+# ── 5. Storage стека Supabase (п. 5 в шапке) ─────────────────────────
+head2 "6. Supabase Storage (файлы, аватары, логотипы)"
+STORAGE_SCRIPT="${STORAGE_SCRIPT:-$PROJECT_DIR/deploy/storage-repair.sh}"
+if [ -f "$STORAGE_SCRIPT" ]; then
+  storage_out="$(bash "$STORAGE_SCRIPT" --check 2>&1 || true)"
+  if printf '%s\n' "$storage_out" | grep -q '"problem":false'; then
+    ok "Storage работает: список бакетов читается"
+    RUNTIME=$((RUNTIME + 1))
+  elif printf '%s\n' "$storage_out" | grep -q '"problem":true'; then
+    bad "Storage не обслуживает запросы"
+    RUNTIME=$((RUNTIME + 1))
+    storage_reason="$(printf '%s\n' "$storage_out" | grep -o '"reason":"[^"]*"' | head -n1 | cut -d'"' -f4 || true)"
+    critical "Supabase Storage не работает${storage_reason:+ ($storage_reason)}: сайт жив, но загрузки файлов уходят в резервную таблицу. Лечение: Админка → Мониторинг → «Хранилище файлов» → «Перезапустить Storage», либо sudo bash $STORAGE_SCRIPT --restart"
+  else
+    warn "проверка Storage не дала вердикта"
+  fi
+  printf '%s\n' "$storage_out" | grep -v '^::edrc::' | sed -e 's/^/  │ /' | head -n 6 || true
+else
+  warn "нет $STORAGE_SCRIPT — обновите клон или задайте STORAGE_SCRIPT"
+fi
+
+# ── 6. логи web ──────────────────────────────────────────────────────
+head2 "7. Последние ошибки web"
 if docker_ok && docker inspect "$WEB_CONTAINER" >/dev/null 2>&1; then
   errors="$(docker logs --tail 200 "$WEB_CONTAINER" 2>&1 \
     | grep -iE 'error|EAI_AGAIN|ECONNREFUSED|PGRST|denied|failed' | tail -n 8 || true)"

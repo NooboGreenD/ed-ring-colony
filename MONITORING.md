@@ -69,6 +69,7 @@ sudo bash deploy/monitoring-setup.sh \
 - **Контент и переводы** — последняя синхронизация Galnet (`galnet_sync_log`), сколько статей ждут перевода, `YANDEX_TRANSLATE_API_KEY` configured, кнопки «Синхронизировать Galnet сейчас» / «Добить переводы». В мобильной — TRANSLATE configured + PENDING total + lastSync + queue.
 - **Обновление проекта** — текущая/ upstream ревизия, aheadBy, pendingMigrations, прогресс ручного обновления по стадиям, лог, кнопки «Обновить сейчас»/«Остановить». В мобильной — карточка «Обновление проекта» + updater connected/active.
 - **API-ключи сайта** — `.env.production` в маскировке + «Применить (пересоздать web)». В мобильной пока только просмотр через app_flags, действия — в десктопной.
+- **Хранилище файлов (Supabase Storage)** — состояние контейнера `storage`, healthcheck, число перезапусков/OOM и ответ API `/bucket`; кнопки «Проверить» и «Перезапустить Storage» (перезапускается только сервис `storage` и только если он не работает). Подробности и таблица причин — [STORAGE-RESTART.md](STORAGE-RESTART.md).
 - **Дополнительно для мобильной агрегатор** (`/api/mobile/admin-summary`):
   - Overview counts: profiles, hubs, routeSystems, news, forumThreads/Posts, comments, ticketsOpen/Total, apiTokens, galaxySystems, galnetPending
   - Billing: revenue total/avgCheck/arpu, transactions total, subs active/churn, telemetry (pilots/systems/facilities/tonnage/tickets/tokens), topProducts
@@ -698,6 +699,31 @@ Conflict. The container name "/src-web-1" is already in use…») оставля
 `UPDATE_BACKUP_DIR`, `UPDATE_BACKUP_KEEP`, `BACKUP_TIMEOUT_MINUTES`,
 `BACKUP_EXCLUDE_TABLE`.
 
+## Supabase Storage лежит (не грузятся картинки)
+
+Storage — **отдельный стек** `/opt/supabase`: обновление проекта его не
+трогает, поэтому упавший контейнер не роняет сайт, но аватары, логотипы
+эскадрилий и документы перестают сохраняться.
+
+1. Админка → Мониторинг → **«Хранилище файлов»** → «Проверить».
+2. Если «Не работает» — «Перезапустить Storage». Перезапускается только
+   сервис `storage`; сайт и база не останавливаются.
+3. Отказ ключа (`401/403`) перезапуском не лечится: панель скажет проверить
+   `SERVICE_ROLE_KEY` в `.env` стека.
+
+Сторож включён по умолчанию: агент раз в `STORAGE_WATCH_SECONDS` (300 с) читает
+состояние и при доказанной поломке запускает тот же перезапуск (не больше
+`STORAGE_WATCH_MAX_PER_HOUR` = 3 раз в час, дальше час тишины). Проверка также
+выполняется в конце каждого обновления проекта. Полный разбор — в
+[STORAGE-RESTART.md](STORAGE-RESTART.md).
+
+Ручной запуск на хосте:
+
+```bash
+sudo bash deploy/storage-repair.sh            # только проверка
+sudo bash deploy/storage-repair.sh --restart  # проверка и перезапуск, если надо
+```
+
 ### Переменные самого агента
 
 | Переменная | По умолчанию | Зачем |
@@ -706,6 +732,10 @@ Conflict. The container name "/src-web-1" is already in use…») оставля
 | `UPDATE_AGENT_RESTART_DELAY_SECONDS` | `12` | Пауза перед выходом: панель успевает забрать финальный статус. Допустимо 1–120 |
 | `UPDATE_AGENT_FROM_REPO` | `1` | Запускать агента из смонтированного клона, а не из образа. `0` — старое поведение (код из образа) |
 | `UPDATE_AGENT_ENTRY` | `scripts/update-agent.mjs` | Путь к агенту внутри клона |
+| `STORAGE_CONTAINER` | `supabase-storage` | Контейнер Supabase Storage, состояние которого читает проверка |
+| `STORAGE_WATCH_SECONDS` | `300` | Период сторожа Storage; `0` — выключить |
+| `STORAGE_WATCH_MAX_PER_HOUR` | `3` | Сколько перезапусков Storage сторож делает за час, дальше час тишины |
+| `STORAGE_INTERNAL_URL` | пусто | Адрес API Storage из контейнера агента; нужен только при общей docker-сети (иначе проверка идёт изнутри контейнера) |
 
 Восстановление (на хосте):
 
