@@ -1741,9 +1741,26 @@ class ExobiologyTracker:
                     species, {"stage": "", "samples": 0, "first": "", "body": body_name,
                               "system": system, "last_ts": 0.0}
                 )
-                if stage == "Sample":
-                    entry["samples"] = int(entry.get("samples") or 0) + 1
-                    entry["stage"] = "Sample"
+                # Один комплект — это `Log` (первый образец), `Sample`
+                # (следующие) и `Analyse` (комплект закрыт). Раньше считался
+                # только `Sample`, поэтому после первого сканирования блок
+                # показывал «0/3», а полный проход давал «2/3».
+                folded = stage.casefold()
+                if folded in ("log", "sample", "analyse"):
+                    current = int(entry.get("samples") or 0)
+                    if folded == "log":
+                        entry["samples"] = 1
+                    elif folded == "analyse":
+                        # `Analyse` без единого скана в журнале (старый журнал,
+                        # обрезанный файл) не должен выдавать «3/3» заново:
+                        # комплект считается собранным, только если он начат.
+                        entry["samples"] = (SAMPLES_FOR_FULL_CREDIT if current > 0
+                                            else 1)
+                    elif current <= 0 or current >= SAMPLES_FOR_FULL_CREDIT:
+                        entry["samples"] = 1
+                    else:
+                        entry["samples"] = min(current + 1, SAMPLES_FOR_FULL_CREDIT)
+                    entry["stage"] = stage
                     entry["last_ts"] = self._event_time(event)
                 elif stage:
                     entry["stage"] = stage

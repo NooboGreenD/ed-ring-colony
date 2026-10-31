@@ -170,6 +170,39 @@ class TrackerTests(unittest.TestCase):
         organics = {row["species"]: row for row in state["organics"]}
         self.assertTrue(organics["Tussock"]["complete"])
 
+    def test_sampling_counts_the_log_stage_as_the_first_sample(self):
+        """`Log` — первый образец комплекта, `Analyse` его закрывает."""
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "Sol"})
+        self.tracker.handle(scan_event(StarSystem="Sol", BodyName="Sol 3"))
+        self.tracker.handle({"event": "ApproachBody", "StarSystem": "Sol", "BodyName": "Sol 3"})
+
+        def scan(stage):
+            self.tracker.handle({"event": "ScanOrganic", "Body": "Sol 3",
+                                 "Species_Localised": "Tussock", "ScanType": stage})
+
+        scan("Log")
+        organics = {row["species"]: row for row in self.tracker.current_body_state()["organics"]}
+        self.assertEqual(organics["Tussock"]["samples"], 1)
+        self.assertFalse(organics["Tussock"]["complete"])
+        scan("Sample")
+        organics = {row["species"]: row for row in self.tracker.current_body_state()["organics"]}
+        self.assertEqual(organics["Tussock"]["samples"], 2)
+        scan("Analyse")
+        organics = {row["species"]: row for row in self.tracker.current_body_state()["organics"]}
+        self.assertEqual(organics["Tussock"]["samples"], 3)
+        self.assertTrue(organics["Tussock"]["complete"])
+
+    def test_analyse_without_scans_does_not_claim_a_full_set(self):
+        """Запоздавший `Analyse` без сканов не даёт «комплект собран»."""
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "Sol"})
+        self.tracker.handle(scan_event(StarSystem="Sol", BodyName="Sol 3"))
+        self.tracker.handle({"event": "ApproachBody", "StarSystem": "Sol", "BodyName": "Sol 3"})
+        self.tracker.handle({"event": "ScanOrganic", "Body": "Sol 3",
+                             "Species_Localised": "Tussock", "ScanType": "Analyse"})
+        organics = {row["species"]: row for row in self.tracker.current_body_state()["organics"]}
+        self.assertEqual(organics["Tussock"]["samples"], 1)
+        self.assertFalse(organics["Tussock"]["complete"])
+
     def test_signal_keeps_max_count(self):
         self.tracker.handle({"event": "FSDJump", "StarSystem": "A"})
         self.tracker.handle(scan_event(StarSystem="A", BodyName="A 1"))

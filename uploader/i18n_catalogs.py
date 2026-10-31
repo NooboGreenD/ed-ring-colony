@@ -7361,6 +7361,14 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "zh": "{species} · {done}/{total} · 距离下一次取样 {distance}",
         "ja": "{species} · {done}/{total} · 次のサンプルまで {distance}",
     },
+    "радиус {radius}": {
+        "en": "radius {radius}",
+        "de": "Radius {radius}",
+        "it": "raggio {radius}",
+        "ko": "반경 {radius}",
+        "zh": "半径 {radius}",
+        "ja": "半径 {radius}",
+    },
     "{species} · комплект собран · радиус {radius}": {
         "en": "{species} · sample set complete · radius {radius}",
         "de": "{species} · Probensatz vollständig · Radius {radius}",
