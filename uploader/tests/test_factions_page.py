@@ -136,6 +136,61 @@ class FactionInfographicTests(unittest.TestCase):
         browser.assert_called_once_with("https://edringcolony.ru/atlas?tab=factions&locale=ru",
                                         new=2)
 
+    # ------------------------------------------------------------- data source
+    def test_empty_state_no_longer_promises_only_the_journal(self):
+        text = self.widget.empty.text()
+        self.assertIn("базе проекта", text, "подсказка знает про базу проекта")
+        self.assertIn("Watcher", text)
+
+    def test_site_source_line_shows_the_observation_time(self):
+        self.widget.set_snapshot("Sol", "", FACTIONS, source="site",
+                                 observed_at="2026-10-31T20:00:00+00:00")
+        text = self.widget.source_label.text()
+        self.assertIn("сайт проекта", text)
+        self.assertIn("2026", text)
+
+    def test_journal_source_lines_differ(self):
+        self.widget.set_snapshot("Sol", "", FACTIONS, source="journal",
+                                 observed_at="2026-10-31T22:14:03Z")
+        self.assertIn("журнал игры", self.widget.source_label.text())
+        self.widget.set_snapshot("Sol", "", FACTIONS, source="journal-archive",
+                                 observed_at="2026-10-31T22:14:03Z")
+        self.assertIn("архив", self.widget.source_label.text())
+
+    def test_unknown_source_and_missing_time(self):
+        self.widget.set_snapshot("Sol", "", FACTIONS, source="", observed_at="")
+        self.assertEqual(self.widget.source_label.text(), "")
+        self.widget.set_snapshot("Sol", "", FACTIONS, source="site", observed_at="вчера")
+        self.assertIn("время неизвестно", self.widget.source_label.text())
+
+    def test_note_explains_an_empty_list(self):
+        self.widget.set_snapshot("Sol", "", [], source="", observed_at="",
+                                 note="Фракции системы Sol не найдены")
+        self.assertEqual(self.widget.status_label.text(), "Фракции системы Sol не найдены")
+
+    def test_live_journal_snapshot_clears_the_previous_note(self):
+        self.widget.set_snapshot("Sol", "", [], note="нет данных")
+        self.widget.set_snapshot("Sol", "", FACTIONS, source="journal")
+        self.assertEqual(self.widget.status_label.text(), "")
+
+    def test_player_faction_is_marked_in_its_card(self):
+        row = dict(FACTIONS[1], is_player=True)
+        self.widget.set_snapshot("Sol", "", [row])
+        texts = [label.text() for label in self.widget._card_widgets()[0].findChildren(QLabel)]
+        self.assertTrue(any("фракция игроков" in text for text in texts))
+
+    # ----------------------------------------------------------------- refresh
+    def test_refresh_button_asks_the_helper_for_new_data(self):
+        calls = []
+        widget = qt_factions.FactionInfographic(locale="ru", on_refresh=lambda: calls.append(1))
+        self.assertIsNotNone(widget.refresh_btn)
+        widget.refresh_btn.click()
+        self.assertEqual(calls, [1])
+
+    def test_no_refresh_button_without_a_callback(self):
+        self.assertIsNone(self.widget.refresh_btn)
+        self.widget.refresh()          # без обработчика ничего не падает
+
     # ---------------------------------------------------------------- drawing
     def test_page_renders_with_cards(self):
         self.widget.set_snapshot("Sol", "Sol Workers' Party", FACTIONS)

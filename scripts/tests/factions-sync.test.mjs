@@ -406,6 +406,15 @@ test('API слоя, поиска, присутствия и карточки с�
   assert.deepEqual(sol.factions[0].activeStates, ['Boom']);
   assert.equal((await get(mod.systemRoute, '/api/factions/system?id64=424242')).status, 404);
   assert.equal((await get(mod.systemRoute, '/api/factions/system?id64=abc')).status, 400);
+  // Helper знает систему по имени, когда адреса в журнале нет: ?name= находит
+  // ту же карточку через name_lc.
+  const byName = mod.decodeSystemDetail(
+    await (await get(mod.systemRoute, '/api/factions/system?name=%20SOL%20')).json(),
+  );
+  assert.equal(byName.id64, '10477373803', 'имя находит ту же систему');
+  assert.deepEqual(byName.factions.map((item) => item.name), ['Mother Gaia', 'Sol Workers Party']);
+  assert.equal((await get(mod.systemRoute, '/api/factions/system?name=Nowhere')).status, 404);
+  assert.equal((await get(mod.systemRoute, '/api/factions/system')).status, 400);
 });
 
 /* ── Обновления от пилотов ─────────────────────────────────────────────── */

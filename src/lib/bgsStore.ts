@@ -226,6 +226,29 @@ export async function readBgsPresence(svc: Svc, ids: number[]): Promise<unknown[
   return Array.isArray(list) ? list : [];
 }
 
+/**
+ * `id64` системы по её имени: та же нормализация, что у колонки `name_lc`
+ * (`lower(btrim(name))` в миграции 20261019120000_minor_factions.sql).
+ *
+ * Нужна там, где адреса системы нет: Helper знает только имя из журнала, а
+ * карточка системы строится по `id64`. `null` — системы в данных о фракциях
+ * нет (ненаселённая или ещё не приходила ни от пилотов, ни из дампа EDSM).
+ */
+export async function findBgsSystemIdByName(svc: Svc, name: string): Promise<string | null> {
+  const key = name.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (!key) return null;
+  const { data, error } = await svc
+    .from('bgs_systems')
+    .select('id64')
+    .eq('name_lc', key)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  const id = (data as { id64?: unknown } | null)?.id64;
+  if (id === null || id === undefined) return null;
+  return String(id);
+}
+
 export async function readBgsSystem(svc: Svc, id64: string): Promise<{ system: unknown; factions: unknown[] } | null> {
   const { data, error } = await svc.rpc('bgs_system_detail', { p_id64: id64 });
   if (error) throw new Error(error.message);

@@ -61,6 +61,34 @@ Colonial Helper, журнал на сайте), ссылки EDSM / Inara / Span
 и в панели слоёв карты. Настройки (показ, фильтр, выбранные фракции) хранятся
 в `localStorage` (`atlas-factions-v1`).
 
+## Вкладка «Фракции» в Colonial Helper
+
+Вкладка показывает минорные фракции системы, **в которой сейчас пилот**, — и
+делает это, даже если свежего `FSDJump`/`Location`/`CarrierJump` в читаемых
+журналах нет (Helper запустили уже в игре, журнал сменился, событие пропущено):
+
+1. **Живое событие журнала** — приоритет. `FSDJump`, `Location` и `CarrierJump`
+   дают систему, адрес, контролирующую фракцию, влияние и состояния; снимок
+   вкладки обновляется сразу (Helper 2.23.0 починил мёртвую проверку, из-за
+   которой перерисовка после прыжка не запускалась вовсе).
+2. **Хвост журналов** — последнее событие с `Factions` для этой системы: файлы
+   читаются с конца (до 6 файлов по 4 МБ), поэтому история в гигабайты не
+   перебирается (`uploader/factions_data.py`).
+3. **База проекта** — `GET /api/factions/system?id64=…` (карточка системы из
+   `bgs_systems`/`bgs_faction_presence`). Если адреса нет, сайт ищет систему по
+   имени (`?name=`), а если и её нет — 404 «Системы нет в данных о фракциях»;
+   это не ошибка сети, повторять запрос по этой системе бессмысленно.
+
+Свежее наблюдение перекрывает старое (при равном времени — журнал): ответ сайта
+никогда не откатывает только что прочитанный прыжок. Под названием системы
+видно источник и время наблюдения («Источник: журнал игры · 31.10.2026 22:14»,
+«Источник: сайт проекта · наблюдение …», «журнал игры (архив)»), ниже —
+пояснение, если данных нет ни там, ни там, и если сайт не ответил. Кнопка
+«Обновить» перезапрашивает данные принудительно; при открытии вкладки запрос
+повторяется не чаще раза в 2 минуты на систему, а сеть и чтение журналов идут в
+фоновом потоке. Систему Helper берёт из состояния трекеров, а если их ещё не
+наполнили — из хвостов журналов (`_determine_cmdr_system`).
+
 ## Откуда данные
 
 ### 1. Ночной дамп EDSM — полный набор
@@ -320,7 +348,7 @@ EDSM (`mode` = `download` / `split` / `import`; обычный запуск — 
 | `GET /api/factions/systems` | слой: кортежи `[id64, имя, x, y, z, принадлежность, правительство, фракция у власти, население, фракций, наблюдение, источник]` + словари; ETag/304, `X-Content-Bytes`, `meta.progress` идущего импорта |
 | `GET /api/factions/search?q=&player=1&limit=` | поиск фракций |
 | `GET /api/factions/presence?ids=1,2` | системы выбранных фракций (до 12) с влиянием и состояниями |
-| `GET /api/factions/system?id64=` | карточка системы со всеми фракциями |
+| `GET /api/factions/system?id64=` | карточка системы со всеми фракциями (`?name=Sol` — если адреса системы нет: имя ищется по `name_lc`) |
 | `POST /api/factions/sync` | наблюдения от Helper (токен) и сайта (сессия), до 500 событий |
 | `GET/POST /api/admin/factions` | админка: состояние (архив, куски, незаконченная загрузка с компьютера, путь записи, `stallSeconds`/`shortRequests`); `start` / `start+force` / `download` / `split` / `import` (+ `segments` 1–16) / `cancel` / `cleanup` |
 | `GET/POST/PUT /api/admin/factions/upload` | архив с компьютера: `start` (имя, размер, дата → с какого байта) / `PUT ?offset=N` (кусок; не тот offset — 409 с принятым размером) / `finish` (проверка → архив) / `cancel` |
@@ -380,8 +408,11 @@ EDSM (`mode` = `download` / `split` / `import`; обычный запуск — 
   (слой и PowerPlay — одно облако выбора `MapClickLayer` в `GalaxyScene.tsx`);
 * `src/components/Admin/FactionsAdminTab.tsx`, `ArchiveUploadControl.tsx`
   («Загрузить архив с компьютера», общий с PowerPlay);
-* `uploader/bgs_sync.py`, `uploader/api_client.py` (`sync_bgs_snapshots`),
-  `uploader/colonial_helper.py` (`_bgs_sync_collector`, `_flush_bgs_sync`).
+* `uploader/bgs_sync.py`, `uploader/api_client.py` (`sync_bgs_snapshots`,
+  `get_system_factions`), `uploader/colonial_helper.py` (`_bgs_sync_collector`,
+  `_flush_bgs_sync`, `_refresh_factions_data`, `_apply_faction_refresh`),
+  `uploader/factions_data.py` (снимок из журнала и с сайта, выбор источника),
+  `uploader/qt_factions.py` (вкладка).
 
 Тесты: `scripts/tests/factions-lib.test.mjs` (справочники, дамп, журнал,
 слой, точки, ход импорта, виды запуска, куски, остановка и обрезанный архив),
@@ -397,4 +428,8 @@ API, обновления пилотов, слияние, защита, оста
 `freshFetch`; сервер «за ТСПУ» — заморозка после N байт на соединение,
 переход на короткие запросы, запросы по числу, молчащий сервер),
 `factions-ui.test.mjs` (карточка, админка, архив с компьютера, подключение),
-`atlas-ui-dom.test.mjs` (вкладка в странице Atlas), `uploader/tests/test_bgs_sync.py`.
+`atlas-ui-dom.test.mjs` (вкладка в странице Atlas), `uploader/tests/test_bgs_sync.py`,
+`uploader/tests/test_factions_data.py` (снимок из журнала и с сайта, выбор
+свежего, чтение хвостов журналов, запрос карточки),
+`uploader/tests/test_faction_site_sync.py` и `test_factions_page.py` (вкладка
+Helper: источник, пояснения, кнопка «Обновить»; нужен Qt).
