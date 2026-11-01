@@ -78,6 +78,9 @@ from inara_api import InaraAPI
 from ship_tracker import ShipTracker
 from foot_map import FootMap
 from pilot_equipment import PilotEquipment
+from factions_data import (SOURCE_JOURNAL, prefer_snapshot, scan_journal_for_factions,
+                           snapshot_from_event, snapshot_from_site, snapshot_system,
+                           snapshot_timestamp, system_key)
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
@@ -125,7 +128,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.22.1"
+VERSION = "2.23.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -274,9 +277,16 @@ class ColonialHelperApp:
         self.system_map = SystemMapBuilder()
         self._faction_state_lock = threading.RLock()
         self._faction_system = ""
+        self._faction_system_address = 0
         self._faction_updated_at = ""
         self._faction_controlling = ""
         self._faction_presence: list = []
+        # Откуда взят снимок вкладки «Фракции»: журнал игры или база проекта.
+        self._faction_source = ""
+        self._faction_note = ""               # пояснение под списком фракций
+        self._faction_request_key = ""        # система, по которой уже спросили сайт
+        self._faction_request_at = 0.0        # когда спросили (time.monotonic)
+        self._faction_site_inflight = False   # запрос к сайту уже летит
         self._map_zoom_index = 2              # 1.0 — индекс в MAP_ZOOM_STEPS
         self._map_selected = ""               # выбранный объект (имя тела/buildId)
         self._map_center = ""                 # центр карты: пусто = звезда системы
@@ -2098,54 +2108,202 @@ class ColonialHelperApp:
     #: Длинные имена станций урезаем, иначе подписи перекрывают полкарты.
     MAP_LABEL_LIMIT = 26
 
+    #: Сколько секунд ответ сайта о фракциях считаем свежим: вкладку открывают
+    #: и закрывают часто, а состояние системы на сайте меняется не мгновенно.
+    FACTION_SITE_TTL = 120
+
     def _build_tab_factions(self):
         """Вкладка «Фракции» на чистом Qt (qt_factions.FactionInfographic)."""
         from qt_factions import FactionInfographic
         self.faction_infographic = FactionInfographic(
-            locale=self.config.get("site_locale"), site_url=self.api.site_url)
+            locale=self.config.get("site_locale"), site_url=self.api.site_url,
+            on_refresh=lambda: self._refresh_factions_data(force=True))
         self.tab_factions._get_tk_layout("pack").addWidget(self.faction_infographic)
         self._show_page(self.faction_infographic)
         self._render_factions_infographic()
+        # Свежий прыжок мог остаться в прошлой сессии и не попасть в живые
+        # события: система и фракции подтянутся из журналов и базы проекта,
+        # не дожидаясь нового FSDJump.
+        self._refresh_factions_data()
 
-    def _update_faction_infographic(self,event:dict):
-        if not isinstance(event,dict) or event.get("event") not in ("FSDJump","Location","CarrierJump"):
+    def _update_faction_infographic(self, event: dict):
+        """Живое событие журнала: оно свежее любого ответа сайта."""
+        if not isinstance(event, dict) or event.get("event") not in ("FSDJump", "Location", "CarrierJump"):
             return
-        system=str(event.get("StarSystem") or "").strip()
-        if not system:return
-        timestamp=str(event.get("timestamp") or "")
-        lock=getattr(self,"_faction_state_lock",None)
-        if lock is None:self._faction_state_lock=lock=threading.RLock()
-        with lock:
-            previous_at=str(getattr(self,"_faction_updated_at",""))
-            if timestamp and previous_at and timestamp < previous_at:return
-            self._faction_system=system
-            self._faction_updated_at=timestamp or previous_at
-            control=event.get("SystemFaction")
-            self._faction_controlling=str(control.get("Name") or "") if isinstance(control,dict) else ""
-            items=[]
-            for faction in event.get("Factions") or []:
-                if not isinstance(faction,dict) or not str(faction.get("Name") or "").strip():continue
-                try:influence=max(0.0,min(1.0,float(faction.get("Influence") or 0.0)))
-                except (TypeError,ValueError):influence=0.0
-                states=[]
-                for state in faction.get("ActiveStates") or []:
-                    if isinstance(state,dict) and state.get("State"):states.append(str(state["State"]))
-                items.append({"name":str(faction["Name"]).strip(),"influence":influence,
-                              "allegiance":str(faction.get("Allegiance") or ""),
-                              "government":str(faction.get("Government") or ""),
-                              "state":str(faction.get("FactionState") or ""),"active_states":states})
-            self._faction_presence=sorted(items,key=lambda item:(-item["influence"],item["name"].casefold()))
-        if hasattr(self,"faction_cards_frame"):
-            self.after(0,self._render_factions_infographic)
+        system = str(event.get("StarSystem") or "").strip()
+        if not system:
+            return
+        timestamp = str(event.get("timestamp") or "")
+        snapshot = snapshot_from_event(event)
+        address = self._faction_address(event.get("SystemAddress"))
+        control = event.get("SystemFaction")
+        controlling = str(control.get("Name") or "") if isinstance(control, dict) else ""
+        with self._faction_state_lock:
+            previous_at = str(getattr(self, "_faction_updated_at", "") or "")
+            if timestamp and previous_at and timestamp < previous_at:
+                return
+            self._faction_system = system
+            self._faction_system_address = address
+            self._faction_updated_at = timestamp or previous_at
+            self._faction_controlling = controlling
+            self._faction_presence = list(snapshot["factions"]) if snapshot else []
+            self._faction_source = SOURCE_JOURNAL
+            self._faction_note = ""
+        if getattr(self, "faction_infographic", None) is not None:
+            self.after(0, self._render_factions_infographic)
+
+    @staticmethod
+    def _faction_address(value) -> int:
+        """``SystemAddress`` журнала числом; мусор и пустое значение — 0."""
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _faction_tracker_system(self) -> tuple:
+        """(имя, адрес) системы из состояния трекеров — без чтения журналов."""
+        with self._faction_state_lock:
+            name = str(self._faction_system or "").strip()
+            address = int(getattr(self, "_faction_system_address", 0) or 0)
+        if name:
+            return name, address
+        mapper = getattr(self, "system_map", None)
+        mapped = str(getattr(mapper, "current_system", "") or "").strip()
+        if mapped:
+            return mapped, int(getattr(mapper, "current_system_address", 0) or 0)
+        ship_state = getattr(getattr(self, "ship", None), "state", None)
+        tracked = str(getattr(ship_state, "current_system", "") or "").strip()
+        if tracked:
+            return tracked, int(getattr(ship_state, "system_address", 0) or 0)
+        return "", 0
+
+    def _faction_pilot_system(self) -> tuple:
+        """(имя, адрес) системы, где пилот: трекеры, затем хвосты журналов.
+
+        Чтение журналов — последний шаг и только в фоновом потоке: Helper мог
+        запуститься уже в игре, и живых событий о системе тогда нет вовсе.
+        """
+        system, address = self._faction_tracker_system()
+        if system or address:
+            return system, address
+        try:
+            name, address = self._determine_cmdr_system()
+        except Exception:
+            return "", 0
+        return str(name or "").strip(), self._faction_address(address)
+
+    def _refresh_factions_data(self, force: bool = False) -> None:
+        """Подтянуть фракции текущей системы: хвост журналов и база проекта.
+
+        Метод зовётся из обработчика вкладки и из кнопки «Обновить», поэтому
+        здесь только проверка и запуск: чтение журналов, поиск системы по
+        хвостам и запрос к сайту идут в фоновом потоке.
+        """
+        if self._faction_site_inflight:
+            return
+        if (not force and self._faction_request_key
+                and (time.monotonic() - self._faction_request_at) < self.FACTION_SITE_TTL):
+            return
+        self._faction_site_inflight = True
+        threading.Thread(target=self._faction_refresh_worker, args=(force,),
+                         name="factions-refresh", daemon=True).start()
+
+    def _faction_refresh_worker(self, force: bool = False) -> None:
+        """Фоновый сбор: журналы игры (локально) и карточка системы с сайта."""
+        system, address = self._faction_pilot_system()
+        key = system_key(system, address)
+        now = time.monotonic()
+        if (not force and key and key == self._faction_request_key
+                and (now - self._faction_request_at) < self.FACTION_SITE_TTL):
+            self._faction_site_inflight = False
+            return
+        self._faction_request_key = key
+        self._faction_request_at = now
+        if not system and not address:
+            # Системы не знает ни один трекер и журналы её не содержат.
+            self._faction_site_inflight = False
+            try:
+                self.root.after(0, self._render_factions_infographic)
+            except Exception:
+                pass
+            return
+        journal = None
+        try:
+            journal = scan_journal_for_factions(self.journal_path, system, address)
+        except Exception as exc:
+            self.log(f"Factions journal scan: {exc}", "error")
+        site = None
+        site_error = ""
+        try:
+            payload = self.api.get_system_factions(address, system)
+            if payload.get("ok"):
+                site = snapshot_from_site(payload)
+            elif not payload.get("missing"):
+                site_error = str(payload.get("error") or "")
+        except Exception as exc:
+            site_error = str(exc)
+        result = {"system": system, "address": address, "journal": journal,
+                  "site": site, "site_error": site_error}
+        try:
+            self.root.after(0, lambda: self._apply_faction_refresh(result))
+        except Exception:
+            self._faction_site_inflight = False
+
+    def _apply_faction_refresh(self, result: dict) -> None:
+        """Ответ фона на экране: выбрать свежее наблюдение и перерисовать вкладку."""
+        self._faction_site_inflight = False
+        system = str(result.get("system") or "").strip()
+        address = int(result.get("address") or 0)
+        journal = result.get("journal") if isinstance(result.get("journal"), dict) else None
+        site = result.get("site") if isinstance(result.get("site"), dict) else None
+        error = str(result.get("site_error") or "").strip()
+        current, _current_address = self._faction_tracker_system()
+        if system and current and current.casefold() != system.casefold():
+            return                     # пилот уже в другой системе: ответ опоздал
+        chosen = prefer_snapshot(journal, site)
+        note = ""
+        if error:
+            note = (tr("Сайт проекта недоступен: {error} — показаны данные журнала игры.",
+                       error=error) if chosen else
+                    tr("Сайт проекта недоступен: {error}; в журнале игры данных о фракциях "
+                       "этой системы тоже нет.", error=error))
+        if chosen is None:
+            note = note or tr("Фракции системы {system} не найдены ни в журнале, "
+                              "ни в базе проекта.", system=system)
+        with self._faction_state_lock:
+            if not self._faction_system and system:
+                self._faction_system = system
+                self._faction_system_address = address
+            if chosen is not None:
+                chosen_at = snapshot_timestamp(chosen)
+                previous_at = str(self._faction_updated_at or "")
+                if not (previous_at and chosen_at and chosen_at < previous_at):
+                    self._faction_system = snapshot_system(chosen) or system or self._faction_system
+                    if address:
+                        self._faction_system_address = address
+                    self._faction_controlling = str(chosen.get("controlling") or "")
+                    self._faction_presence = [dict(row) for row in chosen.get("factions") or []
+                                              if isinstance(row, dict)]
+                    self._faction_source = str(chosen.get("source") or "")
+                    self._faction_updated_at = chosen_at or previous_at
+            self._faction_note = note
+        self._render_factions_infographic()
 
     def _render_factions_infographic(self):
-        widget=getattr(self,"faction_infographic",None)
-        if widget is None:return
+        widget = getattr(self, "faction_infographic", None)
+        if widget is None:
+            return
         with self._faction_state_lock:
-            system=self._faction_system
-            control=self._faction_controlling
-            factions=list(self._faction_presence)
-        widget.set_snapshot(system,control,factions)
+            system = self._faction_system
+            control = self._faction_controlling
+            factions = list(self._faction_presence)
+            source = self._faction_source
+            observed_at = self._faction_updated_at
+            note = self._faction_note
+        if not system and not factions:
+            note = note or tr("Система не определена — загрузите журнал игры.")
+        widget.set_snapshot(system, control, factions, source=source,
+                            observed_at=observed_at, note=note)
 
     # Legacy renderer remains unreferenced; the system-map tab is removed.
     def _select_map_object(self, key: str):
@@ -2604,6 +2762,14 @@ class ColonialHelperApp:
                     self._update_tab_exobio()
                     if hasattr(self, "exobiology") and self.exobiology.current_system:
                         self._ensure_system_exobio(self.exobiology.current_system)
+            except Exception:
+                pass
+        if hasattr(self, "notebook") and hasattr(self, "tab_factions"):
+            # Открыли «Фракции»: дозапросим систему, если она сменилась или
+            # ответ сайта уже устарел (внутри — свой TTL и фоновый поток).
+            try:
+                if self.notebook.select() == str(self.tab_factions):
+                    self._refresh_factions_data()
             except Exception:
                 pass
 

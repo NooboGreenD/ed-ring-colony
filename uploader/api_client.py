@@ -482,6 +482,41 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def get_system_factions(self, id64=None, system_name: str = "") -> dict:
+        """Карточка системы для вкладки «Фракции» (`/api/factions/system`).
+
+        Адрес системы (``SystemAddress`` из журнала) — основной ключ: он не
+        зависит от переименований. Если адреса нет, сайт ищет систему по имени
+        (``?name=``). ``missing=True`` — системы нет в данных о фракциях, это не
+        ошибка сети: показывать нечего, но повторять запрос бессмысленно.
+        """
+        params = {}
+        address = str(id64 or "").strip()
+        if address.isdigit():
+            params["id64"] = address
+        else:
+            name = str(system_name or "").strip()
+            if not name:
+                return {"ok": False, "error": tr("Неизвестна система: нет ни адреса, ни имени")}
+            params["name"] = name
+        try:
+            resp = self._session.get(
+                f"{self.api_base}/factions/system",
+                params=params,
+                allow_redirects=False,
+                timeout=12,
+            )
+            data = _safe_json(resp)
+            if resp.ok and isinstance(data.get("system"), dict):
+                return {"ok": True, "system": data["system"],
+                        "factions": data.get("factions") or []}
+            if resp.status_code == 404:
+                return {"ok": False, "missing": True,
+                        "error": data.get("error", tr("Системы нет в данных о фракциях"))}
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
+
     def upload_system_scans(self, system_name: str, bodies: list, cmdr: str = None) -> dict:
         """Отправить сканы тел системы в БД проекта (/api/atlas/system-bodies)."""
         name = str(system_name or "").strip()

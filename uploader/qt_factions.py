@@ -1,8 +1,10 @@
 """Faction presence infographic — native Qt, no Tk facade.
 
-The page shows the minor factions of the system from the last
-``FSDJump``/``Location``/``CarrierJump`` event: influence, allegiance,
-government, state and a link to the project site's Atlas.
+The page shows the minor factions of the pilot's current system: influence,
+allegiance, government and states. The data comes from the journal event that
+carries it (``FSDJump``/``Location``/``CarrierJump``) or, when no such event was
+read, from the project database (``GET /api/factions/system``). The line under
+the system name says which of the two was used and when the state was observed.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from factions_data import format_timestamp
 from i18n import tr
 from locale_config import localized_url, normalize_locale
 from site_config import DEFAULT_SITE_URL
@@ -36,8 +39,14 @@ PALETTE = ("#e57b28", "#42b9d4", "#65c78a", "#8e7bf0", "#e27676", "#dfbd65")
 
 #: Подпись пустого списка: ключ перевода, ``tr()`` зовётся при сборке карточки
 #: (константа модуля не может зависеть от выбранного языка).
-EMPTY_HINT = ("Запустите Watcher и загрузите журнал из населённой системы, "
-              "чтобы увидеть присутствующие фракции.")
+EMPTY_HINT = ("Данных о фракциях этой системы пока нет — ни в журнале игры, ни в "
+              "базе проекта. Запустите Watcher и загрузите журнал: после прыжка "
+              "система попадёт в базу, и вкладка подтянет её с сайта.")
+
+#: Откуда взят снимок: подписи под названием системы.
+SOURCE_SITE = "site"
+SOURCE_JOURNAL = "journal"
+SOURCE_JOURNAL_ARCHIVE = "journal-archive"
 
 
 class FactionInfographic(QWidget):
@@ -48,7 +57,7 @@ class FactionInfographic(QWidget):
     involved.
     """
 
-    def __init__(self, parent=None, locale: str = "ru", site_url=None) -> None:
+    def __init__(self, parent=None, locale: str = "ru", site_url=None, on_refresh=None) -> None:
         super().__init__(parent)
         self.setObjectName("FactionInfographic")
         self.locale = normalize_locale(locale)
@@ -69,14 +78,20 @@ class FactionInfographic(QWidget):
         self.scroll.setWidget(self.content)
         outer.addWidget(self.scroll)
 
-        self.layout_.addWidget(label("FACTION PRESENCE  /  JOURNAL SNAPSHOT",
+        self.layout_.addWidget(label("FACTION PRESENCE  /  SYSTEM SNAPSHOT",
                                      size=9, bold=True, color=CYAN))
+        self.on_refresh = on_refresh
         self.open_btn = action_button(tr("Открыть Atlas ↗"), self._open_atlas, height=32)
-        self.layout_.addWidget(row(heading(tr("Фракции в текущей системе"), size=20),
-                                   self.open_btn, None))
+        self.refresh_btn = None
+        header_widgets = [heading(tr("Фракции в текущей системе"), size=20)]
+        if callable(on_refresh):
+            self.refresh_btn = action_button(tr("Обновить"), self.refresh, height=32)
+            header_widgets.append(self.refresh_btn)
+        header_widgets += [self.open_btn, None]
+        self.layout_.addWidget(row(*header_widgets))
         self.layout_.addWidget(label(
-            tr("Минорные фракции, влияние и состояния из последнего события "
-               "FSDJump/Location в журнале."), role="muted", size=9, wrap=True,
+            tr("Минорные фракции, влияние и состояния текущей системы: из журнала "
+               "игры и базы проекта."), role="muted", size=9, wrap=True,
             word_wrap_width=820))
 
         self.system_label = label(tr("Ожидание данных о системе…"), size=11, bold=True,
@@ -84,6 +99,13 @@ class FactionInfographic(QWidget):
         self.layout_.addWidget(self.system_label)
         self.control_label = label("", role="muted", size=9, wrap=True)
         self.layout_.addWidget(self.control_label)
+        # Откуда взято состояние и когда его видели: журнал игры или сайт проекта.
+        self.source_label = label("", role="muted", size=9, wrap=True)
+        self.layout_.addWidget(self.source_label)
+        # Пояснение, почему список пуст или неполон (нет системы, сайт молчит).
+        self.status_label = label("", role="muted", size=9, wrap=True,
+                                  word_wrap_width=760)
+        self.layout_.addWidget(self.status_label)
 
         self.cards = QWidget()
         self.cards_layout = QVBoxLayout(self.cards)
@@ -100,8 +122,19 @@ class FactionInfographic(QWidget):
         """Open the Atlas factions tab in the browser (site links are localized)."""
         webbrowser.open(self.atlas_url, new=2)
 
-    def set_snapshot(self, system, controlling, factions) -> None:
-        """Replace the whole view: system, controlling faction and the cards."""
+    def refresh(self) -> None:
+        """Попросить свежие данные (кнопка «Обновить»); сеть живёт в Helper."""
+        if callable(self.on_refresh):
+            self.on_refresh()
+
+    def set_snapshot(self, system, controlling, factions, *, source="",
+                     observed_at="", note="") -> None:
+        """Replace the whole view: system, controlling faction and the cards.
+
+        ``source`` — откуда взято состояние (``site``, ``journal``,
+        ``journal-archive``), ``observed_at`` — время наблюдения из журнала или
+        базы, ``note`` — готовое пояснение для строки состояния.
+        """
         system = str(system or "").strip()
         controlling = str(controlling or "").strip()
         rows = [row for row in (factions or []) if isinstance(row, dict)]
@@ -110,6 +143,8 @@ class FactionInfographic(QWidget):
                                   else tr("Ожидание данных о системе…"))
         self.control_label.setText(
             tr("Контролирующая фракция: {faction}", faction=controlling) if controlling else "")
+        self.source_label.setText(self._source_text(source, observed_at))
+        self.status_label.setText(str(note or "").strip())
 
         self._clear_cards()
         if not rows:
@@ -129,6 +164,21 @@ class FactionInfographic(QWidget):
         return [getattr(card, "_faction_name", "") for card in self._card_widgets()]
 
     # ------------------------------------------------------------------ pieces
+    @staticmethod
+    def _source_text(source, observed_at) -> str:
+        """Строка «Источник: …» под названием системы (пустая, если нечего сказать)."""
+        source = str(source or "").strip()
+        if not source:
+            return ""
+        moment = format_timestamp(observed_at) or tr("время неизвестно")
+        if source == SOURCE_SITE:
+            return tr("Источник: сайт проекта · наблюдение {time}", time=moment)
+        if source == SOURCE_JOURNAL:
+            return tr("Источник: журнал игры · {time}", time=moment)
+        if source == SOURCE_JOURNAL_ARCHIVE:
+            return tr("Источник: журнал игры (архив) · {time}", time=moment)
+        return ""
+
     def _card_widgets(self) -> list:
         widgets = []
         for index in range(self.cards_layout.count()):
@@ -178,6 +228,8 @@ class FactionInfographic(QWidget):
             value = faction.get(key)
             if value:
                 details.append(str(value))
+        if faction.get("is_player"):
+            details.append(tr("фракция игроков"))
         states = faction.get("active_states") or []
         if states:
             details.append(tr("Активно: {states}",

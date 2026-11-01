@@ -78,7 +78,11 @@ Standalone desktop uploader for **ED Ring Colony** — https://edringcolony.ru.
   (`pilot_columns`, `sparkline_points`, `bars_geometry`) проверяются без окна.
 - «Фракции» уже нативные: `qt_factions.FactionInfographic` — виджет на
   `QFrame`/`QLabel`/`QProgressBar`; влияние, состояния и ссылка в Atlas
-  собираются из журнала.
+  собираются из журнала (`FSDJump`/`Location`/`CarrierJump`), а если такого
+  события в читаемых журналах нет — из хвоста журналов и из базы проекта
+  (`GET /api/factions/system`). Чистый сбор и выбор источника —
+  `factions_data.py`; под названием системы видно, откуда снимок и когда его
+  наблюдали, кнопка «Обновить» перезапрашивает данные.
 - «Колонизатор» уже нативный (`helper_pages.ColonyPage`): таблица проектов,
   действия с выбранным проектом и форма создания. Значения формы берутся
   через `value()`/`set_value()`, поэтому поле ввода и выпадающий список
