@@ -68,6 +68,16 @@ test('счётчики картографии и следов считаются
   assert.equal(discovery.updatedAt, '2026-10-01T00:00:00.000Z');
 });
 
+test('координаты: только полный набор осей, иначе null', () => {
+  const full = shapeDiscovery([scan()], { x: 1, y: 2, z: 3 });
+  assert.deepEqual(full.coordinates, { x: 1, y: 2, z: 3 });
+  const noCoords = shapeDiscovery([scan()]);
+  assert.equal(noCoords.coordinates, null);
+  assert.equal(shapeDiscovery([scan()], { x: 1, y: 2 }).coordinates, null, 'две оси — не координаты');
+  assert.equal(shapeDiscovery([scan()], { x: 1, y: 2, z: Number.NaN }).coordinates, null);
+  assert.equal(shapeDiscovery([scan()], 'Sol').coordinates, null);
+});
+
 test('стройка: процент, статус и остаток тонн', () => {
   const building = shapeConstruction({
     systemName: 'Test A',
@@ -118,6 +128,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
 // медленную часть до общего таймаута функции.
 process.env.ROUTE_HINT_PART_TIMEOUT_MS = '50';
 process.env.ROUTE_HINT_RELAXED_TIMEOUT_MS = '200';
+// Координаты — третий источник, у него свой лимит (в бою 3 с, здесь 100 мс).
+process.env.ROUTE_HINT_COORDS_TIMEOUT_MS = '100';
 
 const NEXT_SERVER_STUB = `
 export const NextResponse = {
@@ -176,9 +188,25 @@ export async function loadSystemsProgress(_svc, names) {
 }
 `;
 
+// Каталог галактики (Spansh-дамп) в тесте не читается: он лезет в отдельный
+// клиент Supabase через `./supabaseAdmin.ts` и без сети просто висит. Поэтому
+// подменяем модуль целиком — маршруту нужна от него одна функция.
+const GALAXY_STUB = `
+export const galaxy = { byName: new Map(), hang: false, calls: 0 };
+export async function findSystemByName(name) {
+  galaxy.calls += 1;
+  const key = String(name || '').trim().toLowerCase();
+  if (galaxy.hang) return new Promise(() => {});
+  return galaxy.byName.get(key) ?? null;
+}
+export async function systemById64() { return null; }
+export async function findSystemsByNames() { return new Map(); }
+`;
+
 const ENTRY = "export * as route from '@/app/api/systems/route-hint/route';\n"
   + "export { db, reset } from '@/lib/supabaseServer';\n"
-  + "export { progressBySystem } from '@/lib/systemOverview';\n";
+  + "export { progressBySystem } from '@/lib/systemOverview';\n"
+  + "export { galaxy } from '@/lib/galaxySystemsDb';\n";
 
 async function buildRoute() {
   const bundle = await bundleFile({
@@ -188,11 +216,15 @@ async function buildRoute() {
       '@/lib/supabaseServer': SUPABASE_STUB,
       '@/lib/supabaseAdmin': SUPABASE_STUB,
       '@/lib/systemOverview': PROGRESS_STUB,
+      '@/lib/galaxySystemsDb': GALAXY_STUB,
     },
   });
   const mod = await import(bundle);
   mod.reset();
   mod.progressBySystem.clear();
+  mod.galaxy.byName.clear();
+  mod.galaxy.hang = false;
+  mod.galaxy.calls = 0;
   return { mod };
 }
 
@@ -332,5 +364,45 @@ maybe('медленный запасной поиск не держит отве
 
   assert.ok(Date.now() - started < 2000, 'ответ не ждёт полного сканирования');
   assert.equal(body.partial, true, 'ответ помечен неполным — Helper переспросит');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+});
+
+/* ── координаты системы: нужны выгрузке маршрута ───────────────────────── */
+
+maybe('подсказка отдаёт координаты системы: по ним считается расстояние в выгрузке', async () => {
+  const { mod } = await buildRoute();
+  mod.galaxy.byName.set('coords one', { x: 1.5, y: -22.25, z: 300 });
+  mod.db.scans = [scan({ system_name: 'Coords One', first_discovered_by: 'CMDR Star' })];
+
+  const response = await mod.route.GET(new Request('https://site.test/api/systems/route-hint?name=Coords%20One'));
+  const body = await response.json();
+
+  assert.deepEqual(body.discovery.coordinates, { x: 1.5, y: -22.25, z: 300 });
+});
+
+maybe('системы нет в каталоге — координаты null, а не нули', async () => {
+  const { mod } = await buildRoute();
+  mod.db.scans = [scan({ system_name: 'No Coords', first_discovered_by: 'CMDR Star' })];
+
+  const response = await mod.route.GET(new Request('https://site.test/api/systems/route-hint?name=No%20Coords'));
+  const body = await response.json();
+
+  assert.equal(body.ok, true);
+  assert.equal(body.discovery.coordinates, null, 'нули на месте неизвестной оси дали бы ложные световые годы');
+  assert.equal(body.partial, undefined, 'каталог ответил «нет системы» — ответ полный');
+});
+
+maybe('медленный каталог не держит ответ: он приходит без координат и помечен partial', async () => {
+  const { mod } = await buildRoute();
+  mod.galaxy.hang = true;
+  mod.db.scans = [scan({ system_name: 'Slow Galaxy', first_discovered_by: 'CMDR Star' })];
+
+  const started = Date.now();
+  const response = await mod.route.GET(new Request('https://site.test/api/systems/route-hint?name=Slow%20Galaxy'));
+  const body = await response.json();
+
+  assert.ok(Date.now() - started < 2000, 'ответ не ждёт каталог галактики');
+  assert.equal(body.discovery.coordinates, null);
+  assert.equal(body.partial, true, 'пустые координаты — дырка, Helper переспросит');
   assert.equal(response.headers.get('cache-control'), 'no-store');
 });

@@ -11,6 +11,50 @@ from typing import Callable, List, Dict, Optional
 import route_hint
 
 
+def _system_column_names() -> List[str]:
+    """Как в CSV может называться колонка с именем системы.
+
+    Своя выгрузка пишет заголовок на языке интерфейса, а старые файлы — по-
+    английски (`system`, `name`). Ищем по всем названиям сразу: порядок в
+    списке — это приоритет.
+    """
+    # «система» — не подпись окна, а значение поля в файле: так называется
+    # колонка в русской выгрузке, и файл должен читаться при любом языке.
+    names: List[str] = ["system", "name", "star_system", "starsystem", "система"]
+    try:
+        import i18n
+        from locale_config import SUPPORTED_LOCALES
+
+        # Русский оригинал и все переводы слова «Система»: в своей же выгрузке
+        # заголовок стоит на языке интерфейса, и файл должен читаться обратно.
+        source = i18n.tr("Система")
+        for code in list(SUPPORTED_LOCALES) + ["ru"]:
+            for text in (i18n.catalog(code).get("Система"), source):
+                text = str(text or "").strip().casefold()
+                if text and text not in names:
+                    names.append(text)
+    except Exception:            # каталог недоступен — хватает английских имён
+        pass
+    return names
+
+
+def _csv_cell(values: Dict[str, str], columns: Dict[str, str], key: str):
+    """Значение ячейки по ключу столбца (`x`, `system_address`) — пусто, если нет."""
+    column = columns.get(key)
+    return None if column is None else values.get(column.strip().casefold())
+
+
+def _number_from_csv(value) -> Optional[float]:
+    """Координата из CSV: пустая ячейка и мусор — ``None``, а не ноль."""
+    text = str(value or "").strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 class RouteTracker:
     def __init__(self, hint_cache_path: Optional[Path] = None):
         self.systems: List[dict] = []
@@ -63,15 +107,54 @@ class RouteTracker:
         self.systems = loaded
 
     def load_from_csv(self, text: str):
-        """Загрузить из CSV."""
-        reader = csv.DictReader(io.StringIO(text))
+        """Загрузить маршрут из CSV — в том числе из нашей же выгрузки.
+
+        Файл, который пишет «Экспорт CSV», открывают в Excel и правят руками:
+        там точка с запятой, BOM и заголовки на языке интерфейса. Поэтому
+        разделитель определяется по первой строке, BOM срезается, а колонка с
+        именем системы ищется по списку названий (включая переводы
+        «Система»). Координаты (`X`/`Y`/`Z`), если они есть, сохраняются: по ним
+        считается расстояние до следующей системы.
+        """
+        raw = str(text or "").lstrip("\ufeff")
+        if not raw.strip():
+            self.systems = []
+            return
+        # Наша выгрузка пишет заголовки на языке интерфейса, поэтому колонки
+        # ищутся по ключу столбца (`x`, `system_address`), а не по точному
+        # тексту: иначе координаты из собственного файла терялись бы.
+        import route_export
+
+        header = raw.splitlines()[0]
+        delimiter = route_export.sniff_delimiter(header)
+        reader = csv.DictReader(io.StringIO(raw), delimiter=delimiter)
+        name_columns = _system_column_names()
+        columns = route_export.read_columns(list(reader.fieldnames or []))
         self.systems = []
-        idx = 1
         for row in reader:
-            name = row.get("system") or row.get("name") or row.get("System") or row.get("Name")
-            if name:
-                self.systems.append({"index": idx, "name": name.strip(), "status": "pending", "visited_at": None})
-                idx += 1
+            values = {str(key or "").strip().casefold(): value
+                      for key, value in (row or {}).items()}
+            name = ""
+            for column in name_columns:
+                name = str(values.get(column) or "").strip()
+                if name:
+                    break
+            if not name:
+                continue
+            system = {"index": len(self.systems) + 1, "name": name,
+                      "status": "pending", "visited_at": None}
+            position = [_number_from_csv(_csv_cell(values, columns, axis))
+                        for axis in ("x", "y", "z")]
+            if all(value is not None for value in position):
+                system["star_pos"] = position
+            address = (_csv_cell(values, columns, "system_address")
+                       or values.get("адрес системы"))
+            if address:
+                try:
+                    system["system_address"] = int(str(address).strip())
+                except ValueError:
+                    pass
+            self.systems.append(system)
 
     def refresh_next_system_info(self, force: bool = False):
         """Асинхронно получить краткую информацию о следующей системе из EDSM."""
@@ -344,6 +427,29 @@ class RouteTracker:
         with self._info_lock:
             return dict(self.next_system_info)
 
+    # -- подсказки о системах: чтение и запоминание ---------------------------
+    def cached_hint(self, system_name: str) -> Optional[Dict]:
+        """Уже известная подсказка о системе (память или кэш с диска)."""
+        name = str(system_name or "").strip()
+        if not name:
+            return None
+        with self._hint_lock:
+            return self._cached_hint(name)
+
+    def remember_hint(self, system_name: str, hint: Optional[Dict]) -> None:
+        """Запомнить подсказку, полученную не оверлеем (например, для выгрузки).
+
+        Кэш общий: выгруженная система не будет спрашиваться заново ни блоком
+        ROUTE, ни следующим экспортом.
+        """
+        name = str(system_name or "").strip()
+        if not name or not isinstance(hint, dict) or hint.get("error"):
+            return
+        with self._hint_lock:
+            self._hint_cache[name.casefold()] = {"at": time.time(), "hint": dict(hint)}
+            self._hint_cache_dirty = True
+        self._save_hint_cache()
+
     def mark_visited(self, system_name: str) -> bool:
         """Отметить систему как посещённую."""
         key = system_name.lower()
@@ -362,14 +468,19 @@ class RouteTracker:
         key = system_name.lower()
         return any(s["name"].lower() == key for s in self.systems)
 
-    def export_csv(self) -> str:
-        """Экспортировать в CSV."""
-        out = io.StringIO()
-        writer = csv.writer(out)
-        writer.writerow(["index", "system", "status", "visited_at"])
-        for s in self.systems:
-            writer.writerow([s["index"], s["name"], s["status"], s.get("visited_at") or ""])
-        return out.getvalue()
+    def export_csv(self, keys=None, *, hints=None, translate=None,
+                   status_text=None) -> str:
+        """Экспортировать маршрут в CSV.
+
+        Без аргументов — прежние четыре столбца (`№`, `Система`, `Статус`,
+        `Посещена`) в формате, который понимает Excel: точка с запятой, BOM,
+        CRLF. Набор столбцов выбирает окно выгрузки (`route_export.FIELDS`):
+        расстояния, координаты, тела, первооткрыватели, стройка.
+        """
+        import route_export
+
+        return route_export.build_csv(self.systems, keys, hints=hints,
+                                      translate=translate, status_text=status_text)
 
     def clear(self):
         self.systems = []

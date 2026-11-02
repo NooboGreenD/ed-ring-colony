@@ -56,6 +56,8 @@ from journal_parser import (
     PARSER_VERSION,
 )
 from route_tracker import RouteTracker
+import route_export
+import route_hint
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from helper_shell import PageHost, build_shell
 from overlay import (
@@ -128,7 +130,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.23.0"
+VERSION = "2.24.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -235,6 +237,9 @@ class ColonialHelperApp:
         # стройка и первооткрыватель известных систем видны сразу.
         self.route = RouteTracker(
             self.config_path.with_name(".colonial_helper_route_hints.json"))
+        # Выгрузка маршрута в CSV: фон идёт отдельным потоком, а столбцы
+        # запоминаются между запусками (в следующий раз галочки уже стоят).
+        self._route_export_inflight = False
         self.ship = ShipTracker()
         # Миникарта пешехода: позиция из Status.json, точки интереса из журнала.
         self.foot_map = FootMap()
@@ -8398,23 +8403,153 @@ class ColonialHelperApp:
         except Exception as e:
             self.log(f"Ошибка импорта маршрута: {e}", "error")
 
+    #: Сколько систем маршрута обогащаем данными сайта при выгрузке. Длинный
+    #: маршрут на 500 систем иначе означал бы 500 запросов подряд.
+    ROUTE_EXPORT_HINT_LIMIT = 200
+    #: Сколько секунд ждём сайт, прежде чем отдать файл с тем, что успели.
+    ROUTE_EXPORT_HINT_SECONDS = 120
+
     def _on_export_route(self):
+        """Экспорт CSV: сначала мини-меню столбцов, потом файл.
+
+        Прежняя кнопка писала фиксированные четыре столбца — теперь командир
+        выбирает, что ему нужно (расстояния, координаты, тела систем,
+        первооткрыватели, стройка), а выбор запоминается между запусками.
+        """
         if not self.route.systems:
             self.log("Нет данных для экспорта", "warn")
             return
+        from helper_pages import RouteExportDialog
+
+        keys = RouteExportDialog.ask(keys=self.config.get("route_export_columns"),
+                                     systems=len(self.route.systems),
+                                     parent=self.root)
+        if keys is None:
+            return
+        self.config["route_export_columns"] = list(keys)
+        try:
+            self.save_config()
+        except Exception:
+            pass
         filepath = ask_save_file(
             defaultextension=".csv",
             filetypes=[("CSV", "*.csv")],
             initialfile="route_export.csv",
         )
         if filepath:
+            self._start_route_export(keys, filepath)
+
+    def _start_route_export(self, keys, filepath: str) -> None:
+        """Запустить выгрузку в фоне: сайт отвечает не мгновенно."""
+        if self._route_export_inflight:
+            self.log("Выгрузка маршрута уже идёт", "warn")
+            return
+        self._route_export_inflight = True
+        systems = [dict(system) for system in self.route.systems]
+        threading.Thread(target=self._route_export_worker,
+                         args=(list(keys), str(filepath), systems),
+                         name="route-export", daemon=True).start()
+
+    def _route_status_text(self, status: str) -> str:
+        """Как назвать статус маршрута в файле — тем же словом, что в таблице."""
+        key = route_export.STATUS_TITLES.get(str(status or ""))
+        return tr(key) if key else str(status or "")
+
+    def _route_export_worker(self, keys, filepath: str, systems: list) -> None:
+        """Фоновый сбор: подсказки о системах (сайт) и запись файла."""
+        notes: list = []
+        try:
+            hints, notes = self._route_export_hints(keys, systems)
+            text = route_export.build_csv(systems, keys, hints=hints, translate=tr,
+                                          status_text=self._route_status_text)
+            with open(filepath, "w", encoding="utf-8", newline="") as handle:
+                handle.write(text)
+        except Exception as exc:
+            message = str(exc)
+            self.root.after(0, lambda m=message: self._route_export_done("", m, 0, []))
+            return
+        self.root.after(0, lambda: self._route_export_done(filepath, "", len(systems), notes))
+
+    def _route_export_hints(self, keys, systems: list) -> tuple:
+        """Подсказки о системах маршрута: из кэша, недостающие — с сайта.
+
+        Возвращает ``(подсказки, заметки)``: заметки — честные причины, по
+        которым часть столбцов осталась пустой (нет соединения, кончилось
+        время, слишком длинный маршрут). В файле на месте таких значений пусто,
+        а не ноль.
+        """
+        notes: list = []
+        hints: dict = {}
+        if not (route_export.needs_hints(keys) or route_export.needs_coordinates(keys)):
+            return hints, notes
+        unique: dict = {}
+        for system in systems:
+            name = str(system.get("name") or "").strip()
+            if name and name.casefold() not in unique:
+                unique[name.casefold()] = (name, system)
+        need_hint = route_export.needs_hints(keys)
+        need_coords = route_export.needs_coordinates(keys)
+        to_fetch: list = []
+        for low, (name, system) in unique.items():
+            hint = self.route.cached_hint(name)
+            if hint:
+                hints[name] = hint
+            missing_hint = need_hint and hint is None
+            missing_coords = need_coords and route_export.position(system, hint) is None
+            if missing_hint or missing_coords:
+                to_fetch.append(name)
+        if not to_fetch:
+            return hints, notes
+        limit = min(len(to_fetch), int(self.ROUTE_EXPORT_HINT_LIMIT))
+        if len(to_fetch) > limit:
+            notes.append(tr("данные сайта спрошены для {done} систем из {total}: "
+                            "маршрут длиннее лимита выгрузки",
+                            done=limit, total=len(to_fetch)))
+        deadline = time.monotonic() + float(self.ROUTE_EXPORT_HINT_SECONDS)
+        failed = 0
+        done = 0
+        for index, name in enumerate(to_fetch[:limit]):
+            if time.monotonic() > deadline:
+                notes.append(tr("сайт не успел ответить по {count} системам: "
+                                "эти столбцы в файле пустые",
+                                count=len(to_fetch) - index))
+                break
+            payload = {}
             try:
-                csv_text = self.route.export_csv()
-                with open(filepath, "w", encoding="utf-8-sig", newline="") as f:
-                    f.write(csv_text)
-                self.log(f"Маршрут экспортирован: {filepath}", "success")
-            except Exception as e:
-                self.log(f"Ошибка экспорта: {e}", "error")
+                payload = self.api.get_route_hint(name) or {}
+            except Exception:
+                payload = {"ok": False}
+            hint = route_hint.normalize_hint(payload, name)
+            done += 1
+            if hint.get("error"):
+                failed += 1
+            else:
+                self.route.remember_hint(name, hint)
+                hints[name] = hint
+            if done % 5 == 0:
+                self.root.after(0, lambda d=done, total=limit: self._route_export_progress(d, total))
+        if failed:
+            notes.append(tr("сайт не ответил по {count} системам: их столбцы пустые",
+                            count=failed))
+        self.root.after(0, lambda: self._route_export_progress(limit, limit))
+        return hints, notes
+
+    def _route_export_progress(self, done: int, total: int) -> None:
+        page = getattr(self, "route_page", None)
+        if page is not None and total:
+            page.set_counter(tr("Выгрузка маршрута: {done} из {total} систем…",
+                                done=done, total=total))
+
+    def _route_export_done(self, filepath: str, error: str, count: int, notes: list) -> None:
+        """Готово (или не вышло): журнал и обычная строка счётчика маршрута."""
+        self._route_export_inflight = False
+        self._refresh_route_tree()
+        if error:
+            self.log(f"Ошибка экспорта: {error}", "error")
+            return
+        self.log(f"Маршрут экспортирован: {filepath} ({count} систем)", "success")
+        for note in notes or ():
+            self.log(f"Выгрузка маршрута: {note}", "warn")
 
     def _on_clear_route(self):
         self.route.clear()

@@ -56,6 +56,30 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(hint["bodies"], 12)
         self.assertEqual([need["label"] for need in hint["needs"]], ["Сталь", "Титан"])
 
+    def test_coordinates_come_with_the_hint(self):
+        """Координаты нужны выгрузке маршрута: по ним считаются расстояния."""
+        data = payload()
+        data["discovery"]["coordinates"] = {"x": 1.5, "y": -22.25, "z": 300}
+        hint = route_hint.normalize_hint(data)
+        self.assertEqual(hint["coordinates"], {"x": 1.5, "y": -22.25, "z": 300})
+
+    def test_incomplete_coordinates_are_dropped_whole(self):
+        """Две оси — не координаты: «0» на месте третьей дал бы ложные св. л."""
+        for point in ({"x": 1, "y": 2}, {"x": 1, "y": 2, "z": "мусор"},
+                      {"x": 1, "y": 2, "z": None}, "1, 2, 3", [1, 2, 3], {}):
+            data = payload()
+            data["discovery"]["coordinates"] = point
+            hint = route_hint.normalize_hint(data)
+            self.assertIsNone(hint["coordinates"], point)
+        empty = route_hint.empty_hint()
+        self.assertIsNone(empty["coordinates"])
+
+    def test_coordinates_from_the_site_are_numbers(self):
+        data = payload()
+        data["discovery"]["coordinates"] = {"x": "12.5", "y": 0, "z": "-3"}
+        self.assertEqual(route_hint.normalize_hint(data)["coordinates"],
+                         {"x": 12.5, "y": 0.0, "z": -3.0})
+
     def test_empty_payload_is_not_explored(self):
         hint = route_hint.normalize_hint(None, "Test Alpha")
         self.assertEqual(hint["system"], "Test Alpha")

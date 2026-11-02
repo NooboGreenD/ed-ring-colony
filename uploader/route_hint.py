@@ -44,6 +44,9 @@ def empty_hint() -> Dict[str, Any]:
         "mapped": 0,
         "footfall": 0,
         "discoverer": "",
+        # Координаты системы в световых годах: сайт отдаёт их вместе с
+        # подсказкой, и по ним считается расстояние в выгрузке маршрута.
+        "coordinates": None,
         "status": UNKNOWN,
         "progress": None,
         "remaining": None,
@@ -86,6 +89,23 @@ def _percent(value: Any) -> Optional[int]:
 def _count(value: Any) -> int:
     number = _number(value)
     return 0 if number is None else max(0, int(number))
+
+
+def _coordinates(value: Any) -> Optional[Dict[str, float]]:
+    """Координаты системы из ответа сайта: все три оси или ничего.
+
+    Половина координат хуже, чем их отсутствие: по двум осям расстояние не
+    посчитать, а «0» на месте неизвестной оси дал бы неверные световые годы.
+    """
+    if not isinstance(value, dict):
+        return None
+    axes = {}
+    for axis in ("x", "y", "z"):
+        number = _number(value.get(axis))
+        if number is None:
+            return None
+        axes[axis] = number
+    return axes
 
 
 def normalize_hint(payload: Any, system: str = "") -> Dict[str, Any]:
@@ -146,6 +166,7 @@ def normalize_hint(payload: Any, system: str = "") -> Dict[str, Any]:
         hint["mapped"] = _count(discovery.get("mapped"))
         hint["footfall"] = _count(discovery.get("footfall"))
         hint["discoverer"] = _text(discovery.get("discoverer"), 80)
+        hint["coordinates"] = _coordinates(discovery.get("coordinates"))
     return hint
 
 
@@ -165,5 +186,5 @@ def hint_signature(hint: Optional[Dict[str, Any]]) -> str:
     return "|".join(str(hint.get(key, "")) for key in (
         "system", "loading", "error", "known", "discoverer", "status", "progress",
         "remaining", "sites_active", "sites_complete", "bodies", "mapped", "footfall",
-        "partial",
+        "partial", "coordinates",
     ))

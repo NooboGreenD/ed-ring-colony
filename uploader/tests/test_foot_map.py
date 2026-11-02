@@ -292,6 +292,43 @@ class FootMapStatusTests(unittest.TestCase):
         self.assertTrue(any(poi["distance"] > foot_map.POI_MAX_DRAW_M
                             for poi in state["pois"]))
 
+    def test_map_never_widens_past_five_kilometres(self):
+        """50 км обзора прятали всё, что рядом: биологию, корабль и метки.
+
+        Жалоба командира: «масштаб отображения в 50 км — это слишком много,
+        надо не больше 5 вокруг игрока… из-за этого не видно ни зоны биологии,
+        ни остальных меток». Далёкое поселение растягивало обзор до 50 км, и
+        круг колонии в 500 м превращался в пиксель под стрелкой.
+        """
+        self.assertEqual(foot_map.MAX_SCALE_M, 5000)
+        self.assertLessEqual(max(foot_map.SCALE_STEPS), 5000)
+        self.assertEqual(foot_map.pick_scale(50000), 5000)
+
+        self.map.update_status(status(Latitude=0.0, Longitude=0.0))
+        self.map.handle({"event": "ApproachSettlement", "MarketID": 7, "Name": "Near",
+                         "Latitude": 0.03, "Longitude": 0.0})     # ~3,3 км
+        self.assertEqual(self.map.state()["scale"], 5000)
+
+        self.map.handle({"event": "ApproachSettlement", "MarketID": 8, "Name": "Far",
+                         "Latitude": 0.3, "Longitude": 0.0})      # ~33 км
+        state = self.map.state()
+        self.assertLessEqual(state["scale"], foot_map.MAX_SCALE_M)
+        # Точка не пропала с карты: её метка встанет на кольцо.
+        self.assertTrue(any(poi["name"] == "Far" for poi in state["pois"]))
+
+    def test_sample_circle_stays_readable_at_the_widest_scale(self):
+        """При обзоре 5 км круг колонии 500 м — десятая часть радиуса карты."""
+        self.map.update_status(status(Latitude=0.0, Longitude=0.0))
+        self.map.handle({"event": "ApproachSettlement", "MarketID": 9, "Name": "Far",
+                         "Latitude": 0.3, "Longitude": 0.0})
+        self.map.handle({"event": "ScanOrganic", "ScanType": "Log",
+                         "Genus_Localised": "Bacterium",
+                         "Species_Localised": "Bacterium Cerbrus"})
+        state = self.map.state()
+        self.assertLessEqual(state["scale"], foot_map.MAX_SCALE_M)
+        self.assertEqual(state["sample"]["radius"], 500)
+        self.assertGreaterEqual(foot_map.MAX_SCALE_M / state["sample"]["radius"], 5.0)
+
 
 class FootMapSampleTests(unittest.TestCase):
     """Образцы биосигналов: где снят и докуда нельзя ставить следующий."""
