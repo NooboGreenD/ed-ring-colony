@@ -39,14 +39,16 @@ from i18n import tr
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.4.0"
+LAUNCHER_VERSION = "1.4.1"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
 
 #: Что лаунчер сообщает запущенному коду (читает `colonial_helper`).
 ENV_LAUNCHER = "COLONIAL_HELPER_LAUNCHER"
-ENV_VERSION = "COLONIAL_HELPER_ACTIVE_VERSION"
+#: Имя переменной одно на двоих: по ней `bundle.running_version()` понимает,
+#: каталог какой версии нельзя переносить и удалять.
+ENV_VERSION = bundle.ACTIVE_ENV
 ENV_ROOT = "COLONIAL_HELPER_HOME"
 
 #: Модули, которые обязаны перечитаться из пакета, а не остаться копией из exe.
@@ -286,6 +288,33 @@ def choose_version(root, embedded_dir: Optional[Path],
     return current
 
 
+def purge_version_modules(root) -> List[str]:
+    """Убрать из `sys.modules` всё, что загружено из каталогов версий.
+
+    Лаунчер живёт дольше Helper: «Запустить» открывает программу в том же
+    процессе, а после закрытия окна снова показывает стартовый экран. Модули
+    прошлой версии при этом остаются в кэше Python, и следующий запуск
+    импортировал бы их заново — то есть работал бы на СТАРОМ коде, хотя в
+    `state.json` уже новая версия. Так и выглядело «обновление не применилось,
+    пока не перезапустишь лаунчер». Хуже того, половинчатая смесь модулей двух
+    версий (новый `helper_pages` и старый `ui_qt`) — это падения без сообщения.
+
+    Поэтому перед каждым запуском Helper кэш версий чистится целиком. Модули,
+    приехавшие внутри exe (`app_bundle`) и сам `launcher`, не трогаем: они
+    лежат вне `app/<версия>`.
+    """
+    versions_root = str(bundle.versions_dir(root))
+    dropped: List[str] = []
+    for name, module in list(sys.modules.items()):
+        origin = getattr(module, "__file__", None)
+        if not origin:
+            continue
+        if _path_is_inside(str(origin), versions_root):
+            sys.modules.pop(name, None)
+            dropped.append(name)
+    return dropped
+
+
 def activate_path(root, version: str) -> Path:
     """Поставить каталог версии первым в `sys.path` и сбросить кэш модулей."""
     folder = bundle.version_dir(root, version)
@@ -293,6 +322,8 @@ def activate_path(root, version: str) -> Path:
     while path in sys.path:
         sys.path.remove(path)
     sys.path.insert(0, path)
+    # Модули прошлой версии — из кэша вон (см. `purge_version_modules`).
+    purge_version_modules(root)
     # `bundle`/`bundle_updater` уже импортированы из exe. Программа должна
     # работать с их копиями ИЗ ПАКЕТА: иначе логику обновлений нельзя было бы
     # починить обновлением — только новым exe.
@@ -579,6 +610,22 @@ def show_dashboard(root, embedded_dir, embedded_manifest,
     return None if result is None else bool(result)
 
 
+def crash_reason(root, hours: float = 1.0) -> str:
+    """Последняя запись журнала падений Helper — «почему закрылось».
+
+    Журнал пишет сам Helper (`crash_log`), лаунчер только читает. Модуль лежит
+    в пакете кода, поэтому его может не быть (сломанная установка) — тогда
+    честно возвращаем пусто и не мешаем показать стартовый экран.
+    """
+    try:
+        # Через `importlib`, а не `import`: статический импорт заставил бы
+        # PyInstaller заморозить модуль в exe (см. `import_dashboard`).
+        module = importlib.import_module("crash_log")
+        return module.recent_crash(root, hours=hours)
+    except Exception:
+        return ""
+
+
 def helper_exit_code(run) -> int:
     """Код возврата Helper: он мог закрыться штатно, упасть или вызвать exit()."""
     try:
@@ -612,7 +659,15 @@ def run_dashboard_loop(root, embedded_dir, embedded_manifest,
             return 0
         code = helper_exit_code(lambda: run_helper(args))
         log(root, f"Helper завершён (код {code}) — открываем лаунчер заново")
-        reminder = NOTICE_CLOSED if code == 0 else NOTICE_FAILED
+        if code == 0:
+            reminder = NOTICE_CLOSED
+        else:
+            reminder = NOTICE_FAILED
+            # Причину падения знает только журнал Helper: без него пилот видит
+            # исчезнувшее окно и не более того.
+            reason = crash_reason(root)
+            log(root, f"причина падения: {reason}" if reason
+                else "причина падения не записана — журнала Helper нет")
 
 
 def main(argv: Optional[List[str]] = None) -> int:

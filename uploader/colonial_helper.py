@@ -124,13 +124,15 @@ NON_UI_LITERALS = frozenset({
     "  Отправлено этим приложением в Raven Colonial: ", " доставок)",
     "  Авианосец ", ": на борту ", "Обнаружен журнал другого CMDR '",
     "' (ожидался '", "'). Доставки из ", " пропущены.", "t на маршрут)",
+    # шапка журнала падений (`crash_log`): диагностика, а не подписи окна
+    "версия пакета ", "запуск из исходников", "лаунчер ",
     # консоль и файл аварийного журнала: окно ещё не существует
     "Лог очищен", "ОШИБКА: не найден модуль 'requests'",
     "Решение: pip install requests", "КРИТИЧЕСКАЯ ОШИБКА при запуске:\n",
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.24.0"
+VERSION = "2.24.1"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -4203,7 +4205,10 @@ class ColonialHelperApp:
         ):
             self._restart_after_update()
         else:
-            self.log("Новая версия заработает после перезапуска программы.", "info")
+            # Честно: файлы на диске уже новые, но этот процесс продолжает
+            # работать на загруженных модулях прошлой версии.
+            self.log(tr("Обновление установлено, но программа работает "
+                        "на прошлой версии до перезапуска."), "warn")
 
     def _restart_after_update(self):
         """Запустить новый процесс и аккуратно закрыть текущий."""
@@ -8609,7 +8614,30 @@ class ColonialHelperApp:
         self.root.after(ms, callback)
 
 
+def _install_crash_log():
+    """Включить журнал падений до всего остального (см. `crash_log`).
+
+    Оконная сборка не имеет консоли, поэтому «программа закрылась без ошибки» —
+    это всегда потерянная трассировка. Журнал ставится первым же действием:
+    тогда в него попадут и нативные падения, и исключения из фоновых потоков.
+    Возвращает `(путь, прошлое_падение)`; пустые значения — журнал недоступен.
+    """
+    try:
+        import crash_log
+
+        launcher = os.environ.get("COLONIAL_HELPER_LAUNCHER", "").strip()
+        extra = (f"версия пакета {ACTIVE_BUNDLE_VERSION}"
+                 if bundle_mode() else "запуск из исходников")
+        if launcher:
+            extra = f"лаунчер {launcher}, {extra}"
+        path = crash_log.install(version=VERSION, extra=extra)
+        return (str(path or ""), crash_log.recent_crash() or "")
+    except Exception:
+        return ("", "")
+
+
 def main():
+    crash_file, crash_previous = _install_crash_log()
     try:
         try:
             import requests
@@ -8622,6 +8650,14 @@ def main():
 
         root = HelperWindow(f"{APP_NAME} v{VERSION}")
         app = ColonialHelperApp(root)
+        if crash_file:
+            app.crash_log_path = crash_file
+            app.log(tr("Журнал падений: {path}", path=crash_file), "info")
+        if crash_previous:
+            # Прошлый запуск закончился падением: говорим об этом прямо, иначе
+            # «оно само закрылось» — единственное, что запомнил пилот.
+            app.log(tr("Прошлый запуск завершился ошибкой: {reason}", reason=crash_previous),
+                    "warn")
         root.run()
     except Exception as e:
         error_file = Path.home() / "colonial_helper_error.log"
@@ -8632,13 +8668,16 @@ def main():
             f.write("-" * 60 + "\n")
             traceback.print_exc(file=f)
             f.write("=" * 60 + "\n")
+        # Журнал падений пишет то же самое подробнее: туда попадают и потоки,
+        # и нативные падения, поэтому путь к нему тоже показываем.
+        details = f"{error_file}\n{crash_file}" if crash_file else str(error_file)
         try:
             from ui_qt import show_error_dialog
 
             show_error_dialog(
                 tr("Colonial Helper — Ошибка запуска"),
                 f"{type(e).__name__}: {e}\n\n"
-                f"Подробности сохранены в:\n{error_file}",
+                f"{tr('Подробности сохранены в журнале:')}\n{details}",
             )
         except Exception:
             pass

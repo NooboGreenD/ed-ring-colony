@@ -624,6 +624,60 @@ def write_bundle_files(target_dir, manifest: Dict[str, Any],
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+#: В какой версии работает текущий процесс (ставит лаунчер перед запуском кода).
+ACTIVE_ENV = "COLONIAL_HELPER_ACTIVE_VERSION"
+
+
+def running_version() -> str:
+    """Версия, из каталога которой работает этот процесс (пусто — неизвестно).
+
+    Нужна ровно для одного: чтобы обновление и «восстановить установку» никогда
+    не уносили каталог, из которого программа прямо сейчас читает модули.
+    Раньше переустановка той же версии (`repair`) переносила живой каталог в
+    `.old-…` и удаляла его: приложение продолжало работать на уже загруженных
+    модулях, а первый же `import` после этого валил процесс без сообщения —
+    в оконной сборке трассировку некуда печатать.
+    """
+    value = os.environ.get(ACTIVE_ENV, "").strip()
+    return value if _VERSION_RE.match(value) else ""
+
+
+def _replace_files_in_place(stage: Path, target: Path) -> None:
+    """Обновить файлы каталога, который нельзя переносить (он в работе).
+
+    Каталог остаётся на месте, меняются только файлы — по одному и атомарно.
+    Python не держит `.py` открытыми, поэтому замена безопасна; если отдельный
+    файл всё же занят (антивирус), он остаётся старым и это не рушит установку.
+    Лишние файлы прошлой сборки убираются: иначе в каталоге остался бы модуль,
+    которого в манифесте уже нет.
+    """
+    incoming = set()
+    for source in sorted(stage.rglob("*")):
+        if not source.is_file():
+            continue
+        relative = source.relative_to(stage)
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(source, destination)
+        except OSError:
+            try:
+                shutil.copyfile(source, destination)
+            except OSError:
+                continue
+        incoming.add(relative.as_posix())
+    for stale in sorted(target.rglob("*"), reverse=True):
+        if not stale.is_file():
+            continue
+        if stale.relative_to(target).as_posix() in incoming:
+            continue
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    shutil.rmtree(stage, ignore_errors=True)
+
+
 def promote_stage(root, version: str) -> Path:
     """Перенести подготовленный каталог `.stage-<version>` на его место."""
     stage = stage_dir(root, version)
@@ -631,6 +685,11 @@ def promote_stage(root, version: str) -> Path:
     if not stage.is_dir():
         raise BundleError(tr("Нет подготовленного каталога {path}", path=stage))
     if target.exists():
+        if str(version) == running_version():
+            # Этот каталог читает работающий процесс: переносить и удалять его
+            # нельзя, иначе программа теряет собственные файлы на ходу.
+            _replace_files_in_place(stage, target)
+            return target
         backup = target.with_name(f".old-{version}-{int(time.time())}")
         os.replace(target, backup)
         shutil.rmtree(backup, ignore_errors=True)
@@ -715,6 +774,9 @@ def prune_versions(root, keep: int = KEEP_VERSIONS) -> List[str]:
     """Удалить старые версии, оставив текущую, предыдущую и `keep` свежих."""
     state = load_state(root)
     protected = {str(state.get("current") or ""), str(state.get("previous") or "")}
+    # Каталог работающего процесса не удаляем никогда: он не обязан совпадать с
+    # current (обновление могло переключить указатель уже после запуска).
+    protected.add(running_version())
     versions = installed_versions(root)
     # Сначала номер версии, при равенстве — время установки: две сборки одной
     # версии (пересобранный prerelease) различаются только временем.

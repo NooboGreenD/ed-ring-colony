@@ -311,6 +311,14 @@ def _install_stage(root, manifest: Dict[str, Any], stage: Path,
         shutil.rmtree(stage, ignore_errors=True)
         return {"ok": False, "error": problem, "version": version}
     bundle.promote_stage(root, version)
+    # Проверяем уже установленный каталог, а не только подготовленный: при
+    # обновлении работающей версии файлы заменяются на месте, и занятый файл
+    # (антивирус, второй экземпляр) мог остаться старым. Об этом надо сказать,
+    # а не считать установку успешной.
+    placed = bundle.verify_directory(bundle.version_dir(root, version), manifest, keys,
+                                     require_signature)
+    if placed:
+        return {"ok": False, "error": placed, "version": version}
     bundle.activate(root, version)
     bundle.prune_versions(root)
     return {"ok": True, "error": None, "version": version}

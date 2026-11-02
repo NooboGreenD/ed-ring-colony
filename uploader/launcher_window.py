@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -64,7 +64,7 @@ def launcher_version() -> str:
     module = sys.modules.get("__main__")
     if not hasattr(module, "LAUNCHER_VERSION"):
         module = sys.modules.get("launcher")
-    return str(getattr(module, "LAUNCHER_VERSION", "1.4.0"))
+    return str(getattr(module, "LAUNCHER_VERSION", "1.4.1"))
 
 
 class LauncherWindow(FramelessWindow):
@@ -309,9 +309,27 @@ class LauncherWindow(FramelessWindow):
         if self.notice == "closed":
             return tr("Colonial Helper закрыт — лаунчер снова открыт. Можно запустить его ещё раз.")
         if self.notice == "failed":
+            # «Закрылось без ошибки» — самый неудобный отчёт для разбора, поэтому
+            # показываем и причину из журнала Helper, и путь к самому журналу.
+            reason, path = self._crash_details()
+            if reason and path:
+                return tr("Colonial Helper завершился с ошибкой: {reason}. "
+                          "Подробности в журнале: {path}", reason=reason, path=path)
+            if path:
+                return tr("Colonial Helper завершился с ошибкой — лаунчер открыт снова. "
+                          "Подробности в журнале: {path}", path=path)
             return tr("Colonial Helper завершился с ошибкой — лаунчер открыт снова. "
                       "Подробности в журнале Helper.")
         return ""
+
+    def _crash_details(self) -> Tuple[str, str]:
+        """Причина последнего падения и путь журнала; пусто — журнала нет."""
+        try:
+            import crash_log
+
+            return crash_log.notice_details(getattr(self, "install_root", None))
+        except Exception:
+            return "", ""
 
     # --------------------------------------------------------------- профиль
     def open_account(self) -> None:

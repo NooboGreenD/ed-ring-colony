@@ -11392,6 +11392,59 @@ _STRINGS.update({
     },
 })
 
+_STRINGS.update({
+    # ------------------------------------------------- журнал падений Helper
+    "Журнал падений: {path}": {
+        "en": "Crash log: {path}",
+        "de": "Absturzprotokoll: {path}",
+        "it": "Registro degli arresti: {path}",
+        "ko": "충돌 기록: {path}",
+        "zh": "崩溃日志：{path}",
+        "ja": "クラッシュログ: {path}",
+    },
+    "Прошлый запуск завершился ошибкой: {reason}": {
+        "en": "The previous run ended with an error: {reason}",
+        "de": "Der vorherige Start endete mit einem Fehler: {reason}",
+        "it": "L'avvio precedente è terminato con un errore: {reason}",
+        "ko": "지난 실행이 오류로 끝났습니다: {reason}",
+        "zh": "上次运行以错误结束：{reason}",
+        "ja": "前回の起動はエラーで終了しました: {reason}",
+    },
+    "Подробности сохранены в журнале:": {
+        "en": "Details are saved in the log:",
+        "de": "Details stehen im Protokoll:",
+        "it": "I dettagli sono salvati nel registro:",
+        "ko": "자세한 내용은 로그에 저장됩니다:",
+        "zh": "详细信息已保存到日志：",
+        "ja": "詳細はログに保存されています:",
+    },
+    "Colonial Helper завершился с ошибкой: {reason}. Подробности в журнале: {path}": {
+        "en": "Colonial Helper ended with an error: {reason}. Details in the log: {path}",
+        "de": "Colonial Helper wurde mit einem Fehler beendet: {reason}. Details im Protokoll: {path}",
+        "it": "Colonial Helper è terminato con un errore: {reason}. Dettagli nel registro: {path}",
+        "ko": "Colonial Helper가 오류로 종료되었습니다: {reason}. 자세한 내용은 로그: {path}",
+        "zh": "Colonial Helper 因错误退出：{reason}。详情见日志：{path}",
+        "ja": "Colonial Helper がエラーで終了しました: {reason}。詳細はログ: {path}",
+    },
+    "Colonial Helper завершился с ошибкой — лаунчер открыт снова. Подробности в журнале: {path}": {
+        "en": "Colonial Helper ended with an error — the launcher is open again. Details in the log: {path}",
+        "de": "Colonial Helper wurde mit einem Fehler beendet — der Launcher ist wieder offen. Details im Protokoll: {path}",
+        "it": "Colonial Helper è terminato con un errore — il launcher è di nuovo aperto. Dettagli nel registro: {path}",
+        "ko": "Colonial Helper가 오류로 종료되어 런처가 다시 열렸습니다. 자세한 내용은 로그: {path}",
+        "zh": "Colonial Helper 因错误退出，启动器已重新打开。详情见日志：{path}",
+        "ja": "Colonial Helper がエラーで終了したため、ランチャーを再度開きました。詳細はログ: {path}",
+    },
+    # ------------------------------------- запуск из обновлённого пакета кода
+    "Обновление установлено, но программа работает на прошлой версии до перезапуска.": {
+        "en": "The update is installed, but the program runs the previous version until it restarts.",
+        "de": "Das Update ist installiert, aber das Programm läuft bis zum Neustart auf der vorherigen Version.",
+        "it": "L'aggiornamento è installato, ma il programma usa la versione precedente fino al riavvio.",
+        "ko": "업데이트가 설치되었지만 재시작 전까지 이전 버전으로 실행됩니다.",
+        "zh": "更新已安装，但程序在重启前仍使用旧版本。",
+        "ja": "更新はインストールされましたが、再起動までは以前のバージョンで動作します。",
+    },
+})
+
 
 def _build_catalogs() -> Dict[str, Dict[str, str]]:
     """Развернуть «строка → {язык: текст}» в «язык → {строка: текст}»."""

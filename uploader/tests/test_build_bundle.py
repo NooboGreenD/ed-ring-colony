@@ -76,6 +76,7 @@ class BuildBundleTests(unittest.TestCase):
         for name, text in (
             ("colonial_helper.py", 'VERSION = "2.13.0"\ndef main():\n    return 0\n'),
             ("overlay.py", "BLOCKS = 7\n"),
+            ("crash_log.py", "# журнал падений\n"),
             ("updater.py", 'VERSION = "2.13.0"\n'),
             ("launcher.py", 'LAUNCHER_VERSION = "1.4.0"\n'),
             ("build_exe.py", "# сборщик\n"),
@@ -115,6 +116,17 @@ class BuildBundleTests(unittest.TestCase):
         # Тесты и служебные файлы пилоту не нужны.
         self.assertFalse(any(name.startswith("tests/") for name in names))
         self.assertNotIn("requirements.txt", names)
+
+    def test_crash_log_ships_with_the_program(self):
+        """Журнал падений — часть программы, а не сборки.
+
+        Если модуля нет в пакете, `colonial_helper` не смог бы поставить
+        перехватчики, и «закрылось без ошибки» осталось бы без следа ровно у
+        тех пилотов, кто поставил обновление.
+        """
+        self.build()
+        names = {item["path"] for item in self.manifest()["files"]}
+        self.assertIn("crash_log.py", names)
 
     def test_archive_matches_the_manifest(self):
         self.build()
