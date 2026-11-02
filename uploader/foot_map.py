@@ -858,9 +858,19 @@ class FootMap:
             return None
         return dict(nearest)
 
+    def _set_is_complete(self) -> bool:
+        """Комплект собран: три образца, игра снимает канистру.
+
+        Собранный комплект ничего не ограничивает — отходить от его точек
+        больше не нужно, поэтому круг такой точки на карте гаснет (его цвет
+        решает блок HUD по полю ``complete``).
+        """
+        return len(self._samples) >= SAMPLES_PER_SPECIES
+
     def _samples_list(self) -> List[Dict[str, Any]]:
         """Образцы в метрах от командира: точка, вид и радиус колонии."""
         rows = []
+        complete = self._set_is_complete()
         for index, record in enumerate(self._samples, start=1):
             east, north = local_offsets(record["lat"], record["lon"],
                                         self._lat, self._lon, self._radius)
@@ -873,6 +883,9 @@ class FootMap:
                 "north": round(north, 1),
                 "distance": round(math.hypot(east, north), 1),
                 "bearing": round(math.degrees(math.atan2(east, north)) % 360.0, 1),
+                # Комплект собран — круг этого образца больше не ограничивает:
+                # отходить от него незачем, и на карте он рисуется серым.
+                "complete": complete,
             })
         rows.sort(key=lambda row: row["distance"])
         return rows
@@ -894,7 +907,7 @@ class FootMap:
             "radius": radius,
             "count": len(rows),
             "total": SAMPLES_PER_SPECIES,
-            "complete": len(rows) >= SAMPLES_PER_SPECIES,
+            "complete": self._set_is_complete(),
             "allowed": bool(allowed),
             "need_m": 0.0 if allowed else round(radius - float(nearest), 1),
             "nearest_m": nearest,

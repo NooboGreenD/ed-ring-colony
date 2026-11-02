@@ -476,6 +476,30 @@ class FootMapSampleTests(unittest.TestCase):
         self.assertEqual(summary["count"], 1)
         self.assertFalse(summary["complete"])
 
+    def test_collected_set_turns_its_circles_off(self):
+        """Собранный комплект больше не ограничивает — его круги гаснут.
+
+        Три образца сданы, канистру снимают: отходить от этих точек уже не
+        нужно, и зелёный круг «отсюда нельзя брать следующий» там врал бы.
+        """
+        self.sample()
+        rows = self.map.state()["samples"]
+        self.assertEqual([row["complete"] for row in rows], [False])
+
+        for step in (1, 2):
+            self.walk_to(600.0 * step)
+            self.assertTrue(self.sample())
+        rows = self.map.state()["samples"]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([row["complete"] for row in rows], [True, True, True],
+                         "после третьего образца круги должны погаснуть")
+
+        # Комплект сдан — следующий образец того же вида начинает новый набор.
+        self.walk_to(2000.0)
+        self.assertTrue(self.sample(scan_type="Log"))
+        rows = self.map.state()["samples"]
+        self.assertEqual([row["complete"] for row in rows], [False])
+
     def test_another_species_discards_the_unfinished_set(self):
         """Генетический самплер держит один вид: смена вида стирает образцы."""
         self.sample()
@@ -828,6 +852,35 @@ class FootMapRenderingContractTests(unittest.TestCase):
                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
         self.assertTrue("SAMPLE_MIN_RADIUS_PX" in names or "SAMPLE_MIN_RADIUS_PX" in used,
                         "минимальный радиус не применяется")
+
+    def test_collected_sample_circles_are_grey(self):
+        """Собранный комплект гаснет: серый круг вместо зелёного.
+
+        Признак «комплект собран» приходит из `foot_map` в каждой строке
+        образца. Если его не читать, зелёный круг продолжал бы врать —
+        «отсюда нельзя брать следующий», хотя канистра уже снята.
+        """
+        import ast
+
+        tree = ast.parse(self._source("overlay_blocks.py"))
+        canvas = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.ClassDef) and node.name == "FootMapCanvas")
+        constants = {}
+        for item in canvas.body:
+            if isinstance(item, ast.Assign) and isinstance(item.targets[0], ast.Name):
+                constants[item.targets[0].id] = item.value
+        self.assertIn("SAMPLE_DONE_COLOR", constants, "нет цвета погасшего круга")
+
+        draw_samples = next(item for item in canvas.body
+                            if isinstance(item, ast.FunctionDef) and item.name == "_draw_samples")
+        used = {node.attr for node in ast.walk(draw_samples)
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)}
+        names = {node.id for node in ast.walk(draw_samples) if isinstance(node, ast.Name)}
+        literals = {node.value for node in ast.walk(draw_samples)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        self.assertIn("SAMPLE_DONE_COLOR", used, "цвет погасшего круга не применяется")
+        self.assertIn("complete", literals, "признак собранного комплекта не читается")
+        self.assertIn("sorted", names, "погасшие круги надо рисовать первыми")
 
     def test_sample_line_always_names_the_clonal_radius(self):
         """Радиус колонии — в строке образцов, а не только после сбора."""
