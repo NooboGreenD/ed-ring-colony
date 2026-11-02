@@ -146,6 +146,14 @@ class ValueTests(unittest.TestCase):
         )
         self.assertEqual([row[-1] for row in rows], ["", "10.00"])
 
+    def test_jump_is_blank_after_a_system_without_coordinates(self):
+        """Пропуск в координатах не должен превращаться в «прыжок через одну»."""
+        rows = route_export.build_rows(
+            [system("A", star_pos=[0, 0, 0]), system("B"), system("C", star_pos=[0, 0, 30])],
+            ["system", "jump_ly"],
+        )
+        self.assertEqual([row[-1] for row in rows], ["", "", ""])
+
     def test_status_text_is_translated_by_the_caller(self):
         statuses = {"visited": "посещена", "pending": "ожидает"}
         rows = route_export.build_rows(

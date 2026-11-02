@@ -304,7 +304,10 @@ def build_rows(systems: Sequence[Mapping[str, Any]],
         hint = by_name.get(name.casefold()) or {}
         point = position(system, hint)
         jump = jump_distance(previous, point)
-        previous = point or previous
+        # Неизвестные координаты обрывают цепочку: иначе «прыжок от предыдущей»
+        # посчитался бы через пропущенную систему — правдоподобное, но неверное
+        # число. Пустая ячейка честнее.
+        previous = point
         values: Dict[str, str] = {
             "index": str(system.get("index") or offset + 1),
             "system": name,

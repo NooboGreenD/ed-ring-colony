@@ -206,6 +206,73 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(launcher.run_module("fake_app"), 0)
         self.assertEqual(sys.modules["fake_app"].VERSION, "1.0.0")
 
+    def install_version(self, version: str) -> None:
+        """Положить в установку ещё одну версию — как это делает обновление."""
+        target = bundle.version_dir(self.root, version)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / ENTRY).write_text(
+            f'VERSION = "{version}"\n\ndef main():\n    return 0\n', encoding="utf-8")
+        manifest = bundle.sign_manifest(
+            bundle.build_manifest(target, version=version, entry=ENTRY, files=[ENTRY]),
+            self.secret, "test")
+        (target / bundle.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_helper_restarted_from_the_same_launcher_runs_the_new_version(self):
+        """Обновление работает без перезапуска лаунчера.
+
+        Лаунчер живёт дольше Helper: окно закрыли, стартовый экран показался
+        снова, «Запустить». Если модули прошлой версии остались в кэше Python,
+        программа запускается СТАРОЙ — и выглядит это как «обновление не
+        применилось» до перезапуска лаунчера.
+        """
+        self.choose()
+        launcher.activate_path(self.root, "1.0.0")
+        self.assertEqual(launcher.run_module("fake_app"), 0)
+        self.assertEqual(sys.modules["fake_app"].VERSION, "1.0.0")
+
+        self.install_version("1.1.0")
+        bundle.activate(self.root, "1.1.0")
+
+        launcher.activate_path(self.root, "1.1.0")
+        self.assertEqual(launcher.run_module("fake_app"), 0)
+        self.assertEqual(sys.modules["fake_app"].VERSION, "1.1.0",
+                         "второй запуск обязан взять код новой версии")
+
+    def test_purge_does_not_touch_modules_outside_the_installation(self):
+        """Чистим только кэш версий: сам лаунчер и код из exe остаются."""
+        self.choose()
+        launcher.activate_path(self.root, "1.0.0")
+        launcher.run_module("fake_app")
+        launcher.purge_version_modules(self.root)
+        self.assertNotIn("fake_app", sys.modules)
+        # Лаунчер и переводы лежат в exe/исходниках — их кэш не наш.
+        self.assertIn("launcher", sys.modules)
+        self.assertIn("i18n", sys.modules)
+
+    def test_crash_reason_comes_from_the_helper_log(self):
+        """«Почему закрылось» лаунчер читает из журнала Helper, а не угадывает."""
+        import threading
+
+        import crash_log
+
+        self.assertEqual(launcher.crash_reason(self.root), "", "журнала ещё нет")
+        saved = (sys.excepthook, threading.excepthook)
+        try:
+            sys.excepthook = lambda *args: None
+            threading.excepthook = lambda args: None
+            crash_log.install(self.root, version="2.24.1")
+            try:
+                raise RuntimeError("сломалось на старте")
+            except RuntimeError:
+                sys.excepthook(*sys.exc_info())
+            crash_log.uninstall()
+        finally:
+            sys.excepthook, threading.excepthook = saved
+
+        reason = launcher.crash_reason(self.root)
+        self.assertIn("RuntimeError", reason)
+        self.assertIn("сломалось на старте", reason)
+
     def test_entry_module_name_comes_from_manifest(self):
         self.assertEqual(launcher.entry_module({"entry": "colonial_helper.py"}), "colonial_helper")
         self.assertEqual(launcher.entry_module({}), "colonial_helper")
@@ -324,6 +391,50 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(launcher.run_dashboard_loop(self.root, None, None), 0)
         helper.assert_called_once()
         dashboard.show_launcher.assert_called_once()
+
+    def test_dashboard_reads_the_state_again_after_helper_returns(self):
+        """Обновление, поставленное внутри Helper, видно без перезапуска лаунчера.
+
+        Лаунчер не завершается вместе с Helper: после закрытия окна он снова
+        показывает стартовый экран. Если он помнит версию с прошлого раза,
+        пилот видит старый экран и старые цифры — ровно то, что выглядело как
+        «обновление не применилось».
+        """
+        self.choose()
+        old_screen = bundle.version_dir(self.root, "1.0.0")
+        old_screen.mkdir(parents=True, exist_ok=True)
+        (old_screen / "launcher_ui.py").write_text(
+            'MARKER = "old"\n'
+            "def show_launcher(*args, **kwargs):\n"
+            "    return True\n", encoding="utf-8")
+        new_screen = bundle.version_dir(self.root, "1.1.0")
+        new_screen.mkdir(parents=True, exist_ok=True)
+        (new_screen / "launcher_ui.py").write_text(
+            'MARKER = "new"\n'
+            "def show_launcher(*args, **kwargs):\n"
+            "    return False\n", encoding="utf-8")
+
+        def helper_installed_the_update(args=None):
+            state = bundle.load_state(self.root)
+            state["current"] = "1.1.0"
+            bundle.save_state(self.root, state)
+            return 0
+
+        try:
+            with mock.patch.object(launcher, "run_helper",
+                                   side_effect=helper_installed_the_update), \
+                 mock.patch.object(launcher, "log"):
+                self.assertEqual(launcher.run_dashboard_loop(self.root, None, None), 0)
+            screen = sys.modules.get("launcher_ui")
+            self.assertIsNotNone(screen)
+            self.assertEqual(Path(screen.__file__).parent, new_screen,
+                             "второй экран обязан приехать из новой версии")
+        finally:
+            sys.modules.pop("launcher_ui", None)
+            while str(old_screen) in sys.path:
+                sys.path.remove(str(old_screen))
+            while str(new_screen) in sys.path:
+                sys.path.remove(str(new_screen))
 
     def test_main_runs_the_installed_code(self):
         manifest = json.loads((self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8"))

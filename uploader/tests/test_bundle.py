@@ -259,6 +259,59 @@ class InstallLayoutTests(unittest.TestCase):
         self.assertFalse(stage.exists())
         self.assertTrue((bundle.version_dir(self.root, "1.0.1") / "colonial_helper.py").is_file())
 
+    def test_repair_of_the_running_version_does_not_move_its_directory(self):
+        """«Восстановить установку» той же версии не должно уносить живой каталог.
+
+        Раньше каталог работающей версии переносился в `.old-…` и удалялся:
+        процесс продолжал жить на загруженных модулях, а первый же `import`
+        после этого валил его без сообщения — в оконной сборке трассировку
+        некуда печатать.
+        """
+        live = bundle.version_dir(self.root, "1.0.0")
+        stage = bundle.stage_dir(self.root, "1.0.0")
+        stage.mkdir(parents=True, exist_ok=True)
+        (stage / "colonial_helper.py").write_text("VERSION = '1.0.0'\nRESTORED = True\n",
+                                                  encoding="utf-8")
+        os.environ[bundle.ACTIVE_ENV] = "1.0.0"
+        try:
+            bundle.promote_stage(self.root, "1.0.0")
+        finally:
+            os.environ.pop(bundle.ACTIVE_ENV, None)
+
+        self.assertTrue(live.is_dir(), "каталог работающей версии обязан остаться")
+        self.assertEqual((live / "colonial_helper.py").read_text(encoding="utf-8"),
+                         "VERSION = '1.0.0'\nRESTORED = True\n")
+        self.assertFalse(stage.exists(), "подготовленный каталог убран")
+
+    def test_in_place_update_removes_files_the_new_build_does_not_have(self):
+        """Лишний модуль прошлой сборки не должен остаться в каталоге версии."""
+        live = bundle.version_dir(self.root, "1.0.0")
+        (live / "gone.py").write_text("OLD = 1\n", encoding="utf-8")
+        stage = bundle.stage_dir(self.root, "1.0.0")
+        stage.mkdir(parents=True, exist_ok=True)
+        (stage / "colonial_helper.py").write_text("VERSION = '1.0.0'\n", encoding="utf-8")
+        os.environ[bundle.ACTIVE_ENV] = "1.0.0"
+        try:
+            bundle.promote_stage(self.root, "1.0.0")
+        finally:
+            os.environ.pop(bundle.ACTIVE_ENV, None)
+        self.assertFalse((live / "gone.py").exists())
+
+    def test_prune_never_removes_the_running_version(self):
+        for version in ("1.0.1", "1.0.2", "1.0.3"):
+            target = bundle.version_dir(self.root, version)
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "colonial_helper.py").write_text("x = 1\n", encoding="utf-8")
+            bundle.activate(self.root, version)
+        # Процесс всё ещё работает на 1.0.1 — её каталог трогать нельзя, даже
+        # если указатель установки давно ушёл вперёд.
+        os.environ[bundle.ACTIVE_ENV] = "1.0.1"
+        try:
+            bundle.prune_versions(self.root, keep=1)
+        finally:
+            os.environ.pop(bundle.ACTIVE_ENV, None)
+        self.assertIn("1.0.1", set(bundle.installed_versions(self.root)))
+
     def test_install_root_respects_environment(self):
         os.environ[bundle.HOME_ENV] = str(self.work / "elsewhere")
         try:
