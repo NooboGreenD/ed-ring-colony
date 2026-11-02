@@ -39,6 +39,13 @@ export interface RouteHintConstruction {
   updatedAt: string | null;
 }
 
+/** Координаты системы в световых годах — те же, что на карте Atlas. */
+export interface RouteHintCoordinates {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface RouteHintDiscovery {
   /** Система есть в базе проекта: журналы пилотов, EDSM, Spansh. */
   known: boolean;
@@ -50,6 +57,12 @@ export interface RouteHintDiscovery {
   mapped: number;
   /** У скольких тел известен первый шаг по поверхности. */
   footfall: number;
+  /**
+   * Координаты системы из каталога галактики (`galaxy_systems`), если она там
+   * есть. Нужны выгрузке маршрута в CSV: расстояние между системами считается
+   * по ним, а маршрут, набранный из списка имён, своих координат не имеет.
+   */
+  coordinates: RouteHintCoordinates | null;
   updatedAt: string | null;
 }
 
@@ -80,10 +93,29 @@ function timestamp(row: Row): number {
 }
 
 /** Строки `system_scans` → «кто открыл систему» и насколько она изучена. */
-export function shapeDiscovery(rows: Row[] | null | undefined): RouteHintDiscovery {
+/** Координаты из строки каталога: все три оси числами, иначе `null`. */
+export function shapeCoordinates(value: unknown): RouteHintCoordinates | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Row;
+  const x = typeof row.x === 'number' ? row.x : Number(row.x);
+  const y = typeof row.y === 'number' ? row.y : Number(row.y);
+  const z = typeof row.z === 'number' ? row.z : Number(row.z);
+  // Частичные координаты хуже отсутствия: расстояние по двум осям — выдумка.
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  return { x, y, z };
+}
+
+export function shapeDiscovery(
+  rows: Row[] | null | undefined,
+  coordinates: unknown = null,
+): RouteHintDiscovery {
   const list = Array.isArray(rows) ? rows.filter((row) => row && typeof row === 'object') : [];
+  const point = shapeCoordinates(coordinates);
   if (list.length === 0) {
-    return { known: false, discoverer: null, bodies: 0, mapped: 0, footfall: 0, updatedAt: null };
+    return {
+      known: false, discoverer: null, bodies: 0, mapped: 0, footfall: 0,
+      coordinates: point, updatedAt: null,
+    };
   }
   // Главная звезда — тело с наименьшим расстоянием до точки входа. Именно её
   // открывает тот, кого игра считает первооткрывателем системы.
@@ -103,6 +135,7 @@ export function shapeDiscovery(rows: Row[] | null | undefined): RouteHintDiscove
     bodies: list.length,
     mapped,
     footfall,
+    coordinates: point,
     updatedAt: Number.isFinite(updated) ? new Date(updated).toISOString() : null,
   };
 }
@@ -154,12 +187,17 @@ export function shapeConstruction(progress: CompactSystemProgress | null | undef
 /** Собрать ответ подсказки: имя системы, стройка, первооткрыватель. */
 export function buildRouteHint(
   systemName: string,
-  sources: { progress?: CompactSystemProgress | null; scans?: Row[] | null },
+  sources: {
+    progress?: CompactSystemProgress | null;
+    scans?: Row[] | null;
+    /** Строка каталога галактики (`galaxy_systems`) или `{x,y,z}`. */
+    coordinates?: unknown;
+  },
 ): RouteHint {
   return {
     ok: true,
     system: text(systemName, 200),
     construction: shapeConstruction(sources.progress ?? null),
-    discovery: shapeDiscovery(sources.scans ?? []),
+    discovery: shapeDiscovery(sources.scans ?? [], sources.coordinates ?? null),
   };
 }

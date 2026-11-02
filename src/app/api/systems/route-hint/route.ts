@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { loadSystemsProgress } from '@/lib/systemOverview';
+import { findSystemByName } from '@/lib/galaxySystemsDb';
 import { buildRouteHint, type RouteHintRow } from '@/lib/routeHint';
 import { cleanSystemName } from '@/lib/systemIdentity.ts';
 
@@ -21,6 +22,10 @@ const PART_TIMEOUT_MS = Number(process.env.ROUTE_HINT_PART_TIMEOUT_MS) || 6000;
 // Запасной поиск без учёта регистра идёт без индекса. Ждём его недолго: если
 // не успел — ответ помечается неполным и Helper переспросит через минуту.
 const RELAXED_SCAN_TIMEOUT_MS = Number(process.env.ROUTE_HINT_RELAXED_TIMEOUT_MS) || 2500;
+// Координаты — необязательная часть ответа: без них оверлею всё равно, а
+// выгрузке маршрута они нужны. Поэтому у запроса свой короткий лимит: пусть
+// ответ придёт без координат, чем придёт поздно.
+const COORDINATES_TIMEOUT_MS = Number(process.env.ROUTE_HINT_COORDS_TIMEOUT_MS) || 3000;
 
 // Кэш в памяти тёплого экземпляра функции: оверлей после прыжка просит одну и
 // ту же систему, а Helper — ещё и соседние по маршруту. Минута совпадает с
@@ -150,7 +155,7 @@ export async function GET(request: Request) {
       return { rows: relaxed.value, timedOut: relaxed.timedOut };
     };
 
-    const [progressPart, scansPart] = await Promise.all([
+    const [progressPart, scansPart, coordsPart] = await Promise.all([
       within(
         loadSystemsProgress(svc, [name]).then((rows) => rows[0] ?? null),
         PART_TIMEOUT_MS,
@@ -165,18 +170,32 @@ export async function GET(request: Request) {
           console.warn('[systems/route-hint] scans', error);
           return { value: { rows: [], timedOut: false } as Scans, timedOut: false };
         }),
+      // Каталог галактики: имя уже приведено к `name_lc`, запрос идёт по индексу.
+      // Нет таблицы или нет системы — координат просто не будет.
+      within<unknown>(
+        findSystemByName(name).catch((error: unknown) => {
+          console.warn('[systems/route-hint] coordinates', error);
+          return null;
+        }),
+        COORDINATES_TIMEOUT_MS,
+        null,
+        'coordinates',
+      ),
     ]);
 
     const body = buildRouteHint(name, {
       progress: progressPart.value,
       scans: scansPart.value.rows,
+      coordinates: coordsPart.value,
     });
 
-    if (progressPart.timedOut || scansPart.timedOut || scansPart.value.timedOut) {
+    if (progressPart.timedOut || scansPart.timedOut || scansPart.value.timedOut || coordsPart.timedOut) {
       // Ответ неполный (например, прогресс не успел). Кэшировать его на минуту
       // нельзя: «стройка неизвестна» — не то же самое, что «стройки нет», и
       // оверлей не должен показывать это до истечения кэша. Помечаем ответ как
-      // неполный, а Helper переспросит такую систему заметно раньше.
+      // неполный, а Helper переспросит такую систему заметно раньше. Координаты
+      // считаются так же: пустые координаты в выгрузке маршрута — это дырка,
+      // которую надо закрыть, а не «у системы нет координат».
       const partial = { ...body, partial: true };
       return NextResponse.json(partial, {
         headers: { 'Cache-Control': 'no-store' },

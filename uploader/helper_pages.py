@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import route_export
 from hud_icons import HudIcon
 from i18n import tr
 from ui_qt import (
@@ -832,6 +834,115 @@ class RoutePage(QWidget):
 
     def counter_text(self) -> str:
         return self.counter.text()
+
+
+class RouteExportDialog(QDialog):
+    """Мини-меню «Экспорт CSV»: какие данные о маршруте попадут в файл.
+
+    Раньше кнопка писала фиксированные четыре столбца. Теперь командир сам
+    решает, что ему нужно: имена и расстояния, координаты, тела систем,
+    первооткрыватели, готовность строек. Набор столбцов описан в
+    `route_export.FIELDS` — здесь только галочки, порядок и кнопки, поэтому
+    правило «что выгружается» проверяется без окна.
+
+    «Система» отмечена всегда и не снимается: по ней же маршрут импортируется
+    обратно, и файл без имени системы — это не маршрут.
+    """
+
+    def __init__(self, parent: _Optional[QWidget] = None, keys=None,
+                 systems: int = 0) -> None:
+        super().__init__(parent)
+        self.setObjectName("routeExportDialog")
+        self.setWindowTitle(tr("Выгрузка маршрута в CSV"))
+        self.setMinimumWidth(560)
+        self.chosen: List[str] = route_export.normalize_keys(keys)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+        layout.addWidget(heading(tr("Что выгрузить в файл"), size=13))
+        layout.addWidget(label(
+            tr("Отметьте столбцы. «Система» нужна всегда: по ней маршрут "
+               "импортируется обратно."),
+            role="muted", size=9, wrap=True))
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 4, 0, 4)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(4)
+        self._boxes: Dict[str, QCheckBox] = {}
+        # Два столбца галочек: так окно не растягивается на весь экран.
+        half = (len(route_export.FIELDS) + 1) // 2
+        for position, field in enumerate(route_export.FIELDS):
+            box = QCheckBox(tr(field.title))
+            box.setChecked(field.key in self.chosen)
+            if field.key in route_export.REQUIRED_KEYS:
+                box.setEnabled(False)
+            self._boxes[field.key] = box
+            grid.addWidget(box, position % half, position // half)
+        layout.addLayout(grid)
+
+        note = label(
+            tr("Тела, картография, первооткрыватель, стройка и координаты "
+               "приходят из базы проекта: для них нужно соединение с сайтом."),
+            role="muted", size=9, wrap=True)
+        layout.addWidget(note)
+        self.summary = label("", role="muted", size=9, wrap=True)
+        layout.addWidget(self.summary)
+        self._systems = max(0, int(systems or 0))
+        self._update_summary()
+
+        buttons = row(
+            action_button(tr("Все столбцы"), self._select_all, height=30),
+            action_button(tr("Основные"), self._select_defaults, height=30),
+            None,
+            action_button(tr("Отмена"), self.reject, height=30),
+            action_button(tr("Выгрузить"), self._accept, variant="primary", height=30),
+        )
+        layout.addWidget(buttons)
+        for box in self._boxes.values():
+            box.toggled.connect(lambda _checked=False: self._update_summary())
+
+    # ------------------------------------------------------------------ pieces
+    def _select_all(self) -> None:
+        for box in self._boxes.values():
+            box.setChecked(True)
+
+    def _select_defaults(self) -> None:
+        defaults = set(route_export.DEFAULT_KEYS)
+        for key, box in self._boxes.items():
+            box.setChecked(key in defaults or key in route_export.REQUIRED_KEYS)
+
+    def _update_summary(self) -> None:
+        columns = len(self.selection())
+        if self._systems:
+            self.summary.setText(tr("Столбцов: {columns} · систем в маршруте: {systems}",
+                                    columns=columns, systems=self._systems))
+        else:
+            self.summary.setText(tr("Столбцов: {columns}", columns=columns))
+
+    def selection(self) -> List[str]:
+        """Выбранные столбцы в том порядке, в каком они попадут в файл."""
+        return route_export.normalize_keys(
+            [key for key, box in self._boxes.items() if box.isChecked()])
+
+    def _accept(self) -> None:
+        self.chosen = self.selection()
+        self.accept()
+
+    # ------------------------------------------------------------------ public
+    @classmethod
+    def ask(cls, keys=None, systems: int = 0,
+            parent: _Optional[QWidget] = None) -> _Optional[List[str]]:
+        """Спросить столбцы; ``None`` — командир отказался от выгрузки."""
+        from ui_qt import DIALOGS_ENABLED   # читаем флаг сейчас, а не при импорте
+
+        if not DIALOGS_ENABLED:
+            return route_export.normalize_keys(keys)
+        dialog = cls(parent=parent, keys=keys, systems=systems)
+        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+            return None
+        return list(dialog.chosen)
 
 
 # ===========================================================================
