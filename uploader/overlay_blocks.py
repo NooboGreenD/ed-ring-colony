@@ -1493,6 +1493,8 @@ class FootMapCanvas(QWidget):
     }
     #: Круг образца: зелёный — биология, цвет тот же у всех родов.
     SAMPLE_COLOR = COLOR_GREEN_TEXT
+    #: Круг собранного комплекта: серый — он больше ничего не ограничивает.
+    SAMPLE_DONE_COLOR = COLOR_TEXT_MUTED
     #: Сколько подписей у точек рисуем: остальные — только метки.
     POI_LABELS = 3
     #: Отступ метки от кольца: значок должен читаться, а не срезаться краем.
@@ -1653,6 +1655,10 @@ class FootMapCanvas(QWidget):
         Радиус круга — клональная колония рода (от 100 м у анемоны до 1000 м у
         Electricae). Пока командир внутри круга, следующий образец того же вида
         игра не засчитает, поэтому круг масштабный, а не декоративный.
+
+        Собранный комплект (три образца) больше ничего не ограничивает —
+        канистру снимают и везут в Vista. Круги таких точек рисуются серыми и
+        первыми: зелёными остаются только те, от которых ещё надо отойти.
         """
         samples = state.get("samples") or []
         if not samples:
@@ -1661,16 +1667,18 @@ class FootMapCanvas(QWidget):
         disc.addEllipse(center, max(1.0, radius - 1), max(1.0, radius - 1))
         painter.save()
         painter.setClipPath(disc, Qt.IntersectClip)
-        for row in samples:
+        # Сначала погасшие: активный круг должен остаться поверх серых.
+        for row in sorted(samples, key=lambda item: 0 if item.get("complete") else 1):
             x, y = foot_map.to_screen(float(row.get("east") or 0.0),
                                       float(row.get("north") or 0.0),
                                       heading, px_per_m, center.x(), center.y())
             circle = max(self.SAMPLE_MIN_RADIUS_PX,
                          float(row.get("radius") or 0.0) * px_per_m)
-            color = QColor(self.SAMPLE_COLOR)
-            color.setAlpha(160)
+            complete = bool(row.get("complete"))
+            color = QColor(self.SAMPLE_DONE_COLOR if complete else self.SAMPLE_COLOR)
+            color.setAlpha(120 if complete else 160)
             painter.setPen(QPen(color, 1.0, Qt.DashLine))
-            if circle <= radius * 3:
+            if not complete and circle <= radius * 3:
                 # Огромный круг залил бы весь диск: тогда остаётся только кольцо.
                 fill = QColor(color)
                 fill.setAlpha(16)
