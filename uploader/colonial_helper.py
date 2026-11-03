@@ -83,6 +83,8 @@ from pilot_equipment import PilotEquipment
 from factions_data import (SOURCE_JOURNAL, prefer_snapshot, scan_journal_for_factions,
                            snapshot_from_event, snapshot_from_site, snapshot_system,
                            snapshot_timestamp, system_key)
+from powerplay_data import (PowerplayTracker, scan_journal_for_powerplay,
+                            site_state as powerplay_site_state)
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
@@ -132,7 +134,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.24.2"
+VERSION = "2.25.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -294,6 +296,13 @@ class ColonialHelperApp:
         self._faction_request_key = ""        # система, по которой уже спросили сайт
         self._faction_request_at = 0.0        # когда спросили (time.monotonic)
         self._faction_site_inflight = False   # запрос к сайту уже летит
+        # PowerPlay 2.0: держава, ранг и заслуги командира плюс состояние
+        # текущей системы (вкладка «PowerPlay» раздела BGS).
+        self.powerplay = PowerplayTracker()
+        self._powerplay_request_key = ""      # система, для которой уже спросили
+        self._powerplay_request_at = 0.0      # когда спросили (time.monotonic)
+        self._powerplay_inflight = False      # фоновый сбор уже идёт
+        self._powerplay_note = ""             # пояснение под карточками
         self._map_zoom_index = 2              # 1.0 — индекс в MAP_ZOOM_STEPS
         self._map_selected = ""               # выбранный объект (имя тела/buildId)
         self._map_center = ""                 # центр карты: пусто = звезда системы
@@ -564,7 +573,8 @@ class ColonialHelperApp:
         self._build_tab_colony()
 
         self.tab_factions = PageHost(page_host)
-        self.notebook.add(self.tab_factions, text=tr("Фракции"))
+        # Раздел «BGS»: фракции системы и PowerPlay 2.0 — двумя вкладками.
+        self.notebook.add(self.tab_factions, text=tr("BGS"))
         self._build_tab_factions()
         # Backward-compatible field for old internal map callbacks; no map page
         # is registered in navigation or rendered in the Qt interface.
@@ -2120,18 +2130,29 @@ class ColonialHelperApp:
     FACTION_SITE_TTL = 120
 
     def _build_tab_factions(self):
-        """Вкладка «Фракции» на чистом Qt (qt_factions.FactionInfographic)."""
-        from qt_factions import FactionInfographic
-        self.faction_infographic = FactionInfographic(
+        """Раздел «BGS»: фракции системы и PowerPlay — вкладками одного раздела.
+
+        BGS-состояние системы и её PowerPlay 2.0 — два слоя одного и того же
+        места, поэтому они рядом: раньше раздел назывался «Фракции» и вторую
+        половину ответа («кто её держит по PowerPlay») приходилось искать на
+        сайте.
+        """
+        from qt_factions import BgsSection
+        self.bgs_section = BgsSection(
             locale=self.config.get("site_locale"), site_url=self.api.site_url,
-            on_refresh=lambda: self._refresh_factions_data(force=True))
-        self.tab_factions._get_tk_layout("pack").addWidget(self.faction_infographic)
-        self._show_page(self.faction_infographic)
+            on_refresh=lambda: self._refresh_factions_data(force=True),
+            on_powerplay_refresh=lambda: self._refresh_powerplay(force=True))
+        self.faction_infographic = self.bgs_section.factions
+        self.powerplay_panel = self.bgs_section.powerplay
+        self.tab_factions._get_tk_layout("pack").addWidget(self.bgs_section)
+        self._show_page(self.bgs_section)
         self._render_factions_infographic()
+        self._render_powerplay()
         # Свежий прыжок мог остаться в прошлой сессии и не попасть в живые
         # события: система и фракции подтянутся из журналов и базы проекта,
-        # не дожидаясь нового FSDJump.
+        # не дожидаясь нового FSDJump; PowerPlay — из хвостов журналов.
         self._refresh_factions_data()
+        self._refresh_powerplay()
 
     def _update_faction_infographic(self, event: dict):
         """Живое событие журнала: оно свежее любого ответа сайта."""
@@ -2311,6 +2332,134 @@ class ColonialHelperApp:
             note = note or tr("Система не определена — загрузите журнал игры.")
         widget.set_snapshot(system, control, factions, source=source,
                             observed_at=observed_at, note=note)
+
+    # ============================================================
+    #  Вкладка BGS: PowerPlay 2.0
+    # ============================================================
+    #: Сколько секунд ответ сайта о PowerPlay считаем свежим: состояние системы
+    #: меняется не мгновенно, а вкладку открывают часто.
+    POWERPLAY_SITE_TTL = 120
+
+    def _update_powerplay(self, event: dict) -> None:
+        """Живое событие журнала: держава и заслуги командира, состояние системы.
+
+        Здесь только приём: подписи и перерисовку делает Qt-поток, а события
+        приходят из потока watcher'а.
+        """
+        if not isinstance(event, dict):
+            return
+        name = str(event.get("event") or "")
+        if name in ("LoadGame", "NewCommander"):
+            # Другой командир (или новая сессия): прошлые заслуги — чужие.
+            self.powerplay.forget()
+            self._powerplay_note = ""
+            self.after(0, self._render_powerplay)
+            return
+        try:
+            changed = self.powerplay.handle(event)
+        except Exception as exc:
+            self.log(f"PowerPlay: {exc}", "error")
+            return
+        if changed:
+            self.after(0, self._render_powerplay)
+
+    def _refresh_powerplay(self, force: bool = False) -> None:
+        """Подтянуть PowerPlay текущей системы: хвосты журналов и карточка сайта.
+
+        Своё состояние (держава, ранг, заслуги) игра пишет в журнал, поэтому
+        основной источник — журнал; сайт нужен, только когда в хвостах нет
+        события о системе (Helper запустили посреди сессии).
+        """
+        if self._powerplay_inflight:
+            return
+        if (not force and self._powerplay_request_key
+                and (time.monotonic() - self._powerplay_request_at) < self.POWERPLAY_SITE_TTL):
+            return
+        self._powerplay_inflight = True
+        threading.Thread(target=self._powerplay_refresh_worker, args=(force,),
+                         name="powerplay-refresh", daemon=True).start()
+
+    def _powerplay_refresh_worker(self, force: bool = False) -> None:
+        """Фоновый сбор: события PowerPlay из журналов и состояние системы с сайта."""
+        system, address = self._faction_pilot_system()
+        key = system_key(system, address)
+        now = time.monotonic()
+        if (not force and key and key == self._powerplay_request_key
+                and (now - self._powerplay_request_at) < self.POWERPLAY_SITE_TTL):
+            self._powerplay_inflight = False
+            return
+        self._powerplay_request_key = key
+        self._powerplay_request_at = now
+        events = {}
+        try:
+            events = scan_journal_for_powerplay(self.journal_path, system, address)
+        except Exception as exc:
+            self.log(f"PowerPlay journal scan: {exc}", "error")
+        site = None
+        site_error = ""
+        if system or address:
+            try:
+                payload = self.api.get_system_powerplay(address, system)
+                if payload.get("ok"):
+                    # Карточку разбирает ``powerplay_data.site_state``: ей нужен
+                    # весь ответ (``name``/``id64`` + блок ``powerplay``).
+                    site = payload
+                else:
+                    site_error = str(payload.get("error") or "")
+            except Exception as exc:
+                site_error = str(exc)
+        result = {"system": system, "address": address, "events": events,
+                  "site": site, "site_error": site_error}
+        try:
+            self.root.after(0, lambda: self._apply_powerplay_refresh(result))
+        except Exception:
+            self._powerplay_inflight = False
+
+    def _apply_powerplay_refresh(self, result: dict) -> None:
+        """Ответ фона на экране: принять наблюдения и перерисовать вкладку."""
+        self._powerplay_inflight = False
+        system = str(result.get("system") or "").strip()
+        events = result.get("events") if isinstance(result.get("events"), dict) else {}
+        commander = events.get("commander") if isinstance(events, dict) else None
+        system_event = events.get("system") if isinstance(events, dict) else None
+        site = result.get("site") if isinstance(result.get("site"), dict) else None
+        error = str(result.get("site_error") or "").strip()
+        try:
+            if isinstance(commander, dict):
+                self.powerplay.handle(commander)
+            snapshot = None
+            if isinstance(system_event, dict):
+                from powerplay_data import system_state
+
+                snapshot = system_state(system_event, source="journal-archive")
+            if snapshot is None and site is not None:
+                snapshot = powerplay_site_state(site, system)
+            if snapshot is not None:
+                self.powerplay.apply_system(snapshot)
+        except Exception as exc:
+            self.log(f"PowerPlay: {exc}", "error")
+        # Пояснение под карточками: только когда данных о системе нет вовсе.
+        state = self.powerplay.state(now_system=system)
+        note = ""
+        if not state.get("system"):
+            if error:
+                note = tr("Сайт проекта недоступен: {error}; в журнале игры данных "
+                          "о PowerPlay этой системы нет.", error=error)
+            elif system:
+                note = tr("PowerPlay системы {system} нет ни в журнале игры, "
+                          "ни в базе проекта.", system=system)
+        self._powerplay_note = note
+        self._render_powerplay()
+
+    def _render_powerplay(self) -> None:
+        """Показать состояние PowerPlay в панели раздела BGS."""
+        panel = getattr(self, "powerplay_panel", None)
+        if panel is None:
+            return
+        system, _address = self._faction_tracker_system()
+        state = self.powerplay.state(now_system=system)
+        state["note"] = getattr(self, "_powerplay_note", "") or ""
+        panel.set_state(state)
 
     # Legacy renderer remains unreferenced; the system-map tab is removed.
     def _select_map_object(self, key: str):
@@ -2777,6 +2926,7 @@ class ColonialHelperApp:
             try:
                 if self.notebook.select() == str(self.tab_factions):
                     self._refresh_factions_data()
+                    self._refresh_powerplay()
             except Exception:
                 pass
 
@@ -7317,6 +7467,11 @@ class ColonialHelperApp:
             self._update_faction_infographic(ev)
         except Exception as exc:
             self.log(f"Faction sync queue: {exc}", "error")
+        # PowerPlay 2.0: держава, ранг и заслуги командира, состояние системы.
+        try:
+            self._update_powerplay(ev)
+        except Exception as exc:
+            self.log(f"PowerPlay: {exc}", "error")
         if live:
             self._log_session_event(ev)
         if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):

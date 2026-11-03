@@ -517,6 +517,46 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def get_system_powerplay(self, id64=None, system_name: str = "") -> dict:
+        """PowerPlay текущей системы из карточки системы (`/api/systems/overview`).
+
+        Отдельного «лёгкого» адреса для одной системы у сайта нет: слой
+        ``/api/powerplay/systems`` отдаёт все системы галактики (мегабайты), а
+        карточка системы уже содержит наблюдение PowerPlay —
+
+        ``{"power", "state", "powers", "controlProgress", "reinforcement",
+        "undermining", "observedAt", "source"}``.
+
+        ``powerplay=None`` — наблюдения нет (система вне PowerPlay или её ещё
+        не видели). ``missing=True`` — системы нет в базе: повторять незачем.
+        """
+        params = {}
+        address = str(id64 or "").strip()
+        if address.isdigit():
+            params["id64"] = address
+        name = str(system_name or "").strip()
+        if name:
+            params["name"] = name
+        if not params:
+            return {"ok": False, "error": tr("Неизвестна система: нет ни адреса, ни имени")}
+        try:
+            resp = self._session.get(
+                f"{self.api_base}/systems/overview",
+                params=params,
+                allow_redirects=False,
+                timeout=12,
+            )
+            data = _safe_json(resp)
+            if resp.ok and isinstance(data, dict) and data.get("found"):
+                return {"ok": True, "powerplay": data.get("powerplay") or None,
+                        "name": str(data.get("name") or name)}
+            if resp.ok and isinstance(data, dict):
+                return {"ok": False, "missing": True,
+                        "error": data.get("error") or tr("Системы нет в базе проекта")}
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
+
     def upload_system_scans(self, system_name: str, bodies: list, cmdr: str = None) -> dict:
         """Отправить сканы тел системы в БД проекта (/api/atlas/system-bodies)."""
         name = str(system_name or "").strip()
