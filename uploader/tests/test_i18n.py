@@ -506,7 +506,8 @@ class TranslationTests(unittest.TestCase):
         """Справочники и служебные модули: подписи только через каталог."""
         modules = ("colony_build_types.py", "site_config.py", "screens.py",
                    "hotkeys.py", "http_errors.py", "colonisation.py",
-                   "qt_factions.py", "api_client.py", "raven_colonial_api.py",
+                   "qt_factions.py", "qt_powerplay.py", "api_client.py",
+                   "powerplay_data.py", "raven_colonial_api.py",
                    "companion_api.py", "carrier.py", "carrier_sync.py",
                    "bgs_sync.py", "eddn_api.py", "edsm_api.py", "inara_api.py",
                    "game_monitor.py", "launcher_content.py", "launcher_ui.py",

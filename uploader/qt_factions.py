@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QProgressBar,
     QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -247,3 +248,44 @@ class FactionInfographic(QWidget):
         layout.addWidget(bar)
 
         return card
+
+
+class BgsSection(QWidget):
+    """Раздел «BGS»: фракции системы и PowerPlay — двумя вкладками.
+
+    Раньше раздел назывался «Фракции» и был одной страницей: BGS-состояние
+    системы (влияние, состояния, войны) и PowerPlay 2.0 (кто владеет системой,
+    оплот она или эксплуатируемая, сколько у командира заслуг) — разные слои
+    одной и той же системы, и искать их в разных местах окна незачем.
+
+    Вкладки держат готовые страницы: ``factions`` — прежняя инфографика
+    (её поля и тесты остались прежними), ``powerplay`` — новая панель.
+    """
+
+    def __init__(self, *, locale: str = "ru", site_url=None, on_refresh=None,
+                 on_powerplay_refresh=None, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("BgsSection")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("bgsTabs")
+        layout.addWidget(self.tabs)
+
+        self.factions = FactionInfographic(locale=locale, site_url=site_url,
+                                           on_refresh=on_refresh)
+        self.tabs.addTab(self.factions, tr("Фракции"))
+
+        from qt_powerplay import PowerplayPanel
+
+        self.powerplay = PowerplayPanel(locale=locale, site_url=site_url,
+                                        on_refresh=on_powerplay_refresh)
+        self.tabs.addTab(self.powerplay, tr("PowerPlay"))
+
+    def show_factions(self) -> None:
+        self.tabs.setCurrentWidget(self.factions)
+
+    def show_powerplay(self) -> None:
+        self.tabs.setCurrentWidget(self.powerplay)

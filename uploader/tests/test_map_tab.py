@@ -18,8 +18,9 @@ class FactionWorkspaceTests(unittest.TestCase):
     def test_navigation_registers_factions_instead_of_system_map(self):
         source=inspect.getsource(colonial_helper.ColonialHelperApp._build_notebook)
         # Подпись переводится, поэтому проверяем ключ каталога, а не готовую
-        # русскую строку: она подставляется при сборке окна.
-        self.assertIn('text=tr("Фракции")', source)
+        # русскую строку: она подставляется при сборке окна. С захода 11 пункт
+        # называется «BGS»: внутри — вкладки «Фракции» и «PowerPlay».
+        self.assertIn('text=tr("BGS")', source)
         self.assertIn('text=tr("Подключение")', source)
         self.assertNotIn('"Карта системы"', source)
         self.assertIn('self.tab_map = None',source)

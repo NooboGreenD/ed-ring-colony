@@ -499,12 +499,16 @@ docker compose exec web node scripts/galnet-sync.mjs --translate-only
 остаются `failed` и будут повторно взяты следующим запуском — свежие статьи обрабатываются первыми).
 Ключи `.env.production` можно посмотреть и поменять в Админка → Мониторинг → «API-ключи сайта».
 
-## Colonial Helper 2.17.0
+## Colonial Helper
 
 В репозитории находится Windows/Python-клиент `uploader/colonial_helper.py` для загрузки данных Elite
 Dangerous на ED Ring Colony. Что он умеет и как собирается — [uploader/README.md](uploader/README.md),
 журнал версий — [uploader/CHANGES.md](uploader/CHANGES.md). Последние версии:
 
+* **2.25.0** — раздел «BGS»: вкладка «Фракции» и новая вкладка «PowerPlay» — держава, ранг, заслуги,
+  голоса и срок присяги командира, состояние текущей системы (владелец, оплот/укреплённая/эксплуатируемая,
+  шкала контроля, подкрепление и подрыв) и последние действия; данные из журнала игры, сайт — только
+  запасной источник ([POWERPLAY.md](POWERPLAY.md#вкладка-powerplay-в-colonial-helper));
 * **2.17.0** — в том же наблюдении системы едет PowerPlay 2.0 (держава, состояние, шкала контроля,
   подкрепление, подрыв): сайт обновляет и фракции, и слой PowerPlay ([ARCHITECTURE.md](ARCHITECTURE.md));
 * **2.16.0** — состояние минорных фракций посещённых систем → `POST /api/factions/sync` ([FACTIONS.md](FACTIONS.md));

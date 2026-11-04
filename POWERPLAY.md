@@ -1,4 +1,4 @@
-# PowerPlay на карте Atlas (web 2.18.0; журналы пилотов — web 2.22.0 и Helper 2.17.0; владелец системы и живые данные EDDN — web 2.23.0; загрузка дампа как у фракций и архив с компьютера — web 2.24.0)
+# PowerPlay на карте Atlas и в Helper (web 2.18.0; журналы пилотов — web 2.22.0 и Helper 2.17.0; владелец системы и живые данные EDDN — web 2.23.0; загрузка дампа как у фракций и архив с компьютера — web 2.24.0; вкладка PowerPlay в Helper — 2.25.0)
 
 Вкладка **«PowerPlay»** в Atlas (`/atlas?tab=powerplay`, Alt+7) и слой 3D-карты:
 **все системы под контролем держав PowerPlay 2.0** с фильтром по державам и
@@ -595,6 +595,48 @@ startedAt, mode }` — этап (`probe` / `download` / `split` / `import` /
   проверка только включением; при заморозке он переподключается и ловит часть
   потока.
 
+## Вкладка PowerPlay в Colonial Helper (Helper 2.25.0)
+
+Раздел навигации Helper называется **«BGS»** и состоит из двух вкладок:
+«Фракции» (см. [FACTIONS.md](FACTIONS.md#вкладка-фракции-в-colonial-helper)) и
+«PowerPlay» (`uploader/qt_powerplay.py`, данные — `uploader/powerplay_data.py`).
+Окно ничего не додумывает: оно показывает то, что игра записала в журнал.
+
+**Командир.** Событие `Powerplay` (`Power`, `Rank`, `Merits`, `Votes`,
+`TimePledged`) даёт державу с цветом из `POWERPLAY_POWERS`, ранг, заслуги,
+голоса и срок присяги; `PowerplaySalary` — последнюю выплату. Действия
+(`PowerplayJoin`/`Leave`/`Defect`, `PowerplayVote`, `PowerplaySalary`,
+`PowerplayCollect`/`Deliver`, `PowerplayFastTrack`, `PowerplayVoucher`)
+складываются в список «Последние действия», новые сверху, до 20 строк.
+`LoadGame`/`NewCommander` забывают прошлого пилота: чужие заслуги не висят.
+
+**Система.** `FSDJump`/`Location`/`CarrierJump` дают `ControllingPower`,
+`Powers`, `PowerplayState`, `PowerplayStateControlProgress` (0…1, у оплота
+может быть больше), `…Reinforcement`, `…Undermining`. Это те же поля, что
+разбирает сайт, и правила те же:
+
+* **владелец — только `ControllingPower`**; без него вкладка пишет «Держава не
+  определена», а `Powers` показывает отдельной строкой как претендентов;
+* **состояние PowerPlay 2.0** — оплот (30 св. лет влияния), укреплённая (20),
+  эксплуатируемая (зоны не даёт), свободная (`Unoccupied`), спорная
+  (`Contested`); состояние показывается тем же цветом, что на карте Atlas;
+* **наблюдения PowerPlay 1.0 отбрасываются** — всё, что старше
+  `2024-10-29T00:00:00Z`: до этого те же поля значили другое (ранг 1–5);
+* **чего нет в событии, того нет и в окне**: шкала контроля не рисуется,
+  заслуги не превращаются в ноль, «собрано» без числа не становится действием.
+
+**Источник данных, по свежести:** живые события журнала → хвосты журналов
+(`Journal.*.log`, файлы читаются с конца) → карточка системы на сайте,
+блок `powerplay` из `GET /api/systems/overview?name=&id64=`
+(`uploader/api_client.py` → `get_system_powerplay`). Слой
+`/api/powerplay/systems` для одной системы не используется: он отдаёт все
+системы галактики. Свежее наблюдение перекрывает старое, ответ сайта никогда не
+откатывает только что прочитанный прыжок. Под карточкой системы видно источник
+и время («журнал игры», «журнал игры (архив)», «сайт проекта»), а если данных
+нет ни там, ни там — пояснение, почему. Кнопка «Обновить» перезапрашивает
+принудительно; при открытии вкладки запрос повторяется не чаще раза в 2 минуты
+на систему, сеть и чтение журналов идут в фоновом потоке.
+
 ## Файлы
 
 * `src/lib/powerplay.ts` — справочник держав, состояния, формат API, фильтр,
@@ -619,6 +661,8 @@ startedAt, mode }` — этап (`probe` / `download` / `split` / `import` /
 * `src/components/Admin/PowerplayAdminTab.tsx` — раздел админки;
   `ArchiveUploadControl.tsx` — «Загрузить архив с компьютера» (общий с фракциями);
 * `src/hooks/usePowerplayLayer.ts` — загрузка, фильтр, выбор, `localStorage`;
+* `uploader/powerplay_data.py` — журнал и справочники держав/состояний для
+  вкладки Helper; `uploader/qt_powerplay.py` — сама вкладка;
 * `src/components/Atlas/AtlasPowerplayPanel.tsx` — вкладка;
 * `src/components/GalaxyMap/PowerplayPoints.tsx` (шейдер, сфера зоны),
   `PowerplaySystemCard.tsx`, `PowerplayGlyph.tsx`; клик и наведение по точкам —
