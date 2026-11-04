@@ -222,6 +222,24 @@ test('отчёт о диске ищет место, которого «нет н
   // head, и каждый `| head -n N` печатал бы заголовок вместо усечения.
   assert.doesNotMatch(report, /^head\(\)/m);
   assert.match(report, /^section\(\)/m);
+  // …и ни один вызов не должен остаться со старым именем: `head "заголовок"`
+  // пытается открыть заголовок как файл и печатает «cannot open … for reading».
+  assert.doesNotMatch(report, /^\s*head "/m);
+});
+
+test('отчёт о диске добирает то, что не видно в проекте: журналы, тома и стек Supabase', { skip }, () => {
+  const report = readFileSync(join(ROOT, 'deploy', 'docker-disk-report.sh'), 'utf8');
+  // Итог `docker system df` одной цифрой прячет виновника среди томов.
+  assert.match(report, /docker system df -v/);
+  // json-file без max-size — каталог, которого нет ни в проекте, ни в du.
+  assert.match(report, /журналы контейнеров/);
+  assert.match(report, /без ротации/);
+  // Стек Supabase живёт своим compose и нашим --wipe не трогается.
+  assert.match(report, /стек Supabase/);
+  // Bind-монтирования (дампы Spansh, релизы Helper) — на хосте, не в du проекта.
+  assert.match(report, /bind-монтирования контейнеров/);
+  // journald держит свой бюджет мимо Docker.
+  assert.match(report, /journalctl --disk-usage/);
 });
 
 test('гонка пересоздания: после конфликта имени «No such container» тоже повторяется, а не обрывает обновление', { skip }, () => {
