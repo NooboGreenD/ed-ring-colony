@@ -60,6 +60,12 @@ df -h / "$DOCKER_ROOT" 2>/dev/null || df -h / || true
 section "docker system df (как это видит демон)"
 docker system df 2>/dev/null || true
 
+# Итоговая строка `docker system df` прячет виновника: том на 60 ГБ и том на
+# 300 МБ дают одну цифру. `-v` показывает каждый том и каждый образ отдельно —
+# именно здесь видно базу Supabase, Storage и всё, что растёт само.
+section "docker system df -v (по томам и образам — кто именно занял место)"
+docker system df -v 2>/dev/null || say "⚠ демон не отдал подробную раскладку"
+
 section "строители buildx (кэш может жить не только в default)"
 docker buildx ls 2>/dev/null || true
 
@@ -72,6 +78,33 @@ fi
 
 section "контейнеры: размер слоя записи + журналов (docker ps -s)"
 docker ps -as --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}' 2>/dev/null || true
+
+# ── Журналы контейнеров ─────────────────────────────────────────────
+# json-file без `max-size` не подрезается ничем: файл в
+# /var/lib/docker/containers/<id>/<id>-json.log растёт, пока живёт контейнер.
+# В нашем docker-compose.yml лимиты есть у web/jobs/monitor-agent/update-agent,
+# но стек Supabase живёт своим compose — там их может не быть вовсе.
+section "журналы контейнеров (/var/lib/docker/containers, топ по размеру)"
+if [ "$(id -u)" = "0" ] && [ -d "$DOCKER_ROOT/containers" ]; then
+  LOGS_TOTAL="$(du -sm "$DOCKER_ROOT/containers" 2>/dev/null | cut -f1)"
+  say "всего: ${LOGS_TOTAL:-?} МБ"
+  du -sh "$DOCKER_ROOT"/containers/*/*-json.log 2>/dev/null | sort -h | tail -n 10 || true
+else
+  say "⚠ нужен root, чтобы прочитать $DOCKER_ROOT/containers"
+fi
+
+UNBOUNDED="$(docker inspect --format '{{.Name}}|{{.HostConfig.LogConfig.Type}}|{{index .HostConfig.LogConfig.Config "max-size"}}' $(docker ps -aq) 2>/dev/null \
+  | awk -F'|' '($2 == "json-file" || $2 == "") && $3 == "" { sub(/^\//, "", $1); print $1 }')"
+if [ -n "$UNBOUNDED" ]; then
+  say ""
+  say "⚠ без ротации (лог растёт, пока живёт контейнер):"
+  printf '%s\n' "$UNBOUNDED" | head -n 12 | sed 's/^/  /'
+  say "  Лечится лимитом в compose сервиса (max-size/max-file) либо разово:"
+  say "  truncate -s 0 \$(docker inspect -f '{{.LogPath}}' <контейнер>) — только у остановленного"
+else
+  say ""
+  say "у всех работающих контейнеров журналы подрезаны (max-size задан)"
+fi
 
 # ── Остатки сорвавшихся переключений ────────────────────────────────
 # «<12 hex>_src-web-1» — переименованный compose'ом старый контейнер. Если
@@ -101,6 +134,32 @@ docker volume ls --format 'table {{.Name}}\t{{.Driver}}' 2>/dev/null | head -n 2
 ANON="$(docker volume ls -qf dangling=true 2>/dev/null | grep -cE '^[0-9a-f]{64}$' || true)"
 say "анонимных томов-сирот: ${ANON:-0} (их чистит edrc_prune_anonymous_volumes при обновлении;"
 say "обычный docker volume prune НЕ применять — он снесёт и galaxy-dump/uploader-store)"
+
+# ── Отдельный стек Supabase ──────────────────────────────────────────
+# ~10 контейнеров (db, kong, auth, rest, realtime, storage, studio…) со своими
+# томами и журналами. В наш docker-compose они не входят, наш `--wipe` их не
+# трогает — а база и Storage растут сами по себе.
+section "стек Supabase (отдельный compose, вне этого репозитория)"
+STACK_DIR="${SUPABASE_STACK_DIR:-/opt/supabase}"
+if [ -d "$STACK_DIR" ]; then
+  say "$STACK_DIR — $(du -sh "$STACK_DIR" 2>/dev/null | cut -f1 || echo '?')"
+else
+  say "каталог $STACK_DIR не найден (если стек в другом месте — SUPABASE_STACK_DIR=<путь>)"
+fi
+docker ps -a --format '{{.Names}}|{{.Status}}|{{.Size}}' 2>/dev/null \
+  | awk -F'|' '$1 ~ /supabase/ { printf "  %-28s %-40s %s\n", $1, $2, $3 }' || true
+SUPA_VOLS="$(docker volume ls -q 2>/dev/null | grep -c 'supabase' || true)"
+say "томов со «supabase» в имени: ${SUPA_VOLS:-0} (их размеры — в разделе docker system df -v)"
+
+# bind-монтирования контейнеров: дампы Spansh (~6 ГиБ каждый), релизы Helper,
+# данные стека. Это хостовые каталоги, и в `du` по проекту их не видно.
+section "данные на хосте: bind-монтирования контейнеров"
+docker ps -aq 2>/dev/null | while read -r id; do
+  docker inspect --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\n"}}{{end}}{{end}}' "$id" 2>/dev/null
+done | sort -u | while read -r src; do
+  [ -n "$src" ] && [ -d "$src" ] || continue
+  printf '  %-8s %s\n' "$(du -sh "$src" 2>/dev/null | cut -f1 || echo '?')" "$src"
+done
 
 # ── «Место занято, а каталогов таких нет» ───────────────────────────
 # Две классические причины, которых не видно ни в du по проекту, ни в
@@ -175,12 +234,25 @@ fi
 section "крупнейшие каталоги корневого диска (du -x, без других ФС)"
 du -xhd2 / 2>/dev/null | sort -h | tail -n 15 || true
 
+# journald держит свой бюджет (по умолчанию — до 10% диска) и живёт мимо
+# Docker: в `docker system df` его нет, в `du` по проекту — тоже.
+section "журналы системы (systemd journald и /var/log)"
+if command -v journalctl >/dev/null 2>&1; then
+  journalctl --disk-usage 2>/dev/null || true
+  say "подрезать: journalctl --vacuum-size=500M (или SystemMaxUse в journald.conf)"
+fi
+du -sh /var/log/* 2>/dev/null | sort -h | tail -n 8 || true
+
 # Кэш-маунты: единственный переносимый способ их померить/почистить —
 # синтетическая сборка с теми же target (см. edrc_trim_cache_mounts).
 if [ -f "$SCRIPT_DIR/compose-lib.sh" ]; then
   # shellcheck source=compose-lib.sh
   source "$SCRIPT_DIR/compose-lib.sh"
-  head "кэш-маунты BuildKit (не видны в docker system df / builder prune)"
+  # Здесь был именно `head`: функция-заголовок когда-то так называлась, и
+  # этот вызов остался после переименования в `section`. В итоге GNU head
+  # пытался открыть заголовок как файл («cannot open … for reading»), а
+  # раздел о кэш-маунтах печатался без заголовка.
+  section "кэш-маунты BuildKit (не видны в docker system df / builder prune)"
   if declare -F edrc_trim_cache_mounts >/dev/null 2>&1; then
     if edrc_compose_uses_buildkit; then
       if [ "$WIPE" = "1" ]; then
