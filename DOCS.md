@@ -21,6 +21,7 @@
 | Цели сообщества: почему нет наград/тиров, куда уходят истёкшие CG | [COMMUNITY-GOALS.md](COMMUNITY-GOALS.md) |
 | «Не загружаются картинки», Supabase Storage упал: проверить и перезапустить | [STORAGE-RESTART.md](STORAGE-RESTART.md) — Админка → Мониторинг → «Хранилище файлов» |
 | Поставить сервер с нуля | [SELFHOST.md](SELFHOST.md), [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md), [SERVER-SETUP.md](SERVER-SETUP.md) |
+| Обновить ОС работающего сервера (20.04 → 22.04) | [OS-UPGRADE-2204.md](OS-UPGRADE-2204.md) — подготовка, бэкап, окно, проверки, откат |
 | Все переменные окружения | [.env.example](.env.example) |
 | Схема базы и миграции | [supabase/DATABASE.md](supabase/DATABASE.md) |
 
@@ -70,6 +71,7 @@
 | [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md) | То же пошагово для Ubuntu 20.04 с переносом архивом |
 | [SERVER-SETUP.md](SERVER-SETUP.md) | Свой сервер + облачный Supabase |
 | [DEPLOY.md](DEPLOY.md) | Справка по переносу с Vercel на VPS: что было привязано к Vercel, Docker, nginx, systemd |
+| [OS-UPGRADE-2204.md](OS-UPGRADE-2204.md) | Обновление ОС работающего сервера: Ubuntu 20.04 → 22.04 (Docker, второй диск, `systemd-oomd`, `nftables`) |
 | [POST-MIGRATION.md](POST-MIGRATION.md) | Что изменилось после переезда (сентябрь 2026) и как устроены `jobs`, OAuth, Uploader на своём сервере |
 | [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md) | Разовая команда переезда от 21.09.2026 (история; обычные обновления — через админку) |
 | [.env.example](.env.example) | Все переменные с пояснениями |
