@@ -11392,6 +11392,95 @@ _STRINGS.update({
     },
 })
 
+# ═══════════════════════════════════════════════════════════════
+#  Обмен настройками с сайтом: ошибки синхронизации
+# ═══════════════════════════════════════════════════════════════
+#  Тексты `settings_sync` показываются командиру в окне привязки лаунчера —
+#  это не диагностика в журнал, а причина, по которой раскладка не приехала.
+#  Ответ сервера (`payload["error"]`) идёт как есть: он уже на языке сайта.
+_STRINGS.update({
+    "Сайт вернул настройки неизвестного вида.": {
+        "en": "The site returned settings in an unknown format.",
+        "de": "Die Website hat Einstellungen in unbekanntem Format zurückgegeben.",
+        "it": "Il sito ha restituito impostazioni in un formato sconosciuto.",
+        "ko": "사이트가 알 수 없는 형식의 설정을 반환했습니다.",
+        "zh": "网站返回了未知格式的设置。",
+        "ja": "サイトから不明な形式の設定が返されました。",
+    },
+    "Сайт вернул настройки неизвестной версии.": {
+        "en": "The site returned settings with an unknown version.",
+        "de": "Die Website hat Einstellungen mit unbekannter Version zurückgegeben.",
+        "it": "Il sito ha restituito impostazioni con una versione sconosciuta.",
+        "ko": "사이트가 알 수 없는 버전의 설정을 반환했습니다.",
+        "zh": "网站返回了未知版本的设置。",
+        "ja": "サイトから不明なバージョンの設定が返されました。",
+    },
+    "На сайте лежат настройки версии {version}, эта программа понимает {expected}. Обновите Helper.": {
+        "en": "The site holds version {version} settings, this program understands {expected}. Update the Helper.",
+        "de": "Auf der Website liegen Einstellungen der Version {version}, dieses Programm versteht {expected}. Aktualisieren Sie den Helper.",
+        "it": "Sul sito ci sono impostazioni versione {version}, questo programma comprende {expected}. Aggiorna l'Helper.",
+        "ko": "사이트에 버전 {version} 설정이 있습니다. 이 프로그램은 {expected}까지 지원합니다. Helper를 업데이트하세요.",
+        "zh": "网站上的设置版本为 {version}，本程序支持 {expected}。请更新 Helper。",
+        "ja": "サイトにある設定のバージョンは {version} ですが、このプログラムが対応するのは {expected} までです。Helper を更新してください。",
+    },
+    "Сайт ответил ошибкой {code}.": {
+        "en": "The site responded with error {code}.",
+        "de": "Die Website hat mit Fehler {code} geantwortet.",
+        "it": "Il sito ha risposto con l'errore {code}.",
+        "ko": "사이트가 오류 {code}(으)로 응답했습니다.",
+        "zh": "网站返回错误 {code}。",
+        "ja": "サイトがエラー {code} を返しました。",
+    },
+    "Нет связи с сайтом: {reason}": {
+        "en": "No connection to the site: {reason}",
+        "de": "Keine Verbindung zur Website: {reason}",
+        "it": "Nessuna connessione al sito: {reason}",
+        "ko": "사이트에 연결할 수 없습니다: {reason}",
+        "zh": "无法连接网站：{reason}",
+        "ja": "サイトに接続できません: {reason}",
+    },
+    "Сайт вернул не JSON.": {
+        "en": "The site did not return JSON.",
+        "de": "Die Website hat kein JSON zurückgegeben.",
+        "it": "Il sito non ha restituito JSON.",
+        "ko": "사이트가 JSON이 아닌 응답을 반환했습니다.",
+        "zh": "网站返回的不是 JSON。",
+        "ja": "サイトの応答が JSON ではありません。",
+    },
+    "Код не принят.": {
+        "en": "The code was not accepted.",
+        "de": "Der Code wurde nicht angenommen.",
+        "it": "Il codice non è stato accettato.",
+        "ko": "코드가 승인되지 않았습니다.",
+        "zh": "代码未被接受。",
+        "ja": "コードが受け付けられませんでした。",
+    },
+    "Не удалось получить профиль.": {
+        "en": "Could not load the profile.",
+        "de": "Profil konnte nicht geladen werden.",
+        "it": "Impossibile ottenere il profilo.",
+        "ko": "프로필을 가져오지 못했습니다.",
+        "zh": "无法获取个人资料。",
+        "ja": "プロフィールを取得できませんでした。",
+    },
+    "Не удалось скачать настройки.": {
+        "en": "Could not download the settings.",
+        "de": "Einstellungen konnten nicht geladen werden.",
+        "it": "Impossibile scaricare le impostazioni.",
+        "ko": "설정을 내려받지 못했습니다.",
+        "zh": "无法下载设置。",
+        "ja": "設定をダウンロードできませんでした。",
+    },
+    "Не удалось отправить настройки.": {
+        "en": "Could not upload the settings.",
+        "de": "Einstellungen konnten nicht gesendet werden.",
+        "it": "Impossibile inviare le impostazioni.",
+        "ko": "설정을 보내지 못했습니다.",
+        "zh": "无法上传设置。",
+        "ja": "設定を送信できませんでした。",
+    },
+})
+
 _STRINGS.update({
     # ------------------------------------------------- журнал падений Helper
     "Журнал падений: {path}": {

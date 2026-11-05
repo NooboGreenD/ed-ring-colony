@@ -19,6 +19,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
 
+from i18n import tr
+
 #: Версия формата снимка. Если раскладка когда-нибудь переедет, старая
 #: версия на сайте не будет молча применена к новой программе.
 SNAPSHOT_VERSION = 1
@@ -82,16 +84,20 @@ def apply_snapshot(settings: Dict[str, Any], snapshot: Any) -> int:
     получить полуприменённый набор, в котором половина блоков уехала за экран.
     """
     if not isinstance(snapshot, dict):
-        raise SyncError("Сайт вернул настройки неизвестного вида.")
+        raise SyncError(tr("Сайт вернул настройки неизвестного вида."))
     version = snapshot.get("version", SNAPSHOT_VERSION)
     try:
         version = int(version)
     except (TypeError, ValueError):
-        raise SyncError("Сайт вернул настройки неизвестной версии.") from None
+        raise SyncError(tr("Сайт вернул настройки неизвестной версии.")) from None
     if version != SNAPSHOT_VERSION:
         raise SyncError(
-            f"На сайте лежат настройки версии {version}, эта программа понимает {SNAPSHOT_VERSION}. "
-            "Обновите Helper."
+            tr(
+                "На сайте лежат настройки версии {version}, эта программа понимает {expected}. "
+                "Обновите Helper.",
+                version=version,
+                expected=SNAPSHOT_VERSION,
+            )
         )
 
     changed = 0
@@ -132,17 +138,17 @@ def _request(url: str, token: str, method: str, body: Optional[dict] = None,
             detail = str(payload.get("error") or "")
         except Exception:
             detail = ""
-        raise SyncError(detail or f"Сайт ответил ошибкой {exc.code}.") from None
+        raise SyncError(detail or tr("Сайт ответил ошибкой {code}.", code=exc.code)) from None
     except urllib.error.URLError as exc:
-        raise SyncError(f"Нет связи с сайтом: {exc.reason}") from None
+        raise SyncError(tr("Нет связи с сайтом: {reason}", reason=exc.reason)) from None
     except OSError as exc:
-        raise SyncError(f"Нет связи с сайтом: {exc}") from None
+        raise SyncError(tr("Нет связи с сайтом: {reason}", reason=exc)) from None
     if not raw:
         return {}
     try:
         return json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
-        raise SyncError("Сайт вернул не JSON.") from None
+        raise SyncError(tr("Сайт вернул не JSON.")) from None
 
 
 def claim_code(base_url: str, code: str, device_name: str, timeout: float = 15.0) -> dict:
@@ -156,14 +162,14 @@ def claim_code(base_url: str, code: str, device_name: str, timeout: float = 15.0
     )
     token = str(payload.get("token") or "")
     if not payload.get("ok") or not token:
-        raise SyncError(str(payload.get("error") or "Код не принят."))
+        raise SyncError(str(payload.get("error") or tr("Код не принят.")))
     return payload
 
 
 def fetch_profile(base_url: str, token: str, timeout: float = 15.0) -> dict:
     payload = _request(f"{base_url.rstrip('/')}/api/uploader/link/me", token, "GET", None, timeout)
     if not payload.get("ok"):
-        raise SyncError(str(payload.get("error") or "Не удалось получить профиль."))
+        raise SyncError(str(payload.get("error") or tr("Не удалось получить профиль.")))
     return payload
 
 
@@ -179,7 +185,7 @@ def fetch_settings(base_url: str, token: str, timeout: float = 20.0) -> Dict[str
     """
     payload = _request(f"{base_url.rstrip('/')}/api/uploader/settings", token, "GET", None, timeout)
     if not payload.get("ok"):
-        raise SyncError(str(payload.get("error") or "Не удалось скачать настройки."))
+        raise SyncError(str(payload.get("error") or tr("Не удалось скачать настройки.")))
     settings = payload.get("settings")
     return {
         "settings": settings if isinstance(settings, dict) else {},
@@ -203,5 +209,5 @@ def upload_settings(base_url: str, token: str, snapshot: Dict[str, Any],
         timeout,
     )
     if not payload.get("ok"):
-        raise SyncError(str(payload.get("error") or "Не удалось отправить настройки."))
+        raise SyncError(str(payload.get("error") or tr("Не удалось отправить настройки.")))
     return str(payload.get("updatedAt") or "")
