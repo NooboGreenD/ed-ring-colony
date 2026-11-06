@@ -6,6 +6,7 @@
  */
 
 import { cardStyle, ghostButton, mutedText, sectionTitle } from '@/components/Architect/panelStyles';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { STAGE_LABELS } from '@/lib/architect/projects';
 import type { SystemProgressView } from '@/lib/architect/projectProgress';
 import {
@@ -24,10 +25,10 @@ import { ActivityChart } from '@/components/Architect/projects/ProjectLeaders';
 import type { LeadersResponse, ProgressResponse, ProjectTab } from '@/components/Architect/projects/ProjectView';
 
 const STATUS_TEXT: Record<SystemProgressView['status'], string> = {
-  unknown: 'нет данных',
-  planned: 'по плану, стройка не начата',
-  building: 'строится',
-  done: 'готова',
+  unknown: 'pov.statusUnknown',
+  planned: 'pov.statusPlanned',
+  building: 'pov.statusBuilding',
+  done: 'pov.statusDone',
 };
 
 interface Props {
@@ -39,6 +40,7 @@ interface Props {
 }
 
 export default function ProjectOverview({ detail, progress, leaders, onOpenTab, onOpenSystem }: Props) {
+  const { t } = useI18n();
   const summary = progress?.summary ?? null;
   const systemsById = new Map((progress?.systems ?? []).map((system) => [system.systemId, system]));
   const color = detail.project.color;
@@ -50,28 +52,28 @@ export default function ProjectOverview({ detail, progress, leaders, onOpenTab, 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 8 }}>
-        <Kpi label="Прогресс проекта" value={summary ? formatPercent(summary.progress) : '…'} tone={color}
-          hint={summary && summary.totalTons > 0 ? `${compactTons(summary.doneTons)} из ${compactTons(summary.totalTons)} т` : 'по тоннажу площадок и планов'} />
-        <Kpi label="Системы" value={summary ? `${summary.systemsDone} / ${summary.systems}` : detail.systems.length}
-          hint={summary ? `строятся ${summary.systemsBuilding} · в плане ${summary.systemsPlanned} · без данных ${summary.systemsUnknown}` : undefined} />
-        <Kpi label="Площадки" value={summary ? `${summary.sitesComplete} / ${summary.sites}` : '…'}
-          hint={summary ? `в работе ${summary.sitesActive}${summary.plannedSites ? ` · в планах ${summary.plannedSites}` : ''}` : undefined} />
-        <Kpi label="Осталось привезти" value={summary?.remaining != null ? formatTons(summary.remaining) : '—'}
-          hint="по активным площадкам" />
-        <Kpi label="Сдано пилотами" value={leaders ? formatTons(leaders.totals.siteTons) : '…'}
-          hint={leaders ? `${leaders.totals.pilots} пилотов · ${leaders.totals.siteOps} поставок` : undefined} />
-        <Kpi label="На авианосцы" value={leaders ? formatTons(leaders.totals.carrierTons) : '…'}
-          hint={`${detail.carriers.length} привязано`} />
+        <Kpi label={t('pov.kpiProgress')} value={summary ? formatPercent(summary.progress) : '…'} tone={color}
+          hint={summary && summary.totalTons > 0 ? t('pov.tonsOf', { done: compactTons(summary.doneTons), total: compactTons(summary.totalTons) }) : t('pov.kpiProgressHint')} />
+        <Kpi label={t('pov.kpiSystems')} value={summary ? `${summary.systemsDone} / ${summary.systems}` : detail.systems.length}
+          hint={summary ? t('pov.sysHint', { building: summary.systemsBuilding, planned: summary.systemsPlanned, unknown: summary.systemsUnknown }) : undefined} />
+        <Kpi label={t('pov.kpiSites')} value={summary ? `${summary.sitesComplete} / ${summary.sites}` : '…'}
+          hint={summary ? `${t('pov.sitesHint', { active: summary.sitesActive })}${summary.plannedSites ? t('pov.sitesPlanTail', { planned: summary.plannedSites }) : ''}` : undefined} />
+        <Kpi label={t('pov.kpiRemaining')} value={summary?.remaining != null ? formatTons(summary.remaining) : '—'}
+          hint={t('pov.remainingHint')} />
+        <Kpi label={t('pov.kpiPilots')} value={leaders ? formatTons(leaders.totals.siteTons) : '…'}
+          hint={leaders ? t('pov.pilotsHint', { pilots: leaders.totals.pilots, ops: leaders.totals.siteOps }) : undefined} />
+        <Kpi label={t('pov.kpiCarriers')} value={leaders ? formatTons(leaders.totals.carrierTons) : '…'}
+          hint={t('pov.carriersHint', { count: detail.carriers.length })} />
       </section>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: 12 }} className="architect-project-overview">
-        <section style={cardStyle} aria-label="Прогресс по системам">
+        <section style={cardStyle} aria-label={t('pov.ariaSystems')}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-            <h2 style={sectionTitle}>Прогресс по системам</h2>
-            <button type="button" style={ghostButton} onClick={() => onOpenTab('systems')}>Все системы →</button>
+            <h2 style={sectionTitle}>{t('pov.systemsTitle')}</h2>
+            <button type="button" style={ghostButton} onClick={() => onOpenTab('systems')}>{t('pov.allSystems')}</button>
           </div>
           {detail.systems.length === 0 ? (
-            <EmptyState>В проекте ещё нет систем. Добавьте их на вкладке «Системы».</EmptyState>
+            <EmptyState>{t('pov.noSystems')}</EmptyState>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {detail.systems.map((system) => {
@@ -86,7 +88,7 @@ export default function ProjectOverview({ detail, progress, leaders, onOpenTab, 
                       display: 'grid', gridTemplateColumns: 'minmax(140px, 1.2fr) minmax(120px, 2fr) 70px', gap: 10, alignItems: 'center',
                       background: 'transparent', border: 'none', padding: '4px 0', cursor: 'pointer', textAlign: 'left', color: 'var(--text)',
                     }}
-                    title={view ? STATUS_TEXT[view.status] : STAGE_LABELS[system.stage]}
+                    title={view ? t(STATUS_TEXT[view.status]) : t(STAGE_LABELS[system.stage])}
                   >
                     <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                       <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{system.name}</span>
@@ -99,8 +101,8 @@ export default function ProjectOverview({ detail, progress, leaders, onOpenTab, 
                       <ProgressBar value={view?.progress ?? null} tone={tone} />
                       <span style={{ ...mutedText, fontSize: 11 }}>
                         {view
-                          ? `${view.sitesComplete}/${view.sites.length} площадок${view.totalTons > 0 ? ` · ${compactTons(view.doneTons)}/${compactTons(view.totalTons)} т` : ''}${view.plan ? ` · план ${view.plan.siteCount}` : ''}`
-                          : 'считаем…'}
+                          ? `${t('pov.sitesLine', { done: view.sitesComplete, total: view.sites.length })}${view.totalTons > 0 ? t('pov.tonsTail', { done: compactTons(view.doneTons), total: compactTons(view.totalTons) }) : ''}${view.plan ? t('pov.planTail', { count: view.plan.siteCount }) : ''}`
+                          : t('pov.calculating')}
                       </span>
                     </span>
                     <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, textAlign: 'right', color: view?.progress != null ? 'var(--text)' : 'var(--muted)' }}>
@@ -114,13 +116,13 @@ export default function ProjectOverview({ detail, progress, leaders, onOpenTab, 
         </section>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <section style={cardStyle} aria-label="Лидеры проекта">
+          <section style={cardStyle} aria-label={t('pov.ariaLeaders')}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-              <h2 style={sectionTitle}>Лидеры</h2>
-              <button type="button" style={ghostButton} onClick={() => onOpenTab('leaders')}>Инфографика →</button>
+              <h2 style={sectionTitle}>{t('pov.leadersTitle')}</h2>
+              <button type="button" style={ghostButton} onClick={() => onOpenTab('leaders')}>{t('pov.infographics')}</button>
             </div>
             {topPilots.length === 0 ? (
-              <EmptyState>Поставок в системы проекта пока нет.</EmptyState>
+              <EmptyState>{t('pov.noDeliveries')}</EmptyState>
             ) : (
               <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {topPilots.map((pilot, index) => (
@@ -128,21 +130,21 @@ export default function ProjectOverview({ detail, progress, leaders, onOpenTab, 
                     <span style={{ fontFamily: 'ui-monospace, monospace', color: index < 3 ? 'var(--orange)' : 'var(--muted)' }}>#{pilot.rank}</span>
                     <span style={{ minWidth: 0 }}>
                       <span style={{ fontSize: 13, color: pilot.hidden ? 'var(--muted)' : 'var(--text)' }}>
-                        {pilot.name}{pilot.isYou ? ' (вы)' : ''}
+                        {pilot.name}{pilot.isYou ? t('pov.you') : ''}
                       </span>
                       <ProgressBar value={maxPilot > 0 ? (pilot.siteTons / maxPilot) * 100 : 0} tone={toneAt(index)} height={5} />
                     </span>
-                    <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, textAlign: 'right' }}>{compactTons(pilot.siteTons)} т</span>
+                    <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, textAlign: 'right' }}>{t('pov.tons', { value: compactTons(pilot.siteTons) })}</span>
                   </li>
                 ))}
               </ol>
             )}
           </section>
 
-          <section style={cardStyle} aria-label="Что ещё везти">
-            <h2 style={{ ...sectionTitle, marginBottom: 10 }}>Что ещё везти</h2>
+          <section style={cardStyle} aria-label={t('pov.ariaNeeds')}>
+            <h2 style={{ ...sectionTitle, marginBottom: 10 }}>{t('pov.whatNext')}</h2>
             {needs.length === 0 ? (
-              <EmptyState>{summary ? 'Открытых потребностей нет или данных площадок ещё нет.' : 'Считаем…'}</EmptyState>
+              <EmptyState>{summary ? t('pov.noNeeds') : t('pov.counting')}</EmptyState>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {needs.map((need) => (
@@ -160,14 +162,14 @@ export default function ProjectOverview({ detail, progress, leaders, onOpenTab, 
         </div>
       </div>
 
-      <section style={cardStyle} aria-label="Активность">
+      <section style={cardStyle} aria-label={t('pov.ariaActivity')}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-          <h2 style={sectionTitle}>Активность</h2>
-          <span style={mutedText}>тонн в день по системам проекта</span>
+          <h2 style={sectionTitle}>{t('pov.activityTitle')}</h2>
+          <span style={mutedText}>{t('pov.activityHint')}</span>
         </div>
         {leaders && leaders.timeline.points.length > 0
           ? <ActivityChart timeline={leaders.timeline} height={120} />
-          : <EmptyState>Поставок пока нет.</EmptyState>}
+          : <EmptyState>{t('pov.noActivity')}</EmptyState>}
       </section>
       <style>{`
         @media (max-width: 960px) {

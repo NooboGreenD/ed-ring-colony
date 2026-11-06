@@ -286,10 +286,10 @@ function ProjectsSection({ overview }: { overview: SystemOverview }) {
             <div key={`ap-${project.id}`} style={row}>
               <span>
                 <Link href={`/architect/projects/${project.id}`} style={{ color: project.color || 'var(--text)' }}>{project.name}</Link>
-                <span style={muted}> · {STATUS_LABELS[project.status as ProjectStatus] ?? project.status}</span>
+                <span style={muted}> · {STATUS_LABELS[project.status as ProjectStatus] ? t(STATUS_LABELS[project.status as ProjectStatus]) : project.status}</span>
               </span>
               <span style={{ fontFamily: mono }}>
-                {STAGE_LABELS[project.stage as SystemStage] ?? project.stage}
+                {STAGE_LABELS[project.stage as SystemStage] ? t(STAGE_LABELS[project.stage as SystemStage]) : project.stage}
                 {project.progress != null ? <span style={muted}>{t('sysOv.projectProgress', { percent: number(locale, project.progress, 1) })}</span> : null}
               </span>
             </div>

@@ -9,6 +9,7 @@
  */
 
 import Link from 'next/link';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useEffect, useMemo, useState } from 'react';
 import {
   cardStyle,
@@ -64,12 +65,13 @@ interface Props {
 type SortMode = 'order' | 'progress' | 'remaining' | 'priority';
 
 const BASIS_TEXT: Record<SystemProgressView['basis'], string> = {
-  plan: 'по плану архитектора',
-  sites: 'по тоннажу площадок',
-  none: 'нет данных о тоннаже',
+  plan: 'psys.basisPlan',
+  sites: 'psys.basisSites',
+  none: 'psys.basisNone',
 };
 
 export default function ProjectSystems({ base, detail, progress, focusSystemId, onChanged, onNotice }: Props) {
+  const { t } = useI18n();
   const perms = detail.viewer.permissions;
   const [stageFilter, setStageFilter] = useState<SystemStage | 'all'>('all');
   const [sort, setSort] = useState<SortMode>('order');
@@ -111,7 +113,7 @@ export default function ProjectSystems({ base, detail, progress, focusSystemId, 
 
   const add = async () => {
     if (!parsed.names.length) {
-      setError(parsed.duplicates.length ? 'Эти системы уже в проекте' : 'Введите имена систем');
+      setError(parsed.duplicates.length ? t('psys.dupExists') : t('psys.enterNames'));
       return;
     }
     setBusy(true);
@@ -123,7 +125,7 @@ export default function ProjectSystems({ base, detail, progress, focusSystemId, 
       return;
     }
     setAdding('');
-    onNotice(`Добавлено систем: ${result.data?.added.length ?? parsed.names.length}`);
+    onNotice(t('psys.addedCount', { count: result.data?.added.length ?? parsed.names.length }));
     await onChanged({ leaders: true });
   };
 
@@ -137,23 +139,23 @@ export default function ProjectSystems({ base, detail, progress, focusSystemId, 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {perms.manageSystems && (
-        <section style={cardStyle} aria-label="Добавить системы">
-          <h2 style={sectionTitle}>Добавить системы</h2>
+        <section style={cardStyle} aria-label={t('psys.addTitle')}>
+          <h2 style={sectionTitle}>{t('psys.addTitle')}</h2>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 8 }}>
             <textarea
               value={adding}
               onChange={(event) => setAdding(event.target.value)}
               rows={3}
-              placeholder={'По одной в строке:\nHIP 90297\nCol 285 Sector AB-C d14-2'}
+              placeholder={t('psys.addPlaceholder')}
               style={{ ...inputStyle, flex: '1 1 360px', fontFamily: 'ui-monospace, monospace', resize: 'vertical' }}
             />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <button type="button" style={primaryButton} disabled={busy} onClick={() => void add()}>
-                {busy ? 'Добавляем…' : `Добавить${parsed.names.length ? ` (${parsed.names.length})` : ''}`}
+                {busy ? t('psys.adding') : `${t('psys.add')}${parsed.names.length ? ` (${parsed.names.length})` : ''}`}
               </button>
               <span style={mutedText}>
-                {detail.systems.length}/{detail.limits.systems} систем
-                {parsed.duplicates.length ? ` · уже есть: ${parsed.duplicates.length}` : ''}
+                {t('psys.systemsOf', { used: detail.systems.length, limit: detail.limits.systems })}
+                {parsed.duplicates.length ? t('psys.alreadyThere', { count: parsed.duplicates.length }) : ''}
               </span>
             </div>
           </div>
@@ -162,29 +164,29 @@ export default function ProjectSystems({ base, detail, progress, focusSystemId, 
       )}
 
       <section style={{ ...cardStyle, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={rowStyle} role="group" aria-label="Этап">
+        <div style={rowStyle} role="group" aria-label={t('psys.editorStage')}>
           <button type="button" style={stageFilter === 'all' ? { ...chipStyle, ...chipActive } : chipStyle} onClick={() => setStageFilter('all')}>
-            Все · {detail.systems.length}
+            {t('psys.allChip', { count: detail.systems.length })}
           </button>
           {SYSTEM_STAGES.filter((stage) => stageCounts.get(stage)).map((stage) => (
             <button key={stage} type="button" style={stageFilter === stage ? { ...chipStyle, ...chipActive } : chipStyle} onClick={() => setStageFilter(stage)}>
-              {STAGE_LABELS[stage]} · {stageCounts.get(stage)}
+              {t(STAGE_LABELS[stage])} · {stageCounts.get(stage)}
             </button>
           ))}
         </div>
         <label style={{ ...mutedText, display: 'flex', gap: 6, alignItems: 'center' }}>
-          Порядок
+          {t('psys.order')}
           <select value={sort} onChange={(event) => setSort(event.target.value as SortMode)} style={inputStyle}>
-            <option value="order">как в проекте</option>
-            <option value="priority">по приоритету</option>
-            <option value="progress">по прогрессу</option>
-            <option value="remaining">по остатку груза</option>
+            <option value="order">{t('psys.sortOrder')}</option>
+            <option value="priority">{t('psys.sortPriority')}</option>
+            <option value="progress">{t('psys.sortProgress')}</option>
+            <option value="remaining">{t('psys.sortRemaining')}</option>
           </select>
         </label>
       </section>
 
       {systems.length === 0 ? (
-        <EmptyState>{detail.systems.length ? 'Нет систем на этом этапе.' : 'В проекте пока нет систем.'}</EmptyState>
+        <EmptyState>{detail.systems.length ? t('psys.noneAtStage') : t('psys.noSystems')}</EmptyState>
       ) : systems.map((system, index) => (
         <SystemCard
           key={system.id}
@@ -217,6 +219,7 @@ function SystemCard({ base, system, view, detail, expanded, onToggle, onChanged,
   onNotice: (message: string) => void;
   neighbours: { up: ProjectSystemView | null; down: ProjectSystemView | null };
 }) {
+  const { t } = useI18n();
   const canEdit = system.editable.length > 0;
   const manager = system.editable.includes('priority');
   const [editing, setEditing] = useState(false);
@@ -240,7 +243,7 @@ function SystemCard({ base, system, view, detail, expanded, onToggle, onChanged,
   };
 
   const remove = async () => {
-    if (!window.confirm(`Убрать систему ${system.name} из проекта? Вклад пилотов в неё перестанет учитываться в проекте.`)) return;
+    if (!window.confirm(t('psys.confirmRemove', { name: system.name }))) return;
     setBusy(true);
     const result = await apiJson(`${base}/systems?systemId=${encodeURIComponent(system.id)}`, { method: 'DELETE' });
     setBusy(false);
@@ -248,7 +251,7 @@ function SystemCard({ base, system, view, detail, expanded, onToggle, onChanged,
       setError(result.error);
       return;
     }
-    onNotice(`Система ${system.name} убрана из проекта`);
+    onNotice(t('psys.removed', { name: system.name }));
     await onChanged({ leaders: true });
   };
 
@@ -264,7 +267,7 @@ function SystemCard({ base, system, view, detail, expanded, onToggle, onChanged,
   };
 
   return (
-    <section id={`project-system-${system.id}`} style={{ ...cardStyle, borderLeftWidth: 3, borderLeftColor: tone }} aria-label={`Система ${system.name}`}>
+    <section id={`project-system-${system.id}`} style={{ ...cardStyle, borderLeftWidth: 3, borderLeftColor: tone }} aria-label={t('psys.systemAria', { name: system.name })}>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.3fr) minmax(200px, 2fr) auto', gap: 14, alignItems: 'center' }} className="architect-project-system-head">
         <div style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -272,40 +275,40 @@ function SystemCard({ base, system, view, detail, expanded, onToggle, onChanged,
               {expanded ? '▾' : '▸'} {system.name}
             </button>
             <StageBadge stage={system.stage} />
-            {system.priority === 1 && <Badge tone="var(--red)">приоритет</Badge>}
-            {system.priority === 3 && <Badge>низкий приоритет</Badge>}
+            {system.priority === 1 && <Badge tone="var(--red)">{t('psys.priorityBadge')}</Badge>}
+            {system.priority === 3 && <Badge>{t('psys.lowPriority')}</Badge>}
           </div>
           <div style={{ ...mutedText, marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <span>ответственный: {system.responsibleName ?? '—'}</span>
+            <span>{t('psys.responsible', { name: system.responsibleName ?? '—' })}</span>
             {system.targetDate && (
-              <span style={{ color: days != null && days < 0 && view?.status !== 'done' ? 'var(--red)' : undefined }}>срок {formatDate(system.targetDate)}</span>
+              <span style={{ color: days != null && days < 0 && view?.status !== 'done' ? 'var(--red)' : undefined }}>{t('psys.deadline', { date: formatDate(system.targetDate) })}</span>
             )}
             {system.plan
-              ? <Link href={`/architect?plan=${system.plan.id}`} style={{ color: 'var(--cyan)' }}>план: {system.plan.title || 'без названия'} ({system.plan.siteCount})</Link>
-              : <span>плана нет</span>}
+              ? <Link href={`/architect?plan=${system.plan.id}`} style={{ color: 'var(--cyan)' }}>{t('psys.planLink', { title: system.plan.title || t('psys.noTitle') })} ({system.plan.siteCount})</Link>
+              : <span>{t('psys.planNone')}</span>}
           </div>
         </div>
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-            <span style={{ color: 'var(--muted)' }}>{view ? BASIS_TEXT[view.basis] : 'считаем…'}</span>
+            <span style={{ color: 'var(--muted)' }}>{view ? t(BASIS_TEXT[view.basis]) : t('psys.calculating')}</span>
             <span style={{ fontFamily: 'ui-monospace, monospace' }}>{view?.progress != null ? formatPercent(view.progress) : '—'}</span>
           </div>
           <ProgressBar value={view?.progress ?? null} tone={tone} height={10} />
           <div style={{ ...mutedText, fontSize: 11, marginTop: 4 }}>
             {view
               ? [
-                `площадок ${view.sitesComplete}/${view.sites.length}`,
-                view.totalTons > 0 ? `${compactTons(view.doneTons)}/${compactTons(view.totalTons)} т` : null,
-                view.remaining ? `осталось ${compactTons(view.remaining)} т` : null,
-                view.plan ? `в плане ${view.plan.siteCount}, сопоставлено ${view.plan.matched}` : null,
+                t('psys.sitesProgress', { done: view.sitesComplete, total: view.sites.length }),
+                view.totalTons > 0 ? t('psys.tonsProgress', { done: compactTons(view.doneTons), total: compactTons(view.totalTons) }) : null,
+                view.remaining ? t('psys.tonsLeft', { tons: compactTons(view.remaining) }) : null,
+                view.plan ? t('psys.planMatched', { count: view.plan.siteCount, matched: view.plan.matched }) : null,
               ].filter(Boolean).join(' · ')
               : ''}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <Link href={`/architect?system=${encodeURIComponent(system.name)}`} style={ghostButton} title="Открыть в планировщике">Планировщик</Link>
-          <Link href={`/system/${encodeURIComponent(system.name)}`} style={ghostButton}>Система</Link>
-          {canEdit && <button type="button" style={ghostButton} onClick={() => setEditing((value) => !value)}>{editing ? 'Готово' : 'Изменить'}</button>}
+          <Link href={`/architect?system=${encodeURIComponent(system.name)}`} style={ghostButton} title={t('psys.openInPlanner')}>{t('psys.planner')}</Link>
+          <Link href={`/system/${encodeURIComponent(system.name)}`} style={ghostButton}>{t('psys.system')}</Link>
+          {canEdit && <button type="button" style={ghostButton} onClick={() => setEditing((value) => !value)}>{editing ? t('psys.saved') : t('psys.change')}</button>}
         </div>
       </div>
 
@@ -339,6 +342,7 @@ function SystemEditor({ system, detail, busy, manager, onPatch, onRemove, onMove
   onMoveUp: (() => void) | null;
   onMoveDown: (() => void) | null;
 }) {
+  const { t } = useI18n();
   const [notes, setNotes] = useState(system.notes);
   const [plans, setPlans] = useState<PlanView[] | null>(null);
 
@@ -354,40 +358,40 @@ function SystemEditor({ system, detail, busy, manager, onPatch, onRemove, onMove
   return (
     <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed var(--line)', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
       <label style={mutedText}>
-        Этап
-        <select value={system.stage} disabled={busy} onChange={(event) => void onPatch({ stage: event.target.value }, `${system.name}: этап «${STAGE_LABELS[event.target.value as SystemStage]}»`)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-          {SYSTEM_STAGES.map((stage) => <option key={stage} value={stage}>{STAGE_LABELS[stage]}</option>)}
+        {t('psys.editorStage')}
+        <select value={system.stage} disabled={busy} onChange={(event) => void onPatch({ stage: event.target.value }, t('psys.stageChange', { name: system.name, stage: t(STAGE_LABELS[event.target.value as SystemStage]) }))} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
+          {SYSTEM_STAGES.map((stage) => <option key={stage} value={stage}>{t(STAGE_LABELS[stage])}</option>)}
         </select>
       </label>
       {manager && (
         <>
           <label style={mutedText}>
-            Приоритет
+            {t('psys.editorPriority')}
             <select value={system.priority} disabled={busy} onChange={(event) => void onPatch({ priority: Number(event.target.value) })} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-              {[1, 2, 3].map((value) => <option key={value} value={value}>{PRIORITY_LABELS[value]}</option>)}
+              {[1, 2, 3].map((value) => <option key={value} value={value}>{t(PRIORITY_LABELS[value])}</option>)}
             </select>
           </label>
           <label style={mutedText}>
-            Ответственный пилот
-            <select value={system.responsibleId ?? ''} disabled={busy} onChange={(event) => void onPatch({ responsibleId: event.target.value || null }, 'Ответственный назначен')} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-              <option value="">— не назначен —</option>
+            {t('psys.editorResponsible')}
+            <select value={system.responsibleId ?? ''} disabled={busy} onChange={(event) => void onPatch({ responsibleId: event.target.value || null }, t('psys.responsibleAssigned'))} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
+              <option value="">{t('psys.unassigned')}</option>
               {detail.members.map((member) => <option key={member.userId} value={member.userId}>{member.name}</option>)}
             </select>
           </label>
           <label style={mutedText}>
-            Срок
+            {t('psys.editorDeadline')}
             <input type="date" value={system.targetDate ?? ''} disabled={busy} onChange={(event) => void onPatch({ targetDate: event.target.value || null })} style={{ ...inputStyle, width: '100%', marginTop: 4 }} />
           </label>
           <label style={mutedText}>
-            План архитектора
-            <select value={system.planId ?? ''} disabled={busy || plans === null} onChange={(event) => void onPatch({ planId: event.target.value || null }, event.target.value ? 'План привязан' : 'План отвязан')} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-              <option value="">{plans === null ? 'загружаем планы…' : '— без плана —'}</option>
+            {t('psys.editorPlan')}
+            <select value={system.planId ?? ''} disabled={busy || plans === null} onChange={(event) => void onPatch({ planId: event.target.value || null }, event.target.value ? t('psys.planBound') : t('psys.planUnbound'))} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
+              <option value="">{plans === null ? t('psys.plansLoading') : t('psys.noPlan')}</option>
               {system.plan && !(plans ?? []).some((plan) => plan.id === system.plan!.id) && (
-                <option value={system.plan.id}>{system.plan.title || 'текущий план'} · {system.plan.authorName}</option>
+                <option value={system.plan.id}>{system.plan.title || t('psys.currentPlan')} · {system.plan.authorName}</option>
               )}
               {(plans ?? []).map((plan) => (
                 <option key={plan.id} value={plan.id}>
-                  {(plan.title || 'без названия')} · {plan.authorName || 'автор'} · {plan.siteCount} постр.{plan.own ? ' · мой' : ''}
+                  {t('psys.planOption', { title: plan.title || t('psys.noTitle'), author: plan.authorName || t('psys.authorFallback'), count: plan.siteCount })}{plan.own ? t('psys.planOwn') : ''}
                 </option>
               ))}
             </select>
@@ -395,16 +399,16 @@ function SystemEditor({ system, detail, busy, manager, onPatch, onRemove, onMove
         </>
       )}
       <label style={{ ...mutedText, gridColumn: '1 / -1' }}>
-        Заметки
+        {t('psys.notes')}
         <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} maxLength={2000} style={{ ...inputStyle, width: '100%', marginTop: 4, resize: 'vertical' }} />
       </label>
       <div style={{ ...rowStyle, gridColumn: '1 / -1' }}>
-        <button type="button" style={primaryButton} disabled={busy || notes === system.notes} onClick={() => void onPatch({ notes }, 'Заметки сохранены')}>Сохранить заметки</button>
-        {manager && onMoveUp && <button type="button" style={ghostButton} disabled={busy} onClick={onMoveUp}>↑ Выше</button>}
-        {manager && onMoveDown && <button type="button" style={ghostButton} disabled={busy} onClick={onMoveDown}>↓ Ниже</button>}
+        <button type="button" style={primaryButton} disabled={busy || notes === system.notes} onClick={() => void onPatch({ notes }, t('psys.notesSaved'))}>{t('psys.saveNotes')}</button>
+        {manager && onMoveUp && <button type="button" style={ghostButton} disabled={busy} onClick={onMoveUp}>{t('psys.moveUp')}</button>}
+        {manager && onMoveDown && <button type="button" style={ghostButton} disabled={busy} onClick={onMoveDown}>{t('psys.moveDown')}</button>}
         {manager && (
           <button type="button" style={{ ...ghostButton, borderColor: 'var(--red)', color: 'var(--red)', marginLeft: 'auto' }} disabled={busy} onClick={onRemove}>
-            Убрать из проекта
+            {t('psys.removeFromProject')}
           </button>
         )}
       </div>
@@ -413,29 +417,29 @@ function SystemEditor({ system, detail, busy, manager, onPatch, onRemove, onMove
 }
 
 function SystemDetails({ system, view }: { system: ProjectSystemView; view: SystemProgressView | null }) {
-  if (!view) return <p style={{ ...mutedText, marginTop: 10 }}>Прогресс ещё считается…</p>;
+  const { t } = useI18n();
+  if (!view) return <p style={{ ...mutedText, marginTop: 10 }}>{t('psys.detailsCalculating')}</p>;
   const needs = view.needs.slice(0, 14);
   const maxNeed = needs[0]?.remaining ?? 0;
   const pendingPlan = view.plan?.sites.filter((site) => !site.siteKey && site.status !== 'complete') ?? [];
   return (
     <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: 14 }} className="architect-project-system-body">
       <div style={{ minWidth: 0 }}>
-        <h3 style={{ ...sectionTitle, fontSize: 13, marginBottom: 6 }}>Площадки</h3>
+        <h3 style={{ ...sectionTitle, fontSize: 13, marginBottom: 6 }}>{t('psys.sitesTitle')}</h3>
         {view.sites.length === 0 ? (
           <EmptyState>
-            Стройплощадок не видно: Raven Colonial ещё не знает систему, а журналов со стыковкой к площадке не загружено.
-            Нажмите «Обновить из Raven» вверху страницы.
+            {t('psys.noSites')}
           </EmptyState>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={tableStyle}>
               <thead>
                 <tr>
-                  <th style={thStyle}>Площадка</th>
-                  <th style={{ ...thStyle, minWidth: 120 }}>Прогресс</th>
-                  <th style={{ ...thStyle, textAlign: 'right' }}>Привезено</th>
-                  <th style={{ ...thStyle, textAlign: 'right' }}>Осталось</th>
-                  <th style={thStyle}>Данные</th>
+                  <th style={thStyle}>{t('psys.colSite')}</th>
+                  <th style={{ ...thStyle, minWidth: 120 }}>{t('psys.colProgress')}</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>{t('psys.colDelivered')}</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>{t('psys.colRemaining')}</th>
+                  <th style={thStyle}>{t('psys.colData')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -446,11 +450,11 @@ function SystemDetails({ system, view }: { system: ProjectSystemView; view: Syst
         )}
         {pendingPlan.length > 0 && (
           <div style={{ marginTop: 10 }}>
-            <h3 style={{ ...sectionTitle, fontSize: 13, marginBottom: 6 }}>Ещё не начаты по плану</h3>
+            <h3 style={{ ...sectionTitle, fontSize: 13, marginBottom: 6 }}>{t('psys.pendingPlan')}</h3>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {pendingPlan.map((site) => (
                 <Badge key={site.siteId} title={`${site.body} · ~${formatTons(site.tons)}`}>
-                  {site.name} · {site.body.replace(system.name, '').trim() || site.body} · {compactTons(site.tons)} т
+                  {site.name} · {site.body.replace(system.name, '').trim() || site.body} · {t('psys.tonsProgress', { done: '', total: compactTons(site.tons) })}
                 </Badge>
               ))}
             </div>
@@ -461,9 +465,9 @@ function SystemDetails({ system, view }: { system: ProjectSystemView; view: Syst
         )}
       </div>
       <div>
-        <h3 style={{ ...sectionTitle, fontSize: 13, marginBottom: 6 }}>Что везти</h3>
+        <h3 style={{ ...sectionTitle, fontSize: 13, marginBottom: 6 }}>{t('psys.whatToHaul')}</h3>
         {needs.length === 0 ? (
-          <EmptyState>{view.sitesActive ? 'Raven не отдал разбивку по товарам.' : 'Активных площадок нет.'}</EmptyState>
+          <EmptyState>{view.sitesActive ? t('psys.noBreakdown') : t('psys.noActiveSites')}</EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {needs.map((need) => (
@@ -478,8 +482,8 @@ function SystemDetails({ system, view }: { system: ProjectSystemView; view: Syst
           </div>
         )}
         <p style={{ ...mutedText, fontSize: 11, marginTop: 10 }}>
-          Raven: {formatAgo(view.ravenUpdatedAt)} · журналы: {formatAgo(view.journalUpdatedAt)}
-          {view.architectName ? ` · архитектор в Raven: ${view.architectName}` : ''}
+          {t('psys.ravenAgo', { raven: formatAgo(view.ravenUpdatedAt), journals: formatAgo(view.journalUpdatedAt) })}
+          {view.architectName ? t('psys.ravenArchitect', { name: view.architectName }) : ''}
         </p>
       </div>
       <style>{`
@@ -492,7 +496,8 @@ function SystemDetails({ system, view }: { system: ProjectSystemView; view: Syst
 }
 
 function SiteRow({ site }: { site: ProjectSite }) {
-  const sourceLabel = site.source === 'both' ? 'Raven + журнал' : site.source === 'journal' ? 'журнал' : 'Raven';
+  const { t } = useI18n();
+  const sourceLabel = site.source === 'both' ? t('psys.sourceBoth') : site.source === 'journal' ? t('psys.sourceJournal') : t('psys.sourceRaven');
   return (
     <tr>
       <td style={tdStyle}>
@@ -502,7 +507,7 @@ function SiteRow({ site }: { site: ProjectSite }) {
       <td style={tdStyle}>
         <ProgressBar value={site.progress} tone={site.complete ? 'var(--green)' : 'var(--orange)'} height={6} />
         <span style={{ fontSize: 11, color: site.complete ? 'var(--green)' : 'var(--muted)' }}>
-          {site.complete ? 'завершена' : site.progress != null ? formatPercent(site.progress) : '—'}
+          {site.complete ? t('psys.complete') : site.progress != null ? formatPercent(site.progress) : '—'}
         </span>
       </td>
       <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'ui-monospace, monospace' }}>
