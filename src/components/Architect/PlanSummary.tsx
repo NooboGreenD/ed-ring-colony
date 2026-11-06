@@ -12,6 +12,7 @@ import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } fro
 import type { ArchitectPlan, PlanEvaluation, SystemEconomy, SystemEffectKey } from '@/lib/architect/types';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { architectLabel } from '@/lib/i18n/architectLabels';
+import { bodyTraitLabel, issueText } from '@/lib/i18n/planText';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
   pop: 'psm.effPop',
@@ -208,12 +209,12 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
           <h3 style={sectionTitle}>{t('psm.issues')}</h3>
           {errors.map((issue, index) => (
             <div key={`e${index}`} style={{ color: 'var(--red)', fontSize: 12, marginBottom: 4 }}>
-              ✕ {issue.message}
+              ✕ {issueText(issue, t)}
             </div>
           ))}
           {warnings.map((issue, index) => (
             <div key={`w${index}`} style={{ color: 'var(--orange)', fontSize: 12, marginBottom: 4 }}>
-              ! {issue.message}
+              ! {issueText(issue, t)}
             </div>
           ))}
         </section>
@@ -312,7 +313,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                   )}
                   {affinity.bodyDependent && affinity.boost.length > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, fontStyle: 'italic' }}>
-                      {t('psm.boostedBy')} {affinity.boost.map((trait: BodyTrait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')}
+                      {t('psm.boostedBy')} {affinity.boost.map((trait: BodyTrait) => bodyTraitLabel(trait, t)).join(', ')}
                     </div>
                   )}
                 </div>
@@ -407,7 +408,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                         <td style={{ ...refCell, color: 'var(--text)' }}>{architectLabel('economy', economy, ECONOMY_LABELS_RU[economy], t)}</td>
                         <td style={{ ...refCell, color: 'var(--muted)' }}>
                           {affinity.boost.length > 0
-                            ? affinity.boost.map((trait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')
+                            ? affinity.boost.map((trait) => bodyTraitLabel(trait, t)).join(', ')
                             : '—'}
                         </td>
                         <td style={{ ...refCell, color: affinity.bodyDependent ? 'var(--orange)' : 'var(--muted)' }}>

@@ -223,6 +223,9 @@ export interface PlanIssue {
   siteId?: string;
   bodyName?: string;
   message: string;
+  /** Ключ перевода сообщения: `message` остаётся русским оригиналом. */
+  key?: string;
+  params?: Record<string, string | number>;
 }
 
 /**
@@ -294,8 +297,21 @@ export interface PlanEvaluation {
 }
 
 /** Проверка «можно ли поставить эту постройку на это тело». */
+/**
+ * Сообщение проверки в двух видах: `text` — русский оригинал (по нему сверяют
+ * тесты и его видно в журналах), `key`/`params` — те же слова из каталога
+ * переводов, по ним интерфейс показывает текст на языке пилота.
+ */
+export interface PlacementNote {
+  key: string;
+  params?: Record<string, string | number>;
+  text: string;
+}
+
 export interface PlacementCheck {
   ok: boolean;
   errors: string[];
   warnings: string[];
+  /** Те же сообщения ключами; порядок совпадает с `errors`/`warnings`. */
+  notes?: { errors: PlacementNote[]; warnings: PlacementNote[] };
 }

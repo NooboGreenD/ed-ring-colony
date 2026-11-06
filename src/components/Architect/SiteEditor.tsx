@@ -13,6 +13,7 @@ import {
   placementCheck,
 } from '@/lib/architect/planner';
 import type { SitePatch } from '@/lib/architect/planner';
+import { economyFitText, placementCheckTexts } from '@/lib/i18n/planText';
 import type {
   ArchitectBody,
   ArchitectPlan,
@@ -70,8 +71,9 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
   }, [query, targetBody, planWithoutSite]);
 
   const chosenCheck = installation ? placementCheck(targetBody, installationId, planWithoutSite) : null;
-  const errors = chosenCheck?.errors ?? [t('sed.unknownSite')];
-  const warnings = chosenCheck?.warnings ?? [];
+  const chosenTexts = chosenCheck ? placementCheckTexts(chosenCheck, t) : null;
+  const errors = chosenTexts?.errors ?? [t('sed.unknownSite')];
+  const warnings = chosenTexts?.warnings ?? [];
   // Соответствие экономики выбранному телу и связи постройки с остальными.
   const economyFit = installation && installation.influence !== 'none' && targetBody && targetBody.kind !== 'star'
     ? economyBodyFit(installation.influence, targetBody)
@@ -187,7 +189,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                         {' · '}
                         {entry.location === 'surface' ? t('sed.surface') : t('sed.orbital')}
                         {entry.pad !== 'none' ? t('sed.pad', { pad: architectLabel('pad', entry.pad, PAD_LABELS_RU[entry.pad], t) }) : ''}
-                        {check.errors.length > 0 ? ` · ${check.errors[0]}` : ''}
+                        {check.errors.length > 0 ? ` · ${placementCheckTexts(check, t).errors[0]}` : ''}
                       </span>
                     </span>
                     <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -246,7 +248,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 5 }}>
                   {economyFit && economyFit.level !== 'neutral' && (
                     <div style={{ fontSize: 11, color: economyFit.level === 'boost' ? 'var(--green)' : 'var(--orange)', lineHeight: 1.5 }}>
-                      {economyFit.level === 'boost' ? '▲ ' : '▽ '}{economyFit.reason}
+                      {economyFit.level === 'boost' ? '▲ ' : '▽ '}{economyFitText(economyFit, t)}
                     </div>
                   )}
                   {links && links.requires.length > 0 && (

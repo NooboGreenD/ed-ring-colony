@@ -66,6 +66,7 @@ import {
 } from '@/lib/architect/planner';
 import type { ArchitectBody, ArchitectPlan, PlannedSite, PlannedSiteStatus } from '@/lib/architect/types';
 import { architectLabel } from '@/lib/i18n/architectLabels';
+import { economyFitText, placementCheckTexts } from '@/lib/i18n/planText';
 
 const SystemOrrery3D = dynamic(() => import('@/components/SystemMap/SystemOrrery3D'), { ssr: false });
 
@@ -493,7 +494,7 @@ export default function ArchitectWorkspace() {
     const body = bodiesByName.get(pickerBody);
     const check = placementCheck(body, installationId, plan);
     if (!check.ok) {
-      setNotice(check.errors.join('; '));
+      setNotice(placementCheckTexts(check, t).errors.join('; '));
       return;
     }
     setPlan(addSite(plan, pickerBody, installationId));
@@ -1522,7 +1523,7 @@ function SiteRow({
           {economyFit && economyFit.level !== 'neutral' && (
             <span
               style={{ marginLeft: 6, color: economyFit.level === 'boost' ? 'var(--green)' : 'var(--orange)' }}
-              title={economyFit.reason}
+              title={economyFitText(economyFit, t)}
             >
               {economyFit.level === 'boost' ? t('arch.boostedByBody') : t('arch.weakOnBody')}
             </span>

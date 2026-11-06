@@ -5,6 +5,7 @@ import { BUILD_CLASS_LABELS_RU, ECONOMY_LABELS_RU, PAD_LABELS_RU, PRE_REQS, inst
 import { ECONOMY_MARKET } from '@/lib/architect/economy';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { architectLabel } from '@/lib/i18n/architectLabels';
+import { placementCheckTexts } from '@/lib/i18n/planText';
 import {
   commodityLabel,
   formatTons,
@@ -152,8 +153,8 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
             <PickerRow
               key={installation.id}
               installation={installation}
-              errors={check.errors}
-              warnings={check.warnings}
+              errors={placementCheckTexts(check, t).errors}
+              warnings={placementCheckTexts(check, t).warnings}
               expanded={expanded === installation.id}
               onToggle={() => setExpanded(expanded === installation.id ? '' : installation.id)}
               onPick={() => onPick(installation.id)}
