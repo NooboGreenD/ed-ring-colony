@@ -11,6 +11,7 @@ import {
 import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } from '@/lib/architect/planner';
 import type { ArchitectPlan, PlanEvaluation, SystemEconomy, SystemEffectKey } from '@/lib/architect/types';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { architectLabel } from '@/lib/i18n/architectLabels';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
   pop: 'psm.effPop',
@@ -353,7 +354,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                       title={hasPreReq ? t('psm.prereqInPlan') : t('psm.prereqMissing')}
                     >
                       {hasPreReq ? '✓ ' : '✗ '}
-                      {links.requires.map((req) => req.label).join(' / ')}
+                      {links.requires.map((req) => architectLabel('preReq', req.preReq, req.label, t)).join(' / ')}
                     </span>
                     <span style={{ color: 'var(--muted)' }}>→</span>
                   </>
@@ -365,7 +366,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                   <>
                     <span style={{ color: 'var(--muted)' }}>→</span>
                     <span style={{ color: 'var(--cyan)' }}>
-                      {t('psm.enables')} {links.enables.map((enable) => shortEnableLabel(enable.label)).join(', ')}
+                      {t('psm.enables')} {links.enables.map((enable) => shortEnableLabel(architectLabel('unlock', enable.id, enable.label, t))).join(', ')}
                     </span>
                   </>
                 )}

@@ -10,6 +10,7 @@ import {
 } from '@/lib/architect/catalogue';
 import { ECONOMY_MARKET } from '@/lib/architect/economy';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { architectLabel } from '@/lib/i18n/architectLabels';
 import {
   commodityLabel,
   formatTons,
@@ -220,12 +221,12 @@ function PickerRow({
             ) : null}
           </div>
           <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-            {BUILD_CLASS_LABELS_RU[installation.buildClass]} · T{installation.tier}
-            {installation.pad !== 'none' ? t('ipk.pad', { pad: PAD_LABELS_RU[installation.pad] }) : ''}
+            {architectLabel('buildClass', installation.buildClass, BUILD_CLASS_LABELS_RU[installation.buildClass], t)} · T{installation.tier}
+            {installation.pad !== 'none' ? t('ipk.pad', { pad: architectLabel('pad', installation.pad, PAD_LABELS_RU[installation.pad], t) }) : ''}
             {installation.needs.count > 0 ? t('ipk.needs', { count: installation.needs.count, tier: installation.needs.tier }) : ''}
             {installation.gives.count > 0 ? t('ipk.gives', { count: installation.gives.count, tier: installation.gives.tier }) : ''}
-            {preReq ? t('ipk.preReq', { label: preReq.label }) : ''}
-            {installation.influence !== 'none' ? t('ipk.economy', { label: ECONOMY_LABELS_RU[installation.influence] }) : ''}
+            {preReq ? t('ipk.preReq', { label: architectLabel('preReq', installation.preReq!, preReq.label, t) }) : ''}
+            {installation.influence !== 'none' ? t('ipk.economy', { label: architectLabel('economy', installation.influence, ECONOMY_LABELS_RU[installation.influence], t) }) : ''}
           </div>
         </div>
         <div style={{ textAlign: 'right', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -267,11 +268,11 @@ function PickerRow({
             <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
               {links.requires.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  {t('ipk.requiresPredecessor')} <span style={{ color: 'var(--text)' }}>{links.requires.map((req) => req.label).join(' / ')}</span>
+                  {t('ipk.requiresPredecessor')} <span style={{ color: 'var(--text)' }}>{links.requires.map((req) => architectLabel('preReq', req.preReq, req.label, t)).join(' / ')}</span>
                 </div>
               )}
               {links.enables.length > 0 && (
-                <div style={{ color: 'var(--cyan)' }}>{t('ipk.enables')} {links.enables.map((enable) => enable.label).join('; ')}</div>
+                <div style={{ color: 'var(--cyan)' }}>{t('ipk.enables')} {links.enables.map((enable) => architectLabel('unlock', enable.id, enable.label, t)).join('; ')}</div>
               )}
               {links.requiredBy.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>

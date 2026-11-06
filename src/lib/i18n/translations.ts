@@ -1,6 +1,7 @@
 import type { Locale } from "./types";
 import { engineersTranslations } from "./engineers.ts";
 import { commodityTranslations } from "./commodities.ts";
+import { architectLabelTranslations, architectKindTranslations } from "./architectLabels.ts";
 import { outfittingTranslations } from "./outfitting.ts";
 import { outfittingAnalysisTranslations } from "./outfittingAnalysis.ts";
 import { outfittingSpecialsTranslations } from "./outfittingSpecials.ts";
@@ -49006,6 +49007,8 @@ const sectionTranslations = [
   outfittingSpecialsTranslations,
   engineersTranslations,
   commodityTranslations,
+  architectLabelTranslations,
+  architectKindTranslations,
 ];
 
 export const translations: Record<string, Record<string, string>> = Object.fromEntries(

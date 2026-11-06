@@ -10,6 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 
 const ENTRY = "export { default as ArchitectWorkspace } from '@/components/Architect/ArchitectWorkspace';\n";
 
@@ -51,7 +52,7 @@ async function renderArchitect(options = {}) {
   // самую страницу заново, и 25 проверок стоили больше десяти секунд.
   const bundle = await bundleFile({
     entrySource: ENTRY,
-    stubs: { 'next/dynamic': NEXT_DYNAMIC_STUB, 'next/link': NEXT_LINK_STUB },
+    stubs: { 'next/dynamic': NEXT_DYNAMIC_STUB, 'next/link': NEXT_LINK_STUB, '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB },
     external: ['react', 'react-dom', 'react-dom/client'],
   });
 
