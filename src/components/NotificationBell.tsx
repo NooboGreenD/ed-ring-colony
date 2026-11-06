@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { useRealtimeUserId } from "@/hooks/useRealtimeUserId";
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface Notification {
   id: string;
@@ -31,6 +32,7 @@ interface Notification {
 }
 
 export default function NotificationBell() {
+  const { t } = useI18n();
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const userId = useRealtimeUserId();
@@ -78,7 +80,7 @@ export default function NotificationBell() {
       if (!msgGroups[m.sender_id]) {
         msgGroups[m.sender_id] = {
           count: 0,
-          name: m.author_name || "Пилот",
+          name: m.author_name || t('nbell.defaultName'),
           lastAt: m.created_at,
           lastContent: m.content,
         };
@@ -95,7 +97,7 @@ export default function NotificationBell() {
         id: `msg-${senderId}`,
         type: "message",
         title: g.name,
-        subtitle: `${g.count} новых · ${g.lastContent.slice(0, 40)}${g.lastContent.length > 40 ? "…" : ""}`,
+        subtitle: `${t('nbell.newCount', { count: g.count })} · ${g.lastContent.slice(0, 40)}${g.lastContent.length > 40 ? "…" : ""}`,
         href: "/account/friends",
         createdAt: g.lastAt,
         senderId,
@@ -141,7 +143,7 @@ export default function NotificationBell() {
       list.push({
         id: `news-${n.id}`,
         type: "news",
-        title: "Новая статья",
+        title: t('nbell.newArticle'),
         subtitle: n.title,
         href: "/news",
         createdAt: n.published_at,
@@ -177,7 +179,7 @@ export default function NotificationBell() {
     if (activeUserId.current !== userId) return;
     setNotifications(list);
     setTotalUnread(list.filter((n) => !n.isRead).length);
-  }, [userId]);
+  }, [userId, t]);
 
   useEffect(() => {
     // A globally mounted bell used to open a guest socket with eq.undefined.
@@ -293,13 +295,13 @@ export default function NotificationBell() {
   // === Web Push Subscription ===
   const subscribePush = async () => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-      alert("Push-уведомления не поддерживаются этим браузером");
+      alert(t('nbell.pushUnsupported'));
       return;
     }
 
     const permission = await Notification.requestPermission();
     if (permission !== "granted") {
-      alert("Разрешение на уведомления не получено");
+      alert(t('nbell.pushNoPermission'));
       return;
     }
 
@@ -329,7 +331,7 @@ export default function NotificationBell() {
       setPushEnabled(true);
     } catch (err) {
       console.error("Push subscription failed:", err);
-      alert("Не удалось подписаться на push-уведомления");
+      alert(t('nbell.pushFailed'));
     }
   };
 
@@ -364,17 +366,17 @@ export default function NotificationBell() {
 
   const typeLabel = (type: string) => {
     switch (type) {
-      case "project_invite": return "📁 Проект";
-      case "squadron_invite": return <><IconShield size={14} /> Эскадрилья</>;
-      case "project_update": return "📁 Проект";
-      case "project_system_status": return <><IconGlobe size={14} /> Система</>;
-      case "route_status_change": return <><IconGlobe size={14} /> Маршрут</>;
-      case "route_progress": return <><IconGlobe size={14} /> Прогресс</>;
-      case "message": return <><IconMessage size={14} /> Сообщение</>;
-      case "forum_reply": return <><IconMessage size={14} /> Форум</>;
-      case "squadron_chat_mention": return <><IconMessage size={14} /> Эскадрилья</>;
-      case "news": return "📰 Новости";
-      case "friend_request": return <><IconMembers size={14} /> Друзья</>;
+      case "project_invite": return t('nbell.typeProject');
+      case "squadron_invite": return <><IconShield size={14} /> {t('nbell.typeSquadron')}</>;
+      case "project_update": return t('nbell.typeProject');
+      case "project_system_status": return <><IconGlobe size={14} /> {t('nbell.typeSystem')}</>;
+      case "route_status_change": return <><IconGlobe size={14} /> {t('nbell.typeRoute')}</>;
+      case "route_progress": return <><IconGlobe size={14} /> {t('nbell.typeProgress')}</>;
+      case "message": return <><IconMessage size={14} /> {t('nbell.typeMessage')}</>;
+      case "forum_reply": return <><IconMessage size={14} /> {t('nbell.typeForum')}</>;
+      case "squadron_chat_mention": return <><IconMessage size={14} /> {t('nbell.typeSquadronChat')}</>;
+      case "news": return t('nbell.typeNews');
+      case "friend_request": return <><IconMembers size={14} /> {t('nbell.typeFriends')}</>;
       default: return "";
     }
   };
@@ -384,7 +386,7 @@ export default function NotificationBell() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-label="Уведомления"
+        aria-label={t('nbell.aria')}
         aria-expanded={open}
         style={{
           background: "transparent",
@@ -460,7 +462,7 @@ export default function NotificationBell() {
             fontWeight: 600,
             color: "#eeeeee",
           }}>
-            <span>Уведомления</span>
+            <span>{t('nbell.title')}</span>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {totalUnread > 0 && (
                 <button
@@ -475,7 +477,7 @@ export default function NotificationBell() {
                     borderRadius: 4,
                   }}
                 >
-                  Прочитать всё
+                  {t('nbell.markAllRead')}
                 </button>
               )}
             </div>
@@ -492,7 +494,7 @@ export default function NotificationBell() {
               gap: 8,
             }}>
               <span style={{ fontSize: 11, color: "#9ca3af" }}>
-                📱 Push на телефон
+                {t('nbell.pushToPhone')}
               </span>
               {pushEnabled ? (
                 <button
@@ -507,7 +509,7 @@ export default function NotificationBell() {
                     cursor: "pointer",
                   }}
                 >
-                  Отключить
+                  {t('nbell.disable')}
                 </button>
               ) : (
                 <button
@@ -522,7 +524,7 @@ export default function NotificationBell() {
                     cursor: "pointer",
                   }}
                 >
-                  Включить
+                  {t('nbell.enable')}
                 </button>
               )}
             </div>
@@ -530,7 +532,7 @@ export default function NotificationBell() {
 
           {notifications.length === 0 && (
             <div style={{ padding: 24, textAlign: "center", color: "#9ca3af", fontSize: 13 }}>
-              Нет новых уведомлений
+              {t('nbell.empty')}
             </div>
           )}
 
