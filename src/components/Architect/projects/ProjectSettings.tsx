@@ -25,6 +25,7 @@ import {
   type ProjectStatus,
 } from '@/lib/architect/projects';
 import { apiJson, type ProjectDetailResponse } from '@/components/Architect/projects/projectUi';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface Props {
   base: string;
@@ -41,6 +42,7 @@ function toDateInput(value: string | null): string {
 export default function ProjectSettings({ base, detail, onChanged, onNotice, onGone }: Props) {
   const { project, viewer } = detail;
   const perms = viewer.permissions;
+  const { t } = useI18n();
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description);
   const [status, setStatus] = useState<ProjectStatus>(project.status);
@@ -79,14 +81,14 @@ export default function ProjectSettings({ base, detail, onChanged, onNotice, onG
       setError(result.error);
       return;
     }
-    onNotice('Настройки проекта сохранены');
+    onNotice(t('pset.saved'));
     await onChanged({ leaders: trackingChanged });
   };
 
   const transfer = async () => {
     const member = detail.members.find((entry) => entry.userId === heir);
     if (!member) return;
-    if (!window.confirm(`Передать проект пилоту ${member.name}? Вы станете модератором.`)) return;
+    if (!window.confirm(t('pset.transferConfirm', { name: member.name }))) return;
     setBusy(true);
     setError('');
     const result = await apiJson(`${base}/members`, { method: 'PATCH', json: { userId: member.userId, role: 'owner' } });
@@ -95,13 +97,13 @@ export default function ProjectSettings({ base, detail, onChanged, onNotice, onG
       setError(result.error);
       return;
     }
-    onNotice(`Проект передан: ${member.name}`);
+    onNotice(t('pset.transferred', { name: member.name }));
     await onChanged();
   };
 
   const remove = async () => {
     if (confirmName.trim() !== project.name) {
-      setError('Для удаления введите название проекта точно');
+      setError(t('pset.confirmNameRequired'));
       return;
     }
     setBusy(true);
@@ -116,7 +118,7 @@ export default function ProjectSettings({ base, detail, onChanged, onNotice, onG
   };
 
   const leave = async () => {
-    if (!window.confirm('Покинуть проект? Вернуть вас сможет только создатель или модератор.')) return;
+    if (!window.confirm(t('pset.leaveConfirm'))) return;
     setBusy(true);
     const result = await apiJson(`${base}/members?userId=${encodeURIComponent(viewer.userId)}`, { method: 'DELETE' });
     setBusy(false);
@@ -131,39 +133,39 @@ export default function ProjectSettings({ base, detail, onChanged, onNotice, onG
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 900 }}>
       {error && <p style={errorText}>{error}</p>}
       {perms.editProject ? (
-        <section style={cardStyle} aria-label="Параметры проекта">
-          <h2 style={sectionTitle}>Параметры проекта</h2>
+        <section style={cardStyle} aria-label={t('pset.settingsAria')}>
+          <h2 style={sectionTitle}>{t('pset.settingsTitle')}</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10, marginTop: 10 }}>
             <label style={mutedText}>
-              Название
+              {t('pset.name')}
               <input value={name} maxLength={PROJECT_LIMITS.name} onChange={(event) => setName(event.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }} />
             </label>
             <label style={mutedText}>
-              Статус
+              {t('pset.status')}
               <select value={status} onChange={(event) => setStatus(event.target.value as ProjectStatus)} style={{ ...inputStyle, width: '100%', marginTop: 4 }}>
-                {PROJECT_STATUSES.map((value) => <option key={value} value={value}>{STATUS_LABELS[value]}</option>)}
+                {PROJECT_STATUSES.map((value) => <option key={value} value={value}>{t(STATUS_LABELS[value])}</option>)}
               </select>
             </label>
             <label style={mutedText}>
-              Срок проекта
+              {t('pset.targetDate')}
               <input type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }} />
             </label>
-            <label style={mutedText} title="Поставки раньше этой даты не идут в лидеров проекта (например, если в систему возили груз под прежнюю стройку)">
-              Считать вклад пилотов с
+            <label style={mutedText} title={t('pset.trackingTitle')}>
+              {t('pset.trackingSince')}
               <input type="date" value={trackingSince} onChange={(event) => setTrackingSince(event.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4 }} />
             </label>
             <label style={{ ...mutedText, gridColumn: '1 / -1' }}>
-              Описание и цели
+              {t('pset.desc')}
               <textarea value={description} maxLength={PROJECT_LIMITS.description} rows={5} onChange={(event) => setDescription(event.target.value)} style={{ ...inputStyle, width: '100%', marginTop: 4, resize: 'vertical' }} />
             </label>
             <div style={{ ...mutedText, gridColumn: '1 / -1' }}>
-              Цвет метки
+              {t('pset.colorLabel')}
               <div style={{ ...rowStyle, marginTop: 4 }}>
                 {PROJECT_COLORS.map((tone) => (
                   <button
                     key={tone}
                     type="button"
-                    aria-label={`Цвет ${tone}`}
+                    aria-label={t('pset.colorAria', { tone })}
                     aria-pressed={color === tone}
                     onClick={() => setColor(tone)}
                     style={{ width: 22, height: 22, borderRadius: 3, background: tone, cursor: 'pointer', borderWidth: 2, borderStyle: 'solid', borderColor: color === tone ? 'var(--text)' : 'transparent' }}
@@ -174,52 +176,52 @@ export default function ProjectSettings({ base, detail, onChanged, onNotice, onG
           </div>
           <div style={{ ...rowStyle, marginTop: 12 }}>
             <button type="button" style={primaryButton} disabled={busy || !dirty || !name.trim()} onClick={() => void save()}>
-              {busy ? 'Сохраняем…' : 'Сохранить'}
+              {busy ? t('pset.saving') : t('pset.save')}
             </button>
-            {dirty && <span style={mutedText}>есть несохранённые изменения</span>}
+            {dirty && <span style={mutedText}>{t('pset.dirty')}</span>}
           </div>
         </section>
       ) : (
         <section style={cardStyle}>
-          <h2 style={sectionTitle}>Параметры проекта</h2>
-          <p style={{ ...mutedText, margin: '8px 0 0' }}>Менять проект могут создатель и модераторы.</p>
+          <h2 style={sectionTitle}>{t('pset.settingsTitle')}</h2>
+          <p style={{ ...mutedText, margin: '8px 0 0' }}>{t('pset.readOnlyHint')}</p>
         </section>
       )}
 
       {perms.transfer && viewer.role === 'owner' && (
-        <section style={cardStyle} aria-label="Передать проект">
-          <h2 style={sectionTitle}>Передать проект</h2>
-          <p style={{ ...mutedText, margin: '6px 0 10px' }}>Новый создатель получит все права, вы останетесь модератором.</p>
+        <section style={cardStyle} aria-label={t('pset.transferAria')}>
+          <h2 style={sectionTitle}>{t('pset.transferTitle')}</h2>
+          <p style={{ ...mutedText, margin: '6px 0 10px' }}>{t('pset.transferHint')}</p>
           <div style={rowStyle}>
-            <select value={heir} onChange={(event) => setHeir(event.target.value)} style={inputStyle} aria-label="Новый создатель">
-              <option value="">— выберите участника —</option>
+            <select value={heir} onChange={(event) => setHeir(event.target.value)} style={inputStyle} aria-label={t('pset.newOwnerAria')}>
+              <option value="">{t('pset.chooseMember')}</option>
               {detail.members.filter((member) => member.role !== 'owner').map((member) => (
                 <option key={member.userId} value={member.userId}>{member.name}</option>
               ))}
             </select>
-            <button type="button" style={ghostButton} disabled={busy || !heir} onClick={() => void transfer()}>Передать</button>
+            <button type="button" style={ghostButton} disabled={busy || !heir} onClick={() => void transfer()}>{t('pset.transferButton')}</button>
           </div>
         </section>
       )}
 
       {perms.leave && (
-        <section style={cardStyle} aria-label="Покинуть проект">
-          <h2 style={sectionTitle}>Покинуть проект</h2>
-          <p style={{ ...mutedText, margin: '6px 0 10px' }}>Ваш вклад останется в статистике проекта.</p>
-          <button type="button" style={{ ...ghostButton, borderColor: 'var(--red)', color: 'var(--red)' }} disabled={busy} onClick={() => void leave()}>Покинуть проект</button>
+        <section style={cardStyle} aria-label={t('pset.leaveAria')}>
+          <h2 style={sectionTitle}>{t('pset.leaveTitle')}</h2>
+          <p style={{ ...mutedText, margin: '6px 0 10px' }}>{t('pset.leaveHint')}</p>
+          <button type="button" style={{ ...ghostButton, borderColor: 'var(--red)', color: 'var(--red)' }} disabled={busy} onClick={() => void leave()}>{t('pset.leaveButton')}</button>
         </section>
       )}
 
       {perms.deleteProject && (
-        <section style={{ ...cardStyle, borderColor: 'var(--red)' }} aria-label="Удалить проект">
-          <h2 style={{ ...sectionTitle, color: 'var(--red)' }}>Удалить проект</h2>
+        <section style={{ ...cardStyle, borderColor: 'var(--red)' }} aria-label={t('pset.deleteAria')}>
+          <h2 style={{ ...sectionTitle, color: 'var(--red)' }}>{t('pset.deleteTitle')}</h2>
           <p style={{ ...mutedText, margin: '6px 0 10px' }}>
-            Удаляются проект, состав, системы и привязки авианосцев. Поставки пилотов, планы и авианосцы остаются на сайте.
+            {t('pset.deleteHint')}
           </p>
           <div style={rowStyle}>
-            <input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={`Введите «${project.name}»`} aria-label="Подтверждение удаления" style={{ ...inputStyle, flex: '1 1 240px' }} />
+            <input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={t('pset.confirmPlaceholder', { name: project.name })} aria-label={t('pset.confirmAria')} style={{ ...inputStyle, flex: '1 1 240px' }} />
             <button type="button" style={{ ...ghostButton, borderColor: 'var(--red)', color: 'var(--red)' }} disabled={busy || confirmName.trim() !== project.name} onClick={() => void remove()}>
-              Удалить навсегда
+              {t('pset.deleteForever')}
             </button>
           </div>
         </section>
