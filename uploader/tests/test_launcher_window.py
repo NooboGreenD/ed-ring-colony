@@ -65,13 +65,13 @@ class LauncherWindowTests(unittest.TestCase):
         i18n.set_locale("ru")
         self.temp.cleanup()
 
-    def _window(self, *, fetcher=None, autostart=False):
+    def _window(self, *, fetcher=None, autostart=False, version="1.2.0"):
         def default_fetcher(locale=None, **_kwargs):
             self.fetch_calls.append((locale, threading.current_thread().name))
             return {"news": [], "galnet": []}
 
         window = launcher_window.LauncherWindow(
-            self.root, "1.2.0", "stable",
+            self.root, version, "stable",
             settings_path=self.settings,
             fetcher=fetcher or default_fetcher,
             autostart=autostart)
@@ -278,6 +278,36 @@ class LauncherWindowTests(unittest.TestCase):
             launcher_window.bundle_updater.check_for_update = original_check
             launcher_window.bundle_updater.plan_update = original_plan
             window.close()
+
+    def test_fresh_install_checks_update_without_the_dash_placeholder(self):
+        """Свежая установка: «—» в окне не должна уходить в запрос.
+
+        После SETUP указателя версии ещё нет, окно показывает «v—», и раньше
+        эта строка попадала в `User-Agent`. Заголовки кодируются в latin-1,
+        запрос падал с UnicodeEncodeError, а обновления выглядели
+        недоступными. В запрос должна уходить пустая версия — «неизвестна».
+        """
+        window = self._window(version="—")
+        asked = []
+        original_check = launcher_window.bundle_updater.check_for_update
+        original_plan = launcher_window.bundle_updater.plan_update
+
+        def fake_check(current, **kwargs):
+            asked.append(current)
+            return {"ok": True, "latest": "2.25.1", "update_available": True,
+                    "manifest": {"version": "2.25.1"}}
+
+        launcher_window.bundle_updater.check_for_update = fake_check
+        launcher_window.bundle_updater.plan_update = lambda *a, **k: {
+            "bytes": 1024, "download": ["a"]}
+        try:
+            window.check_updates()
+            self.assertTrue(wait_until(self.app, window.install_button.isEnabled))
+        finally:
+            launcher_window.bundle_updater.check_for_update = original_check
+            launcher_window.bundle_updater.plan_update = original_plan
+            window.close()
+        self.assertEqual(asked, [""])
 
     def test_update_check_failure_is_reported_without_blocking_launch(self):
         window = self._window()

@@ -187,6 +187,39 @@ class BundleUpdateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("недоступен", str(result["error"]))
 
+    # -- заголовки -------------------------------------------------------
+    def test_headers_are_latin1_clean_even_with_placeholder_version(self):
+        """«—» из пустого состояния не должна попадать в User-Agent.
+
+        `requests` кодирует заголовки в latin-1, поэтому длинное тире роняло
+        запрос до отправки, а проверка обновлений сообщала «сервер недоступен».
+        """
+        for current in ("—", "", "2.25.1", "версия-2"):
+            agent = bundle_updater._headers(current)["User-Agent"]
+            agent.encode("latin-1")            # не должно бросать
+            self.assertNotIn("—", agent)
+            self.assertTrue(agent.startswith("ColonialHelper/"), agent)
+        self.assertEqual(bundle_updater._headers("—")["User-Agent"],
+                         "ColonialHelper/dev (bundle update)")
+        self.assertIn("2.25.1", bundle_updater._headers("2.25.1")["User-Agent"])
+
+    def test_update_check_works_for_a_fresh_install_without_a_version(self):
+        class StrictServer(_Server):
+            """Сессия как у requests: значения заголовков кодируются в latin-1."""
+
+            def get(self, url, **kwargs):
+                for name, value in (kwargs.get("headers") or {}).items():
+                    str(value).encode("latin-1")
+                return super().get(url, **kwargs)
+
+        server = StrictServer(self.manifest_v2)
+        # Свежая установка через SETUP: состояния нет, лаунчер показывает «—».
+        result = bundle_updater.check_for_update("—", session=server, base=BASE,
+                                                 keys=self.keys, launcher_version="1.4.1")
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertTrue(result["update_available"])
+        self.assertEqual(result["latest"], "1.1.0")
+
     # -- установка -------------------------------------------------------
     def test_apply_downloads_only_the_changed_file(self):
         server = _Server(self.manifest_v2, self.blobs)

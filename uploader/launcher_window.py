@@ -67,6 +67,19 @@ def launcher_version() -> str:
     return str(getattr(module, "LAUNCHER_VERSION", "1.4.1"))
 
 
+def current_version(value: Any = "") -> str:
+    """Версия для сети: без заглушки «—» и без мусора из состояния.
+
+    Пустое состояние установки лаунчер показывает как «—». В запрос (и в
+    заголовок `User-Agent`) такая строка попадать не должна: заголовки
+    кодируются в latin-1, и длинное тире роняло проверку обновлений.
+    Пустая строка здесь значит «версия неизвестна» — серверу это понятно.
+    """
+    text = str(value or "").strip()
+    head = text[:1]
+    return text if head.isdigit() else ""
+
+
 class LauncherWindow(FramelessWindow):
     """News dashboard and control panel shown before Colonial Helper starts."""
 
@@ -700,7 +713,7 @@ class LauncherWindow(FramelessWindow):
 
         def work() -> Dict[str, Any]:
             state = bundle.load_state(self.install_root)
-            current = str(state.get("current") or self.version)
+            current = current_version(state.get("current") or self.version)
             result = bundle_updater.check_for_update(
                 current, channel=self.channel, launcher_version=launcher_version())
             plan = (bundle_updater.plan_update(self.install_root, result["manifest"])

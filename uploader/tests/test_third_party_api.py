@@ -250,6 +250,33 @@ class CloudflareHtmlResponseTests(unittest.TestCase):
             self.assertNotIn("python-requests", agent)
             self.assertEqual(api._session.headers.get("Accept"), "application/json")
 
+    def test_user_agent_survives_latin1_with_the_dash_in_the_app_name(self):
+        """«ED Ring Colony — Colonial Helper» в заголовке не кодируется.
+
+        Имя приложения приходит из установщика вместе с длинным тире. В
+        `User-Agent` (latin-1) тире не переживает кодировку, поэтому на выходе
+        должен быть ASCII-вариант, а версия — вообще без не-ASCII символов.
+        """
+        from http_errors import apply_client_headers, header_safe, header_token, user_agent
+
+        agent = user_agent("ED Ring Colony — Colonial Helper", "2.25.1")
+        agent.encode("latin-1")                     # не должно бросать
+        self.assertIn("ED Ring Colony - Colonial Helper/2.25.1", agent)
+
+        # Пустое состояние установки показывает версию как «—».
+        self.assertNotIn("—", user_agent("Colonial Helper", "—"))
+        self.assertEqual(header_token("—"), "")
+        self.assertEqual(header_token("—", "dev"), "dev")
+        self.assertEqual(header_safe("A — B"), "A - B")
+
+        class _Session:
+            headers = {}
+
+        session = _Session()
+        apply_client_headers(session, "ED Ring Colony — Uploader", "2.25.1")
+        for value in session.headers.values():
+            str(value).encode("latin-1")
+
     def test_inara_html_answer_is_classified(self):
         from inara_api import InaraAPI
 

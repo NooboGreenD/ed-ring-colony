@@ -19,6 +19,12 @@ EDSM и Inara стоят за Cloudflare. Когда сервис недосту
 Отдельно: у запросов должен быть осмысленный `User-Agent`. Cloudflare
 регулярно отклоняет дефолтный `python-requests/<версия>`, и именно это
 выглядит как «сервис сломался», хотя дело в заголовке (см. `user_agent()`).
+
+И третье, из-за чего обновления выглядели «недоступными»: `requests`
+кодирует **заголовки** в latin-1. Любая «—» (U+2014) или кириллица в
+значении заголовка роняет запрос с `UnicodeEncodeError` ещё до отправки,
+а вызывающий код видит обычное исключение и сообщает «сервер недоступен».
+Поэтому всё, что уходит в заголовок, проходит через `header_safe()`.
 """
 
 from __future__ import annotations
@@ -36,11 +42,48 @@ RETRYABLE_STATUS = frozenset({
 #: Признаки HTML-страницы в теле ответа.
 HTML_MARKERS = ("<!doctype html", "<html", "<head", "<!--[if", "cloudflare")
 
+#: Типографские знаки, которые Windows-текст приносит в заголовки: их
+#: заменяем на ASCII, чтобы запрос не падал на кодировке в latin-1.
+_HEADER_PUNCTUATION = (
+    ("\u2010", "-"), ("\u2011", "-"), ("\u2012", "-"), ("\u2013", "-"),
+    ("\u2014", "-"), ("\u2015", "-"), ("\u2212", "-"), ("\u00ad", ""),
+    ("\u2018", "'"), ("\u2019", "'"), ("\u201a", ","), ("\u2032", "'"),
+    ("\u201c", '"'), ("\u201d", '"'), ("\u201e", '"'), ("\u2033", '"'),
+    ("\u00ab", '"'), ("\u00bb", '"'), ("\u2026", "..."),
+    ("\u00a0", " "), ("\u2009", " "), ("\u202f", " "), ("\u200b", ""),
+)
+
 
 def looks_like_html(text: str) -> bool:
     """Похоже ли тело ответа на HTML (а не на JSON/текст ошибки)."""
     head = str(text or "")[:400].lower()
     return any(marker in head for marker in HTML_MARKERS)
+
+
+def header_safe(value: Any, fallback: str = "") -> str:
+    """Значение HTTP-заголовка, которое переживает кодировку latin-1.
+
+    `requests` (и `http.client`) кодируют заголовки в latin-1: попавшая туда
+    «—» или кириллица даёт `UnicodeEncodeError: 'latin-1' codec can't encode
+    character ...` **до** отправки запроса, а выше это выглядит как сетевая
+    ошибка. Типографские знаки заменяем на ASCII-аналоги, всё остальное
+    не-ASCII выбрасываем; пустой результат заменяем на `fallback`.
+    """
+    text = str(value or "")
+    for source, target in _HEADER_PUNCTUATION:
+        text = text.replace(source, target)
+    text = text.encode("latin-1", "ignore").decode("latin-1")
+    text = "".join(ch for ch in text if 32 <= ord(ch) < 127)
+    text = " ".join(text.split())
+    return text or fallback
+
+
+def header_token(value: Any, fallback: str = "") -> str:
+    """Короткий токен для заголовка (`"—"` → `fallback`, кириллица → пусто)."""
+    text = header_safe(value)
+    token = "".join(ch for ch in text if ch.isalnum() or ch in "._+-")
+    token = token.strip("._+-")[:40]
+    return token if any(ch.isalnum() for ch in token) else fallback
 
 
 def user_agent(app_name: str = "", app_version: str = "") -> str:
@@ -49,9 +92,12 @@ def user_agent(app_name: str = "", app_version: str = "") -> str:
     EDSM и Inara просят клиента представляться; Cloudflare перед ними
     отклоняет дефолтный `python-requests/…`. Версию подставляем настоящую,
     чтобы по логам сервиса было видно, какая сборка стучится.
+
+    Имя приложения — «ED Ring Colony — Colonial Helper» с длинным тире:
+    в заголовке тире латин-1 не переживает, поэтому здесь ASCII-вариант.
     """
-    name = str(app_name or "ED Ring Colony Uploader").strip()
-    version = str(app_version or "0.0.0").strip()
+    name = header_safe(app_name, "ED Ring Colony Uploader")
+    version = header_token(app_version, "0.0.0")
     return (
         f"{name}/{version} "
         "(Elite Dangerous journal uploader; "
