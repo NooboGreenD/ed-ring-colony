@@ -2,8 +2,10 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function WikiSidebar() {
+  const { t } = useI18n();
   const pathname = usePathname();
   const [categories, setCategories] = useState<any[]>([]);
 
@@ -17,10 +19,10 @@ export default function WikiSidebar() {
   return (
     <div style={{ width: 220, flexShrink: 0, borderRight: '1px solid var(--line)', padding: '20px 16px', minHeight: 'calc(100vh - 60px)' }}>
       <Link href="/wiki" style={{ fontSize: 14, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--orange)', display: 'block', marginBottom: 20 }}>
-        ВИКИПЕДИЯ
+        {t('wh.kicker')}
       </Link>
       <div style={{ fontSize: 11, fontFamily: 'ui-monospace', letterSpacing: '2px', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 12 }}>
-        Категории
+        {t('wh.categories')}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         {categories.map((cat: any) => (
@@ -44,7 +46,7 @@ export default function WikiSidebar() {
       </div>
       <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
         <Link href="/wiki/create" className="btn" style={{ width: '100%', textAlign: 'center', padding: '10px', fontSize: 11 }}>
-          + Создать статью
+          + {t('wh.create')}
         </Link>
       </div>
     </div>

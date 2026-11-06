@@ -1,6 +1,8 @@
 import { createServiceClient } from '@/lib/supabaseServer';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { Tr } from '@/components/Translate';
+import WikiArticleMeta from '@/components/Wiki/WikiArticleMeta';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +19,7 @@ export default async function WikiCategoryPage({ params }: { params: Promise<{ s
   if (catError) {
     return (
       <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-        <h1>Ошибка загрузки категории</h1>
+        <h1><Tr k="wc.loadError" /></h1>
         <p>{catError.message}</p>
       </main>
     );
@@ -35,7 +37,7 @@ export default async function WikiCategoryPage({ params }: { params: Promise<{ s
   if (artError) {
     return (
       <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-        <h1>Ошибка загрузки статей</h1>
+        <h1><Tr k="wc.loadArticlesError" /></h1>
         <p>{artError.message}</p>
       </main>
     );
@@ -60,7 +62,7 @@ export default async function WikiCategoryPage({ params }: { params: Promise<{ s
   return (
     <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ marginBottom: 8, fontSize: 11, fontFamily: 'ui-monospace', color: 'var(--muted)', textTransform: 'uppercase' }}>
-        <Link href="/wiki" style={{ color: 'var(--muted)' }}>Вики</Link> / {category.name}
+        <Link href="/wiki" style={{ color: 'var(--muted)' }}><Tr k="wa.wiki" /></Link> / {category.name}
       </div>
       <h1 style={{ fontSize: 22, letterSpacing: 4, textTransform: 'uppercase', color: 'var(--orange)', marginBottom: 8 }}>
         {category.name}
@@ -68,7 +70,7 @@ export default async function WikiCategoryPage({ params }: { params: Promise<{ s
       {category.description && <p style={{ color: 'var(--muted)', marginBottom: 24, fontSize: 14 }}>{category.description}</p>}
 
       {(!articlesWithAuthors || articlesWithAuthors.length === 0) ? (
-        <div style={{ color: 'var(--muted)', padding: '40px 0', fontSize: 14 }}>В этой категории пока нет статей.</div>
+        <div style={{ color: 'var(--muted)', padding: '40px 0', fontSize: 14 }}><Tr k="wc.empty" /></div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {articlesWithAuthors.map((a: any) => (
@@ -77,7 +79,7 @@ export default async function WikiCategoryPage({ params }: { params: Promise<{ s
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{a.title}</div>
                   <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, fontFamily: 'ui-monospace' }}>
-                    {a.profiles?.cmdr_name || 'Unknown'} · {a.view_count} просмотров · {new Date(a.updated_at).toLocaleDateString('ru-RU')}
+                    <WikiArticleMeta author={a.profiles?.cmdr_name} views={a.view_count} date={a.updated_at} />
                   </div>
                 </div>
                 <span style={{ color: 'var(--orange)', fontSize: 20 }}>→</span>

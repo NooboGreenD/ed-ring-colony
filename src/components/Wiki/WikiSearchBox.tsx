@@ -2,8 +2,10 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { IconSearch } from '@/components/Icons';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function WikiSearchBox() {
+  const { t } = useI18n();
   const [q, setQ] = useState('');
   const router = useRouter();
 
@@ -17,7 +19,7 @@ export default function WikiSearchBox() {
       <input
         value={q}
         onChange={e => setQ(e.target.value)}
-        placeholder="Поиск по вики..."
+        placeholder={t('wsearch.placeholder')}
         style={{ width: '100%', paddingLeft: 36, fontSize: 13 }}
       />
       <IconSearch size={14} color="var(--muted)" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
