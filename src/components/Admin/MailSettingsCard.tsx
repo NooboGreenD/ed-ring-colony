@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authFetch } from '@/lib/supabaseClient';
 import { IconInfo } from '@/components/Icons';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * Настройки отправки писем — Админка → Авторизация → «Отправка писем».
@@ -41,18 +42,19 @@ const EMPTY_DRAFT: Draft = {
 };
 
 const FIELDS: Array<{ key: keyof Draft; label: string; placeholder: string; password?: boolean; hint?: string }> = [
-  { key: 'SMTP_HOST', label: 'SMTP-сервер', placeholder: 'smtp.yandex.ru', hint: 'Адрес почтового сервера, письма без него не отправляются.' },
-  { key: 'SMTP_PORT', label: 'Порт', placeholder: '587', hint: '587 (STARTTLS) или 465 (SSL).' },
-  { key: 'SMTP_USER', label: 'Логин', placeholder: 'noreply@edringcolony.ru' },
-  { key: 'SMTP_PASS', label: 'Пароль', placeholder: '••••••', password: true, hint: 'Для Яндекс/Mail.ru — «пароль приложения», не основной пароль аккаунта.' },
-  { key: 'SMTP_ADMIN_EMAIL', label: 'Адрес отправителя', placeholder: 'noreply@edringcolony.ru' },
-  { key: 'SMTP_SENDER_NAME', label: 'Имя отправителя', placeholder: 'ED Ring Colony' },
+  { key: 'SMTP_HOST', label: 'mail.hostLabel', placeholder: 'smtp.yandex.ru', hint: 'mail.hostHint' },
+  { key: 'SMTP_PORT', label: 'mail.portLabel', placeholder: '587', hint: 'mail.portHint' },
+  { key: 'SMTP_USER', label: 'mail.userLabel', placeholder: 'noreply@edringcolony.ru' },
+  { key: 'SMTP_PASS', label: 'mail.passLabel', placeholder: '••••••', password: true, hint: 'mail.passHint' },
+  { key: 'SMTP_ADMIN_EMAIL', label: 'mail.fromLabel', placeholder: 'noreply@edringcolony.ru' },
+  { key: 'SMTP_SENDER_NAME', label: 'mail.nameLabel', placeholder: 'ED Ring Colony' },
 ];
 
 const inputStyle = { width: '100%', background: '#141618', border: '1px solid #323538', color: '#e5e7eb', padding: '6px 8px', fontSize: 13, borderRadius: 2 } as const;
 const labelStyle = { fontSize: 12, color: '#9ca3af', display: 'grid', gap: 3 } as const;
 
 export default function MailSettingsCard() {
+  const { t } = useI18n();
   const [status, setStatus] = useState<SmtpStatus | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [signupOpen, setSignupOpen] = useState<boolean | null>(null);
@@ -71,7 +73,7 @@ export default function MailSettingsCard() {
       const res = await authFetch('/api/admin/smtp', { cache: 'no-store' });
       const json = await res.json();
       if (!res.ok) {
-        setLoadError(json.error || 'Ошибка загрузки настроек почты');
+        setLoadError(json.error || t('mail.loadError'));
         setStatus(null);
         return;
       }
@@ -92,7 +94,7 @@ export default function MailSettingsCard() {
       setSignupOpen((byName('DISABLE_SIGNUP')?.value ?? 'true').trim().toLowerCase() === 'false');
       setSiteEmail(json.webEmailEnabled === true);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Ошибка загрузки настроек почты');
+      setLoadError(e instanceof Error ? e.message : t('mail.loadError'));
     }
   }, []);
 
@@ -103,13 +105,13 @@ export default function MailSettingsCard() {
     try {
       const res = await authFetch('/api/admin/email-health', { cache: 'no-store' });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Диагностика недоступна');
+      if (!res.ok) throw new Error(json.error || t('mail.diagUnavailable'));
       setDiag(json);
       setMsgOk(json.ok === true);
-      setMsg(json.summary || (json.ok ? 'Регистрация и письма настроены.' : 'Есть проблемы — см. список проверок.'));
+      setMsg(json.summary || (json.ok ? t('mail.readyOk') : t('mail.readyIssues')));
     } catch (e) {
       setMsgOk(false);
-      setMsg(e instanceof Error ? e.message : 'Диагностика недоступна');
+      setMsg(e instanceof Error ? e.message : t('mail.diagUnavailable'));
     } finally { setBusy(null); }
   }, []);
 
@@ -134,7 +136,7 @@ export default function MailSettingsCard() {
           body: JSON.stringify({ key, value }),
         });
         const json = await res.json();
-        if (!res.ok) throw new Error(json.error || `Не сохранён ${key}`);
+        if (!res.ok) throw new Error(json.error || t('mail.notSavedKey', { key }));
       }
       // Флаг сайта — обычный ключ .env.production (тот же механизм, что «API-ключи»).
       if (siteEmail !== null) {
@@ -144,30 +146,29 @@ export default function MailSettingsCard() {
           body: JSON.stringify({ key: 'AUTH_EMAIL_ENABLED', value: siteEmail ? 'true' : 'false' }),
         });
         const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Не сохранён AUTH_EMAIL_ENABLED');
+        if (!res.ok) throw new Error(json.error || t('mail.notSavedKey', { key: 'AUTH_EMAIL_ENABLED' }));
       }
       setMsgOk(true);
-      setMsg('Сохранено. Чтобы изменения вступили в силу, нажмите «Применить и перезапустить».');
+      setMsg(t('mail.savedRestart'));
       await load();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Не сохранено');
+      setMsg(e instanceof Error ? e.message : t('mail.enableFailed'));
     } finally { setBusy(null); }
   }, [draft, signupOpen, siteEmail, load]);
 
   const apply = useCallback(async () => {
     if (!window.confirm(
-      'Пересоздать контейнер auth стека Supabase и web?\n' +
-      'Сайт будет недоступен несколько секунд. Новые SMTP-ключи и флаги вступят в силу.',
+      t('mail.applyConfirm'),
     )) return;
     setBusy('apply'); setMsg(''); setMsgOk(false);
     try {
       const res = await authFetch('/api/admin/smtp/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Не удалось запустить применение');
+      if (!res.ok) throw new Error(json.error || t('mail.applyFailed'));
       setMsgOk(true);
-      setMsg('Применение запущено — прогресс и журнал: Админка → Мониторинг → «Обновление проекта».');
+      setMsg(t('mail.applyStarted'));
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Не удалось запустить применение');
+      setMsg(e instanceof Error ? e.message : t('mail.applyFailed'));
     } finally { setBusy(null); }
   }, []);
 
@@ -187,7 +188,7 @@ export default function MailSettingsCard() {
           body: JSON.stringify({ key: 'DISABLE_SIGNUP', value: 'false' }),
         });
         const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Не сохранён DISABLE_SIGNUP');
+        if (!res.ok) throw new Error(json.error || t('mail.notSavedKey', { key: 'DISABLE_SIGNUP' }));
         setSignupOpen(true);
       } else if (action === 'enable-site-forms') {
         const res = await authFetch('/api/admin/env', {
@@ -195,23 +196,23 @@ export default function MailSettingsCard() {
           body: JSON.stringify({ key: 'AUTH_EMAIL_ENABLED', value: 'true' }),
         });
         const json = await res.json();
-        if (!res.ok) throw new Error(json.error || 'Не сохранён AUTH_EMAIL_ENABLED');
+        if (!res.ok) throw new Error(json.error || t('mail.notSavedKey', { key: 'AUTH_EMAIL_ENABLED' }));
         setSiteEmail(true);
       } else {
         // SMTP заполняется только вручную: подставить за админа сервер и пароль нельзя.
-        setMsg('Заполните SMTP-сервер, логин и пароль ниже, сохраните и нажмите «Применить и перезапустить».');
+        setMsg(t('mail.fillSmtp'));
         return;
       }
       const applied = await authFetch('/api/admin/smtp/apply', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
       });
       const json = await applied.json();
-      if (!applied.ok) throw new Error(json.error || 'Не удалось запустить применение');
+      if (!applied.ok) throw new Error(json.error || t('mail.applyFailed'));
       setMsgOk(true);
-      setMsg('Включено и отправлено на применение. Контейнер auth пересоздаётся — через минуту нажмите «Диагностика», чтобы проверить.');
+      setMsg(t('mail.enabledStarted'));
       await load();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Не удалось включить');
+      setMsg(e instanceof Error ? e.message : t('mail.enableFailed'));
     } finally { setBusy(null); }
   }, [load]);
 
@@ -220,21 +221,17 @@ export default function MailSettingsCard() {
 
   return <section style={{ border: '1px solid #3f3b32', borderRadius: 2, padding: '12px 14px', marginBottom: 16, background: 'rgba(255,157,46,0.04)' }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-      <h3 style={{ margin: 0 }}>✉️ Отправка писем (регистрация и восстановление)</h3>
-      <span style={{ fontSize: 11, color: '#9ca3af' }}>SMTP для Supabase Auth (GoTrue)</span>
+      <h3 style={{ margin: 0 }}>{t('mail.title')}</h3>
+      <span style={{ fontSize: 11, color: '#9ca3af' }}>{t('mail.subtitle')}</span>
     </div>
     <p style={{ color: '#9ca3af', fontSize: 13, margin: '8px 0' }}>
-      Письма подтверждения отправляет сервис auth стека Supabase. Заполните SMTP-сервер, включите
-      регистрацию и отправку, затем нажмите «Применить и перезапустить» — контейнер auth и сайт
-      пересоздадутся с новыми ключами. Пароль SMTP сохраняется на сервере и в браузер не возвращается.
+      {t('mail.intro')}
     </p>
 
     {loadError && <div style={{ border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', padding: '8px 10px', fontSize: 13, color: '#fca5a5', borderRadius: 2, marginBottom: 10 }}>
       {loadError}
       {/404|недоступен|не настроен/i.test(loadError) && <div style={{ marginTop: 4, color: '#f3f4f6' }}>
-        Похоже, update-agent старой версии или без доступа к стеку Supabase. Обновите проект
-        (или перезапустите агента в разделе «Мониторинг») и, если агент работает в Docker,
-        один раз пересоздайте его контейнер:
+        {t('mail.agentOld')}
         <code style={{ display: 'block', marginTop: 4, whiteSpace: 'pre-wrap' }}>
           docker compose --env-file .env.production --profile monitoring up -d --force-recreate update-agent
         </code>
@@ -242,53 +239,47 @@ export default function MailSettingsCard() {
     </div>}
 
     {status && !status.available && <div style={{ border: '1px solid #e67e22', background: 'rgba(230,126,34,0.08)', padding: '8px 10px', fontSize: 13, color: '#fdba74', borderRadius: 2, marginBottom: 10 }}>
-      Агент не видит .env стека Supabase (/opt/supabase/.env). Проверьте монтирование каталога
-      в docker-compose.yml (раздел update-agent) и пересоздайте контейнер агента.
+      {t('mail.noEnv')}
     </div>}
 
     {status?.override && !status.override.passesSmtp && <div style={{ border: '1px solid #e67e22', background: 'rgba(230,126,34,0.08)', padding: '8px 10px', fontSize: 13, color: '#fdba74', borderRadius: 2, marginBottom: 10 }}>
-      Текущий {status.override.file} пока не передаёт SMTP. Ничего объединять вручную не нужно:
-      «Применить и перезапустить» создаст отдельный управляемый docker-compose.smtp-override.yml,
-      сохранив существующие настройки стека.
+      {t('mail.overrideFile', { file: status.override.file })}
     </div>}
 
     {status?.legacySignupKey && (
       <div style={{ border: '1px solid #e67e22', background: 'rgba(230,126,34,0.08)', padding: '8px 10px', fontSize: 13, color: '#fdba74', borderRadius: 2, marginBottom: 10 }}>
-        В <code>.env</code> стека Supabase лежит <code>GOTRUE_DISABLE_SIGNUP</code> — это имя переменной
-        внутри контейнера, compose его не подставляет, поэтому регистрация от такой строки не
-        откроется. Рабочий ключ — <code>DISABLE_SIGNUP</code>: «Применить и перезапустить»
-        переименует строку само.
+        {t('mail.legacyHead')} <code>GOTRUE_DISABLE_SIGNUP</code> {t('mail.legacyMid')} <code>DISABLE_SIGNUP</code>{t('mail.legacyTail')}
       </div>
     )}
 
     <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', marginBottom: 10 }}>
       {FIELDS.map((field) => {
         const saved = valueOf(field.key);
-        return <label key={field.key} style={labelStyle} title={field.hint}>
-          {field.label}
+        return <label key={field.key} style={labelStyle} title={field.hint ? t(field.hint) : undefined}>
+          {t(field.label)}
           <input
             style={inputStyle}
             type={field.password ? 'password' : 'text'}
             autoComplete="new-password"
             value={draft[field.key]}
-            placeholder={field.key === 'SMTP_PASS' && passSaved ? 'сохранён (оставьте пустым, чтобы не менять)' : field.placeholder}
+            placeholder={field.key === 'SMTP_PASS' && passSaved ? t('mail.passSavedPlaceholder') : field.placeholder}
             onChange={(e) => setDraft((prev) => ({ ...prev, [field.key]: e.target.value }))}
           />
           {saved && field.key !== 'SMTP_PASS' && (
-            <span style={{ fontSize: 11, color: '#6b7280' }}>сейчас: {saved.value || saved.masked}</span>
+            <span style={{ fontSize: 11, color: '#6b7280' }}>{t('mail.current', { value: saved.value || saved.masked })}</span>
           )}
         </label>;
       })}
     </div>
 
     <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 13, marginBottom: 10 }}>
-      <label title="DISABLE_SIGNUP=false в .env стека Supabase: GoTrue разрешает создавать новые аккаунты.">
+      <label title={t('mail.signupTitle')}>
         <input type="checkbox" checked={signupOpen === true} disabled={signupOpen === null}
-          onChange={(e) => setSignupOpen(e.target.checked)} /> регистрация новых пилотов открыта
+          onChange={(e) => setSignupOpen(e.target.checked)} /> {t('mail.signupLabel')}
       </label>
-      <label title="AUTH_EMAIL_ENABLED в окружении сайта: форма регистрации и восстановления доступна пользователям.">
+      <label title={t('mail.siteEmailTitle')}>
         <input type="checkbox" checked={siteEmail === true} disabled={siteEmail === null}
-          onChange={(e) => setSiteEmail(e.target.checked)} /> формы регистрации/восстановления на сайте
+          onChange={(e) => setSiteEmail(e.target.checked)} /> {t('mail.siteEmailLabel')}
       </label>
     </div>
 
@@ -296,33 +287,33 @@ export default function MailSettingsCard() {
 
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
       <button type="button" className="btn btn-cyan" disabled={busy !== null} onClick={() => void save()}>
-        {busy === 'save' ? 'Сохраняю…' : 'Сохранить'}
+        {busy === 'save' ? t('mail.saving') : t('mail.save')}
       </button>
-      <button type="button" className="btn btn-cyan" disabled={busy !== null || !ready} title={!ready ? 'Сначала укажите SMTP-сервер' : ''} onClick={() => void apply()}>
-        {busy === 'apply' ? 'Запускаю…' : 'Применить и перезапустить'}
+      <button type="button" className="btn btn-cyan" disabled={busy !== null || !ready} title={!ready ? t('mail.smtpFirst') : ''} onClick={() => void apply()}>
+        {busy === 'apply' ? t('mail.applying') : t('mail.apply')}
       </button>
       <button type="button" className="btn" disabled={busy !== null} onClick={() => void runDiagnostics()}>
-        {busy === 'check' ? 'Проверяю…' : 'Диагностика'}
+        {busy === 'check' ? t('mail.checking') : t('mail.diagnostics')}
       </button>
     </div>
 
     {diag && (
       <div style={{ marginTop: 12, borderTop: '1px solid #323538', paddingTop: 10 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-          <strong style={{ fontSize: 13 }}>Диагностика</strong>
+          <strong style={{ fontSize: 13 }}>{t('mail.diagnostics')}</strong>
           <span style={{ fontSize: 12, color: diag.ok ? '#22c55e' : '#ef4444' }}>
-            {diag.ok ? 'всё настроено' : 'есть проблемы'}
+            {diag.ok ? t('mail.allGood') : t('mail.hasIssues')}
           </span>
         </div>
         <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4, fontSize: 12.5 }}>
           {(diag.checks ?? []).map((check) => (
             <li key={check.id} style={{ color: check.ok ? '#9ca3af' : '#fca5a5' }}>
               {check.ok ? '✓' : '✗'} <strong style={{ color: '#d1d5db' }}>{check.title}</strong> — {check.detail}
-              {check.fix && <div style={{ color: '#fdba74', marginLeft: 14 }}>как починить: {check.fix}</div>}
+              {check.fix && <div style={{ color: '#fdba74', marginLeft: 14 }}>{t('mail.howToFix', { fix: check.fix })}</div>}
               {!check.ok && check.action && check.action !== 'configure-smtp' && (
                 <button type="button" className="btn btn-cyan" style={{ marginLeft: 14, marginTop: 4, fontSize: 12 }}
                   disabled={busy !== null} onClick={() => void repair(check.action as MailAction)}>
-                  {busy === 'repair' ? 'Включаю…' : 'Включить и применить'}
+                  {busy === 'repair' ? t('mail.enabling') : t('mail.enableApply')}
                 </button>
               )}
             </li>
@@ -333,13 +324,13 @@ export default function MailSettingsCard() {
 
     <details style={{ marginTop: 10, fontSize: 12.5, color: '#9ca3af' }}>
       <summary style={{ cursor: 'pointer', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-        <IconInfo size={13} color="#e67e22" /> как это работает
+        <IconInfo size={13} color="#e67e22" /> {t('mail.howItWorks')}
       </summary>
       <ol style={{ margin: '8px 0 0', paddingLeft: 18, display: 'grid', gap: 3 }}>
-        <li>Ключи пишутся в <code>/opt/supabase/.env</code> стека Supabase (не сайта) — через update-agent, пароль наружу не отдаётся.</li>
-        <li>«Применить» ставит compose-override из репозитория (если его ещё нет), пересоздаёт <code>auth</code> и затем <code>web</code>.</li>
-        <li>Подтверждение адресов всегда включено (autoconfirm не используется): без письма регистрация не завершается.</li>
-        <li>Почтовые квоты, SPF/DKIM домена и пароли приложений — на стороне почтового сервиса.</li>
+        <li>{t('mail.li1Head')} <code>/opt/supabase/.env</code> {t('mail.li1Tail')}</li>
+        <li>{t('mail.li2Head')} <code>auth</code> {t('mail.li2Mid')} <code>web</code>{t('mail.li2Tail')}</li>
+        <li>{t('mail.li3')}</li>
+        <li>{t('mail.li4')}</li>
       </ol>
     </details>
   </section>;
