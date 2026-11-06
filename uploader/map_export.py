@@ -10,7 +10,10 @@
 import struct
 import time
 import zlib
+from contextlib import contextmanager
 from typing import Optional, Tuple
+
+import i18n
 
 from map_font import FONT_8X10, GLYPH_H, GLYPH_W, UNKNOWN_GLYPH
 from system_map import (
@@ -36,6 +39,12 @@ COLOR_GREEN = (0x2e, 0xcc, 0x71)
 COLOR_RED = (0xe7, 0x4c, 0x3c)
 COLOR_YELLOW = (0xf1, 0xc4, 0x0f)   # тот же жёлтый, что в палитре вкладки
 COLOR_DARK = (0x11, 0x13, 0x15)
+
+
+#: Русские строки PNG: картинка рисуется битмап-шрифтом `map_font.FONT_8X10`,
+#: в котором нет ни умлаутов, ни иероглифов. Перевод дал бы прямоугольники,
+#: поэтому подписи на картинке остаются русскими (см. `_map_font_text`).
+NON_UI_LITERALS = frozenset({"стройка", "вы", "Вы здесь"})
 
 
 def _hex(color: str) -> Tuple[int, int, int]:
@@ -203,10 +212,38 @@ def _diamond(raster: _Raster, cx: float, cy: float, radius: float, color,
             raster.line(x0, y0, x1, y1, outline)
 
 
+@contextmanager
+def _map_font_text():
+    """Русский текст на время отрисовки PNG.
+
+    Картинка собирается битмап-шрифтом `map_font.FONT_8X10`: в нём есть только
+    латиница и кириллица. Умлауты („übrig“) и иероглифы шрифт нарисовал бы
+    прямоугольниками, поэтому подписи на PNG остаются русскими, хотя в окне
+    они идут на языке интерфейса. Язык процесса возвращается на место даже
+    при исключении.
+    """
+    saved = i18n.current_locale()
+    i18n.set_locale("ru")
+    try:
+        yield
+    finally:
+        i18n.set_locale(saved)
+
+
 def export_map_png(snapshot, width: int = 1280, height: int = 820,
                    zoom: float = 1.0, show_moons: bool = True,
                    show_labels: bool = True, center_on: str = "") -> bytes:
-    """Схема системы в PNG: те же объекты и прогресс-бары, что на вкладке."""
+    """Схема системы в PNG: те же объекты и прогресс-бары, что на вкладке.
+
+    Текст на картинке всегда русский — см. `_map_font_text()`.
+    """
+    with _map_font_text():
+        return _draw_map_png(snapshot, width, height, zoom, show_moons,
+                             show_labels, center_on)
+
+
+def _draw_map_png(snapshot, width: int, height: int, zoom: float,
+                  show_moons: bool, show_labels: bool, center_on: str) -> bytes:
     raster = _Raster(width, height)
     items = layout(snapshot, width, height, zoom=zoom, show_moons=show_moons,
                    center_on=center_on)

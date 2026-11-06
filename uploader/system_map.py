@@ -39,6 +39,7 @@ from colonisation import (
     is_primary_port_station,
 )
 from event_dispatch import normalize_commodity
+from i18n import tr
 
 # ---------------------------------------------------------------------------
 # Типы объектов
@@ -59,6 +60,14 @@ SIGNAL_ATTRIBUTES: Dict[str, str] = {
     "guardian": "guardian_signals",
     "other": "other_signals",
 }
+
+
+def _tons(value: object) -> str:
+    """Тоннаж в подписи: «4 000» — неразрывные разряды одинаковы на всех языках."""
+    try:
+        return f"{max(0, int(round(float(value or 0)))):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "0"
 
 
 def classify_body_signal(signal_type: object) -> str:
@@ -90,6 +99,15 @@ STATION_INSTALLATION = "installation"
 STATION_CARRIER = "carrier"            # Fleet Carrier
 STATION_MEGASHIP = "megaship"
 STATION_OTHER = "other"
+
+#: Русские строки, которые не подписи окна и намеренно остаются как есть.
+#: Это маркеры разбора событий журнала (`биолог`, `таргоид`) и значения поля
+#: `first_discovered_by`, которое уходит на сайт: перевод сломал бы сравнение
+#: «первооткрыватель — я или кто-то другой» при слиянии с ответом EDSM.
+NON_UI_LITERALS = frozenset({
+    "биолог", "геолог", "таргоид", "страж", "человеч", "люд",
+    "Вы", "Другой пилот",
+})
 
 #: Подписи объектов для вкладки и легенды карты.
 STATION_LABELS = {
@@ -303,22 +321,24 @@ class MapStation:
             return default_project_name(self.build_name) or self.build_name
         if self.is_site and self.name:
             return default_project_name(self.name) or self.name
-        return self.name or STATION_LABELS.get(self.kind, "объект")
+        return self.name or tr(STATION_LABELS.get(self.kind, "объект"))
 
     @property
     def caption(self) -> str:
         """Строка под иконкой: тип + прогресс (или остаток, если % неизвестен)."""
-        label = STATION_LABELS.get(self.kind, "объект")
+        label = tr(STATION_LABELS.get(self.kind, "объект"))
         percent = self.percent_delivered
         if self.planned and percent is None:
-            return f"{label} · план"
+            return tr("{label} · план", label=label)
         if percent is not None:
             rest = self.remaining_tons
-            return f"{label} · {percent}%" + (f" · осталось {rest:,} t".replace(",", " ")
-                                              if rest else "")
+            if rest:
+                return tr("{label} · {percent}% · осталось {tons} t", label=label,
+                          percent=percent, tons=_tons(rest))
+            return f"{label} · {percent}%"
         if self.remaining_tons:
-            tons = f"{self.remaining_tons:,}".replace(",", " ")
-            return f"{label} · осталось {tons} t"
+            return tr("{label} · осталось {tons} t", label=label,
+                      tons=_tons(self.remaining_tons))
         return label
 
 
@@ -420,14 +440,14 @@ class PlayerPosition:
     def place(self) -> str:
         """Короткое описание места для подписи «вы здесь»."""
         if self.docked and self.station_name:
-            return f"на станции {self.station_name}"
+            return tr("на станции {station}", station=self.station_name)
         if self.on_surface and self.body_name:
-            return f"на поверхности {self.body_name}"
+            return tr("на поверхности {body}", body=self.body_name)
         if self.near_body and self.body_name:
-            return f"у тела {self.body_name}"
+            return tr("у тела {body}", body=self.body_name)
         if self.in_supercruise:
-            return "в суперкруизе"
-        return "в космосе"
+            return tr("в суперкруизе")
+        return tr("в космосе")
 
 
 @dataclass
@@ -1258,7 +1278,8 @@ class SystemMapBuilder:
                     return station
                 if default_project_name(station.name).strip().lower() == lowered:
                     return station
-        return self._station(system, name or f"Проект {market_id}", market_id,
+        return self._station(system, name or tr("Проект {market_id}", market_id=market_id),
+                             market_id,
                              source="raven")
 
     def merge_site_plans(self, system: str, plans: List[dict]) -> bool:
@@ -1290,7 +1311,7 @@ class SystemMapBuilder:
                     changed = True
                 continue
             station = existing or self._station(
-                system, name or body_name or "Площадка",
+                system, name or body_name or tr("Площадка"),
                 _as_int(plan.get("marketId"), 0), source="raven")
             if not station.planned:
                 station.planned = True
@@ -1752,7 +1773,7 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
     else:
         items.append(PlacedItem(
             kind="star", x=center_x, y=center_y, radius=5.0,
-            label="", caption="звезда не отсканирована",
+            label="", caption=tr("звезда не отсканирована"),
             color="#555555", orbit_radius=0.0,
             depth=0.0, plane_x=center_x, plane_y=center_y,
         ))
@@ -1976,7 +1997,7 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
 
     items.append(PlacedItem(
         kind="player", x=anchor[0], y=anchor[1], radius=12.0,
-        label="Вы здесь", caption=player.place, color=PLAYER_COLOR, ref=player,
+        label=tr("Вы здесь"), caption=player.place, color=PLAYER_COLOR, ref=player,
         depth=anchor[2] + 0.5, plane_x=anchor[0], plane_y=anchor[1],
     ))
 
@@ -2056,7 +2077,7 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         body_radius[star.name] = star_radius
     else:
         items.append(PlacedItem(kind="star", x=center_x, y=center_y, radius=4.0,
-                                label="", caption="звезда не отсканирована",
+                                label="", caption=tr("звезда не отсканирована"),
                                 color="#555555", orbit_radius=0.0,
                                 plane_x=center_x, plane_y=center_y))
 
@@ -2268,7 +2289,7 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         anchor = (center_x, center_y - max_radius * 0.35)
     items.append(PlacedItem(
         kind="player", x=anchor[0], y=anchor[1], radius=12.0,
-        label="Вы здесь", caption=player.place, color=PLAYER_COLOR, ref=player,
+        label=tr("Вы здесь"), caption=player.place, color=PLAYER_COLOR, ref=player,
     ))
     if center_on:
         # Двойной клик по объекту: вся карта сдвигается так, чтобы он встал в
@@ -2426,17 +2447,18 @@ def due_note(due_at: str, now=None) -> str:
     delta_days = (due - moment).total_seconds() / 86400.0
     if delta_days < 0:
         over = max(1, int(-delta_days))
-        return f"дедлайн просрочен на {over} дн ({due:%d.%m})"
+        return tr("дедлайн просрочен на {days} дн ({date})", days=over,
+                  date=f"{due:%d.%m}")
     days = int(delta_days)
     if days == 0:
-        return f"дедлайн сегодня ({due:%d.%m})"
-    return f"дедлайн через {days} дн ({due:%d.%m})"
+        return tr("дедлайн сегодня ({date})", date=f"{due:%d.%m}")
+    return tr("дедлайн через {days} дн ({date})", days=days, date=f"{due:%d.%m}")
 
 
 def commodity_label(key: str) -> str:
     """`liquidoxygen` -> «Жидкий кислород»; неизвестный ключ не трогаем."""
     name = str(key or "").strip()
-    return COMMODITY_LABELS_RU.get(name.lower(), name)
+    return tr(COMMODITY_LABELS_RU.get(name.lower(), name))
 
 
 def map_report(snapshot: MapSnapshot, app_version: str = "", now=None) -> str:
@@ -2448,28 +2470,32 @@ def map_report(snapshot: MapSnapshot, app_version: str = "", now=None) -> str:
     тесты передают его явно, чтобы сводка не зависела от даты запуска.
     """
     if not snapshot.system:
-        return "Система неизвестна — включите Watcher или загрузите журналы"
+        return tr("Система неизвестна — включите Watcher или загрузите журналы")
     head = snapshot.system
     if app_version:
-        head += f" — карта системы (Colonial Helper {app_version})"
+        head += " " + tr("— карта системы (Colonial Helper {version})", version=app_version)
     lines = [head]
     scanned = len([body for body in snapshot.bodies if body.scanned])
-    bodies_line = f"Тел: {len(snapshot.bodies)}"
+    bodies = len(snapshot.bodies)
     if snapshot.known_body_count:
-        bodies_line += f" из {snapshot.known_body_count}"
-    bodies_line += f", отсканировано {scanned}"
+        bodies_line = tr("Тел: {bodies} из {total}, отсканировано {scanned}",
+                         bodies=bodies, total=snapshot.known_body_count, scanned=scanned)
+    else:
+        bodies_line = tr("Тел: {bodies}, отсканировано {scanned}",
+                         bodies=bodies, scanned=scanned)
     lines.append(bodies_line)
 
     sites = [station for station in snapshot.sites if not station.complete]
     if sites:
-        lines.append("Стройки:")
+        lines.append(tr("Стройки:"))
         for station in sites:
             percent = station.percent_delivered
-            progress = f"{percent}%" if percent is not None else "процент неизвестен"
+            progress = f"{percent}%" if percent is not None else tr("процент неизвестен")
             if station.planned and percent is None:
-                progress = "план"
-            rest = f" (осталось {station.remaining_tons:,} t)".replace(",", " ")
-            line = f"  {station.title} — {progress}{rest if station.remaining_tons else ''}"
+                progress = tr("план")
+            line = f"  {station.title} — {progress}"
+            if station.remaining_tons:
+                line += " " + tr("(осталось {tons} t)", tons=_tons(station.remaining_tons))
             note = due_note(station.due_at, now=now)
             if note:
                 line += f" · {note}"
@@ -2477,7 +2503,7 @@ def map_report(snapshot: MapSnapshot, app_version: str = "", now=None) -> str:
                 top = sorted(station.remaining_by_commodity.items(),
                              key=lambda pair: pair[1], reverse=True)[:4]
                 line += ": " + ", ".join(
-                    f"{commodity_label(name)} {amount:,}".replace(",", " ")
+                    f"{commodity_label(name)} {_tons(amount)}"
                     for name, amount in top)
             lines.append(line)
     done = [station for station in snapshot.sites if station.complete]
@@ -2485,43 +2511,45 @@ def map_report(snapshot: MapSnapshot, app_version: str = "", now=None) -> str:
     if done or built:
         names = [f"{station.title} (100%)" for station in done]
         names += [station.title for station in built]
-        lines.append("Построено: " + ", ".join(names))
+        lines.append(tr("Построено: {names}", names=", ".join(names)))
     player = snapshot.player
     ship = " ".join(part for part in (player.ship_name, player.ship_type) if part)
-    lines.append(f"Пилот: {ship}, {player.place}" if ship else f"Пилот: {player.place}")
+    lines.append(tr("Пилот: {pilot}, {place}", pilot=ship, place=player.place) if ship
+                 else tr("Пилот: {place}", place=player.place))
     return "\n".join(lines)
 
 
 def map_summary(snapshot: MapSnapshot) -> str:
     """Одна строка состояния вкладки: система, тела, стройки, где пилот."""
     if not snapshot.system:
-        return "Система неизвестна — включите Watcher или загрузите журналы"
+        return tr("Система неизвестна — включите Watcher или загрузите журналы")
     parts = [snapshot.system]
     star_count = len([body for body in snapshot.bodies if body.kind == KIND_STAR])
     if star_count > 1:
-        parts.append(f"звёзд: {star_count}")
+        parts.append(tr("звёзд: {count}", count=star_count))
     bodies = len(snapshot.bodies)
     if snapshot.known_body_count and snapshot.known_body_count > bodies:
-        parts.append(f"тел {bodies} из {snapshot.known_body_count}")
+        parts.append(tr("тел {bodies} из {total}", bodies=bodies, total=snapshot.known_body_count))
     elif bodies:
-        parts.append(f"тел: {bodies}")
+        parts.append(tr("тел: {count}", count=bodies))
     else:
-        parts.append("тела не отсканированы")
+        parts.append(tr("тела не отсканированы"))
     unscanned = len([body for body in snapshot.bodies if not body.scanned])
     if unscanned:
         # Подсказка сканеру: сколько тел системы журнал ещё не видел.
-        parts.append(f"без скана: {unscanned}")
+        parts.append(tr("без скана: {count}", count=unscanned))
     building = [station for station in snapshot.sites if not station.complete]
     if building:
         details = []
         for station in building[:3]:
             percent = station.percent_delivered
             details.append(f"{station.title}" + (f" {percent}%" if percent is not None else ""))
-        parts.append(f"строек: {len(building)} (" + ", ".join(details) + ")")
+        parts.append(tr("строек: {count} ({details})", count=len(building),
+                        details=", ".join(details)))
     built = len(snapshot.built)
     if built:
-        parts.append(f"построенных объектов: {built}")
-    parts.append(f"вы {snapshot.player.place}")
+        parts.append(tr("построенных объектов: {count}", count=built))
+    parts.append(tr("вы {place}", place=snapshot.player.place))
     return " · ".join(parts)
 
 
