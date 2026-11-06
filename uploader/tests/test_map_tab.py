@@ -42,7 +42,8 @@ class FactionWorkspaceTests(unittest.TestCase):
     def test_journal_snapshot_drives_local_faction_presence_and_influence(self):
         app=SimpleNamespace(_faction_state_lock=__import__("threading").RLock(),
             _faction_updated_at="",_faction_system="",_faction_controlling="",
-            _faction_presence=[],after=mock.Mock())
+            _faction_presence=[],after=mock.Mock(),
+            _faction_address=colonial_helper.ColonialHelperApp._faction_address)
         event={"event":"FSDJump","timestamp":"2026-10-27T12:00:00Z","StarSystem":"Sol",
                "SystemFaction":{"Name":"Sol Workers' Party"},"Factions":[
                    {"Name":"Low Influence","Influence":0.12,"Government":"Democracy"},

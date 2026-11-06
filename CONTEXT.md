@@ -1,9 +1,9 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: **2026-10-19** (checked against the code).
-> Web release: **2.25.2** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
-> 90 SQL migrations · 231 API routes · 59 pages · 150 test files (1592 checks) · Helper tests: 1416.
+> Last updated: **2026-11-06** (checked against the code).
+> Web release: **2.27.9** · Colonial Helper: **2.26.0** (`PARSER_VERSION = 6`, launcher 1.4.1).
+> 105 SQL migrations · 249 API routes · 60 pages · 179 site test files · Helper tests: 2077.
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
