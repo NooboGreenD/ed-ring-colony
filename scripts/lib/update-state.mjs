@@ -34,17 +34,17 @@ export const UPDATE_PROTOCOL = '::edrc::';
 export const UPDATE_AGENT_PROTOCOL = 4;
 
 export const UPDATE_STAGES = [
-  { id: 'prepare', label: 'Проверка блокировок и репозитория', percent: 5 },
-  { id: 'fetch', label: 'Синхронизация с GitHub', percent: 15 },
+  { id: 'prepare', label: 'Проверка блокировок и репозитория', labelKey: 'updStage.update.prepare', percent: 5 },
+  { id: 'fetch', label: 'Синхронизация с GitHub', labelKey: 'updStage.update.fetch', percent: 15 },
   // Проценты обязаны совпадать с `report`-строками deploy/update-project.sh:
   // они же служат запасным значением, если скрипт прислал стадию без percent.
-  { id: 'compare', label: 'Сверка ревизий и перемотка исходников', percent: 25 },
-  { id: 'backup', label: 'Резервная копия базы', percent: 45 },
-  { id: 'migrate', label: 'Миграции базы данных', percent: 55 },
-  { id: 'build', label: 'Сборка новой версии', percent: 70 },
-  { id: 'switch', label: 'Переключение контейнеров/сервиса', percent: 85 },
-  { id: 'verify', label: 'Проверка доступности сайта', percent: 95 },
-  { id: 'done', label: 'Готово', percent: 100 },
+  { id: 'compare', label: 'Сверка ревизий и перемотка исходников', labelKey: 'updStage.update.compare', percent: 25 },
+  { id: 'backup', label: 'Резервная копия базы', labelKey: 'updStage.update.backup', percent: 45 },
+  { id: 'migrate', label: 'Миграции базы данных', labelKey: 'updStage.update.migrate', percent: 55 },
+  { id: 'build', label: 'Сборка новой версии', labelKey: 'updStage.update.build', percent: 70 },
+  { id: 'switch', label: 'Переключение контейнеров/сервиса', labelKey: 'updStage.update.switch', percent: 85 },
+  { id: 'verify', label: 'Проверка доступности сайта', labelKey: 'updStage.update.verify', percent: 95 },
+  { id: 'done', label: 'Готово', labelKey: 'updStage.done', percent: 100 },
 ];
 
 /**
@@ -54,10 +54,10 @@ export const UPDATE_STAGES = [
  * правды о том, что значит «45%».
  */
 export const BACKUP_STAGES = [
-  { id: 'prepare', label: 'Проверка доступа к базе и места на диске', percent: 5 },
-  { id: 'backup', label: 'pg_dump базы данных', percent: 45 },
-  { id: 'verify', label: 'Проверка архива (pg_restore --list)', percent: 95 },
-  { id: 'done', label: 'Готово', percent: 100 },
+  { id: 'prepare', label: 'Проверка доступа к базе и места на диске', labelKey: 'updStage.backup.prepare', percent: 5 },
+  { id: 'backup', label: 'pg_dump базы данных', labelKey: 'updStage.backup.backup', percent: 45 },
+  { id: 'verify', label: 'Проверка архива (pg_restore --list)', labelKey: 'updStage.backup.verify', percent: 95 },
+  { id: 'done', label: 'Готово', labelKey: 'updStage.done', percent: 100 },
 ];
 
 /**
@@ -67,10 +67,10 @@ export const BACKUP_STAGES = [
  * Проценты обязаны совпадать с report-строками deploy/apply-env.sh.
  */
 export const ENV_STAGES = [
-  { id: 'env_prepare', label: 'Определение режима (Docker / systemd)', percent: 10 },
-  { id: 'env_switch', label: 'Пересоздание сервисов с новыми ключами', percent: 40 },
-  { id: 'env_verify', label: 'Проверка доступности сайта', percent: 90 },
-  { id: 'done', label: 'Готово', percent: 100 },
+  { id: 'env_prepare', label: 'Определение режима (Docker / systemd)', labelKey: 'updStage.env.env_prepare', percent: 10 },
+  { id: 'env_switch', label: 'Пересоздание сервисов с новыми ключами', labelKey: 'updStage.env.env_switch', percent: 40 },
+  { id: 'env_verify', label: 'Проверка доступности сайта', labelKey: 'updStage.env.env_verify', percent: 90 },
+  { id: 'done', label: 'Готово', labelKey: 'updStage.done', percent: 100 },
 ];
 
 /**
@@ -81,13 +81,13 @@ export const ENV_STAGES = [
  * report-строками deploy/apply-smtp.sh.
  */
 export const SMTP_STAGES = [
-  { id: 'smtp_prepare', label: 'Проверка доступа к стеку Supabase', percent: 5 },
-  { id: 'smtp_override', label: 'Проверка compose-override для auth', percent: 15 },
-  { id: 'smtp_switch', label: 'Пересоздание контейнера auth (GoTrue)', percent: 35 },
-  { id: 'smtp_verify', label: 'Проверка доступности auth', percent: 55 },
-  { id: 'smtp_signup', label: 'Проверка, что регистрация открыта', percent: 60 },
-  { id: 'smtp_web', label: 'Пересоздание web с новыми ключами сайта', percent: 70 },
-  { id: 'done', label: 'Готово', percent: 100 },
+  { id: 'smtp_prepare', label: 'Проверка доступа к стеку Supabase', labelKey: 'updStage.smtp.smtp_prepare', percent: 5 },
+  { id: 'smtp_override', label: 'Проверка compose-override для auth', labelKey: 'updStage.smtp.smtp_override', percent: 15 },
+  { id: 'smtp_switch', label: 'Пересоздание контейнера auth (GoTrue)', labelKey: 'updStage.smtp.smtp_switch', percent: 35 },
+  { id: 'smtp_verify', label: 'Проверка доступности auth', labelKey: 'updStage.smtp.smtp_verify', percent: 55 },
+  { id: 'smtp_signup', label: 'Проверка, что регистрация открыта', labelKey: 'updStage.smtp.smtp_signup', percent: 60 },
+  { id: 'smtp_web', label: 'Пересоздание web с новыми ключами сайта', labelKey: 'updStage.smtp.smtp_web', percent: 70 },
+  { id: 'done', label: 'Готово', labelKey: 'updStage.done', percent: 100 },
 ];
 
 /**
@@ -98,11 +98,11 @@ export const SMTP_STAGES = [
  * deploy/storage-repair.sh.
  */
 export const STORAGE_STAGES = [
-  { id: 'storage_prepare', label: 'Проверка доступа к Docker и стеку Supabase', percent: 5 },
-  { id: 'storage_check', label: 'Проверка состояния Storage и ответа API', percent: 20 },
-  { id: 'storage_restart', label: 'Перезапуск сервиса storage', percent: 45 },
-  { id: 'storage_verify', label: 'Проверка, что бакеты снова читаются', percent: 75 },
-  { id: 'done', label: 'Готово', percent: 100 },
+  { id: 'storage_prepare', label: 'Проверка доступа к Docker и стеку Supabase', labelKey: 'updStage.storage.storage_prepare', percent: 5 },
+  { id: 'storage_check', label: 'Проверка состояния Storage и ответа API', labelKey: 'updStage.storage.storage_check', percent: 20 },
+  { id: 'storage_restart', label: 'Перезапуск сервиса storage', labelKey: 'updStage.storage.storage_restart', percent: 45 },
+  { id: 'storage_verify', label: 'Проверка, что бакеты снова читаются', labelKey: 'updStage.storage.storage_verify', percent: 75 },
+  { id: 'done', label: 'Готово', labelKey: 'updStage.done', percent: 100 },
 ];
 
 const STAGE_BY_ID = new Map([

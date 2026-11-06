@@ -241,7 +241,7 @@ function stateMetaFor(update: UpdateState | null): { label: string; level: Monit
 // в этом прогоне не происходят — чек-лист их не показывает.
 const MIGRATIONS_ONLY_STAGE_IDS = new Set(['prepare', 'fetch', 'compare', 'backup', 'migrate', 'done']);
 
-function stagesForKind(update: UpdateState | null): Array<{ id: string; label: string; percent: number }> {
+function stagesForKind(update: UpdateState | null): Array<{ id: string; label: string; labelKey: string; percent: number }> {
   if (update?.kind === 'env') return ENV_STAGES;
   if (update?.kind === 'smtp') return SMTP_STAGES;
   if (update?.kind === 'storage') return STORAGE_STAGES;
@@ -1140,7 +1140,7 @@ export default function ServerMonitorTab() {
                 {stagesForKind(update).map((stage, index) => (
                   <li className="ops-update-stage" key={stage.id} data-state={stageState(index, update)}>
                     {stageState(index, update) === 'done' ? <IconCheckCircle size={11} /> : <IconClock size={11} />}
-                    {stage.label}
+                    {t(stage.labelKey)}
                   </li>
                 ))}
               </ul>
