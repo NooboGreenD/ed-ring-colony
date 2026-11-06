@@ -2,13 +2,18 @@ import type { Metadata } from 'next';
 import { REQUISITES, requisitesAsPlainText } from './requisites';
 import CopyButton from './CopyButton';
 import { Tr } from '@/components/Translate';
+import { getServerI18n } from '@/lib/i18n/server';
 
-export const metadata: Metadata = {
-  title: 'Реквизиты — ED Ring Colony',
-  description: 'Реквизиты организации',
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await getServerI18n();
+
+  return {
+    title: t('meta.detailsTitle'),
+    description: t('meta.detailsDescription'),
   // Скрытая страница: не индексировать и не переходить по ссылкам
   robots: { index: false, follow: false },
-};
+  };
+}
 
 export default function DetailsPage() {
   return (
