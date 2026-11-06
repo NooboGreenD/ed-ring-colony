@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { id64FromAny } from '@/lib/bgs';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { findBgsSystemIdByName, readBgsSystem } from '@/lib/bgsStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -19,21 +20,22 @@ export const runtime = 'nodejs';
  * `SystemAddress`): имя приводится к `name_lc` и находится в тех же данных.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const params = new URL(request.url).searchParams;
   const id64 = id64FromAny(params.get('id64') ?? '');
   const name = (params.get('name') ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (!id64 && !name) {
-    return NextResponse.json({ error: 'Нужен параметр id64 или name' }, { status: 400 });
+    return NextResponse.json({ error: t('api.factionsParamRequired') }, { status: 400 });
   }
   try {
     const svc = createServiceClient();
     const key = id64 ?? (await findBgsSystemIdByName(svc, name));
-    if (!key) return NextResponse.json({ error: 'Системы нет в данных о фракциях' }, { status: 404 });
+    if (!key) return NextResponse.json({ error: t('api.factionsSystemMissing') }, { status: 404 });
     const detail = await readBgsSystem(svc, key);
-    if (!detail) return NextResponse.json({ error: 'Системы нет в данных о фракциях' }, { status: 404 });
+    if (!detail) return NextResponse.json({ error: t('api.factionsSystemMissing') }, { status: 404 });
     return NextResponse.json(detail, { headers: { 'Cache-Control': 'public, max-age=30, stale-while-revalidate=120' } });
   } catch (error) {
     console.error('[factions/system]', error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: 'Не удалось загрузить систему' }, { status: 503 });
+    return NextResponse.json({ error: t('api.factionsLoadFailed') }, { status: 503 });
   }
 }

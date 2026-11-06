@@ -6,15 +6,17 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { saveCachedSystems } from '@/lib/atlasSystemCache';
 import { discoverMarketSystems, resolveRefCoords } from '@/lib/marketDiscovery';
 import { knownMarketSystems } from '@/lib/stationCommerce';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      return NextResponse.json({error:'Некорректные параметры поиска'}, {status:400});
+      return NextResponse.json({ error: t('api.marketBadParams') }, {status:400});
     }
     const ref_system =
       typeof body.ref_system === 'string' ? body.ref_system.trim() : '';

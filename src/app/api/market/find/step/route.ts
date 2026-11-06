@@ -5,12 +5,14 @@ import { commodityKey, resolveCommodity } from '@/lib/commodities';
 import { marketUpstream, marketError } from '@/lib/marketUpstream';
 import { edsmInventoryItems, edsmStationReport, saveStationReport, validTime, INVENTORY_TTL_MS, COMMERCE_SOURCE_RANK } from '@/lib/stationCommerce';
 import { discoverMarketSystems } from '@/lib/marketDiscovery';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 const STEP_SIZE = 5;
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const { job_id, known_systems_count } = await request.json();
     const knownCount = Number.isInteger(known_systems_count) && known_systems_count >= 0 ? Math.min(known_systems_count, 10000) : 0;
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
         : [resolveCommodity(job.commodity || '')].filter(Boolean);
     if (!commoditiesList.length)
       return NextResponse.json(
-        { error: 'Неизвестный тип стройплощадки или пустой товар' },
+        { error: t('api.marketSiteUnknown') },
         { status: 400 }
       );
     const needed = new Set(commoditiesList.map(commodityKey));
