@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GovernanceInfo } from '@/lib/architect/governance';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   cardStyle,
   errorText,
@@ -47,6 +48,7 @@ function formatDate(value: string | null): string {
 }
 
 export default function GovernancePanel({ systemName, onNotice, onState }: GovernancePanelProps) {
+  const { t } = useI18n();
   const [governance, setGovernance] = useState<GovernanceInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -130,27 +132,27 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(String(data?.error || `Не удалось назначить (${response.status})`));
+        setError(String(data?.error || t('gov.assignFailedStatus', { status: response.status })));
         return;
       }
       setAssignInput('');
       setCandidates([]);
-      setDone(`Архитектор системы назначен: ${data?.architect?.name ?? architect}`);
-      onNotice(`Система ${systemName} закреплена за архитектором`);
+      setDone(t('gov.assignedDone', { name: data?.architect?.name ?? architect }));
+      onNotice(t('gov.systemAssigned', { name: systemName }));
       void load(systemName);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось назначить архитектора');
+      setError(err instanceof Error ? err.message : t('gov.assignFailed'));
     } finally {
       setBusy(false);
     }
-  }, [assignInput, busy, systemName, load, onNotice]);
+  }, [assignInput, busy, systemName, load, onNotice, t]);
 
   const unassign = useCallback(async () => {
     if (busy) return;
     const isOwn = Boolean(governance?.viewer?.isArchitect);
     const question = isOwn
-      ? `Отказаться от архитектуры системы ${systemName}? План снова смогут вести все.`
-      : `Снять архитектора системы ${systemName}? План снова смогут вести все.`;
+      ? t('gov.confirmResignOwn', { name: systemName })
+      : t('gov.confirmUnassign', { name: systemName });
     if (!window.confirm(question)) return;
     setBusy(true);
     setError('');
@@ -163,14 +165,14 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(String(data?.error || `Не удалось снять архитектора (${response.status})`));
+        setError(String(data?.error || t('gov.unassignFailedStatus', { status: response.status })));
         return;
       }
-      setDone(data?.resigned ? 'Вы отказались от архитектуры этой системы.' : 'Архитектор системы снят.');
-      onNotice(`Система ${systemName} снова свободна`);
+      setDone(data?.resigned ? t('gov.resigned') : t('gov.unassigned'));
+      onNotice(t('gov.systemFree', { name: systemName }));
       void load(systemName);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось снять архитектора');
+      setError(err instanceof Error ? err.message : t('gov.unassignFailed'));
     } finally {
       setBusy(false);
     }
@@ -185,14 +187,13 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
   return (
     <section style={cardStyle}>
       <div style={rowStyle}>
-        <h3 style={sectionTitle}>Администрирование системы</h3>
-        {loading && <span style={mutedText}>проверка…</span>}
+        <h3 style={sectionTitle}>{t('gov.title')}</h3>
+        {loading && <span style={mutedText}>{t('gov.checking')}</span>}
       </div>
 
       {!architect && !loading && (
         <div style={{ ...mutedText, marginTop: 8 }}>
-          Архитектор не назначен — план системы может вести любой командир. Назначение делает админ,
-          после него сохранять и менять планы системы сможет только архитектор.
+          {t('gov.noArchitect')}
         </div>
       )}
 
@@ -200,20 +201,19 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
         <div style={{ marginTop: 8 }}>
           <div style={rowStyle}>
             <span style={{ color: 'var(--orange)', fontSize: 14, fontWeight: 600 }}>★ {architect.name}</span>
-            <span style={mutedText}>архитектор системы</span>
-            {viewer.isArchitect && <span style={{ ...mutedText, color: 'var(--green)' }}>это вы</span>}
+            <span style={mutedText}>{t('gov.architectOfSystem')}</span>
+            {viewer.isArchitect && <span style={{ ...mutedText, color: 'var(--green)' }}>{t('gov.itsYou')}</span>}
           </div>
           <div style={{ ...mutedText, marginTop: 4 }}>
-            {architect.assignedByName ? `назначен: ${architect.assignedByName}` : 'назначен администратором'}
+            {architect.assignedByName ? t('gov.assignedBy', { name: architect.assignedByName }) : t('gov.assignedByAdmin')}
             {' · '}{formatDate(architect.assignedAt)}
           </div>
           <div style={{ ...mutedText, marginTop: 4 }}>
-            Создавать и изменять планы этой системы теперь может только архитектор (и админ).
+            {t('gov.onlyArchitect')}
           </div>
           {viewerLocked && (
             <div style={{ ...mutedText, marginTop: 6, color: 'var(--cyan)' }}>
-              Для вас планы системы открыты на чтение: правки вернутся, если архитектор откажется
-              от системы или админ назначит вас.
+              {t('gov.readOnly')}
             </div>
           )}
         </div>
@@ -222,7 +222,7 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
       {(viewer.isArchitect || viewer.isAdmin) && architect && (
         <div style={{ ...rowStyle, marginTop: 10 }}>
           <button type="button" onClick={() => void unassign()} disabled={busy} style={{ ...ghostButton, color: 'var(--red)' }}>
-            {viewer.isArchitect ? 'Отказаться от системы' : 'Снять архитектора'}
+            {viewer.isArchitect ? t('gov.resign') : t('gov.unassign')}
           </button>
         </div>
       )}
@@ -230,15 +230,15 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
       {viewer.isAdmin && (
         <div style={{ marginTop: 12, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
           <div style={{ ...mutedText, textTransform: 'uppercase', letterSpacing: 1, fontSize: 11 }}>
-            {architect ? 'Сменить архитектора (админ)' : 'Назначить архитектора (админ)'}
+            {architect ? t('gov.changeArchitect') : t('gov.assignArchitect')}
           </div>
           <div style={{ ...rowStyle, marginTop: 6 }}>
             <input
               value={assignInput}
               onChange={(event) => setAssignInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') void assign(); }}
-              aria-label="Позывной нового архитектора"
-              placeholder="Позывной командира, напр. CMDR Ivanov"
+              aria-label={t('gov.newArchitectAria')}
+              placeholder={t('gov.callsignPlaceholder')}
               style={{ ...inputStyle, flex: '1 1 200px' }}
             />
             <button
@@ -247,16 +247,16 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
               disabled={busy || assignInput.trim().length < 2}
               style={primaryButton}
             >
-              {busy ? '…' : architect ? 'Сменить' : 'Назначить'}
+              {busy ? '…' : architect ? t('gov.change') : t('gov.assign')}
             </button>
             <button
               type="button"
               onClick={() => void assign(true)}
               disabled={busy || viewer.isArchitect}
               style={ghostButton}
-              title="Назначить текущего администратора без поиска профиля по позывному"
+              title={t('gov.assignSelfTitle')}
             >
-              Назначить себя
+              {t('gov.assignSelf')}
             </button>
           </div>
           {candidates.length > 0 && (

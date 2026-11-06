@@ -9,6 +9,7 @@ import {
   PRE_REQS,
 } from '@/lib/architect/catalogue';
 import { ECONOMY_MARKET } from '@/lib/architect/economy';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   commodityLabel,
   formatTons,
@@ -36,9 +37,10 @@ interface InstallationPickerProps {
 type LocationFilter = 'any' | 'orbital' | 'surface';
 type TierFilter = 0 | 1 | 2 | 3;
 
-const TIER_LABELS: Record<TierFilter, string> = { 0: 'все тиры', 1: 'T1', 2: 'T2', 3: 'T3' };
+const TIER_LABELS: Record<TierFilter, string> = { 0: 'ipk.tierAny', 1: 'T1', 2: 'T2', 3: 'T3' };
 
 export default function InstallationPicker({ body, plan, onPick, onClose, initialLocation = 'any' }: InstallationPickerProps) {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [location, setLocation] = useState<LocationFilter>(initialLocation);
   const [tier, setTier] = useState<TierFilter>(0);
@@ -89,27 +91,27 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
             <div>
               <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-                Выбор постройки
+                {t('ipk.title')}
               </div>
               <div style={{ fontSize: 18, color: 'var(--text)' }}>{body.name}</div>
             </div>
-            <button type="button" onClick={onClose} style={buttonStyle}>Закрыть</button>
+            <button type="button" onClick={onClose} style={buttonStyle}>{t('ipk.close')}</button>
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
             {body.subType && body.subType !== 'Неизвестно'
               ? body.subType
-              : <span style={{ color: 'var(--orange)' }}>класс тела неизвестен</span>}
+              : <span style={{ color: 'var(--orange)' }}>{t('ipk.unknownClass')}</span>}
             {body.kind === 'planet' || body.kind === 'moon' ? (
               <>
                 {' · '}
                 {surfaceLimit > 0
-                  ? `наземных слотов: ${usedSurface} из ${surfaceLimit}`
-                  : 'наземных слотов нет'}
+                  ? t('ipk.surfaceSlots', { used: usedSurface, limit: surfaceLimit })
+                  : t('ipk.noSurfaceSlots')}
               </>
-            ) : ' · звезда: только орбитальные постройки'}
+            ) : t('ipk.starOrbitalOnly')}
             {' · '}{orbitalSlots === null
-              ? `орбитальных: ${usedOrbital}, без лимита`
-              : `орбитальных слотов: ${usedOrbital} из ${orbitalSlots}`}
+              ? t('ipk.orbitalUnlimited', { used: usedOrbital })
+              : t('ipk.orbitalSlots', { used: usedOrbital, limit: orbitalSlots })}
           </div>
         </div>
 
@@ -117,7 +119,7 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Поиск: порт, ферма, consus…"
+            placeholder={t('ipk.searchPlaceholder')}
             style={{ ...inputStyle, flex: '1 1 220px' }}
           />
           <div style={{ display: 'flex', gap: 4 }}>
@@ -128,7 +130,7 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
                 onClick={() => setLocation(value)}
                 style={{ ...chipStyle, ...(location === value ? chipActive : {}) }}
               >
-                {value === 'any' ? 'всё' : value === 'orbital' ? 'орбита' : 'поверхность'}
+                {value === 'any' ? t('ipk.filterAll') : value === 'orbital' ? t('ipk.filterOrbital') : t('ipk.filterSurface')}
               </button>
             ))}
           </div>
@@ -140,7 +142,7 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
                 onClick={() => setTier(value)}
                 style={{ ...chipStyle, ...(tier === value ? chipActive : {}) }}
               >
-                {TIER_LABELS[value]}
+                {t(TIER_LABELS[value])}
               </button>
             ))}
           </div>
@@ -148,7 +150,7 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
 
         <div style={{ overflowY: 'auto', padding: '8px 12px 16px' }}>
           {rows.length === 0 && (
-            <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13 }}>Ничего не найдено.</div>
+            <div style={{ padding: 20, color: 'var(--muted)', fontSize: 13 }}>{t('ipk.nothingFound')}</div>
           )}
           {rows.map(({ installation, check }) => (
             <PickerRow
@@ -182,6 +184,7 @@ function PickerRow({
   onToggle: () => void;
   onPick: () => void;
 }) {
+  const { t } = useI18n();
   const preReq = installation.preReq ? PRE_REQS[installation.preReq] : null;
   const links = installationLinks(installation.id);
   const market = ECONOMY_MARKET[installation.influence];
@@ -198,7 +201,7 @@ function PickerRow({
         <button
           type="button"
           onClick={onToggle}
-          aria-label="Подробности"
+          aria-label={t('ipk.detailsAria')}
           style={{ ...buttonStyle, padding: '2px 8px' }}
         >
           {expanded ? '−' : '+'}
@@ -212,23 +215,23 @@ function PickerRow({
                 title={primary.note}
                 style={{ marginLeft: 6, fontSize: 11, color: 'var(--orange)', border: '1px solid var(--orange)', borderRadius: 3, padding: '0 5px' }}
               >
-                ★ может быть основным портом
+                {t('ipk.canBePrimary')}
               </span>
             ) : null}
           </div>
           <div style={{ color: 'var(--muted)', fontSize: 11 }}>
             {BUILD_CLASS_LABELS_RU[installation.buildClass]} · T{installation.tier}
-            {installation.pad !== 'none' ? ` · площадка ${PAD_LABELS_RU[installation.pad]}` : ''}
-            {installation.needs.count > 0 ? ` · нужно ${installation.needs.count} очк. T${installation.needs.tier}` : ''}
-            {installation.gives.count > 0 ? ` · даёт ${installation.gives.count} очк. T${installation.gives.tier}` : ''}
-            {preReq ? ` · нужен: ${preReq.label}` : ''}
-            {installation.influence !== 'none' ? ` · экономика: ${ECONOMY_LABELS_RU[installation.influence]}` : ''}
+            {installation.pad !== 'none' ? t('ipk.pad', { pad: PAD_LABELS_RU[installation.pad] }) : ''}
+            {installation.needs.count > 0 ? t('ipk.needs', { count: installation.needs.count, tier: installation.needs.tier }) : ''}
+            {installation.gives.count > 0 ? t('ipk.gives', { count: installation.gives.count, tier: installation.gives.tier }) : ''}
+            {preReq ? t('ipk.preReq', { label: preReq.label }) : ''}
+            {installation.influence !== 'none' ? t('ipk.economy', { label: ECONOMY_LABELS_RU[installation.influence] }) : ''}
           </div>
         </div>
         <div style={{ textAlign: 'right', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
           {formatTons(installation.haulTons)}
-          {primary ? <div style={{ fontSize: 11, color: 'var(--orange)' }}>основной: {primary.approximate ? '≈ ' : ''}{formatTons(primaryTons)}</div> : null}
-          <div style={{ fontSize: 11 }}>оценка +{installation.score}</div>
+          {primary ? <div style={{ fontSize: 11, color: 'var(--orange)' }}>{t('ipk.primary', { value: `${primary.approximate ? '≈ ' : ''}${formatTons(primaryTons)}` })}</div> : null}
+          <div style={{ fontSize: 11 }}>{t('ipk.score', { score: installation.score })}</div>
         </div>
         <button
           type="button"
@@ -241,7 +244,7 @@ function PickerRow({
               : { borderColor: 'var(--orange)', color: 'var(--orange)' }),
           }}
         >
-          В план
+          {t('ipk.addToPlan')}
         </button>
       </div>
       {errors.length > 0 && (
@@ -257,32 +260,32 @@ function PickerRow({
       {expanded && (
         <div style={{ padding: '0 10px 10px' }}>
           <div style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 6 }}>
-            {installation.nameEn} · {installation.group} · расположение: {installation.location === 'surface' ? 'поверхность' : 'орбита'}
+            {t('ipk.locationLine', { name: installation.nameEn, group: installation.group, location: installation.location === 'surface' ? t('ipk.surface') : t('ipk.orbital') })}
           </div>
 
           {(links.requires.length > 0 || links.enables.length > 0 || links.requiredBy.length > 0 || market.produces.length > 0) && (
             <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
               {links.requires.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  нужен предшественник: <span style={{ color: 'var(--text)' }}>{links.requires.map((req) => req.label).join(' / ')}</span>
+                  {t('ipk.requiresPredecessor')} <span style={{ color: 'var(--text)' }}>{links.requires.map((req) => req.label).join(' / ')}</span>
                 </div>
               )}
               {links.enables.length > 0 && (
-                <div style={{ color: 'var(--cyan)' }}>открывает: {links.enables.map((enable) => enable.label).join('; ')}</div>
+                <div style={{ color: 'var(--cyan)' }}>{t('ipk.enables')} {links.enables.map((enable) => enable.label).join('; ')}</div>
               )}
               {links.requiredBy.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  нужна для: <span style={{ color: 'var(--text)' }}>{links.requiredBy.map((ref) => ref.nameRu).join(', ')}</span>
+                  {t('ipk.requiredFor')} <span style={{ color: 'var(--text)' }}>{links.requiredBy.map((ref) => ref.nameRu).join(', ')}</span>
                 </div>
               )}
               {market.produces.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  <span style={{ color: 'var(--green)' }}>рынок продаёт:</span> {market.produces.join(', ')}
+                  <span style={{ color: 'var(--green)' }}>{t('ipk.marketSells')}</span> {market.produces.join(', ')}
                 </div>
               )}
               {market.imports.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  <span style={{ color: 'var(--cyan)' }}>рынок ввозит:</span> {market.imports.join(', ')}
+                  <span style={{ color: 'var(--cyan)' }}>{t('ipk.marketImports')}</span> {market.imports.join(', ')}
                 </div>
               )}
             </div>
@@ -298,7 +301,7 @@ function PickerRow({
           {primary && (
             <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
               <div style={{ fontSize: 11, color: 'var(--orange)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
-                Материалы основного порта {primary.approximate ? '(оценка)' : ''} — {formatTons(primaryTons)}
+                {t('ipk.primaryMaterials', { estimate: primary.approximate ? t('ipk.estimate') : '', tons: formatTons(primaryTons) })}
               </div>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>{primary.note}</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '2px 16px', fontSize: 12 }}>

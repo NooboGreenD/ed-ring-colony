@@ -7,8 +7,8 @@ import {
   STATION_PAGE_SIZE, stationAtlasLink,
   type StationMatchedItem, type StationSearchKind, type StationSearchStation, type StationSearchStationsResponse,
 } from '@/lib/stationSearch';
-import { ruPlural } from '@/lib/stationSearchOptions';
 import { systemPageHref } from '@/lib/systemIdentity';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * Результаты поиска станций списком: строка — станция, по нажатию строка
@@ -17,16 +17,22 @@ import { systemPageHref } from '@/lib/systemIdentity';
  * получены, а также ссылки на карточку системы и Атлас.
  */
 
+type TFunc = (key: string, params?: Record<string, string | number>) => string;
+
 export const STATION_TAB_TITLES: Record<StationSearchKind, string> = {
-  market: 'Товары', outfitting: 'Модули', shipyard: 'Корабли', services: 'Услуги',
+  market: 'stn.tab.market', outfitting: 'stn.tab.outfitting', shipyard: 'stn.tab.shipyard', services: 'stn.tab.services',
 };
 
 const SOURCES: Record<string, string> = { 'colonial-helper': 'Colonial Helper', edsm: 'EDSM', spansh: 'Spansh', eddn: 'EDDN' };
 
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-const number = (value: unknown, suffix = '') => finite(value) ? `${value.toLocaleString('ru-RU')}${suffix}` : '—';
-const credits = (value: unknown) => number(value, ' CR');
-const distance = (value: unknown) => finite(value) ? `${value.toLocaleString('ru-RU', { maximumFractionDigits: value < 100 ? 2 : 1 })} св. л.` : '—';
+const num = (locale: string, value: unknown) => (finite(value) ? value.toLocaleString(locale) : '—');
+const credits = (locale: string, value: unknown) => (finite(value) ? `${value.toLocaleString(locale)} CR` : '—');
+const tons = (t: TFunc, locale: string, value: unknown) => (finite(value) ? t('stn.tons', { count: value.toLocaleString(locale) }) : '—');
+const lightSeconds = (t: TFunc, locale: string, value: unknown) => (finite(value) ? t('stn.lightSeconds', { count: value.toLocaleString(locale) }) : '—');
+const distance = (t: TFunc, locale: string, value: unknown) => (finite(value)
+  ? t('stn.lightYears', { count: value.toLocaleString(locale, { maximumFractionDigits: value < 100 ? 2 : 1 }) })
+  : '—');
 
 function observedAt(value: string): Date | null {
   const at = Date.parse(value);
@@ -34,57 +40,53 @@ function observedAt(value: string): Date | null {
   return Number.isFinite(at) && at > Date.UTC(2014, 0, 1) ? new Date(at) : null;
 }
 
-export function observedAgo(value: string, now = Date.now()): string {
+export function observedAgo(t: TFunc, value: string, now = Date.now()): string {
   const at = observedAt(value);
-  if (!at) return 'время неизвестно';
+  if (!at) return t('stn.timeUnknown');
   const minutes = Math.max(0, Math.round((now - at.getTime()) / 60_000));
-  if (minutes < 1) return 'только что';
-  if (minutes < 60) return `${minutes} мин назад`;
+  if (minutes < 1) return t('stn.justNow');
+  if (minutes < 60) return t('stn.minutesAgo', { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} ч назад`;
+  if (hours < 24) return t('stn.hoursAgo', { count: hours });
   const days = Math.round(hours / 24);
-  if (days < 31) return `${days} ${ruPlural(days, ['день', 'дня', 'дней'])} назад`;
+  if (days < 31) return t('stn.daysAgo', { count: days });
   const months = Math.round(days / 30);
-  if (months < 12) return `${months} мес. назад`;
+  if (months < 12) return t('stn.monthsAgo', { count: months });
   const years = Math.round(days / 365);
-  return `${years} ${ruPlural(years, ['год', 'года', 'лет'])} назад`;
+  return t('stn.yearsAgo', { count: years });
 }
 
-function observedLabel(value: string): string {
+function observedLabel(t: TFunc, locale: string, value: string): string {
   const at = observedAt(value);
-  return at ? at.toLocaleString('ru-RU') : 'Время наблюдения неизвестно';
+  return at ? at.toLocaleString(locale) : t('stn.observedUnknown');
 }
-
-const ITEM_FORMS: Record<StationSearchKind, [string, string, string]> = {
-  market: ['товар', 'товара', 'товаров'],
-  outfitting: ['модуль', 'модуля', 'модулей'],
-  shipyard: ['корабль', 'корабля', 'кораблей'],
-  services: ['услуга', 'услуги', 'услуг'],
-};
 
 function itemPrice(kind: StationSearchKind, item: StationMatchedItem): number | undefined {
   return kind === 'market' ? item.buyPrice : item.price ?? item.buyPrice;
 }
 
 /** Что видно в свёрнутой строке. */
-function stationSummary(kind: StationSearchKind, station: StationSearchStation, picked: boolean): string {
+function stationSummary(t: TFunc, locale: string, kind: StationSearchKind, station: StationSearchStation, picked: boolean): string {
   const first = station.items[0];
   const count = station.item_count;
   if (kind === 'services') {
     const names = station.items.map((item) => item.display);
-    return names.length > 2 ? `${names.slice(0, 2).join(', ')} и ещё ${count - 2}` : names.join(', ');
+    return names.length > 2
+      ? t('stn.servicesMore', { first: names.slice(0, 2).join(', '), count: count - 2 })
+      : names.join(', ');
   }
   if (count === 1 && first) {
     const price = itemPrice(kind, first);
-    const parts = [picked ? '' : first.display, finite(price) ? credits(price) : '',
-      kind === 'market' && finite(first.stock) ? `запас ${number(first.stock, ' т')}` : ''].filter(Boolean);
+    const parts = [picked ? '' : first.display, finite(price) ? credits(locale, price) : '',
+      kind === 'market' && finite(first.stock) ? t('stn.stockTons', { count: first.stock.toLocaleString(locale) }) : ''].filter(Boolean);
     return parts.join(' · ') || first.display;
   }
-  const best = finite(station.best_price) ? ` · от ${credits(station.best_price)}` : '';
-  return `${count} ${ruPlural(count, ITEM_FORMS[kind])}${best}`;
+  const best = finite(station.best_price) ? ` · ${t('stn.fromPrice', { price: credits(locale, station.best_price) })}` : '';
+  return `${t('stn.rowItems', { count: count.toLocaleString(locale) })}${best}`;
 }
 
 function ItemsTable({ kind, station }: { kind: StationSearchKind; station: StationSearchStation }) {
+  const { t, locale } = useI18n();
   if (kind === 'services') {
     return (
       <ul className="station-row-services">
@@ -94,7 +96,7 @@ function ItemsTable({ kind, station }: { kind: StationSearchKind; station: Stati
       </ul>
     );
   }
-  const title = kind === 'market' ? 'Товар' : kind === 'outfitting' ? 'Модуль' : 'Корабль';
+  const title = t(kind === 'market' ? 'stn.colMarket' : kind === 'outfitting' ? 'stn.colOutfitting' : 'stn.colShipyard');
   return (
     <div className="station-items-scroll">
       <table className={`station-items station-items-${kind}`}>
@@ -102,8 +104,8 @@ function ItemsTable({ kind, station }: { kind: StationSearchKind; station: Stati
           <tr>
             <th scope="col">{title}</th>
             {kind === 'market' ? <>
-              <th scope="col">Покупка</th><th scope="col">Продажа</th><th scope="col">Запас</th><th scope="col">Спрос</th>
-            </> : <th scope="col">Цена</th>}
+              <th scope="col">{t('stn.colBuy')}</th><th scope="col">{t('stn.colSell')}</th><th scope="col">{t('stn.colStock')}</th><th scope="col">{t('stn.colDemand')}</th>
+            </> : <th scope="col">{t('stn.colPrice')}</th>}
           </tr>
         </thead>
         <tbody>
@@ -114,11 +116,11 @@ function ItemsTable({ kind, station }: { kind: StationSearchKind; station: Stati
                 {item.hint && <span className="station-items-hint">{item.hint}</span>}
               </th>
               {kind === 'market' ? <>
-                <td>{credits(item.buyPrice)}</td>
-                <td>{credits(item.sellPrice)}</td>
-                <td>{number(item.stock, ' т')}</td>
-                <td>{number(item.demand, ' т')}</td>
-              </> : <td>{credits(itemPrice(kind, item))}</td>}
+                <td>{credits(locale, item.buyPrice)}</td>
+                <td>{credits(locale, item.sellPrice)}</td>
+                <td>{tons(t, locale, item.stock)}</td>
+                <td>{tons(t, locale, item.demand)}</td>
+              </> : <td>{credits(locale, itemPrice(kind, item))}</td>}
             </tr>
           ))}
         </tbody>
@@ -130,6 +132,7 @@ function ItemsTable({ kind, station }: { kind: StationSearchKind; station: Stati
 function StationRow({ kind, station, index, open, picked, onToggle }: {
   kind: StationSearchKind; station: StationSearchStation; index: number; open: boolean; picked: boolean; onToggle: () => void;
 }) {
+  const { t, locale } = useI18n();
   const panelId = `station-row-panel-${index}`;
   const atlas = stationAtlasLink(station);
   const more = station.item_count - station.items.length;
@@ -140,36 +143,36 @@ function StationRow({ kind, station, index, open, picked, onToggle }: {
         <IconChevronRight size={14} className="station-row-chevron" />
         <span className="station-row-name">
           <strong>{station.station_name}</strong>
-          <span className="station-row-type">{station.station_type || 'Тип неизвестен'}</span>
+          <span className="station-row-type">{station.station_type || t('stn.typeUnknown')}</span>
         </span>
         <span className="station-row-system">{station.system_name}</span>
-        <span className="station-row-distance">{distance(station.distance)}</span>
-        <span className="station-row-summary">{stationSummary(kind, station, picked)}</span>
-        <span className={`station-row-age${station.stale ? ' stale' : ''}`} title={`${SOURCES[station.source] || station.source} · ${observedLabel(station.observed_at)}`}>
-          <span className="station-row-dot" aria-hidden="true" />{observedAgo(station.observed_at)}
+        <span className="station-row-distance">{distance(t, locale, station.distance)}</span>
+        <span className="station-row-summary">{stationSummary(t, locale, kind, station, picked)}</span>
+        <span className={`station-row-age${station.stale ? ' stale' : ''}`} title={`${SOURCES[station.source] || station.source} · ${observedLabel(t, locale, station.observed_at)}`}>
+          <span className="station-row-dot" aria-hidden="true" />{observedAgo(t, station.observed_at)}
         </span>
       </button>
       {open && (
-        <div id={panelId} className="station-row-panel" role="region" aria-label={`${station.station_name}: что найдено`}>
+        <div id={panelId} className="station-row-panel" role="region" aria-label={t('stn.rowPanelAria', { name: station.station_name })}>
           <ItemsTable kind={kind} station={station} />
-          {more > 0 && <p className="station-row-more">И ещё {more} {ruPlural(more, ITEM_FORMS[kind])} — уточните запрос, класс или рейтинг.</p>}
+          {more > 0 && <p className="station-row-more">{t('stn.moreItems', { count: more.toLocaleString(locale) })}</p>}
           <dl className="station-row-facts">
-            <div><dt>Система</dt><dd><Link href={systemPageHref(station.system_name)} title="Всё о системе: стройки, фракции, PowerPlay, станции, авианосцы">{station.system_name}</Link></dd></div>
-            <div><dt>Тип станции</dt><dd>{station.station_type || 'Нет данных'}</dd></div>
-            {metadata.body_name && <div><dt>Тело</dt><dd>{metadata.body_name}</dd></div>}
-            <div><dt>От точки прибытия</dt><dd>{number(metadata.distance_to_arrival, ' св. с.')}</dd></div>
-            <div><dt>От опорной системы</dt><dd>{distance(station.distance)}</dd></div>
-            {metadata.engineers?.length ? <div><dt>Инженеры</dt><dd>{metadata.engineers.join(', ')}</dd></div> : null}
+            <div><dt>{t('stn.dtSystem')}</dt><dd><Link href={systemPageHref(station.system_name)} title={t('stn.systemLinkTitle')}>{station.system_name}</Link></dd></div>
+            <div><dt>{t('stn.dtStationType')}</dt><dd>{station.station_type || t('stn.noData')}</dd></div>
+            {metadata.body_name && <div><dt>{t('stn.dtBody')}</dt><dd>{metadata.body_name}</dd></div>}
+            <div><dt>{t('stn.dtArrival')}</dt><dd>{lightSeconds(t, locale, metadata.distance_to_arrival)}</dd></div>
+            <div><dt>{t('stn.dtReference')}</dt><dd>{distance(t, locale, station.distance)}</dd></div>
+            {metadata.engineers?.length ? <div><dt>{t('stn.dtEngineers')}</dt><dd>{metadata.engineers.join(', ')}</dd></div> : null}
           </dl>
           <p className="station-report-time">
-            {SOURCES[station.source] || station.source} · {observedLabel(station.observed_at)}
-            {station.stale && <span className="station-row-stale"> · отчёт старше часа — наличие и цены могли измениться</span>}
+            {SOURCES[station.source] || station.source} · {observedLabel(t, locale, station.observed_at)}
+            {station.stale && <span className="station-row-stale">{t('stn.staleNote')}</span>}
           </p>
           <div className="station-row-actions">
-            <Link href={systemPageHref(station.system_name)} className="btn">Карточка системы</Link>
+            <Link href={systemPageHref(station.system_name)} className="btn">{t('stn.systemCard')}</Link>
             {atlas
-              ? <Link href={atlas} target="_blank" rel="noopener noreferrer" className="btn" title="Открыть систему в новой вкладке Атласа"><IconMap size={14} /> Показать систему в Атласе</Link>
-              : <button type="button" className="btn" disabled title="В БД нет координат системы">Координаты системы неизвестны</button>}
+              ? <Link href={atlas} target="_blank" rel="noopener noreferrer" className="btn" title={t('stn.atlasOpenTitle')}><IconMap size={14} /> {t('stn.atlasOpen')}</Link>
+              : <button type="button" className="btn" disabled title={t('stn.noCoordsTitle')}>{t('stn.noCoords')}</button>}
           </div>
         </div>
       )}
@@ -184,6 +187,7 @@ interface Props {
 }
 
 export function StationResultsList({ data, loading, onPage }: Props) {
+  const { t, locale } = useI18n();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   // Новая выдача — всё свёрнуто; единственная станция раскрыта сразу.
   useEffect(() => {
@@ -198,46 +202,46 @@ export function StationResultsList({ data, loading, onPage }: Props) {
   const allOpen = data.stations.length > 0 && data.stations.every((station) => expanded.has(station.station_key));
   const pages = data.total != null ? Math.max(1, Math.ceil(data.total / STATION_PAGE_SIZE)) : null;
   const found = data.total != null
-    ? `Найдено ${data.total.toLocaleString('ru-RU')} ${ruPlural(data.total, ['станция', 'станции', 'станций'])}`
-    : `На странице ${data.stations.length} ${ruPlural(data.stations.length, ['станция', 'станции', 'станций'])}`;
+    ? t('stn.found', { count: data.total.toLocaleString(locale) })
+    : t('stn.onPage', { count: data.stations.length.toLocaleString(locale) });
 
   return (
     <>
       <div className="station-results-heading">
-        <h2>{STATION_TAB_TITLES[data.kind]}: {data.query}</h2>
+        <h2>{t(STATION_TAB_TITLES[data.kind])}: {data.query}</h2>
         <div className="station-results-meta">
           <span className="atlas-muted">
-            {found}{pages ? ` · страница ${data.page + 1} из ${pages}` : ` · страница ${data.page + 1}`}
-            {data.reference ? ` · от ${data.reference.name}` : ''}
+            {found}{pages ? t('stn.pageOf', { page: data.page + 1, pages }) : t('stn.pageOnly', { page: data.page + 1 })}
+            {data.reference ? t('stn.fromReference', { name: data.reference.name }) : ''}
           </span>
           {data.stations.length > 1 && (
             <button type="button" className="station-expand-all" onClick={() =>
               setExpanded(allOpen ? new Set() : new Set(data.stations.map((station) => station.station_key)))}>
-              {allOpen ? 'Свернуть все' : 'Развернуть все'}
+              {allOpen ? t('stn.collapseAll') : t('stn.expandAll')}
             </button>
           )}
         </div>
       </div>
       {data.pick && (
-        <p className="station-results-exact"><IconStar size={12} /> Точное совпадение с выбранным из списка: «{data.pick.label}».</p>
+        <p className="station-results-exact"><IconStar size={12} /> {t('stn.pickExact', { label: data.pick.label })}</p>
       )}
       {data.grouping === 'page' && (
-        <p className="station-results-exact">База ещё без миграции поиска списком — станции собраны из одной страницы наблюдений, общее число неизвестно.</p>
+        <p className="station-results-exact">{t('stn.pageGrouping')}</p>
       )}
       {!data.stations.length && (
         <div className="station-search-empty">
-          <h2>Нет подходящих наблюдений в БД</h2>
-          <p>Попробуйте другой запрос, больший радиус или отключите фильтр свежести. Отсутствие отчёта не означает, что услуга или товар отсутствуют в игре.</p>
-          <Link href="/atlas?tab=market">Для товаров — расширенный поиск в Атласе →</Link>
+          <h2>{t('stn.emptyTitle')}</h2>
+          <p>{t('stn.emptyBody')}</p>
+          <Link href="/atlas?tab=market">{t('stn.emptyLink')}</Link>
         </div>
       )}
       {data.stations.length > 0 && (
         <div className="station-list-wrap">
           <div className="station-list-columns" aria-hidden="true">
             <span />
-            <span>Станция</span><span>Система</span><span>Расстояние</span><span>Найдено</span><span>Обновлено</span>
+            <span>{t('stn.colStation')}</span><span>{t('stn.colSystem')}</span><span>{t('stn.colDistance')}</span><span>{t('stn.colFound')}</span><span>{t('stn.colUpdated')}</span>
           </div>
-          <ul className="station-list" aria-label="Найденные станции">
+          <ul className="station-list" aria-label={t('stn.listAria')}>
             {data.stations.map((station, index) => (
               <StationRow key={station.station_key} kind={data.kind} station={station} index={index}
                 open={expanded.has(station.station_key)} picked={!!data.pick} onToggle={() => toggle(station.station_key)} />
@@ -246,10 +250,10 @@ export function StationResultsList({ data, loading, onPage }: Props) {
         </div>
       )}
       {(data.page > 0 || data.has_more) && (
-        <nav className="station-search-pagination" aria-label="Страницы результатов">
-          <button type="button" className="btn" disabled={loading || data.page === 0} onClick={() => onPage(data.page - 1)}>← Назад</button>
-          <span>Страница {data.page + 1}{pages ? ` из ${pages}` : ''}</span>
-          <button type="button" className="btn" disabled={loading || !data.has_more || data.page >= 100} onClick={() => onPage(data.page + 1)}>Далее →</button>
+        <nav className="station-search-pagination" aria-label={t('stn.paginationAria')}>
+          <button type="button" className="btn" disabled={loading || data.page === 0} onClick={() => onPage(data.page - 1)}>{t('stn.prev')}</button>
+          <span>{t('stn.pageLabel', { page: data.page + 1 })}{pages ? t('stn.pageLabelOf', { pages }) : ''}</span>
+          <button type="button" className="btn" disabled={loading || !data.has_more || data.page >= 100} onClick={() => onPage(data.page + 1)}>{t('stn.next')}</button>
         </nav>
       )}
     </>

@@ -20,10 +20,12 @@ import type {
   PlannedSiteStatus,
 } from '@/lib/architect/types';
 import { cardStyle, chipActive, chipStyle, mutedText, tdStyle, thStyle } from '@/components/Architect/panelStyles';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 type SortKey = 'order' | 'name' | 'body' | 'tier' | 'tons' | 'status';
 
-const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'план', building: 'строится', complete: 'готово' };
+const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'stbl.stPlan', building: 'stbl.stBuilding', complete: 'stbl.stComplete' };
+const SORT_LABELS: Record<SortKey, string> = { order: 'stbl.sortOrder', name: 'stbl.sortName', body: 'stbl.sortBody', tier: 'stbl.sortTier', tons: 'stbl.sortTons', status: 'stbl.sortStatus' };
 const STATUS_TONES: Record<PlannedSiteStatus, string> = { plan: 'var(--muted)', building: 'var(--cyan)', complete: 'var(--green)' };
 const STATUS_ORDER: PlannedSiteStatus[] = ['plan', 'building', 'complete'];
 
@@ -51,6 +53,7 @@ export default function SiteTable({
   onCycle,
   onTogglePrimary,
 }: SiteTableProps) {
+  const { t } = useI18n();
   const [sort, setSort] = useState<SortKey>('order');
   const [query, setQuery] = useState('');
 
@@ -99,7 +102,7 @@ export default function SiteTable({
   if (plan.sites.length === 0) {
     return (
       <section style={cardStyle}>
-        <div style={mutedText}>План пуст: добавьте постройки на карточках тел или перенесите существующую застройку.</div>
+        <div style={mutedText}>{t('stbl.empty')}</div>
       </section>
     );
   }
@@ -110,8 +113,8 @@ export default function SiteTable({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Поиск по постройкам, телам, заметкам"
-          aria-label="Поиск по плану"
+          placeholder={t('stbl.searchPlaceholder')}
+          aria-label={t('stbl.searchAria')}
           style={{
             flex: '1 1 220px', margin: 0, background: 'var(--bg)', border: '1px solid var(--line)',
             color: 'var(--text)', padding: '7px 10px', borderRadius: 3, fontSize: 13,
@@ -124,11 +127,7 @@ export default function SiteTable({
             onClick={() => setSort(key)}
             style={{ ...chipStyle, ...(sort === key ? chipActive : {}) }}
           >
-            {key === 'order' ? 'по порядку'
-              : key === 'name' ? 'по названию'
-                : key === 'body' ? 'по телу'
-                  : key === 'tier' ? 'по тиру'
-                    : key === 'tons' ? 'по тоннажу' : 'по статусу'}
+            {t(SORT_LABELS[key])}
           </button>
         ))}
       </div>
@@ -138,13 +137,13 @@ export default function SiteTable({
           <thead>
             <tr>
               <th style={{ ...thStyle, width: 34 }}>#</th>
-              <th style={thStyle}>постройка</th>
-              <th style={thStyle}>тело</th>
-              <th style={{ ...thStyle, width: 74 }}>место</th>
-              <th style={{ ...thStyle, width: 96 }}>очки</th>
-              <th style={{ ...thStyle, width: 90 }}>тоннаж</th>
-              <th style={{ ...thStyle, width: 96 }}>факт</th>
-              <th style={{ ...thStyle, width: 200 }}>действия</th>
+              <th style={thStyle}>{t('stbl.thBuild')}</th>
+              <th style={thStyle}>{t('stbl.thBody')}</th>
+              <th style={{ ...thStyle, width: 74 }}>{t('stbl.thPlace')}</th>
+              <th style={{ ...thStyle, width: 96 }}>{t('stbl.thPoints')}</th>
+              <th style={{ ...thStyle, width: 90 }}>{t('stbl.thTons')}</th>
+              <th style={{ ...thStyle, width: 96 }}>{t('stbl.thActual')}</th>
+              <th style={{ ...thStyle, width: 200 }}>{t('stbl.thActions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -169,7 +168,7 @@ export default function SiteTable({
                         color: 'var(--text)', fontSize: 12, textAlign: 'left',
                       }}
                     >
-                      {site.primary && <span style={{ color: 'var(--orange)' }} title="Основной порт">★ </span>}
+                      {site.primary && <span style={{ color: 'var(--orange)' }} title={t('stbl.primaryPort')}>★ </span>}
                       {installation?.nameRu ?? site.installationId}
                     </button>
                     <div style={{ fontSize: 10, color: 'var(--muted)' }}>
@@ -179,20 +178,20 @@ export default function SiteTable({
                   </td>
                   <td style={tdStyle}>
                     <span style={{ color: unknownBody ? 'var(--orange)' : 'var(--text)' }}>
-                      {site.bodyName || <span style={{ color: 'var(--red)' }}>тело не задано</span>}
+                      {site.bodyName || <span style={{ color: 'var(--red)' }}>{t('stbl.noBody')}</span>}
                     </span>
                     {unknownBody && (
-                      <div style={{ fontSize: 10, color: 'var(--orange)' }} title="Тела нет в загруженных данных системы">
-                        вне каталога тел
+                      <div style={{ fontSize: 10, color: 'var(--orange)' }} title={t('stbl.outsideTitle')}>
+                        {t('stbl.outsideCatalogue')}
                       </div>
                     )}
                   </td>
                   <td style={{ ...tdStyle, color: 'var(--muted)' }}>
-                    {installation?.location === 'surface' ? 'поверхн.' : 'орбита'}
+                    {installation?.location === 'surface' ? t('stbl.surface') : t('stbl.orbit')}
                   </td>
                   <td style={{ ...tdStyle, color: 'var(--muted)', fontFamily: 'ui-monospace, monospace' }}>
                     {site.primary
-                      ? <span style={{ color: 'var(--green)' }}>0 (осн.)</span>
+                      ? <span style={{ color: 'var(--green)' }}>{t('stbl.primaryZero')}</span>
                       : installation && installation.needs.count > 0
                         ? `−${installation.needs.count} T${installation.needs.tier}`
                         : '—'}
@@ -225,19 +224,19 @@ export default function SiteTable({
                         onClick={() => onCycle(site.id, STATUS_ORDER[(STATUS_ORDER.indexOf(site.status) + 1) % STATUS_ORDER.length])}
                         style={{ ...miniButton, color: STATUS_TONES[site.status], borderColor: STATUS_TONES[site.status] }}
                       >
-                        {STATUS_LABELS[site.status]}
+                        {t(STATUS_LABELS[site.status])}
                       </button>
                       {installation?.primary && (
                         <button
                           type="button"
                           onClick={() => onTogglePrimary(site.id)}
                           style={{ ...miniButton, ...(site.primary ? { color: 'var(--orange)', borderColor: 'var(--orange)' } : {}) }}
-                          title="Основной порт системы"
+                          title={t('stbl.primaryPortSys')}
                         >
                           {site.primary ? '★' : '☆'}
                         </button>
                       )}
-                      <button type="button" onClick={() => onEdit(site.id)} style={miniButton}>изменить</button>
+                      <button type="button" onClick={() => onEdit(site.id)} style={miniButton}>{t('stbl.edit')}</button>
                       <button type="button" onClick={() => onRemove(site.id)} style={{ ...miniButton, color: 'var(--red)' }}>×</button>
                     </div>
                   </td>
@@ -249,7 +248,7 @@ export default function SiteTable({
             <tr>
               <td style={{ ...tdStyle, borderBottom: 'none' }} />
               <td style={{ ...tdStyle, borderBottom: 'none', color: 'var(--muted)' }} colSpan={4}>
-                построек: {totals.sites}
+                {t('stbl.sitesCount', { count: totals.sites })}
               </td>
               <td style={{ ...tdStyle, borderBottom: 'none', fontFamily: 'ui-monospace, monospace', color: 'var(--green)' }}>
                 {formatTons(totals.tons)}

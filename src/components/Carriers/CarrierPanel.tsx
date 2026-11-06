@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { authFetch } from "@/lib/supabaseClient";
 import type { CarrierView } from "@/lib/fleetCarriers";
 import CarrierCard from "./CarrierCard";
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * Панель авианосцев.
@@ -29,6 +30,7 @@ const EMPTY: State = { own: null, squadron: [], squadronId: null, canManage: fal
 const REFRESH_MS = 60_000;
 
 function BindForm({ kind, squadronId, onDone }: { kind: "personal" | "squadron"; squadronId?: number | null; onDone: () => void }) {
+  const { t } = useI18n();
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -59,11 +61,11 @@ function BindForm({ kind, squadronId, onDone }: { kind: "personal" | "squadron";
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
-          placeholder={kind === "squadron" ? "Carrier ID (3700…) или позывной Javelin — тег эскадрильи (ABCD)" : "Carrier ID (3700…) или позывной ABC-123"}
+          placeholder={kind === "squadron" ? t('cpnl.phSquadron') : t('cpnl.phPersonal')}
           style={{ flex: "1 1 240px", background: "#141618", border: "1px solid #323538", color: "#eeeeee", padding: "8px 10px", borderRadius: 4, fontSize: 13 }}
         />
         <button className="btn btn-cyan" style={{ padding: "8px 14px", fontSize: 11 }} disabled={busy || !value.trim()} onClick={() => void submit()}>
-          {busy ? "Привязка…" : "Привязать"}
+          {busy ? t('cpnl.binding') : t('cpnl.bind')}
         </button>
       </div>
       {error && <div style={{ color: "#e74c3c", fontSize: 12, marginTop: 6 }}>{error}</div>}
@@ -72,6 +74,7 @@ function BindForm({ kind, squadronId, onDone }: { kind: "personal" | "squadron";
 }
 
 export default function CarrierPanel(props: Props) {
+  const { t } = useI18n();
   const [state, setState] = useState<State>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -102,8 +105,8 @@ export default function CarrierPanel(props: Props) {
 
   const unbind = async (carrier: CarrierView, kind: "personal" | "squadron") => {
     const question = kind === "personal"
-      ? `Отвязать «${carrier.name || carrier.callsign || carrier.carrierId}» от профиля? Учёт груза сохранится.`
-      : `Отвязать «${carrier.name || carrier.callsign || carrier.carrierId}» от эскадрильи? Журналы участников больше не привяжут его к ней сами — вернуть можно только вручную.`;
+      ? t('cpnl.confirmPersonal', { name: carrier.name || carrier.callsign || carrier.carrierId })
+      : t('cpnl.confirmSquadron', { name: carrier.name || carrier.callsign || carrier.carrierId });
     if (!window.confirm(question)) return;
     const response = await authFetch("/api/carriers/bind", {
       method: "DELETE",
@@ -122,26 +125,24 @@ export default function CarrierPanel(props: Props) {
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <p style={{ margin: 0, fontSize: 12, color: "#9ca3af", maxWidth: 720 }}>
-          Учёт ведёт сайт проекта по журналам (Colonial Helper в реальном времени или загрузка журналов). Оверлей Helper'а
-          берёт эти данные отсюда и не зависит от доступности Raven Colonial.
+          {t('cpnl.intro')}
         </p>
         <button className="btn btn-cyan" style={smallButton} onClick={() => { setLoading(true); void load(); }} disabled={loading}>
-          {loading ? "Обновление…" : "Обновить"}
+          {loading ? t('cpnl.updating') : t('cpnl.refresh')}
         </button>
       </div>
       {error && <div style={{ color: "#e74c3c", fontSize: 13 }}>{error}</div>}
 
       {props.mode === "account" && (
         <div>
-          <h3 style={{ ...heading, color: "#3498db" }}>Мой авианосец</h3>
+          <h3 style={{ ...heading, color: "#3498db" }}>{t('cpnl.myCarrier')}</h3>
           {state.own ? (
             <CarrierCard carrier={state.own} actions={
-              <button className="btn btn-danger" style={smallButton} onClick={() => void unbind(state.own!, "personal")}>Отвязать</button>
+              <button className="btn btn-danger" style={smallButton} onClick={() => void unbind(state.own!, "personal")}>{t('cpnl.unbind')}</button>
             } />
           ) : !loading && (
             <div style={{ border: "1px dashed #323538", borderRadius: 8, padding: 16, color: "#9ca3af", fontSize: 13 }}>
-              Авианосец ещё не привязан. Он привяжется сам, когда Colonial Helper (или загрузка журналов) увидит
-              CarrierStats — откройте в игре управление носителем. Если журналы сброшены, укажите носитель вручную:
+              {t('cpnl.notBound')}
               <BindForm kind="personal" onDone={() => void load()} />
             </div>
           )}
@@ -150,25 +151,25 @@ export default function CarrierPanel(props: Props) {
 
       {(props.mode === "squadron" || state.isMember) && (
         <div>
-          <h3 style={{ ...heading, color: "#e67e22" }}>{props.mode === "account" ? "Авианосцы эскадрильи" : "Эскадренный авианосец"}</h3>
+          <h3 style={{ ...heading, color: "#e67e22" }}>{props.mode === "account" ? t('cpnl.squadronCarriers') : t('cpnl.squadronCarrier')}</h3>
           {state.squadron.length > 0 ? (
             <div style={{ display: "grid", gap: 12 }}>
               {state.squadron.map((carrier) => (
                 <CarrierCard key={carrier.carrierId} carrier={carrier} actions={state.canManage ? (
-                  <button className="btn btn-danger" style={smallButton} onClick={() => void unbind(carrier, "squadron")}>Отвязать</button>
+                  <button className="btn btn-danger" style={smallButton} onClick={() => void unbind(carrier, "squadron")}>{t('cpnl.unbind')}</button>
                 ) : undefined} />
               ))}
             </div>
           ) : !loading && (
             <div style={{ border: "1px dashed #323538", borderRadius: 8, padding: 16, color: "#9ca3af", fontSize: 13 }}>
               {state.isMember || props.mode === "account"
-                ? "Эскадренный носитель привяжется сам по свежему журналу участника эскадрильи (Colonial Helper или загрузка журналов): при каждом запуске игра пишет, где стоит носитель эскадрильи. Стыковка к носителю его не привязывает — Javelin пускает и чужих пилотов."
-                : "У эскадрильи пока нет привязанного авианосца."}
+                ? t('cpnl.squadronAuto')
+                : t('cpnl.squadronNone')}
             </div>
           )}
           {state.canManage && (
             <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>
-              Привязать носитель к эскадрилье вручную:
+              {t('cpnl.bindManual')}
               <BindForm kind="squadron" squadronId={state.squadronId} onDone={() => void load()} />
             </div>
           )}

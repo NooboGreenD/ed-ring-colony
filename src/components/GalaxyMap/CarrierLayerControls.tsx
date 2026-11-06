@@ -27,6 +27,7 @@ import {
   type CarrierSystemGroup,
 } from '@/lib/carrierMap';
 import { CarrierGlyph } from './CarrierGlyph';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export type CarrierLayerStatus = 'loading' | 'ready' | 'error';
 
@@ -92,6 +93,7 @@ export function CarrierLayerControls({
   status,
   signedIn,
 }: CarrierLayerControlsProps) {
+  const { t } = useI18n();
   const [listOpen, setListOpen] = useState(true);
   const filtered = !isDefaultCarrierFilter(filter);
   const total = status === 'loading' && counts.total === 0 ? '…' : filtered ? `${visibleCount}/${counts.total}` : String(counts.total);
@@ -100,21 +102,21 @@ export function CarrierLayerControls({
   return (
     <div className="carrier-layer-controls" style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
       <label style={{ fontSize: 11, color: LAYER_COLOR, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
-        title="Где стоят авианосцы пилотов сайта: значок как в игре, жёлтый — ваш, зелёный — эскадрильи, оранжевый — остальные">
+        title={t('clc.toggleTitle')}>
         <input type="checkbox" checked={show} onChange={(event) => onShowChange(event.target.checked)} />
         <CarrierGlyph size={14} tone="other" />
-        Авианосцы ({total})
+        {t('clc.carriers', { total })}
       </label>
 
       {show && (
         <div style={{ paddingLeft: 22, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div role="group" aria-label="Чьи носители" style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+          <div role="group" aria-label={t('clc.whoseAria')} style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
             {MAP_CARRIER_RELATIONS.map((relation) => (
               <FilterChip
                 key={relation}
                 on={filter.relations[relation] !== false}
                 color={CARRIER_TONE_COLOR[relation]}
-                title={`Показывать: ${CARRIER_RELATION_HINT[relation]}`}
+                title={t('clc.showRelation', { hint: CARRIER_RELATION_HINT[relation] })}
                 onClick={() => onFilterChange(toggleCarrierRelation(filter, relation))}
               >
                 <CarrierGlyph size={10} tone={relation} />
@@ -122,13 +124,13 @@ export function CarrierLayerControls({
               </FilterChip>
             ))}
           </div>
-          <div role="group" aria-label="Класс носителя" style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+          <div role="group" aria-label={t('clc.classAria')} style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
             {MAP_CARRIER_TYPES.map((type) => (
               <FilterChip
                 key={type}
                 on={filter.types[type] !== false}
                 color="#d1d5db"
-                title={`Показывать: ${CARRIER_TYPE_FULL[type]}`}
+                title={t('clc.showType', { name: CARRIER_TYPE_FULL[type] })}
                 onClick={() => onFilterChange(toggleCarrierType(filter, type))}
               >
                 <CarrierGlyph size={10} glyph={type === 'SquadronCarrier' ? 'javelin' : 'drake'} color="#d1d5db" />
@@ -143,11 +145,11 @@ export function CarrierLayerControls({
             onClick={() => setListOpen((open) => !open)}
             style={{ alignSelf: 'flex-start', background: 'transparent', border: 'none', padding: 0, color: MUTED, fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', textTransform: 'uppercase', letterSpacing: 0.5 }}
           >
-            {listOpen ? '▾' : '▸'} В каких системах ({groups.length})
+            {listOpen ? '▾' : '▸'} {t('clc.inWhichSystems', { count: groups.length })}
           </button>
 
           {listOpen && (
-            <ul aria-label="Системы с авианосцами" style={{ listStyle: 'none', margin: 0, padding: 0, maxHeight: 190, overflowY: 'auto', border: `1px solid #2d2f33`, borderRadius: 3 }}>
+            <ul aria-label={t('clc.systemsAria')} style={{ listStyle: 'none', margin: 0, padding: 0, maxHeight: 190, overflowY: 'auto', border: `1px solid #2d2f33`, borderRadius: 3 }}>
               {groups.map((group) => {
                 const variant = carrierIconVariant(group);
                 const jump = group.carriers.map((carrier) => carrierJumpText(carrier)).find(Boolean);
@@ -159,7 +161,7 @@ export function CarrierLayerControls({
                       data-carrier-system={group.key}
                       aria-pressed={active}
                       onClick={() => onSelectGroup(group)}
-                      title={group.position ? 'Показать на карте' : 'Координаты системы неизвестны — откроется только карточка'}
+                      title={group.position ? t('clc.showOnMap') : t('clc.noCoordsTitle')}
                       style={{
                         display: 'flex',
                         alignItems: 'flex-start',
@@ -188,7 +190,7 @@ export function CarrierLayerControls({
                           {carrierListLabel(group)}
                         </span>
                         {jump && <span style={{ display: 'block', fontSize: 10, color: '#ffd166', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{jump}</span>}
-                        {!group.position && <span style={{ display: 'block', fontSize: 10, color: DIM }}>нет координат системы</span>}
+                        {!group.position && <span style={{ display: 'block', fontSize: 10, color: DIM }}>{t('clc.noCoords')}</span>}
                       </span>
                     </button>
                   </li>
@@ -196,17 +198,17 @@ export function CarrierLayerControls({
               })}
               {groups.length === 0 && (
                 <li style={{ fontSize: 10, color: DIM, padding: '6px' }}>
-                  {status === 'loading' ? 'Загрузка…' : counts.total === 0 ? 'Сайт пока не знает ни одного носителя' : 'Под выбранный фильтр носителей нет'}
+                  {status === 'loading' ? t('clc.loading') : counts.total === 0 ? t('clc.noneKnown') : t('clc.noMatch')}
                 </li>
               )}
             </ul>
           )}
 
-          {status === 'error' && <div style={{ fontSize: 10, color: '#f87171' }}>Не удалось обновить носители — повторим через минуту</div>}
-          {unplaced > 0 && <div style={{ fontSize: 9, color: DIM }}>Без координат: {unplaced} — система не найдена ни в каталоге, ни в EDSM</div>}
-          {!signedIn && <div style={{ fontSize: 9, color: DIM, lineHeight: 1.3 }}>Войдите, чтобы отличать свои носители и носители эскадрильи.</div>}
+          {status === 'error' && <div style={{ fontSize: 10, color: '#f87171' }}>{t('clc.refreshError')}</div>}
+          {unplaced > 0 && <div style={{ fontSize: 9, color: DIM }}>{t('clc.unplaced', { count: unplaced })}</div>}
+          {!signedIn && <div style={{ fontSize: 9, color: DIM, lineHeight: 1.3 }}>{t('clc.signIn')}</div>}
           <div style={{ fontSize: 9, color: DIM, lineHeight: 1.3 }}>
-            значок как в игре; заполненный круг — Javelin, пунктир — запланированный прыжок, бледный — стоянка старше двух недель
+            {t('clc.legend')}
           </div>
         </div>
       )}

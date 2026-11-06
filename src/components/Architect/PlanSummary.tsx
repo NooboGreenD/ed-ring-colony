@@ -10,18 +10,19 @@ import {
 } from '@/lib/architect/economy';
 import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } from '@/lib/architect/planner';
 import type { ArchitectPlan, PlanEvaluation, SystemEconomy, SystemEffectKey } from '@/lib/architect/types';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
-  pop: 'население',
-  mpop: 'предел населения',
-  sec: 'безопасность',
-  wealth: 'богатство',
-  tech: 'технологии',
-  sol: 'близость к Солнцу',
-  dev: 'развитие',
+  pop: 'psm.effPop',
+  mpop: 'psm.effMpop',
+  sec: 'psm.effSec',
+  wealth: 'psm.effWealth',
+  tech: 'psm.effTech',
+  sol: 'psm.effSol',
+  dev: 'psm.effDev',
 };
 
-const STATUS_LABELS = { plan: 'план', building: 'строится', complete: 'готово' } as const;
+const STATUS_LABELS = { plan: 'psm.statusPlan', building: 'psm.statusBuilding', complete: 'psm.statusComplete' } as const;
 
 interface PlanSummaryProps {
   plan: ArchitectPlan;
@@ -31,6 +32,7 @@ interface PlanSummaryProps {
 }
 
 export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSummaryProps) {
+  const { t } = useI18n();
   const [showAllCargo, setShowAllCargo] = useState(false);
   const [showAllUnlocks, setShowAllUnlocks] = useState(false);
   const [showPrimaryCargo, setShowPrimaryCargo] = useState(false);
@@ -88,18 +90,18 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <section style={cardStyle}>
-        <h3 style={sectionTitle}>Сводка плана</h3>
+        <h3 style={sectionTitle}>{t('psm.summaryTitle')}</h3>
         {plan.architect && (
           <div style={{ marginBottom: 10, color: 'var(--muted)', fontSize: 12 }}>
-            Архитектор системы: <span style={{ color: 'var(--cyan)' }}>{plan.architect}</span>
+            {t('psm.architect')} <span style={{ color: 'var(--cyan)' }}>{plan.architect}</span>
           </div>
         )}
         <div style={metricGrid}>
-          <Metric label="построек" value={String(plan.sites.length)} />
-          <Metric label="тоннаж" value={formatTons(evaluation.haulTons)} />
-          <Metric label="оценка системы" value={String(evaluation.score)} />
+          <Metric label={t('psm.mSites')} value={String(plan.sites.length)} />
+          <Metric label={t('psm.mHaul')} value={formatTons(evaluation.haulTons)} />
+          <Metric label={t('psm.mScore')} value={String(evaluation.score)} />
           <Metric
-            label="ошибок"
+            label={t('psm.mErrors')}
             value={String(errors.length)}
             tone={errors.length > 0 ? 'var(--red)' : 'var(--green)'}
           />
@@ -122,17 +124,17 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
 
         {evaluation.portCosts.length > 0 && (
           <div style={{ marginTop: 12 }}>
-            <div style={subTitle}>Стоимость портов</div>
+            <div style={subTitle}>{t('psm.portCosts')}</div>
             {evaluation.portCosts.map((port, index) => {
               const installation = getInstallation(port.installationId);
               return (
                 <div key={port.siteId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)' }}>
                   <span>
                     {index + 1}. {installation?.nameRu ?? port.installationId}
-                    {port.siteId === primaryPort?.siteId ? ' ★ основной — бесплатно' : ''}
+                    {port.siteId === primaryPort?.siteId ? t('psm.primaryFree') : ''}
                   </span>
                   <span style={{ color: port.taxed ? 'var(--orange)' : 'var(--text)' }}>
-                    {port.cost > 0 ? `${port.cost} очк. T${port.tier}` : '—'}
+                    {port.cost > 0 ? t('psm.costPoints', { cost: port.cost, tier: port.tier }) : '—'}
                   </span>
                 </div>
               );
@@ -142,7 +144,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
       </section>
 
       <section style={{ ...cardStyle, borderColor: primaryPort ? 'var(--orange)' : 'var(--line)' }}>
-        <h3 style={{ ...sectionTitle, color: 'var(--orange)' }}>★ Основной порт</h3>
+        <h3 style={{ ...sectionTitle, color: 'var(--orange)' }}>{t('psm.primaryTitle')}</h3>
         {primaryPort && primaryInstallation ? (
           <>
             <div style={{ fontSize: 14, color: 'var(--text)' }}>
@@ -150,16 +152,16 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
               <span style={{ color: 'var(--muted)', fontSize: 12 }}> — {primaryPort.bodyName}</span>
             </div>
             <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-              экономика системы: {ECONOMY_LABELS_RU[primaryPort.economy] ?? primaryPort.economy}
+              {t('psm.economyOf')} {ECONOMY_LABELS_RU[primaryPort.economy] ?? primaryPort.economy}
               {' · '}
-              материалов: {primaryPort.approximate ? '≈ ' : ''}{formatTons(primaryPort.tons)}
-              {' · '}очков системы не тратит
+              {t('psm.materials')} {primaryPort.approximate ? '≈ ' : ''}{formatTons(primaryPort.tons)}
+              {' · '}{t('psm.noSystemPoints')}
             </div>
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>{primaryInstallation.primary?.note}</div>
             {primaryCargoList.length > 0 && (
               <>
                 <button type="button" style={linkButton} onClick={() => setShowPrimaryCargo((value) => !value)}>
-                  {showPrimaryCargo ? 'Свернуть материалы' : `Материалы основного порта (${primaryCargoList.length})`}
+                  {showPrimaryCargo ? t('psm.collapseMaterials') : t('psm.materialsOfPrimary', { count: primaryCargoList.length })}
                 </button>
                 {showPrimaryCargo && (
                   <div style={{ marginTop: 6, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '2px 10px', fontSize: 12 }}>
@@ -177,9 +179,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         ) : (
           <>
             <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
-              Основной порт не отмечен. Первый порт новой колонии строится с колониального корабля:
-              он не тратит очки системы, но требует больше материалов. Если система уже колонизирована —
-              основной порт в плане не нужен.
+              {t('psm.noPrimaryText')}
             </div>
             {portsWithoutPrimary.length > 0 && onMarkPrimary && (
               <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -204,7 +204,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
 
       {(errors.length > 0 || warnings.length > 0) && (
         <section style={cardStyle}>
-          <h3 style={sectionTitle}>Замечания</h3>
+          <h3 style={sectionTitle}>{t('psm.issues')}</h3>
           {errors.map((issue, index) => (
             <div key={`e${index}`} style={{ color: 'var(--red)', fontSize: 12, marginBottom: 4 }}>
               ✕ {issue.message}
@@ -219,9 +219,9 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
       )}
 
       <section style={cardStyle}>
-        <h3 style={sectionTitle}>Порядок стройки</h3>
+        <h3 style={sectionTitle}>{t('psm.order')}</h3>
         {evaluation.order.length === 0 && (
-          <div style={{ color: 'var(--muted)', fontSize: 13 }}>Добавьте постройки — порядок посчитается сам.</div>
+          <div style={{ color: 'var(--muted)', fontSize: 13 }}>{t('psm.orderEmpty')}</div>
         )}
         <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text)' }}>
           {evaluation.order.map((siteId) => {
@@ -235,8 +235,8 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                 {installation.nameRu}
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                   {' · '}
-                  {site.bodyName || <span style={{ color: 'var(--orange)' }}>тело не задано</span>}
-                  {' · '}{formatTons(tons)} · {STATUS_LABELS[site.status]}
+                  {site.bodyName || <span style={{ color: 'var(--orange)' }}>{t('psm.bodyMissing')}</span>}
+                  {' · '}{formatTons(tons)} · {t(STATUS_LABELS[site.status])}
                 </span>
               </li>
             );
@@ -245,7 +245,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
       </section>
 
       <section style={cardStyle}>
-        <h3 style={sectionTitle}>Грузы ({cargo.length})</h3>
+        <h3 style={sectionTitle}>{t('psm.cargoTitle', { count: cargo.length })}</h3>
         {(showAllCargo ? cargo : cargo.slice(0, 10)).map((item) => (
           <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)' }}>
             <span style={{ color: 'var(--text)' }}>{item.label}</span>
@@ -254,19 +254,19 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         ))}
         {cargo.length > 10 && (
           <button type="button" style={linkButton} onClick={() => setShowAllCargo((value) => !value)}>
-            {showAllCargo ? 'Свернуть' : `Показать все (${cargo.length})`}
+            {showAllCargo ? t('psm.collapse') : t('psm.showAll', { count: cargo.length })}
           </button>
         )}
       </section>
 
       <section style={cardStyle}>
-        <h3 style={sectionTitle}>Эффекты на систему</h3>
+        <h3 style={sectionTitle}>{t('psm.effects')}</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 6 }}>
           {(Object.keys(EFFECT_LABELS) as SystemEffectKey[]).map((key) => {
             const value = evaluation.effects[key];
             return (
               <div key={key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-                <span style={{ color: 'var(--muted)' }}>{EFFECT_LABELS[key]}</span>
+                <span style={{ color: 'var(--muted)' }}>{t(EFFECT_LABELS[key])}</span>
                 <span style={{ color: value > 0 ? 'var(--green)' : value < 0 ? 'var(--red)' : 'var(--text)' }}>
                   {value > 0 ? `+${value}` : value}
                 </span>
@@ -276,7 +276,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         </div>
         {Object.keys(evaluation.economies).length > 0 && (
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)' }}>
-            Экономики:{' '}
+            {t('psm.economies')}{' '}
             {Object.entries(evaluation.economies)
               .map(([economy, count]) => `${ECONOMY_LABELS_RU[economy as keyof typeof ECONOMY_LABELS_RU] ?? economy} ×${count}`)
               .join(', ')}
@@ -286,10 +286,9 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
 
       {planEconomies.length > 0 && (
         <section style={cardStyle}>
-          <h3 style={sectionTitle}>Экономики и торговые рынки</h3>
+          <h3 style={sectionTitle}>{t('psm.marketsTitle')}</h3>
           <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 0, marginBottom: 10 }}>
-            Что рынки системы будут продавать и покупать. Ассортимент станции плавает — это ориентир
-            для перевозчиков, а не точный прайс.
+            {t('psm.marketsNote')}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {planEconomies.map(({ economy, count }) => {
@@ -302,17 +301,17 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                   </div>
                   {market.produces.length > 0 && (
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-                      <span style={{ color: 'var(--green)' }}>продаёт:</span> {market.produces.join(', ')}
+                      <span style={{ color: 'var(--green)' }}>{t('psm.sells')}</span> {market.produces.join(', ')}
                     </div>
                   )}
                   {market.imports.length > 0 && (
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-                      <span style={{ color: 'var(--cyan)' }}>ввозит:</span> {market.imports.join(', ')}
+                      <span style={{ color: 'var(--cyan)' }}>{t('psm.imports')}</span> {market.imports.join(', ')}
                     </div>
                   )}
                   {affinity.bodyDependent && affinity.boost.length > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, fontStyle: 'italic' }}>
-                      усиливается телом: {affinity.boost.map((trait: BodyTrait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')}
+                      {t('psm.boostedBy')} {affinity.boost.map((trait: BodyTrait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')}
                     </div>
                   )}
                 </div>
@@ -324,10 +323,9 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
 
       {buildingLinks.length > 0 && (
         <section style={cardStyle}>
-          <h3 style={sectionTitle}>Связи построек</h3>
+          <h3 style={sectionTitle}>{t('psm.linksTitle')}</h3>
           <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 0, marginBottom: 10 }}>
-            Цепочки зависимостей: что нужно построить раньше (предшественники) и что постройка
-            открывает системе.
+            {t('psm.linksNote')}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {buildingLinks.map(({ id, nameRu, count, links, hasPreReq }) => (
@@ -352,7 +350,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                         color: hasPreReq ? 'var(--green)' : 'var(--red)',
                         maxWidth: 220,
                       }}
-                      title={hasPreReq ? 'Предшественник есть в плане' : 'Предшественника нет в плане'}
+                      title={hasPreReq ? t('psm.prereqInPlan') : t('psm.prereqMissing')}
                     >
                       {hasPreReq ? '✓ ' : '✗ '}
                       {links.requires.map((req) => req.label).join(' / ')}
@@ -367,12 +365,12 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                   <>
                     <span style={{ color: 'var(--muted)' }}>→</span>
                     <span style={{ color: 'var(--cyan)' }}>
-                      открывает: {links.enables.map((enable) => shortEnableLabel(enable.label)).join(', ')}
+                      {t('psm.enables')} {links.enables.map((enable) => shortEnableLabel(enable.label)).join(', ')}
                     </span>
                   </>
                 )}
                 {links.requires.length === 0 && links.enables.length === 0 && (
-                  <span style={{ color: 'var(--muted)' }}>самостоятельная постройка</span>
+                  <span style={{ color: 'var(--muted)' }}>{t('psm.standalone')}</span>
                 )}
               </div>
             ))}
@@ -386,16 +384,16 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
           onClick={() => setShowEconomyRef((value) => !value)}
           style={{ ...sectionTitle, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}
         >
-          Справочник: экономики и тела {showEconomyRef ? '▾' : '▸'}
+          {t('psm.referenceToggle', { arrow: showEconomyRef ? '▾' : '▸' })}
         </button>
         {showEconomyRef && (
           <div style={{ overflowX: 'auto', marginTop: 8 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
-                  <th style={refCell}>Экономика</th>
-                  <th style={refCell}>Усиливается на телах</th>
-                  <th style={refCell}>Зависит от тела</th>
+                  <th style={refCell}>{t('psm.refEconomy')}</th>
+                  <th style={refCell}>{t('psm.refBoost')}</th>
+                  <th style={refCell}>{t('psm.refDepends')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -412,7 +410,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                             : '—'}
                         </td>
                         <td style={{ ...refCell, color: affinity.bodyDependent ? 'var(--orange)' : 'var(--muted)' }}>
-                          {affinity.bodyDependent ? 'да' : 'нет'}
+                          {affinity.bodyDependent ? t('psm.yes') : t('psm.no')}
                         </td>
                       </tr>
                     );
@@ -424,7 +422,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
       </section>
 
       <section style={cardStyle}>
-        <h3 style={sectionTitle}>Что открывает система</h3>
+        <h3 style={sectionTitle}>{t('psm.unlocksTitle')}</h3>
         {(showAllUnlocks ? evaluation.unlocks : evaluation.unlocks.filter((unlock) => unlock.satisfied)).map((unlock) => (
           <div
             key={unlock.id}
@@ -435,12 +433,12 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         ))}
         {!showAllUnlocks && evaluation.unlocks.some((unlock) => !unlock.satisfied) && (
           <button type="button" style={linkButton} onClick={() => setShowAllUnlocks(true)}>
-            Показать недостроенное
+            {t('psm.showIncomplete')}
           </button>
         )}
         {showAllUnlocks && (
           <button type="button" style={linkButton} onClick={() => setShowAllUnlocks(false)}>
-            Только открытое
+            {t('psm.showOnlyUnlocked')}
           </button>
         )}
       </section>
@@ -458,6 +456,7 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: s
 }
 
 function TierBadge({ tier, free, spent, given }: { tier: string; free: number; spent: number; given: number }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -469,12 +468,12 @@ function TierBadge({ tier, free, spent, given }: { tier: string; free: number; s
       }}
     >
       <div style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-        Очки {tier}
+        {t('psm.tierPoints', { tier })}
       </div>
       <div style={{ fontSize: 18, color: free < 0 ? 'var(--red)' : 'var(--text)', fontFamily: 'ui-monospace, monospace' }}>
         {free > 0 ? `+${free}` : free}
       </div>
-      <div style={{ fontSize: 11, color: 'var(--muted)' }}>тратим {spent} · получаем {given}</div>
+      <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('psm.tierSpent', { spent, given })}</div>
     </div>
   );
 }

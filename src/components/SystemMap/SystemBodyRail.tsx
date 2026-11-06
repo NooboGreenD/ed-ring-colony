@@ -20,6 +20,7 @@ import {
 import type { FilterMode } from '@/lib/orrery3d/viewer';
 import { SIGNAL_META, activeSignalKinds, hasSignals } from '@/lib/bodySignals';
 import type { OrreryViewBody, OrreryViewPayload, OrreryViewStructure } from '@/lib/orrery3d/types';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export interface SystemBodyRailProps {
   payload: OrreryViewPayload;
@@ -32,13 +33,13 @@ export interface SystemBodyRailProps {
 }
 
 const FILTERS: { id: FilterMode; label: string; hint: string }[] = [
-  { id: 'all', label: 'все', hint: 'Все тела системы' },
-  { id: 'sites', label: 'стройки', hint: 'Только тела со стройплощадками' },
-  { id: 'landable', label: 'посадка', hint: 'Тела, где можно сесть' },
-  { id: 'bio', label: 'био', hint: 'Тела с биологическими сигнатурами' },
-  { id: 'signals', label: 'сигналы', hint: 'Тела с любыми сигналами: биология, геология, люди, стражи, таргоиды' },
-  { id: 'rings', label: 'кольца', hint: 'Тела с кольцами' },
-  { id: 'unscanned', label: 'без скана', hint: 'Не нанесены на карту' },
+  { id: 'all', label: 'sbr.filterAll', hint: 'sbr.hintAll' },
+  { id: 'sites', label: 'sbr.filterSites', hint: 'sbr.hintSites' },
+  { id: 'landable', label: 'sbr.filterLandable', hint: 'sbr.hintLandable' },
+  { id: 'bio', label: 'sbr.filterBio', hint: 'sbr.hintBio' },
+  { id: 'signals', label: 'sbr.filterSignals', hint: 'sbr.hintSignals' },
+  { id: 'rings', label: 'sbr.filterRings', hint: 'sbr.hintRings' },
+  { id: 'unscanned', label: 'sbr.filterUnscanned', hint: 'sbr.hintUnscanned' },
 ];
 
 function kindIcon(body: OrreryViewBody): string {
@@ -64,10 +65,12 @@ function matches(body: OrreryViewBody, filter: FilterMode): boolean {
 }
 
 /** Ключ группировки: звезда-владелец (у самой звезды — она же). */
+const NO_STAR = '__no_star__';
+
 function groupOf(body: OrreryViewBody, payload: OrreryViewPayload): string {
   if (body.kind === 'star') return body.name;
   const cluster = payload.clusters.find((candidate) => candidate.bodies.includes(body.name));
-  return cluster?.star || body.star || 'Без своей звезды';
+  return cluster?.star || body.star || NO_STAR;
 }
 
 export default function SystemBodyRail({
@@ -78,6 +81,7 @@ export default function SystemBodyRail({
   onFilterChange,
   onClose,
 }: SystemBodyRailProps) {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'distance' | 'name' | 'progress'>('distance');
 
@@ -134,8 +138,8 @@ export default function SystemBodyRail({
           <input
             value={query}
             onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
-            placeholder="поиск тела…"
-            aria-label="Поиск тела"
+            placeholder={t('sbr.searchPlaceholder')}
+            aria-label={t('sbr.searchAria')}
             style={{
               flex: 1, minWidth: 0, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 2,
               color: 'var(--text)', padding: '6px 9px', fontSize: 12.5, outline: 'none',
@@ -144,21 +148,21 @@ export default function SystemBodyRail({
           <select
             value={sort}
             onChange={(event) => setSort(event.target.value as typeof sort)}
-            aria-label="Сортировка тел"
+            aria-label={t('sbr.sortAria')}
             style={{
               background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 2, color: 'var(--text)',
               padding: '6px 6px', fontSize: 12,
             }}
           >
-            <option value="distance">по дистанции</option>
-            <option value="name">по имени</option>
-            <option value="progress">по стройкам</option>
+            <option value="distance">{t('sbr.sortDistance')}</option>
+            <option value="name">{t('sbr.sortName')}</option>
+            <option value="progress">{t('sbr.sortProgress')}</option>
           </select>
           {onClose && (
             <button
               type="button"
               onClick={onClose}
-              title="Свернуть список"
+              title={t('sbr.collapse')}
               style={{ background: 'transparent', border: '1px solid var(--line)', borderRadius: 2, color: 'var(--muted)', cursor: 'pointer', padding: '4px 8px', fontSize: 12 }}
             >
               ✕
@@ -172,7 +176,7 @@ export default function SystemBodyRail({
               <button
                 key={entry.id}
                 type="button"
-                title={entry.hint}
+                title={t(entry.hint)}
                 onClick={() => {
                   onFilterChange?.(entry.id);
                 }}
@@ -186,7 +190,7 @@ export default function SystemBodyRail({
                   cursor: 'pointer',
                 }}
               >
-                {entry.label}
+                {t(entry.label)}
               </button>
             );
           })}
@@ -196,7 +200,7 @@ export default function SystemBodyRail({
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 10px 24px' }}>
         {totalShown === 0 && (
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 12 }}>
-            Ничего не найдено. Сбросьте фильтр или поиск.
+            {t('sbr.empty')}
           </p>
         )}
         {groups.map((group) => (
@@ -206,12 +210,12 @@ export default function SystemBodyRail({
                 <button
                   type="button"
                   onClick={() => onFocus(group.key)}
-                  title="Показать кластер этой звезды"
+                  title={t('sbr.showCluster')}
                   style={{ background: 'transparent', border: 'none', color: '#ffd166', fontSize: 11.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', cursor: 'pointer', padding: 0 }}
                 >
-                  ★ {group.key.replace(`${payload.system} `, '')}
+                  ★ {group.key === NO_STAR ? t('sbr.noStar') : group.key.replace(`${payload.system} `, '')}
                 </button>
-                <span style={{ color: '#6b7280', fontSize: 10.5 }}>{group.bodies.length} тел</span>
+                <span style={{ color: '#6b7280', fontSize: 10.5 }}>{t('sbr.bodyCount', { count: group.bodies.length })}</span>
               </div>
             )}
             <div style={{ display: 'grid', gap: 6 }}>
@@ -227,7 +231,7 @@ export default function SystemBodyRail({
                     type="button"
                     onClick={() => onFocus(body.name)}
                     onMouseEnter={() => undefined}
-                    title={`Показать ${body.name} на карте`}
+                    title={t('sbr.showOnMap', { name: body.name })}
                     style={{
                       textAlign: 'left',
                       background: active ? 'rgba(230,126,34,0.08)' : 'var(--bg)',
@@ -251,35 +255,35 @@ export default function SystemBodyRail({
                       )}
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 3, fontSize: 10.5, color: 'var(--muted)' }}>
-                      <span>{body.cls || (body.kind === 'star' ? 'звезда' : 'тело')}</span>
+                      <span>{body.cls || t(body.kind === 'star' ? 'sbr.star' : 'sbr.body')}</span>
                       {body.orbitLs > 0 && body.kind !== 'star' && <span>{formatLightSeconds(body.orbitLs)}</span>}
-                      {body.radiusM > 0 && <span>{formatNumber(body.radiusM / 1000, 0)} км</span>}
+                      {body.radiusM > 0 && <span>{t('sbr.km', { value: formatNumber(body.radiusM / 1000, 0) })}</span>}
                       {body.gravity > 0 && <span>{formatGravity(body.gravity)}</span>}
                     </div>
                     {(body.landable || hasSignals(body.signals) || body.rings.length > 0 || body.habitableBand === 'habitable' || !body.scanned) && (
                       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
-                        {body.habitableBand === 'habitable' && <Tag color="#2ecc71">🌍 обитаемая зона</Tag>}
-                        {body.landable && <Tag color="#00f3ff">🛬 посадка</Tag>}
+                        {body.habitableBand === 'habitable' && <Tag color="#2ecc71">{t('sbr.habitable')}</Tag>}
+                        {body.landable && <Tag color="#00f3ff">{t('sbr.landing')}</Tag>}
                         {activeSignalKinds(body.signals).map((kind) => (
                           <Tag key={kind} color={SIGNAL_META[kind].color}>
                             {SIGNAL_META[kind].icon} {body.signals[kind]}
                           </Tag>
                         ))}
                         {body.rings.length > 0 && <Tag color="#9fd8ef">💍 {body.rings.length}</Tag>}
-                        {!body.scanned && <Tag color="#9ca3af">❔ нет скана</Tag>}
+                        {!body.scanned && <Tag color="#9ca3af">{t('sbr.noScan')}</Tag>}
                       </div>
                     )}
                     {bodyStructures.map((structure) => (
                       <div key={structure.id} style={{ marginTop: 5 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, fontSize: 10.5, color: structureColor(structure) }}>
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{structure.name}</span>
-                          <span>{structure.complete ? 'готово' : `${Math.round(structure.progress)}%`}</span>
+                          <span>{structure.complete ? t('sbr.done') : `${Math.round(structure.progress)}%`}</span>
                         </div>
                         <div style={{ height: 3, background: '#2b2f33', borderRadius: 2, marginTop: 2, overflow: 'hidden' }}>
                           <div style={{ width: `${Math.max(0, Math.min(100, structure.progress))}%`, height: '100%', background: structureColor(structure) }} />
                         </div>
                         {structure.remainingTons > 0 && (
-                          <div style={{ fontSize: 10, color: 'var(--muted)' }}>осталось {formatTons(structure.remainingTons)}</div>
+                          <div style={{ fontSize: 10, color: 'var(--muted)' }}>{t('sbr.remaining', { tons: formatTons(structure.remainingTons) })}</div>
                         )}
                       </div>
                     ))}

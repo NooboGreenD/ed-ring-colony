@@ -4,19 +4,21 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import ProjectCard from "@/components/Projects/ProjectCard";
 import { toast } from "@/components/ui/Toaster";
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { Project } from "@/types/project";
 
 type Filter = "all" | "active" | "paused" | "completed" | "archived";
 type SortKey = "created" | "name" | "progress" | "systems";
 
 const statusLabels: Record<string, string> = {
-  active: "Активен",
-  paused: "Приостановлен",
-  completed: "Завершён",
-  archived: "Архив",
+  active: "pg.statusActive",
+  paused: "pg.statusPaused",
+  completed: "pg.statusCompleted",
+  archived: "pg.statusArchived",
 };
 
 export default function ProjectsPage() {
+  const { t } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -43,7 +45,7 @@ export default function ProjectsPage() {
 
   const createProject = async () => {
     if (!name.trim()) {
-      toast("Введите название проекта", "error");
+      toast(t('pg.enterName'), "error");
       return;
     }
     const res = await fetch("/api/projects", {
@@ -52,7 +54,7 @@ export default function ProjectsPage() {
       body: JSON.stringify({ name, description, color }),
     });
     if (res.ok) {
-      toast("Проект создан", "success");
+      toast(t('pg.created'), "success");
       setShowCreate(false);
       setName("");
       setDescription("");
@@ -60,7 +62,7 @@ export default function ProjectsPage() {
       load();
     } else {
       const j = await res.json().catch(() => ({}));
-      toast(j.error || "Ошибка создания", "error");
+      toast(j.error || t('pg.createFailed'), "error");
     }
   };
 
@@ -118,9 +120,9 @@ export default function ProjectsPage() {
         }}
       >
         <div>
-          <div className="kicker">Эскадрильи // Управление</div>
+          <div className="kicker">{t('pg.kicker')}</div>
           <h1 style={{ marginTop: 8, fontSize: 20, letterSpacing: 3 }}>
-            Проекты колонизации
+            {t('pg.title')}
           </h1>
         </div>
         {user && (
@@ -128,7 +130,7 @@ export default function ProjectsPage() {
             onClick={() => setShowCreate(!showCreate)}
             className="btn btn-orange"
           >
-            {showCreate ? "Отмена" : "+ Создать проект"}
+            {showCreate ? t('pg.cancel') : t('pg.createToggle')}
           </button>
         )}
       </div>
@@ -136,15 +138,15 @@ export default function ProjectsPage() {
       {/* Create form */}
       {showCreate && (
         <div className="project-form">
-          <h3>Новый проект</h3>
+          <h3>{t('pg.newProject')}</h3>
           <div className="project-form-grid">
             <input
-              placeholder="Название проекта *"
+              placeholder={t('pg.namePlaceholder')}
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
             <textarea
-              placeholder="Описание миссии..."
+              placeholder={t('pg.descPlaceholder')}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               style={{ minHeight: 60 }}
@@ -159,7 +161,7 @@ export default function ProjectsPage() {
                   textTransform: "uppercase",
                 }}
               >
-                Цвет:
+                {t('pg.color')}
               </label>
               <input
                 type="color"
@@ -188,10 +190,10 @@ export default function ProjectsPage() {
           </div>
           <div className="project-form-actions">
             <button onClick={createProject} className="btn btn-cyan">
-              Создать проект
+              {t('pg.createButton')}
             </button>
             <button onClick={() => setShowCreate(false)} className="btn">
-              Отмена
+              {t('pg.cancel')}
             </button>
           </div>
         </div>
@@ -201,18 +203,18 @@ export default function ProjectsPage() {
       <div className="projects-toolbar">
         <input
           type="search"
-          placeholder="Поиск проектов..."
+          placeholder={t('pg.searchPlaceholder')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="filter-pills">
           {(
             [
-              ["all", "Все"],
-              ["active", "Активные"],
-              ["paused", "Приостановленные"],
-              ["completed", "Завершённые"],
-              ["archived", "Архив"],
+              ["all", "pg.filterAll"],
+              ["active", "pg.filterActive"],
+              ["paused", "pg.filterPaused"],
+              ["completed", "pg.filterCompleted"],
+              ["archived", "pg.filterArchived"],
             ] as [Filter, string][]
           ).map(([key, label]) => (
             <button
@@ -220,7 +222,7 @@ export default function ProjectsPage() {
               onClick={() => setFilter(key)}
               className={`filter-pill${filter === key ? " active" : ""}`}
             >
-              {label}
+              {t(label)}
               <span className="count">({filterCounts[key] || 0})</span>
             </button>
           ))}
@@ -228,10 +230,10 @@ export default function ProjectsPage() {
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
           {(
             [
-              ["created", "Дата"],
-              ["name", "Название"],
-              ["progress", "Прогресс"],
-              ["systems", "Системы"],
+              ["created", "pg.sortCreated"],
+              ["name", "pg.sortName"],
+              ["progress", "pg.sortProgress"],
+              ["systems", "pg.sortSystems"],
             ] as [SortKey, string][]
           ).map(([key, label]) => (
             <button
@@ -239,7 +241,7 @@ export default function ProjectsPage() {
               onClick={() => setSort(key)}
               className={`sort-btn${sort === key ? " active" : ""}`}
             >
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
@@ -258,16 +260,16 @@ export default function ProjectsPage() {
             textAlign: "center",
           }}
         >
-          Загрузка проектов...
+          {t('pg.loading')}
         </p>
       ) : filtered.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon">&#128640;</div>
-          <h3>Проектов не найдено</h3>
+          <h3>{t('pg.emptyTitle')}</h3>
           <p>
             {projects.length === 0
-              ? "Создайте первую эскадрилью для координации строительства"
-              : "Попробуйте изменить фильтры или поисковый запрос"}
+              ? t('pg.emptyNoProjects')
+              : t('pg.emptyFiltered')}
           </p>
         </div>
       ) : (
@@ -275,13 +277,13 @@ export default function ProjectsPage() {
           <table className="projects-table">
             <thead>
               <tr>
-                <th>Проект</th>
-                <th style={{ textAlign: "center" }}>Статус</th>
-                <th style={{ textAlign: "right" }}>Пилотов</th>
-                <th style={{ textAlign: "right" }}>Систем</th>
-                <th style={{ textAlign: "right" }}>Готово</th>
-                <th style={{ textAlign: "right" }}>Строится</th>
-                <th style={{ minWidth: 140 }}>Прогресс</th>
+                <th>{t('pg.colProject')}</th>
+                <th style={{ textAlign: "center" }}>{t('pg.colStatus')}</th>
+                <th style={{ textAlign: "right" }}>{t('pg.colPilots')}</th>
+                <th style={{ textAlign: "right" }}>{t('pg.colSystems')}</th>
+                <th style={{ textAlign: "right" }}>{t('pg.colDone')}</th>
+                <th style={{ textAlign: "right" }}>{t('pg.colBuilding')}</th>
+                <th style={{ minWidth: 140 }}>{t('pg.colProgress')}</th>
               </tr>
             </thead>
             <tbody>

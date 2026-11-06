@@ -25,6 +25,7 @@ import {
 import { formatTons } from '@/lib/architect/planner';
 import type { ArchitectBody, ArchitectPlan, PlanEvaluation } from '@/lib/architect/types';
 import { cardStyle, chipActive, chipStyle, mutedText } from '@/components/Architect/panelStyles';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 const STATUS_TONES: Record<string, string> = {
   plan: 'var(--muted)',
@@ -47,6 +48,7 @@ interface PlanInsightsProps {
 }
 
 export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }: PlanInsightsProps) {
+  const { t, locale } = useI18n();
   const [capacity, setCapacity] = useState(784);
 
   const budgets = useMemo(() => tierBudgets(evaluation), [evaluation]);
@@ -71,10 +73,9 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
   if (plan.sites.length === 0) {
     return (
       <section style={cardStyle}>
-        <h3 style={titleStyle}>Инфографика плана</h3>
+        <h3 style={titleStyle}>{t('pi.emptyTitle')}</h3>
         <div style={mutedText}>
-          Добавьте постройки — здесь появятся бюджет очков по шагам стройки, доли грузов,
-          экономики, эффекты системы и загрузка тел.
+          {t('pi.emptyText')}
         </div>
       </section>
     );
@@ -83,17 +84,17 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <section style={cardStyle}>
-        <h3 style={titleStyle}>Бюджет очков системы по шагам</h3>
+        <h3 style={titleStyle}>{t('pi.budgetTitle')}</h3>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
           {budgets.map((budget) => (
             <div key={budget.tier} style={{ flex: '1 1 200px', border: '1px solid var(--line)', borderRadius: 3, padding: '8px 10px', background: 'var(--bg)' }}>
-              <div style={labelStyle}>очки T{budget.tier}</div>
+              <div style={labelStyle}>{t('pi.tierPoints', { tier: budget.tier })}</div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                 <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 20, color: budget.free < 0 ? 'var(--red)' : 'var(--text)' }}>
                   {budget.free > 0 ? `+${budget.free}` : budget.free}
                 </span>
                 <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                  получено {budget.given} · потрачено {budget.spent}
+                  {t('pi.givenSpent', { given: budget.given, spent: budget.spent })}
                 </span>
               </div>
               <div style={{ display: 'flex', height: 6, marginTop: 6, border: '1px solid var(--line)', borderRadius: 3, overflow: 'hidden', background: 'var(--bg)' }}>
@@ -102,8 +103,8 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
               </div>
               <div style={{ fontSize: 11, color: budget.firstDeficitStep ? 'var(--red)' : 'var(--muted)', marginTop: 4 }}>
                 {budget.firstDeficitStep
-                  ? `не хватает с шага ${budget.firstDeficitStep} (минимум ${budget.lowest})`
-                  : 'бюджета хватает на всю стройку'}
+                  ? t('pi.deficit', { step: budget.firstDeficitStep, lowest: budget.lowest })
+                  : t('pi.budgetEnough')}
               </div>
             </div>
           ))}
@@ -114,10 +115,10 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
           {timeline.map((step) => {
             const height2 = Math.max(2, Math.round((Math.abs(step.tier2After) / peak) * 38));
             const height3 = Math.max(2, Math.round((Math.abs(step.tier3After) / peak) * 38));
-            const title = `${step.index}. ${step.nameRu} — ${step.bodyName || 'без тела'}\n`
-              + `T2 после шага: ${step.tier2After}, T3: ${step.tier3After}\n`
-              + `${step.cost > 0 ? `тратит ${step.cost} очк. T${step.costTier}` : 'очков не тратит'}`
-              + `${step.gives > 0 ? `, даёт ${step.gives} очк. T${step.givesTier}` : ''}`;
+            const title = t('pi.stepTitle', { index: step.index, name: step.nameRu, body: step.bodyName || t('pi.noBody') }) + '\n'
+              + t('pi.stepTiers', { t2: step.tier2After, t3: step.tier3After }) + '\n'
+              + (step.cost > 0 ? t('pi.stepCost', { cost: step.cost, tier: step.costTier }) : t('pi.stepNoCost'))
+              + (step.gives > 0 ? t('pi.stepGives', { gives: step.gives, tier: step.givesTier }) : '');
             return (
               <button
                 key={step.siteId}
@@ -153,15 +154,15 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
           })}
         </div>
         <div style={{ display: 'flex', gap: 12, marginTop: 6, flexWrap: 'wrap', fontSize: 11, color: 'var(--muted)' }}>
-          <Legend tone="var(--orange)" label="баланс T2" />
-          <Legend tone="var(--cyan)" label="баланс T3" />
-          <Legend tone="var(--red)" label="минус — очков не хватает" />
-          <span>шагов: {timeline.length}</span>
+          <Legend tone="var(--orange)" label={t('pi.balanceT2')} />
+          <Legend tone="var(--cyan)" label={t('pi.balanceT3')} />
+          <Legend tone="var(--red)" label={t('pi.negative')} />
+          <span>{t('pi.stepsCount', { count: timeline.length })}</span>
         </div>
       </section>
 
       <section style={cardStyle}>
-        <h3 style={titleStyle}>Тоннаж и рейсы</h3>
+        <h3 style={titleStyle}>{t('pi.haulTitle')}</h3>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
           <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 22, color: 'var(--green)' }}>
             {formatTons(evaluation.haulTons)}
@@ -173,15 +174,15 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
                 type="button"
                 onClick={() => setCapacity(value)}
                 style={{ ...chipStyle, ...(capacity === value ? chipActive : {}) }}
-                title={value === 25_000 ? 'Трюм авианосца' : value === 784 ? 'Каттер / Type-9 с полным трюмом' : 'Средний грузовик'}
+                title={value === 25_000 ? t('pi.holdCarrier') : value === 784 ? t('pi.holdCutter') : t('pi.holdMedium')}
               >
-                {value.toLocaleString('ru-RU')} т
+                {t('pi.tons', { value: value.toLocaleString(locale) })}
               </button>
             ))}
           </div>
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            рейсов: <span style={{ color: 'var(--orange)', fontFamily: 'ui-monospace, monospace' }}>
-              {haulTrips(evaluation.haulTons, capacity).toLocaleString('ru-RU')}
+            {t('pi.trips')} <span style={{ color: 'var(--orange)', fontFamily: 'ui-monospace, monospace' }}>
+              {haulTrips(evaluation.haulTons, capacity).toLocaleString(locale)}
             </span>
           </div>
         </div>
@@ -192,7 +193,7 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
               key: item.key,
               percent: item.percent,
               tone: SHARE_TONES[index % SHARE_TONES.length],
-              title: `${item.label}: ${formatTons(item.value)} (${item.percent} %)`,
+              title: t('pi.cargoTitle', { label: item.label, tons: formatTons(item.value), percent: item.percent }),
             }))} />
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: '2px 12px', marginTop: 8 }}>
               {cargo.items.map((item, index) => (
@@ -210,13 +211,13 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
       </section>
 
       <section style={cardStyle}>
-        <h3 style={titleStyle}>Стадии и экономики</h3>
-        <div style={labelStyle}>стадии построек</div>
+        <h3 style={titleStyle}>{t('pi.stagesTitle')}</h3>
+        <div style={labelStyle}>{t('pi.buildStages')}</div>
         <StackedBar items={stages.filter((stage) => stage.count > 0).map((stage) => ({
           key: stage.status,
           percent: stage.percent,
           tone: STATUS_TONES[stage.status],
-          title: `${stage.label}: ${stage.count} шт., ${formatTons(stage.tons)}`,
+          title: t('pi.stageTitle', { label: stage.label, count: stage.count, tons: formatTons(stage.tons) }),
         }))} />
         <div style={{ display: 'flex', gap: 12, marginTop: 6, flexWrap: 'wrap', fontSize: 12 }}>
           {stages.map((stage) => (
@@ -230,12 +231,12 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
 
         {economies.length > 0 && (
           <>
-            <div style={{ ...labelStyle, marginTop: 14 }}>экономики системы</div>
+            <div style={{ ...labelStyle, marginTop: 14 }}>{t('pi.economies')}</div>
             <StackedBar items={economies.map((item, index) => ({
               key: item.key,
               percent: item.percent,
               tone: SHARE_TONES[index % SHARE_TONES.length],
-              title: `${item.label}: ${item.value} построек (${item.percent} %)`,
+              title: t('pi.economyTitle', { label: item.label, count: item.value, percent: item.percent }),
             }))} />
             <div style={{ display: 'flex', gap: 12, marginTop: 6, flexWrap: 'wrap', fontSize: 12 }}>
               {economies.map((item, index) => (
@@ -250,7 +251,7 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
       </section>
 
       <section style={cardStyle}>
-        <h3 style={titleStyle}>Эффекты системы</h3>
+        <h3 style={titleStyle}>{t('pi.effectsTitle')}</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           {effects.map((effect) => (
             <div key={effect.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
@@ -278,17 +279,17 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
 
       {loads.length > 0 && (
         <section style={cardStyle}>
-          <h3 style={titleStyle}>Загрузка тел</h3>
+          <h3 style={titleStyle}>{t('pi.loadsTitle')}</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {loads.map((load) => (
               <div key={load.name} style={{ fontSize: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                   <span style={{ color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{load.name}</span>
                   <span style={{ color: 'var(--muted)', fontFamily: 'ui-monospace, monospace', flex: '0 0 auto' }}>
-                    {load.limit > 0 ? `${load.used}/${load.limit} назем.` : 'без наземных'}
+                    {load.limit > 0 ? t('pi.landed', { used: load.used, limit: load.limit }) : t('pi.noLanded')}
                     {load.orbitalLimit === null
-                      ? ` · ${load.orbital} орбит. (без лимита)`
-                      : ` · ${load.orbital}/${load.orbitalLimit} орбит.`}
+                      ? t('pi.orbitalUnlimited', { count: load.orbital })
+                      : t('pi.orbitalLimited', { used: load.orbital, limit: load.orbitalLimit })}
                   </span>
                 </div>
                 <div style={{ height: 5, border: '1px solid var(--line)', borderRadius: 3, overflow: 'hidden', marginTop: 3, background: 'var(--bg)' }}>

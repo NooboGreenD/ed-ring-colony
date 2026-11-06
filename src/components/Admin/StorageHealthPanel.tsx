@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { IconAlert, IconCheckCircle, IconHardDrive, IconRefresh, IconSync, IconXCircle } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * Supabase Storage: состояние и перезапуск (Админка → Мониторинг).
@@ -49,27 +50,27 @@ interface StorageResponse {
 const REFRESH_MS = 60_000;
 
 const STATE_RU: Record<string, string> = {
-  running: 'работает',
-  exited: 'остановлен',
-  restarting: 'перезапускается',
-  created: 'создан, не запущен',
-  paused: 'приостановлен',
-  dead: 'мёртв',
-  missing: 'контейнер не найден',
-  unknown: 'неизвестно',
+  running: 'shp.stateRunning',
+  exited: 'shp.stateExited',
+  restarting: 'shp.stateRestarting',
+  created: 'shp.stateCreated',
+  paused: 'shp.statePaused',
+  dead: 'shp.stateDead',
+  missing: 'shp.stateMissing',
+  unknown: 'shp.stateUnknown',
 };
 
 const API_RU: Record<string, string> = {
-  ok: 'бакеты читаются',
-  auth: 'ключ не принят (401/403)',
-  failed: 'не отвечает',
-  unknown: 'не проверено',
+  ok: 'shp.apiOk',
+  auth: 'shp.apiAuth',
+  failed: 'shp.apiFailed',
+  unknown: 'shp.apiUnknown',
 };
 
 const VIA_RU: Record<string, string> = {
-  agent: 'из сети агента',
-  container: 'изнутри контейнера',
-  none: 'проверить нечем',
+  agent: 'shp.viaAgent',
+  container: 'shp.viaContainer',
+  none: 'shp.viaNone',
 };
 
 type Level = 'healthy' | 'warning' | 'critical' | 'unknown';
@@ -86,10 +87,10 @@ function levelOf(data: StorageResponse | null): Level {
 }
 
 const LEVEL_LABEL: Record<Level, string> = {
-  healthy: 'Работает',
-  warning: 'Требует внимания',
-  critical: 'Не работает',
-  unknown: 'Нет данных',
+  healthy: 'shp.levelHealthy',
+  warning: 'shp.levelWarning',
+  critical: 'shp.levelCritical',
+  unknown: 'shp.levelUnknown',
 };
 
 export default function StorageHealthPanel({
@@ -104,6 +105,7 @@ export default function StorageHealthPanel({
   refreshToken?: string | null;
   onStarted?: () => void;
 }) {
+  const { t } = useI18n();
   const [data, setData] = useState<StorageResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -126,7 +128,7 @@ export default function StorageHealthPanel({
       if (!alive.current) return;
       if (!response.ok) {
         setData(null);
-        setMessage(payload.error || `Не удалось проверить Storage (HTTP ${response.status})`);
+        setMessage(payload.error || t('shp.checkFailedHttp', { status: response.status }));
         return;
       }
       setData(payload);
@@ -134,11 +136,11 @@ export default function StorageHealthPanel({
     } catch (cause) {
       if (!alive.current) return;
       setData(null);
-      setMessage(cause instanceof Error ? cause.message : 'Не удалось проверить Storage');
+      setMessage(cause instanceof Error ? cause.message : t('shp.checkFailed'));
     } finally {
       if (alive.current) setLoading(false);
     }
-  }, [agentConfigured]);
+  }, [agentConfigured, t]);
 
   useEffect(() => {
     void load();
@@ -157,11 +159,7 @@ export default function StorageHealthPanel({
   }, [agentConfigured, agentConnected, load]);
 
   const restart = useCallback(async () => {
-    if (!window.confirm(
-      'Перезапустить Supabase Storage?\n\n'
-      + 'Перезапускается только сервис storage: сайт и база не остановятся, но загрузки файлов прервутся на несколько секунд. '
-      + 'Если Storage работает, ничего не произойдёт.',
-    )) return;
+    if (!window.confirm(t('shp.restartConfirm'))) return;
     setRestarting(true);
     setMessage('');
     try {
@@ -172,14 +170,14 @@ export default function StorageHealthPanel({
       });
       const payload = await response.json().catch(() => ({})) as StorageResponse;
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-      setMessage('Перезапуск запущен — прогресс и журнал в блоке «Обновление проекта».');
+      setMessage(t('shp.restartStarted'));
       onStarted?.();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Не удалось запустить перезапуск');
+      setMessage(cause instanceof Error ? cause.message : t('shp.restartFailed'));
     } finally {
       setRestarting(false);
     }
-  }, [onStarted]);
+  }, [onStarted, t]);
 
   if (!agentConfigured) return null;
 
@@ -192,27 +190,24 @@ export default function StorageHealthPanel({
     <section className="ops-panel">
       <div className="ops-panel-head">
         <div>
-          <h3><IconHardDrive size={15} /> Хранилище файлов (Supabase Storage)</h3>
-          <p>
-            Storage — отдельный стек Supabase, обновление проекта его не касается. Проверка читает состояние
-            контейнера и список бакетов; перезапуск поднимает только сервис <code>storage</code>, если он лежит.
-          </p>
+          <h3><IconHardDrive size={15} /> {t('shp.title')}</h3>
+          <p>{t('shp.intro')}</p>
         </div>
         <span className={`ops-status ops-status-${level}`}>
           <span className="ops-status-dot" />
-          {LEVEL_LABEL[level]}
+          {t(LEVEL_LABEL[level])}
         </span>
       </div>
 
       {!agentConnected && (
         <div className="ops-notice ops-notice-warning">
-          <IconAlert size={16} /> Update-агент не отвечает: проверить и перезапустить Storage из панели нельзя.
+          <IconAlert size={16} /> {t('shp.agentDown')}
         </div>
       )}
 
       {unavailable && (
         <div className="ops-notice ops-notice-warning">
-          <IconAlert size={16} /> {data?.reason || 'Проверить Storage не удалось.'}
+          <IconAlert size={16} /> {data?.reason || t('shp.checkFailedFallback')}
         </div>
       )}
 
@@ -220,32 +215,32 @@ export default function StorageHealthPanel({
         <>
           <dl className="ops-facts">
             <div>
-              <dt>Контейнер</dt>
+              <dt>{t('shp.dtContainer')}</dt>
               <dd>
-                {STATE_RU[report.state] ?? report.state}
-                {report.health !== 'none' ? ` · healthcheck: ${report.health === 'healthy' ? 'проходит' : report.health === 'unhealthy' ? 'не проходит' : 'запускается'}` : ''}
+                {t(STATE_RU[report.state] ?? report.state)}
+                {report.health !== 'none' ? t('shp.healthLine', { state: report.health === 'healthy' ? t('shp.healthOk') : report.health === 'unhealthy' ? t('shp.healthBad') : t('shp.healthStarting') }) : ''}
               </dd>
             </div>
-            <div><dt>Перезапусков</dt><dd>{report.restarts}{report.oom ? ' · был OOM' : ''}</dd></div>
-            <div><dt>API</dt><dd>{API_RU[report.api] ?? report.api} · {VIA_RU[report.apiVia] ?? report.apiVia}</dd></div>
+            <div><dt>{t('shp.dtRestarts')}</dt><dd>{report.restarts}{report.oom ? t('shp.oom') : ''}</dd></div>
+            <div><dt>{t('shp.dtApi')}</dt><dd>{t('shp.apiLine', { api: t(API_RU[report.api] ?? report.api), via: t(VIA_RU[report.apiVia] ?? report.apiVia) })}</dd></div>
             {report.state === 'exited' && report.exitCode != null && (
-              <div><dt>Код выхода</dt><dd>{report.exitCode}</dd></div>
+              <div><dt>{t('shp.dtExitCode')}</dt><dd>{report.exitCode}</dd></div>
             )}
           </dl>
           {report.problem && (
             <div className={`ops-notice ${report.state === 'running' ? 'ops-notice-warning' : 'ops-notice-critical'}`}>
               {report.state === 'running' ? <IconAlert size={16} /> : <IconXCircle size={16} />}
               <span>
-                {report.reason || 'Storage не работает.'}
+                {report.reason || t('shp.problemDefault')}
                 {report.restartable
-                  ? ' Кнопка «Перезапустить Storage» поднимает только сервис storage.'
-                  : ' Перезапуск это не лечит — исправьте ключ в .env стека Supabase.'}
+                  ? t('shp.restartableHint')
+                  : t('shp.notRestartableHint')}
               </span>
             </div>
           )}
           {!report.problem && report.state === 'running' && report.api === 'ok' && (
             <div className="ops-notice ops-notice-info">
-              <IconCheckCircle size={16} /> Загрузки аватаров, логотипов и документов идут в Storage.
+              <IconCheckCircle size={16} /> {t('shp.allGood')}
             </div>
           )}
           {report.reason && !report.problem && (
@@ -265,16 +260,16 @@ export default function StorageHealthPanel({
           disabled={!agentConnected || loading}
           onClick={() => void load()}
         >
-          <IconSync size={14} /> {loading ? 'Проверяю…' : 'Проверить'}
+          <IconSync size={14} /> {loading ? t('shp.checking') : t('shp.check')}
         </button>
         <button
           type="button"
           className="ops-button-primary"
           disabled={!agentConnected || restarting || data?.busy === true}
-          title={data?.busy ? 'Агент занят другой задачей — дождитесь её окончания' : 'Перезапустить только сервис storage, если он не работает'}
+          title={data?.busy ? t('shp.busyTitle') : t('shp.restartTitle')}
           onClick={() => void restart()}
         >
-          <IconRefresh size={14} /> {restarting ? 'Запускаю…' : 'Перезапустить Storage'}
+          <IconRefresh size={14} /> {restarting ? t('shp.starting') : t('shp.restart')}
         </button>
         {message && <span className="ops-inline-note">{message}</span>}
       </div>

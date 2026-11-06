@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ArchitectBody, ArchitectPlan, PlannedSite } from '@/lib/architect/types';
 import { getInstallation } from '@/lib/architect/planner';
 import { cardStyle, errorText, inputStyle, mutedText, primaryButton, rowStyle, sectionTitle, ghostButton } from '@/components/Architect/panelStyles';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface KeyState {
   connected: boolean;
@@ -31,6 +32,7 @@ interface RavenCreatePanelProps {
 const NO_KEY: KeyState = { connected: false, mask: null, cmdrName: null };
 
 export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked }: RavenCreatePanelProps) {
+  const { t } = useI18n();
   const [keyState, setKeyState] = useState<KeyState>(NO_KEY);
   const [keyInput, setKeyInput] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
@@ -73,7 +75,7 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
         body: JSON.stringify({ key: keyInput }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
+      if (!res.ok) throw new Error(data.error || t('rvcp.error', { status: res.status }));
       setKeyState({ connected: true, mask: data.mask, cmdrName: data.cmdrName });
       setKeyInput('');
     } catch (err) {
@@ -81,7 +83,7 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
     } finally {
       setKeyBusy(false);
     }
-  }, [keyInput]);
+  }, [keyInput, t]);
 
   const removeKey = useCallback(async () => {
     setKeyBusy(true);
@@ -94,7 +96,7 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
     } finally {
       setKeyBusy(false);
     }
-  }, []);
+  }, [t]);
 
   const create = useCallback(async () => {
     if (!site) return;
@@ -117,54 +119,53 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
+      if (!res.ok) throw new Error(data.error || t('rvcp.error', { status: res.status }));
       onLinked(site.id, String(data.buildId));
-      setMessage(`Проект создан в Raven Colonial (buildId ${data.buildId}).`
-        + (data.linkError ? ` Привязка к командиру не прошла: ${data.linkError}` : ''));
+      setMessage(t('rvcp.created', { id: data.buildId })
+        + (data.linkError ? t('rvcp.linkFailed', { error: data.linkError }) : ''));
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
-  }, [site, bodiesByName, marketId, systemAddress, buildName, system, plan.architect, onLinked]);
+  }, [site, bodiesByName, marketId, systemAddress, buildName, system, plan.architect, onLinked, t]);
 
   return (
     <section style={cardStyle}>
       <div style={rowStyle}>
-        <h3 style={sectionTitle}>Проект в Raven Colonial</h3>
+        <h3 style={sectionTitle}>{t('rvcp.title')}</h3>
       </div>
 
       {!keyState.connected ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
           <div style={mutedText}>
-            Чтобы создавать проекты с сайта, сохраните RCC-ключ (Raven Colonial → настройки).
-            Ключ хранится на сервере в зашифрованном виде и в браузер не возвращается.
+            {t('rvcp.keyIntro')}
           </div>
           <input
             type="password"
             value={keyInput}
             onChange={(event) => setKeyInput(event.target.value)}
-            placeholder="RCC-ключ"
+            placeholder={t('rvcp.keyPlaceholder')}
             style={inputStyle}
             autoComplete="off"
           />
           <button type="button" onClick={saveKey} disabled={keyBusy || keyInput.trim().length < 8} style={primaryButton}>
-            {keyBusy ? 'Проверяю…' : 'Сохранить ключ'}
+            {keyBusy ? t('rvcp.checking') : t('rvcp.saveKey')}
           </button>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
           <div style={{ ...mutedText, display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span>Ключ: {keyState.mask}{keyState.cmdrName ? ` · командир ${keyState.cmdrName}` : ''}</span>
-            <button type="button" onClick={removeKey} disabled={keyBusy} style={ghostButton}>Удалить ключ</button>
+            <span>{t('rvcp.keyLine', { mask: keyState.mask ?? '' })}{keyState.cmdrName ? t('rvcp.cmdrSuffix', { name: keyState.cmdrName }) : ''}</span>
+            <button type="button" onClick={removeKey} disabled={keyBusy} style={ghostButton}>{t('rvcp.removeKey')}</button>
           </div>
 
           {unlinked.length === 0 ? (
-            <div style={mutedText}>Все постройки плана уже связаны с проектами Raven.</div>
+            <div style={mutedText}>{t('rvcp.allLinked')}</div>
           ) : (
             <>
               <label style={mutedText}>
-                Постройка
+                {t('rvcp.build')}
                 <select
                   value={site?.id ?? ''}
                   onChange={(event) => { setSiteId(event.target.value); setBuildName(''); }}
@@ -178,15 +179,15 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
                 </select>
               </label>
               <label style={mutedText}>
-                MarketID стройплощадки (из игры)
+                {t('rvcp.marketId')}
                 <input value={marketId} onChange={(e) => setMarketId(e.target.value.replace(/\D/g, ''))} style={{ ...inputStyle, marginLeft: 8 }} />
               </label>
               <label style={mutedText}>
-                SystemAddress системы
+                {t('rvcp.systemAddress')}
                 <input value={systemAddress} onChange={(e) => setSystemAddress(e.target.value.replace(/\D/g, ''))} style={{ ...inputStyle, marginLeft: 8 }} />
               </label>
               <label style={mutedText}>
-                Название проекта
+                {t('rvcp.projectName')}
                 <input value={buildName} onChange={(e) => setBuildName(e.target.value)} style={{ ...inputStyle, marginLeft: 8 }} />
               </label>
               <button
@@ -195,11 +196,10 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
                 disabled={busy || !site || !marketId || !systemAddress || !buildName.trim()}
                 style={primaryButton}
               >
-                {busy ? 'Создаю…' : 'Создать проект в Raven'}
+                {busy ? t('rvcp.creating') : t('rvcp.create')}
               </button>
               <div style={mutedText}>
-                Raven требует MarketID и SystemAddress: их знает журнал игры (стройплощадка) и адрес системы.
-                После создания постройка связывается с проектом и не дублируется при синхронизациях.
+                {t('rvcp.hint')}
               </div>
             </>
           )}

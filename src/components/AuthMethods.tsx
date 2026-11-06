@@ -7,10 +7,12 @@ import { startOAuthAction, startVkAuthAction, startYandexAuthAction } from '@/ap
 import { OAUTH_PROVIDERS, isOAuthProvider, oauthErrorMessage, canUnlinkOAuthIdentity, type OAuthProvider } from '@/lib/oauthProviders';
 import { VK_LABEL, VK_PROVIDER, vkErrorMessage } from '@/lib/vkShared';
 import { YANDEX_LABEL, YANDEX_PROVIDER, yandexErrorMessage } from '@/lib/yandexShared';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export function OAuthNotice() {
   const [notice, setNotice] = useState('');
   const [isError, setIsError] = useState(false);
+  const { t } = useI18n();
   useEffect(() => {
     const url = new URL(window.location.href);
     const provider = url.searchParams.get('provider');
@@ -21,11 +23,11 @@ export function OAuthNotice() {
         : oauthErrorMessage(error, isOAuthProvider(provider) ? provider : undefined));
       setIsError(true);
     } else if (url.searchParams.get('oauth') === 'linked' && provider === VK_PROVIDER) {
-      setNotice(`${VK_LABEL} привязан к этому аккаунту.`);
+      setNotice(t('amth.linkedTo', { provider: VK_LABEL }));
     } else if (url.searchParams.get('oauth') === 'linked' && provider === YANDEX_PROVIDER) {
-      setNotice(`${YANDEX_LABEL} привязан к этому аккаунту.`);
+      setNotice(t('amth.linkedTo', { provider: YANDEX_LABEL }));
     } else if (url.searchParams.get('oauth') === 'linked' && isOAuthProvider(provider)) {
-      setNotice(`${OAUTH_PROVIDERS[provider].label} привязан к этому аккаунту.`);
+      setNotice(t('amth.linkedTo', { provider: OAUTH_PROVIDERS[provider].label }));
     }
     for (const key of ['oauth_error', 'error', 'oauth', 'provider']) url.searchParams.delete(key);
     window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
@@ -37,6 +39,7 @@ export function OAuthNotice() {
 export default function AuthMethods({ user, onChanged, disabled = false }: {
   user?: User; onChanged?: () => void | Promise<void>; disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const [enabled, setEnabled] = useState<OAuthProvider[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -77,7 +80,7 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
           setLoaded(true);
         }
       })
-      .catch(() => { if (active) setMessage('Не удалось загрузить способы входа. Обновите страницу.'); });
+      .catch(() => { if (active) setMessage(t('amth.loadFailed')); });
     void loadVk();
     void loadYandex();
     return () => { active = false; };
@@ -88,19 +91,19 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
     setBusy(true); setMessage('');
     try {
       const result = await startVkAuthAction(user ? 'link' : 'login');
-      if (result.error || !result.url) setMessage(result.error || 'Не получен адрес авторизации.');
+      if (result.error || !result.url) setMessage(result.error || t('amth.noAuthUrl'));
       else { window.location.assign(result.url); return; }
-    } catch { setMessage('Ошибка соединения. Повторите попытку.'); }
+    } catch { setMessage(t('amth.connectionError')); }
     setBusy(false);
   };
   const unlinkVk = async () => {
-    if (!window.confirm(`Отвязать ${VK_LABEL}? Убедитесь, что можете войти другим способом.`)) return;
+    if (!window.confirm(t('amth.confirmUnlink', { provider: VK_LABEL }))) return;
     setBusy(true); setMessage('');
     try {
       const response = await fetch('/api/auth/vk', { method: 'DELETE' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'vk_failed');
-      setMessage(`${VK_LABEL} отвязан.`);
+      setMessage(t('amth.unlinked', { provider: VK_LABEL }));
       await loadVk();
       await onChanged?.();
     } catch (error) {
@@ -112,19 +115,19 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
     setBusy(true); setMessage('');
     try {
       const result = await startYandexAuthAction(user ? 'link' : 'login');
-      if (result.error || !result.url) setMessage(result.error || 'Не получен адрес авторизации.');
+      if (result.error || !result.url) setMessage(result.error || t('amth.noAuthUrl'));
       else { window.location.assign(result.url); return; }
-    } catch { setMessage('Ошибка соединения. Повторите попытку.'); }
+    } catch { setMessage(t('amth.connectionError')); }
     setBusy(false);
   };
   const unlinkYandex = async () => {
-    if (!window.confirm(`Отвязать ${YANDEX_LABEL}? Убедитесь, что можете войти другим способом.`)) return;
+    if (!window.confirm(t('amth.confirmUnlink', { provider: YANDEX_LABEL }))) return;
     setBusy(true); setMessage('');
     try {
       const response = await fetch('/api/auth/yandex', { method: 'DELETE' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'yandex_failed');
-      setMessage(`${YANDEX_LABEL} отвязан.`);
+      setMessage(t('amth.unlinked', { provider: YANDEX_LABEL }));
       await loadYandex();
       await onChanged?.();
     } catch (error) {
@@ -138,14 +141,14 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
     setBusy(true); setMessage('');
     try {
       const result = await startOAuthAction(provider, user ? 'link' : 'login');
-      if (result.error || !result.url) setMessage(result.error || 'Не получен адрес авторизации.');
+      if (result.error || !result.url) setMessage(result.error || t('amth.noAuthUrl'));
       else { window.location.assign(result.url); return; }
-    } catch { setMessage('Ошибка соединения. Повторите попытку.'); }
+    } catch { setMessage(t('amth.connectionError')); }
     setBusy(false);
   };
 
   const unlink = async (provider: OAuthProvider) => {
-    if (!window.confirm(`Отвязать ${OAUTH_PROVIDERS[provider].label}? Убедитесь, что можете войти другим способом.`)) return;
+    if (!window.confirm(t('amth.confirmUnlink', { provider: OAUTH_PROVIDERS[provider].label }))) return;
     setBusy(true); setMessage('');
     try {
       // Re-read identities: the account may have changed in another tab.
@@ -156,7 +159,7 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
       if (!canUnlinkOAuthIdentity(current, provider, enabled)) throw new Error('last_identity');
       const { error } = await supabase.auth.unlinkIdentity(identity);
       if (error) throw error;
-      setMessage(`${OAUTH_PROVIDERS[provider].label} отвязан.`);
+      setMessage(t('amth.unlinked', { provider: OAUTH_PROVIDERS[provider].label }));
       await onChanged?.();
     } catch (error) {
       setMessage(oauthErrorMessage(error instanceof Error ? error.message : '', provider));
@@ -166,41 +169,40 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
   return <div>
     <OAuthNotice />
     {user && <p style={{ color: '#9ca3af', fontSize: 13 }}>
-      Все привязанные способы ведут в одно досье. Перед отвязкой настройте пароль
-      или другой способ входа. Для пароля воспользуйтесь восстановлением по почте. Frontier CAPI ниже — источник игровых данных, а не вход на сайт.
+      {t('amth.intro')}
     </p>}
-    {!loaded && !message && <p>Загрузка способов входа…</p>}
+    {!loaded && !message && <p>{t('amth.loading')}</p>}
     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
       {providers.map(provider => <div key={provider}>
         {user && <p style={{ fontSize: 12, marginBottom: 6 }}>
-          {OAUTH_PROVIDERS[provider].label}: {linked.includes(provider) ? 'привязан' : 'не привязан'}
+          {OAUTH_PROVIDERS[provider].label}: {linked.includes(provider) ? t('amth.linked') : t('amth.notLinked')}
         </p>}
         <button type="button" className={linked.includes(provider) ? 'btn danger-btn' : 'btn btn-cyan'}
           disabled={disabled || busy || !loaded}
           onClick={() => linked.includes(provider) ? void unlink(provider) : void start(provider)}>
-          {linked.includes(provider) ? 'Отвязать' : user ? 'Привязать' : 'Войти через'} {OAUTH_PROVIDERS[provider].label}
+          {linked.includes(provider) ? t('amth.unlink') : user ? t('amth.link') : t('amth.loginVia')} {OAUTH_PROVIDERS[provider].label}
         </button>
       </div>)}
       {(vkEnabled || vk?.linked) && <div key={VK_PROVIDER}>
         {user && <p style={{ fontSize: 12, marginBottom: 6 }}>
-          {VK_LABEL}: {vk?.linked ? `привязан${vk.name ? ` (${vk.name})` : ''}` : 'не привязан'}
+          {VK_LABEL}: {vk?.linked ? t('amth.linked') + (vk.name ? ` (${vk.name})` : '') : t('amth.notLinked')}
         </p>}
         <button type="button" className={vk?.linked ? 'btn danger-btn' : 'btn btn-cyan'}
           disabled={disabled || busy || !loaded || (vk?.linked && !vk.canUnlink)}
           title={vk?.linked && !vk.canUnlink ? vkErrorMessage('last_identity') : undefined}
           onClick={() => vk?.linked ? void unlinkVk() : void startVk()}>
-          {vk?.linked ? 'Отвязать' : user ? 'Привязать' : 'Войти через'} {VK_LABEL}
+          {vk?.linked ? t('amth.unlink') : user ? t('amth.link') : t('amth.loginVia')} {VK_LABEL}
         </button>
       </div>}
       {(yandexEnabled || yandex?.linked) && <div key={YANDEX_PROVIDER}>
         {user && <p style={{ fontSize: 12, marginBottom: 6 }}>
-          {YANDEX_LABEL}: {yandex?.linked ? `привязан${yandex.name ? ` (${yandex.name})` : ''}` : 'не привязан'}
+          {YANDEX_LABEL}: {yandex?.linked ? t('amth.linked') + (yandex.name ? ` (${yandex.name})` : '') : t('amth.notLinked')}
         </p>}
         <button type="button" className={yandex?.linked ? 'btn danger-btn' : 'btn btn-cyan'}
           disabled={disabled || busy || !loaded || (yandex?.linked && !yandex.canUnlink)}
           title={yandex?.linked && !yandex.canUnlink ? yandexErrorMessage('last_identity') : undefined}
           onClick={() => yandex?.linked ? void unlinkYandex() : void startYandex()}>
-          {yandex?.linked ? 'Отвязать' : user ? 'Привязать' : 'Войти через'} {YANDEX_LABEL}
+          {yandex?.linked ? t('amth.unlink') : user ? t('amth.link') : t('amth.loginVia')} {YANDEX_LABEL}
         </button>
       </div>}
     </div>

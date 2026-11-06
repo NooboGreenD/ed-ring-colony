@@ -10,12 +10,14 @@ import CosmeticBadge from "./CosmeticBadge";
 import CosmeticCallsign from "./CosmeticCallsign";
 import CosmeticTitle from "./CosmeticTitle";
 import { invalidateCosmetics } from "./useCosmetics";
+import { useI18n } from '@/lib/i18n/I18nContext';
 
-const CATEGORY_LABEL: Record<string, string> = { frame: "Рамка", badge: "Знак", skin: "HUD-тема", glow: "Свечение", title: "Титул" };
-const TX_LABEL: Record<string, string> = { subscription: "Подписка", shop_purchase: "Покупка", credit_topup: "Пополнение", refund: "Возврат", admin_grant: "Начисление" };
+const CATEGORY_LABEL: Record<string, string> = { frame: "aprem.catFrame", badge: "aprem.catBadge", skin: "aprem.catSkin", glow: "aprem.catGlow", title: "aprem.catTitle" };
+const TX_LABEL: Record<string, string> = { subscription: "aprem.txSubscription", shop_purchase: "aprem.txShopPurchase", credit_topup: "aprem.txTopup", refund: "aprem.txRefund", admin_grant: "aprem.txAdminGrant" };
 
 /** "Премиум и покупки" tab on /account: everything the pilot owns, in one place. */
 export default function AccountPremiumPanel() {
+  const { t, locale } = useI18n();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [balance, setBalance] = useState<UserBalance | null>(null);
@@ -35,7 +37,7 @@ export default function AccountPremiumPanel() {
     try {
       const res = await authFetch("/api/shop/user-state", { cache: "no-store" });
       const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || "Ошибка загрузки");
+      if (!res.ok || !data.success) throw new Error(data.error || t('aprem.loadError'));
       setBalance(data.balance);
       setSubscription(data.subscription);
       setInventory(data.inventory || []);
@@ -70,7 +72,7 @@ export default function AccountPremiumPanel() {
         body: JSON.stringify({ category: inv.item.category, itemId: inv.is_equipped ? null : inv.item_id }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка");
+      if (!res.ok) throw new Error(data.error || t('aprem.error'));
       setEquipped(data.equipped);
       setInventory((list) => list.map((i) => (i.item?.category === inv.item?.category ? { ...i, is_equipped: !inv.is_equipped && i.item_id === inv.item_id } : i)));
       invalidateCosmetics(userId || undefined);
@@ -83,7 +85,7 @@ export default function AccountPremiumPanel() {
     }
   };
 
-  if (loading) return <p style={{ color: "var(--muted)" }}>Загрузка данных премиум-аккаунта…</p>;
+  if (loading) return <p style={{ color: "var(--muted)" }}>{t('aprem.loading')}</p>;
 
   const eqItem = (id?: string | null) => inventory.find((i) => i.item_id === id)?.item;
   const frame = eqItem(equipped?.frame_id);
@@ -100,33 +102,33 @@ export default function AccountPremiumPanel() {
       {/* Status cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14 }}>
         <div className="card" style={{ margin: 0, padding: "14px 18px" }}>
-          <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}><IconCoins size={12} color="#e67e22" /> Баланс кредитов</div>
-          <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "var(--orange)", margin: "6px 0 2px" }}>{(balance?.credits || 0).toLocaleString("ru-RU")}</div>
-          <div style={{ fontSize: 11, color: "var(--muted)" }}>Потрачено: {(balance?.total_spent_credits || 0).toLocaleString("ru-RU")} кр. / {(balance?.total_spent_rub || 0).toLocaleString("ru-RU")} ₽</div>
-          <Link href="/premium-shop?topup=1" className="btn btn-orange" style={{ marginTop: 10, fontSize: 11, padding: "5px 12px", display: "inline-block" }}>Пополнить</Link>
+          <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}><IconCoins size={12} color="#e67e22" /> {t('aprem.creditBalance')}</div>
+          <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "var(--orange)", margin: "6px 0 2px" }}>{(balance?.credits || 0).toLocaleString(locale)}</div>
+          <div style={{ fontSize: 11, color: "var(--muted)" }}>{t('aprem.spent', { credits: (balance?.total_spent_credits || 0).toLocaleString(locale), rub: (balance?.total_spent_rub || 0).toLocaleString(locale) })}</div>
+          <Link href="/premium-shop?topup=1" className="btn btn-orange" style={{ marginTop: 10, fontSize: 11, padding: "5px 12px", display: "inline-block" }}>{t('aprem.topup')}</Link>
         </div>
 
         <div className="card" style={{ margin: 0, padding: "14px 18px", borderColor: subscription?.plan?.color || undefined }}>
-          <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}><IconCrown size={12} color={subscription?.plan?.color || "#9ca3af"} /> Подписка</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}><IconCrown size={12} color={subscription?.plan?.color || "#9ca3af"} /> {t('aprem.subscription')}</div>
           {subscription ? (
             <>
               <div style={{ fontSize: 18, fontWeight: 700, color: subscription.plan?.color || "var(--text)", margin: "6px 0 2px" }}>{subscription.plan?.name || subscription.plan_id}</div>
               <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                До {subscription.expires_at ? new Date(subscription.expires_at).toLocaleDateString("ru-RU") : "—"} {daysLeft !== null && `(${daysLeft} дн.)`} • скидка в магазине {subscription.plan?.discount_pct || 0}%
+                {t('aprem.until', { date: subscription.expires_at ? new Date(subscription.expires_at).toLocaleDateString(locale) : '—' })} {daysLeft !== null && t('aprem.daysLeft', { days: daysLeft })} • {t('aprem.shopDiscount', { percent: subscription.plan?.discount_pct || 0 })}
               </div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Оплата: {subscription.payment_method}{subscription.auto_renew ? " • автопродление" : ""}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{t('aprem.payment', { method: subscription.payment_method || '' })}{subscription.auto_renew ? t('aprem.autoRenew') : ''}</div>
             </>
           ) : (
             <>
-              <div style={{ fontSize: 15, color: "var(--text)", margin: "6px 0 2px" }}>Стандартный статус</div>
-              <div style={{ fontSize: 11, color: "var(--muted)" }}>Подписка даёт скидки до {Math.max(0, ...plans.map((p) => p.discount_pct || 0))}% и доступ к эксклюзивам.</div>
+              <div style={{ fontSize: 15, color: "var(--text)", margin: "6px 0 2px" }}>{t('aprem.standardStatus')}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)" }}>{t('aprem.noSubHint', { percent: Math.max(0, ...plans.map((p) => p.discount_pct || 0)) })}</div>
             </>
           )}
-          <Link href="/subscriptions" className="btn btn-cyan" style={{ marginTop: 10, fontSize: 11, padding: "5px 12px", display: "inline-block" }}>{subscription ? "Продлить / сменить" : "Оформить"}</Link>
+          <Link href="/subscriptions" className="btn btn-cyan" style={{ marginTop: 10, fontSize: 11, padding: "5px 12px", display: "inline-block" }}>{subscription ? t('aprem.manage') : t('aprem.subscribe')}</Link>
         </div>
 
         <div className="card" style={{ margin: 0, padding: "14px 18px" }}>
-          <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, textTransform: "uppercase" }}>Как вас видят другие</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, textTransform: "uppercase" }}>{t('aprem.howOthersSee')}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10 }}>
             <CosmeticAvatar frameId={frame?.id} framePreview={frame?.preview_data} size={48} />
             <div style={{ minWidth: 0 }}>
@@ -134,19 +136,19 @@ export default function AccountPremiumPanel() {
                 {badge && <CosmeticBadge badgeId={badge.id} badgePreview={badge.preview_data} title={badge.title} size={20} />}
                 <CosmeticCallsign name={cmdrName} glowId={glow?.id} glowPreview={glow?.preview_data} tier={subscription?.plan?.badge_label || null} tierColor={subscription?.plan?.color || null} fontSize={14} />
               </div>
-              <div style={{ marginTop: 4 }}>{title ? <CosmeticTitle titleId={title.id} titlePreview={title.preview_data} text={title.title} /> : <span style={{ fontSize: 11, color: "var(--muted)" }}>Титул не выбран</span>}</div>
+              <div style={{ marginTop: 4 }}>{title ? <CosmeticTitle titleId={title.id} titlePreview={title.preview_data} text={title.title} /> : <span style={{ fontSize: 11, color: "var(--muted)" }}>{t('aprem.noTitle')}</span>}</div>
             </div>
           </div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>HUD-тема: {skin ? <span style={{ color: skin.preview_data?.color }}>{skin.title}</span> : "стандартная"}</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>{t('aprem.hudTheme', { value: '' })}{skin ? <span style={{ color: skin.preview_data?.color }}>{skin.title}</span> : t('aprem.standard')}</div>
         </div>
       </div>
 
       {pending.length > 0 && (
         <div style={{ padding: "10px 14px", border: "1px solid #f39c12", background: "rgba(243,156,18,0.08)", fontSize: 13 }}>
-          <b style={{ color: "#f39c12" }}>Ожидают оплаты:</b>{" "}
+          <b style={{ color: "#f39c12" }}>{t('aprem.pendingPayments')}</b>{" "}
           {pending.map((p) => (
             <Link key={p.id} href={`/premium-shop/pay/${p.id}`} style={{ marginRight: 12, color: "var(--orange)" }}>
-              {TX_LABEL[p.purpose] || p.purpose} • {p.amount_rub} ₽
+              {TX_LABEL[p.purpose] ? t(TX_LABEL[p.purpose]) : p.purpose} • {p.amount_rub} ₽
             </Link>
           ))}
         </div>
@@ -154,10 +156,10 @@ export default function AccountPremiumPanel() {
 
       {/* Inventory */}
       <div>
-        <h3 style={{ margin: "0 0 10px", display: "flex", alignItems: "center", gap: 8 }}><IconStore size={16} color="#e67e22" /> Мои улучшения ({inventory.length})</h3>
+        <h3 style={{ margin: "0 0 10px", display: "flex", alignItems: "center", gap: 8 }}><IconStore size={16} color="#e67e22" /> {t('aprem.inventoryTitle', { count: inventory.length })}</h3>
         {inventory.length === 0 ? (
           <p style={{ color: "var(--muted)", fontSize: 13 }}>
-            Пока ничего не куплено. <Link href="/premium-shop" style={{ color: "var(--orange)" }}>Открыть премиум-магазин →</Link>
+            {t('aprem.nothingBought')} <Link href="/premium-shop" style={{ color: "var(--orange)" }}>{t('aprem.openShop')}</Link>
           </p>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 10 }}>
@@ -177,13 +179,13 @@ export default function AccountPremiumPanel() {
                     </span>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.title}</div>
-                      <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1 }}>{CATEGORY_LABEL[it.category] || it.category} • {it.rarity}</div>
+                      <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1 }}>{CATEGORY_LABEL[it.category] ? t(CATEGORY_LABEL[it.category]) : it.category} • {it.rarity}</div>
                     </div>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: 10, color: "var(--muted)" }}>Куплено {new Date(inv.purchased_at).toLocaleDateString("ru-RU")}</span>
+                    <span style={{ fontSize: 10, color: "var(--muted)" }}>{t('aprem.boughtAt', { date: new Date(inv.purchased_at).toLocaleDateString(locale) })}</span>
                     <button type="button" onClick={() => toggleEquip(inv)} disabled={busy !== null} className={inv.is_equipped ? "btn btn-cyan" : "btn btn-orange"} style={{ fontSize: 10, padding: "3px 10px", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                      {inv.is_equipped ? <><IconX size={10} /> Снять</> : <><IconCheck size={10} /> Надеть</>}
+                      {inv.is_equipped ? <><IconX size={10} /> {t('aprem.unequip')}</> : <><IconCheck size={10} /> {t('aprem.equip')}</>}
                     </button>
                   </div>
                 </div>
@@ -195,33 +197,33 @@ export default function AccountPremiumPanel() {
 
       {/* Transactions */}
       <div>
-        <h3 style={{ margin: "0 0 10px" }}>История операций</h3>
+        <h3 style={{ margin: "0 0 10px" }}>{t('aprem.historyTitle')}</h3>
         {txs.length === 0 ? (
-          <p style={{ color: "var(--muted)", fontSize: 13 }}>Операций пока нет.</p>
+          <p style={{ color: "var(--muted)", fontSize: 13 }}>{t('aprem.noTransactions')}</p>
         ) : (
           <div className="table-scroll">
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ color: "var(--muted)", textAlign: "left", borderBottom: "1px solid var(--line)" }}>
-                  <th style={{ padding: "6px 8px" }}>Дата</th>
-                  <th style={{ padding: "6px 8px" }}>Тип</th>
-                  <th style={{ padding: "6px 8px" }}>Описание</th>
+                  <th style={{ padding: "6px 8px" }}>{t('aprem.colDate')}</th>
+                  <th style={{ padding: "6px 8px" }}>{t('aprem.colType')}</th>
+                  <th style={{ padding: "6px 8px" }}>{t('aprem.colDescription')}</th>
                   <th style={{ padding: "6px 8px", textAlign: "right" }}>₽</th>
-                  <th style={{ padding: "6px 8px", textAlign: "right" }}>Кредиты</th>
-                  <th style={{ padding: "6px 8px" }}>Статус</th>
+                  <th style={{ padding: "6px 8px", textAlign: "right" }}>{t('aprem.colCredits')}</th>
+                  <th style={{ padding: "6px 8px" }}>{t('aprem.colStatus')}</th>
                 </tr>
               </thead>
               <tbody>
-                {txs.map((t) => (
-                  <tr key={t.id} style={{ borderBottom: "1px solid #25282b" }}>
-                    <td style={{ padding: "6px 8px", fontFamily: "ui-monospace, monospace", whiteSpace: "nowrap" }}>{new Date(t.created_at).toLocaleString("ru-RU")}</td>
-                    <td style={{ padding: "6px 8px" }}>{TX_LABEL[t.type] || t.type}</td>
-                    <td style={{ padding: "6px 8px" }}>{t.item_title}<span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 10 }}>{t.id}</span></td>
-                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "ui-monospace, monospace" }}>{t.amount_rub ? t.amount_rub.toLocaleString("ru-RU") : "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "ui-monospace, monospace", color: t.type === "shop_purchase" || (t.type === "subscription" && t.amount_credits) ? "#e74c3c" : "#2ecc71" }}>
-                      {t.amount_credits ? `${t.type === "shop_purchase" || t.type === "subscription" ? "−" : "+"}${Math.abs(t.amount_credits).toLocaleString("ru-RU")}` : "—"}
+                {txs.map((tx) => (
+                  <tr key={tx.id} style={{ borderBottom: "1px solid #25282b" }}>
+                    <td style={{ padding: "6px 8px", fontFamily: "ui-monospace, monospace", whiteSpace: "nowrap" }}>{new Date(tx.created_at).toLocaleString(locale)}</td>
+                    <td style={{ padding: "6px 8px" }}>{TX_LABEL[tx.type] ? t(TX_LABEL[tx.type]) : tx.type}</td>
+                    <td style={{ padding: "6px 8px" }}>{tx.item_title}<span style={{ color: "var(--muted)", marginLeft: 6, fontSize: 10 }}>{tx.id}</span></td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "ui-monospace, monospace" }}>{tx.amount_rub ? tx.amount_rub.toLocaleString(locale) : "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "ui-monospace, monospace", color: tx.type === "shop_purchase" || (tx.type === "subscription" && tx.amount_credits) ? "#e74c3c" : "#2ecc71" }}>
+                      {tx.amount_credits ? `${tx.type === "shop_purchase" || tx.type === "subscription" ? "−" : "+"}${Math.abs(tx.amount_credits).toLocaleString(locale)}` : "—"}
                     </td>
-                    <td style={{ padding: "6px 8px", color: t.status === "completed" ? "#2ecc71" : t.status === "refunded" ? "#f39c12" : "#9ca3af" }}>{t.status}</td>
+                    <td style={{ padding: "6px 8px", color: tx.status === "completed" ? "#2ecc71" : tx.status === "refunded" ? "#f39c12" : "#9ca3af" }}>{tx.status}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useMemo, useState } from 'react';
 import {
   BUILD_CLASS_LABELS_RU,
@@ -34,7 +35,7 @@ interface SiteEditorProps {
 }
 
 const STATUS_ORDER: PlannedSiteStatus[] = ['plan', 'building', 'complete'];
-const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'план', building: 'строится', complete: 'готово' };
+const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'sed.stPlan', building: 'sed.stBuilding', complete: 'sed.stComplete' };
 
 /**
  * Редактирование постройки, уже добавленной в план: тип, тело, статус,
@@ -42,6 +43,7 @@ const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'план', bui
  * «Сохранить» не даст положить постройку туда, где она невозможна.
  */
 export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDelete }: SiteEditorProps) {
+  const { t } = useI18n();
   const [installationId, setInstallationId] = useState(site.installationId);
   const [bodyName, setBodyName] = useState(site.bodyName);
   const [status, setStatus] = useState<PlannedSiteStatus>(site.status);
@@ -72,7 +74,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
   }, [query, targetBody, planWithoutSite]);
 
   const chosenCheck = installation ? placementCheck(targetBody, installationId, planWithoutSite) : null;
-  const errors = chosenCheck?.errors ?? ['Неизвестная постройка'];
+  const errors = chosenCheck?.errors ?? [t('sed.unknownSite')];
   const warnings = chosenCheck?.warnings ?? [];
   // Соответствие экономики выбранному телу и связи постройки с остальными.
   const economyFit = installation && installation.influence !== 'none' && targetBody && targetBody.kind !== 'star'
@@ -111,21 +113,21 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
             <div>
               <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-                Редактирование постройки
+                {t('sed.editTitle')}
               </div>
               <div style={{ fontSize: 18, color: 'var(--text)' }}>
                 {installation?.nameRu ?? site.installationId}
-                {site.primary ? <span style={{ color: 'var(--orange)', fontSize: 14 }}> ★ основной порт</span> : null}
+                {site.primary ? <span style={{ color: 'var(--orange)', fontSize: 14 }}> {t('sed.primaryPort')}</span> : null}
               </div>
             </div>
-            <button type="button" onClick={onClose} style={buttonStyle}>Закрыть</button>
+            <button type="button" onClick={onClose} style={buttonStyle}>{t('sed.close')}</button>
           </div>
         </div>
 
         <div style={{ overflowY: 'auto', padding: '12px 18px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
             <label style={{ ...fieldLabel, flex: '1 1 200px' }}>
-              тело
+              {t('sed.body')}
               <select
                 value={bodyName}
                 onChange={(event) => setBodyName(event.target.value)}
@@ -137,7 +139,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
               </select>
             </label>
             <div style={{ ...fieldLabel, flex: '0 0 auto' }}>
-              статус
+              {t('sed.status')}
               <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
                 {STATUS_ORDER.map((value) => (
                   <button
@@ -146,7 +148,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                     onClick={() => setStatus(value)}
                     style={{ ...chipStyle, ...(status === value ? chipActive : {}) }}
                   >
-                    {STATUS_LABELS[value]}
+                    {t(STATUS_LABELS[value])}
                   </button>
                 ))}
               </div>
@@ -157,8 +159,8 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Поиск постройки: порт, ферма, consus…"
-              aria-label="Поиск постройки"
+              placeholder={t('sed.searchPlaceholder')}
+              aria-label={t('sed.searchAria')}
               style={{ ...inputStyle, width: '100%', marginBottom: 8 }}
             />
             <div style={{ border: '1px solid var(--line)', borderRadius: 4, maxHeight: 260, overflowY: 'auto' }}>
@@ -187,8 +189,8 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                       <span style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>
                         {BUILD_CLASS_LABELS_RU[entry.buildClass]} · T{entry.tier}
                         {' · '}
-                        {entry.location === 'surface' ? 'поверхность' : 'орбита'}
-                        {entry.pad !== 'none' ? ` · площадка ${PAD_LABELS_RU[entry.pad]}` : ''}
+                        {entry.location === 'surface' ? t('sed.surface') : t('sed.orbital')}
+                        {entry.pad !== 'none' ? t('sed.pad', { pad: PAD_LABELS_RU[entry.pad] }) : ''}
                         {check.errors.length > 0 ? ` · ${check.errors[0]}` : ''}
                       </span>
                     </span>
@@ -199,7 +201,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                 );
               })}
               {rows.length === 0 && (
-                <div style={{ padding: 16, color: 'var(--muted)', fontSize: 13 }}>Ничего не найдено.</div>
+                <div style={{ padding: 16, color: 'var(--muted)', fontSize: 13 }}>{t('sed.nothingFound')}</div>
               )}
             </div>
           </div>
@@ -208,14 +210,14 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
             <div style={{ border: '1px solid var(--line)', borderRadius: 4, padding: '10px 12px', background: 'var(--bg)' }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  {installation.needs.count > 0 ? `нужно ${installation.needs.count} очк. T${installation.needs.tier}` : 'очков не требует'}
-                  {installation.gives.count > 0 ? ` · даёт ${installation.gives.count} очк. T${installation.gives.tier}` : ''}
-                  {installation.preReq && PRE_REQS[installation.preReq] ? ` · предшественник: ${PRE_REQS[installation.preReq].label}` : ''}
-                  {` · экономика: ${ECONOMY_LABELS_RU[installation.influence]}`}
+                  {installation.needs.count > 0 ? t('sed.needs', { count: installation.needs.count, tier: installation.needs.tier }) : t('sed.noPoints')}
+                  {installation.gives.count > 0 ? t('sed.gives', { count: installation.gives.count, tier: installation.gives.tier }) : ''}
+                  {installation.preReq && PRE_REQS[installation.preReq] ? t('sed.predecessor', { label: PRE_REQS[installation.preReq].label }) : ''}
+                  {t('sed.economy', { label: ECONOMY_LABELS_RU[installation.influence] })}
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text)', fontFamily: 'ui-monospace, monospace' }}>
                   {formatTons(effectiveTons)}
-                  {primaryCargo ? <span style={{ color: 'var(--orange)', fontSize: 11 }}> (основной порт)</span> : null}
+                  {primaryCargo ? <span style={{ color: 'var(--orange)', fontSize: 11 }}> {t('sed.primarySuffix')}</span> : null}
                 </div>
               </div>
 
@@ -234,12 +236,12 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                       display: 'inline-flex', alignItems: 'center', gap: 6,
                     }}
                   >
-                    {primary ? '★ основной порт' : '☆ сделать основным портом'}
+                    {primary ? t('sed.primaryPort') : t('sed.makePrimary')}
                   </button>
                   <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
                     {primary
-                      ? `Строится с колониального корабля: очков системы не тратит, но материалов нужно больше — ${formatTons(effectiveTons)} вместо ${formatTons(regularTons)}. ${primaryCargo?.approximate ? 'Числа оценочные: ' : ''}${installation.primary?.note ?? ''}`
-                      : 'Основной порт строится с колониального корабля и не тратит очки системы — в плане он может быть только один.'}
+                      ? t('sed.primaryNote', { effective: formatTons(effectiveTons), regular: formatTons(regularTons), estimate: primaryCargo?.approximate ? t('sed.estimateNote') : '', note: installation.primary?.note ?? '' })
+                      : t('sed.primaryHint')}
                   </div>
                 </div>
               )}
@@ -253,7 +255,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                   )}
                   {links && links.requires.length > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
-                      нужен предшественник:{' '}
+                      {t('sed.needsPredecessor')}{' '}
                       {links.requires.map((req) => {
                         const ok = req.options.some((option) => installedIds.has(option.id));
                         return (
@@ -266,12 +268,12 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                   )}
                   {links && links.enables.length > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--cyan)', lineHeight: 1.5 }}>
-                      открывает: {links.enables.map((enable) => enable.label).join('; ')}
+                      {t('sed.enables')} {links.enables.map((enable) => enable.label).join('; ')}
                     </div>
                   )}
                   {links && links.requiredBy.length > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
-                      нужна для: {links.requiredBy.map((ref) => ref.nameRu).join(', ')}
+                      {t('sed.requiredFor')} {links.requiredBy.map((ref) => ref.nameRu).join(', ')}
                     </div>
                   )}
                 </div>
@@ -279,7 +281,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
             </div>
           )}
 
-          {errors.length > 0 && errors[0] !== 'Неизвестная постройка' && (
+          {errors.length > 0 && errors[0] !== t('sed.unknownSite') && (
             <div style={{ color: 'var(--red)', fontSize: 12 }}>
               {errors.map((message) => <div key={message}>• {message}</div>)}
             </div>
@@ -291,11 +293,11 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
           )}
 
           <label style={fieldLabel}>
-            заметка
+            {t('sed.note')}
             <input
               value={note}
               onChange={(event) => setNote(event.target.value)}
-              placeholder="Например: строим после портовой очереди"
+              placeholder={t('sed.notePlaceholder')}
               maxLength={300}
               style={{ ...inputStyle, width: '100%' }}
             />
@@ -309,10 +311,10 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
               onClick={() => onDelete(site.id)}
               style={{ ...buttonStyle, borderColor: 'var(--red)', color: 'var(--red)', marginRight: 'auto' }}
             >
-              Удалить постройку
+              {t('sed.deleteSite')}
             </button>
           )}
-          <button type="button" onClick={onClose} style={buttonStyle}>Отмена</button>
+          <button type="button" onClick={onClose} style={buttonStyle}>{t('sed.cancel')}</button>
           <button
             type="button"
             disabled={errors.length > 0}
@@ -330,7 +332,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                 : { borderColor: 'var(--orange)', color: 'var(--orange)' }),
             }}
           >
-            Сохранить
+            {t('sed.save')}
           </button>
         </div>
       </div>

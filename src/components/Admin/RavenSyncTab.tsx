@@ -4,7 +4,10 @@ import { readAllRows } from '@/lib/readAllRows';
 import { RoutePagination, useRoutePagination } from './RoutePagination';
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, authFetch } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { IconCheckCircle, IconXCircle, IconMapPin, IconSatellite, IconRefresh, IconPackage, IconUserWorker, IconChart, IconClock, IconConstruction } from '@/components/Icons';
+
+type TFunc = (key: string, params?: Record<string, string | number>) => string;
 
 interface SyncResult {
   system_name: string;
@@ -51,10 +54,10 @@ function hasExactResourceAmounts(resource: any): boolean {
     && typeof resource.provided === 'number';
 }
 
-function resourceAmountLabel(resource: any): string {
+function resourceAmountLabel(t: TFunc, locale: string, resource: any): string {
   return hasExactResourceAmounts(resource)
-    ? `${resource.provided.toLocaleString()} / ${resource.required.toLocaleString()} т`
-    : `Осталось: ${Number(resource?.remaining || 0).toLocaleString()} т`;
+    ? t('rvn.amount', { provided: resource.provided.toLocaleString(locale), required: resource.required.toLocaleString(locale) })
+    : t('rvn.remaining', { count: Number(resource?.remaining || 0).toLocaleString(locale) });
 }
 
 function resourceProgress(resource: any): number {
@@ -63,6 +66,7 @@ function resourceProgress(resource: any): number {
 }
 
 export default function RavenSyncTab() {
+  const { t, locale } = useI18n();
   const [routeSystems, setRouteSystems] = useState<RouteSystem[]>([]);
   const [logs, setLogs] = useState<SyncLog[]>([]);
   const [latestBySystem, setLatestBySystem] = useState<Record<string, SyncLog>>({});
@@ -98,7 +102,7 @@ export default function RavenSyncTab() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const runFullSync = async () => {
-    if (!routeSystems.length) { setMessage('Нет систем для синхронизации'); return; }
+    if (!routeSystems.length) { setMessage(t('rvn.noSystemsToSync')); return; }
     setLoading(true);
     setProgress(0);
     setResults([]);
@@ -108,7 +112,7 @@ export default function RavenSyncTab() {
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;
     if (!token) {
-      setMessage('Ошибка: не удалось получить токен авторизации. Войдите заново.');
+      setMessage(t('rvn.tokenError'));
       setIsError(true);
       setLoading(false);
       return;
@@ -183,11 +187,11 @@ export default function RavenSyncTab() {
       setResults(allResults);
       const foundCount = allResults.filter(r => r.found).length;
       const errorCount = allResults.filter(r => r.error).length;
-      setMessage(`Синхронизация завершена. Найдено: ${foundCount}, обновлено: ${updated}, ошибок: ${errorCount}`);
+      setMessage(t('rvn.syncDone', { found: foundCount, updated, errors: errorCount }));
       setIsError(false);
       await loadData();
     } catch (e: any) {
-      setMessage('Ошибка: ' + e.message);
+      setMessage(t('rvn.errorPrefix', { message: e.message }));
       setIsError(true);
     } finally {
       setLoading(false);
@@ -197,18 +201,18 @@ export default function RavenSyncTab() {
 
   const getSystemStatus = (name: string) => {
     const log = latestBySystem[name.toLowerCase()];
-    if (!log) return { label: 'Не синхронизировано', color: '#9ca3af' };
-    if (log.error_message) return { label: 'Ошибка', color: '#e74c3c' };
-    if (log.system_status === 'done') return { label: 'Завершено', color: '#22c55e' };
-    if (log.system_status === 'building') return { label: 'Строительство', color: '#e67e22' };
-    return { label: 'Запланировано', color: '#3b82f6' };
+    if (!log) return { label: t('rvn.stNotSynced'), color: '#9ca3af' };
+    if (log.error_message) return { label: t('rvn.stError'), color: '#e74c3c' };
+    if (log.system_status === 'done') return { label: t('rvn.stDone'), color: '#22c55e' };
+    if (log.system_status === 'building') return { label: t('rvn.stBuilding'), color: '#e67e22' };
+    return { label: t('rvn.stPlanned'), color: '#3b82f6' };
   };
 
-  const formatDate = (d: string) => new Date(d).toLocaleString('ru-RU');
+  const formatDate = (d: string) => new Date(d).toLocaleString(locale);
 
   return (
     <div>
-      <h2><IconSatellite size={20} /> Синхронизация с RavenColonial</h2>
+      <h2><IconSatellite size={20} /> {t('rvn.title')}</h2>
 
       <div style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 10, padding: 16, marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
@@ -229,17 +233,17 @@ export default function RavenSyncTab() {
               fontWeight: 600
             }}
           >
-            <IconRefresh size={14} /> Синхронизировать весь маршрут с RavenColonial
+            <IconRefresh size={14} /> {t('rvn.syncRoute')}
           </button>
           <span style={{ fontSize: 12, color: '#9ca3af' }}>
-            {routeSystems.length} систем в маршруте
+            {t('rvn.systemsInRoute', { count: routeSystems.length })}
           </span>
         </div>
 
         {loading && (
           <div style={{ marginBottom: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, fontSize: 12, color: '#9ca3af' }}>
-              <span><IconRefresh size={14} /> Обрабатывается: <strong style={{ color: '#e67e22' }}>{currentSystem}</strong></span>
+              <span><IconRefresh size={14} /> {t('rvn.processing')} <strong style={{ color: '#e67e22' }}>{currentSystem}</strong></span>
               <span>{progress}%</span>
             </div>
             <div style={{ background: '#323538', borderRadius: 4, height: 8, overflow: 'hidden' }}>
@@ -258,7 +262,7 @@ export default function RavenSyncTab() {
       {results.length > 0 && (
         <div style={{ marginBottom: 24 }}>
           <h3 style={{ fontSize: 15, color: '#eeeeee', marginBottom: 12 }}>
-            <IconChart size={14} /> Результаты последнего запроса ({results.length} систем)
+            <IconChart size={14} /> {t('rvn.lastResults', { count: results.length })}
           </h3>
           <div style={{ display: 'grid', gap: 10 }}>
             <RoutePagination {...resultsPage} />
@@ -272,10 +276,10 @@ export default function RavenSyncTab() {
                         <span>
                           {res.siteName && <><IconMapPin size={12} /> {res.siteName} · </>}
                           {res.architectName && <><IconUserWorker size={12} /> {res.architectName} · </>}
-                          <IconPackage size={12} /> Проектов: {res.projects?.length || 0}
+                          <IconPackage size={12} /> {t('rvn.projectsCount', { count: res.projects?.length || 0 })}
                         </span>
                       ) : (
-                        <span style={{ color: '#e74c3c' }}><IconXCircle size={14} color='#e74c3c' /> {res.error || 'Не найдено'}</span>
+                        <span style={{ color: '#e74c3c' }}><IconXCircle size={14} color='#e74c3c' /> {res.error || t('rvn.notFound')}</span>
                       )}
                     </div>
                   </div>
@@ -285,7 +289,7 @@ export default function RavenSyncTab() {
                         <div style={{ fontSize: 18, fontWeight: 700, color: res.progress === 100 ? '#22c55e' : '#e67e22' }}>
                           {typeof res.progress === 'number' ? `${res.progress}%` : '—'}
                         </div>
-                        <div style={{ fontSize: 10, textTransform: 'uppercase', color: res.status === 'done' ? '#22c55e' : '#9ca3af' }}>{res.status === 'done' ? 'Завершён' : res.status === 'building' ? 'Строительство' : 'Запланирован'}</div>
+                        <div style={{ fontSize: 10, textTransform: 'uppercase', color: res.status === 'done' ? '#22c55e' : '#9ca3af' }}>{res.status === 'done' ? t('rvn.statusDone') : res.status === 'building' ? t('rvn.statusBuilding') : t('rvn.statusPlanned')}</div>
                       </>
                     )}
                   </div>
@@ -295,32 +299,32 @@ export default function RavenSyncTab() {
                   <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #323538' }}>
                     {typeof res.totalRequired === 'number' && typeof res.totalProvided === 'number' && (
                       <div style={{ color: '#d1d5db', fontSize: 12, marginBottom: 10 }}>
-                        Доставлено: <strong>{res.totalProvided.toLocaleString()} / {res.totalRequired.toLocaleString()} т</strong>
-                        {' · '}Осталось: {Number(res.totalRemaining ?? 0).toLocaleString()} т
+                        <span>{t('rvn.delivered')}</span> <strong>{t('rvn.amount', { provided: res.totalProvided.toLocaleString(locale), required: res.totalRequired.toLocaleString(locale) })}</strong>
+                        {' · '}{t('rvn.remaining', { count: Number(res.totalRemaining ?? 0).toLocaleString(locale) })}
                       </div>
                     )}
                     {res.projects && res.projects.length > 0 && (
                       <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 6, fontWeight: 600 }}><IconConstruction size={12} /> Проекты</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 6, fontWeight: 600 }}><IconConstruction size={12} /> {t('rvn.projects')}</div>
                         {res.projects.map((proj: any) => (
                           <div key={proj.buildId} style={{ background: '#323538', borderRadius: 6, padding: 10, marginBottom: 8, fontSize: 12 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                               <span style={{ color: '#eeeeee', fontWeight: 600 }}>{proj.buildName}</span>
                               <span style={{ color: proj.complete ? '#22c55e' : '#e67e22', fontWeight: 600 }}>
-                                {proj.complete ? <><IconCheckCircle size={14} /> Завершён</> : typeof proj.progress === 'number' ? `${proj.progress}%` : '—'}
+                                {proj.complete ? <><IconCheckCircle size={14} /> {t('rvn.statusDone')}</> : typeof proj.progress === 'number' ? `${proj.progress}%` : '—'}
                               </span>
                             </div>
-                            {proj.buildType && <div style={{ color: '#9ca3af', fontSize: 11 }}>Тип: {proj.buildType}</div>}
-                            {proj.bodyName && <div style={{ color: '#9ca3af', fontSize: 11 }}>Тело: {proj.bodyName}</div>}
+                            {proj.buildType && <div style={{ color: '#9ca3af', fontSize: 11 }}>{t('rvn.buildType', { type: proj.buildType })}</div>}
+                            {proj.bodyName && <div style={{ color: '#9ca3af', fontSize: 11 }}>{t('rvn.body', { body: proj.bodyName })}</div>}
                             {typeof proj.totalRequired === 'number' && typeof proj.totalProvided === 'number' && (
                               <div style={{ color: '#d1d5db', fontSize: 11, marginTop: 4 }}>
-                                Доставлено: <strong>{proj.totalProvided.toLocaleString()} / {proj.totalRequired.toLocaleString()} т</strong>
-                                {' · '}Осталось: {Number(proj.totalRemaining ?? 0).toLocaleString()} т
+                                <span>{t('rvn.delivered')}</span> <strong>{t('rvn.amount', { provided: proj.totalProvided.toLocaleString(locale), required: proj.totalRequired.toLocaleString(locale) })}</strong>
+                                {' · '}{t('rvn.remaining', { count: Number(proj.totalRemaining ?? 0).toLocaleString(locale) })}
                               </div>
                             )}
                             {proj.resources && proj.resources.length > 0 && (
                               <div style={{ marginTop: 8 }}>
-                                <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4 }}>Ресурсы:</div>
+                                <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4 }}>{t('rvn.resources')}</div>
                                 {proj.resources.map((r: any) => (
                                   <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                                     <span style={{ color: '#eeeeee', minWidth: 100 }}>{r.name}</span>
@@ -329,9 +333,9 @@ export default function RavenSyncTab() {
                                         <div style={{ width: `${resourceProgress(r)}%`, background: r.remaining === 0 ? '#22c55e' : '#3b82f6', height: '100%' }} />
                                       </div>
                                     ) : (
-                                      <span style={{ flex: 1, color: '#7a7d80', fontSize: 10 }}>Нет точных данных о доставке</span>
+                                      <span style={{ flex: 1, color: '#7a7d80', fontSize: 10 }}>{t('rvn.noExactData')}</span>
                                     )}
-                                    <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 118, textAlign: 'right' }}>{resourceAmountLabel(r)}</span>
+                                    <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 118, textAlign: 'right' }}>{resourceAmountLabel(t, locale, r)}</span>
                                   </div>
                                 ))}
                               </div>
@@ -343,12 +347,12 @@ export default function RavenSyncTab() {
 
                     {res.resources && res.resources.length > 0 && (
                       <div>
-                        <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 6, fontWeight: 600 }}><IconPackage size={12} /> Общие ресурсы системы</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 6, fontWeight: 600 }}><IconPackage size={12} /> {t('rvn.systemResources')}</div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                           {res.resources.map((r: any) => (
                             <div key={r.key} style={{ background: '#323538', borderRadius: 6, padding: '8px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ color: '#eeeeee', fontSize: 12 }}>{r.name}</span>
-                              <span style={{ color: r.remaining === 0 ? '#22c55e' : '#e67e22', fontSize: 12, fontWeight: 600 }}>{resourceAmountLabel(r)}</span>
+                              <span style={{ color: r.remaining === 0 ? '#22c55e' : '#e67e22', fontSize: 12, fontWeight: 600 }}>{resourceAmountLabel(t, locale, r)}</span>
                             </div>
                           ))}
                         </div>
@@ -363,10 +367,10 @@ export default function RavenSyncTab() {
       )}
 
       <div>
-        <h3 style={{ fontSize: 15, color: '#eeeeee', marginBottom: 12 }}><IconClock size={14} /> История синхронизаций</h3>
+        <h3 style={{ fontSize: 15, color: '#eeeeee', marginBottom: 12 }}><IconClock size={14} /> {t('rvn.history')}</h3>
         {logs.length === 0 ? (
           <div style={{ color: '#9ca3af', fontSize: 13, padding: 20, textAlign: 'center', background: '#25282b', borderRadius: 8 }}>
-            История синхронизаций пуста. Выполните первую синхронизацию.
+            {t('rvn.historyEmpty')}
           </div>
         ) : (
           <>
@@ -375,12 +379,12 @@ export default function RavenSyncTab() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid #323538', textAlign: 'left' }}>
-                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>Система</th>
-                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>Статус RC</th>
-                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>Прогресс</th>
-                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>Архитектор</th>
-                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>Проекты</th>
-                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>Последняя синхронизация</th>
+                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>{t('rvn.colSystem')}</th>
+                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>{t('rvn.colStatus')}</th>
+                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>{t('rvn.colProgress')}</th>
+                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>{t('rvn.colArchitect')}</th>
+                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>{t('rvn.colProjects')}</th>
+                  <th style={{ padding: '10px 12px', color: '#9ca3af', fontWeight: 600 }}>{t('rvn.colLastSync')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -398,8 +402,8 @@ export default function RavenSyncTab() {
                       </td>
                       <td style={{ padding: '10px 12px', color: '#eeeeee' }}>{log?.system_progress != null ? `${log.system_progress}%` : '—'}</td>
                       <td style={{ padding: '10px 12px', color: '#9ca3af', fontSize: 12 }}>{log?.architect_name || '—'}</td>
-                      <td style={{ padding: '10px 12px', color: '#9ca3af', fontSize: 12 }}>{log?.projects ? `${log.projects.length} проект(ов)` : '—'}</td>
-                      <td style={{ padding: '10px 12px', color: '#9ca3af', fontSize: 12 }}>{log ? formatDate(log.synced_at) : 'Никогда'}</td>
+                      <td style={{ padding: '10px 12px', color: '#9ca3af', fontSize: 12 }}>{log?.projects ? t('rvn.projectsShort', { count: log.projects.length }) : '—'}</td>
+                      <td style={{ padding: '10px 12px', color: '#9ca3af', fontSize: 12 }}>{log ? formatDate(log.synced_at) : t('rvn.never')}</td>
                     </tr>
                   );
                 })}

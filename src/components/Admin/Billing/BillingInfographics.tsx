@@ -12,6 +12,7 @@ import {
   IconUsers,
   IconSatellite,
 } from "@/components/Icons";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 interface Props {
   stats: ProjectBillingStats;
@@ -30,6 +31,7 @@ export default function BillingInfographics({
   onExport,
   loading,
 }: Props) {
+  const { t, locale } = useI18n();
   const [hoveredRevenue, setHoveredRevenue] = useState<ChartDataPoint | null>(null);
   const [hoveredGrowth, setHoveredGrowth] = useState<PilotGrowthPoint | null>(null);
 
@@ -66,7 +68,7 @@ export default function BillingInfographics({
               marginRight: 6,
             }}
           >
-            Период выборки:
+            {t("bi.period")}
           </span>
           {(["7d", "30d", "90d", "1y", "all"] as const).map((p) => (
             <button
@@ -84,15 +86,7 @@ export default function BillingInfographics({
                 cursor: "pointer",
               }}
             >
-              {p === "7d"
-                ? "7 ДНЕЙ"
-                : p === "30d"
-                ? "30 ДНЕЙ"
-                : p === "90d"
-                ? "90 ДНЕЙ"
-                : p === "1y"
-                ? "1 ГОД"
-                : "ВСЁ ВРЕМЯ"}
+              {t(`bi.period${p}`)}
             </button>
           ))}
         </div>
@@ -113,7 +107,7 @@ export default function BillingInfographics({
             }}
           >
             <IconActivity size={12} color="#e67e22" />
-            {loading ? "Сбор данных..." : "Обновить телеметрию"}
+            {loading ? t("bi.collecting") : t("bi.refresh")}
           </button>
 
           <button
@@ -126,7 +120,7 @@ export default function BillingInfographics({
               color: "var(--cyan, #3498db)",
             }}
           >
-            CSV Экспорт
+            {t("bi.exportCsv")}
           </button>
           <button
             type="button"
@@ -155,17 +149,17 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0, padding: "16px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <span style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--muted, #9ca3af)", letterSpacing: 1.5, textTransform: "uppercase" }}>
-              MRR (Выручка/мес)
+              {t("bi.mrr")}
             </span>
             <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>
               +{kpis.mrrDelta}% ▲
             </span>
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "var(--orange, #e67e22)", margin: "8px 0 4px" }}>
-            {kpis.mrr.toLocaleString("ru-RU")} ₽
+            {kpis.mrr.toLocaleString(locale)} ₽
           </div>
           <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)" }}>
-            ARR: {(kpis.mrr * 12).toLocaleString("ru-RU")} ₽ / год
+            {t("bi.arr", { value: (kpis.mrr * 12).toLocaleString(locale) })}
           </div>
         </div>
 
@@ -173,17 +167,17 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0, padding: "16px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <span style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--muted, #9ca3af)", letterSpacing: 1.5, textTransform: "uppercase" }}>
-              Валовый доход
+              {t("bi.grossRevenue")}
             </span>
             <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>
               +{kpis.grossRevenueDelta}% ▲
             </span>
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#3498db", margin: "8px 0 4px" }}>
-            {kpis.grossRevenue.toLocaleString("ru-RU")} ₽
+            {kpis.grossRevenue.toLocaleString(locale)} ₽
           </div>
           <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)" }}>
-            Включая магазин и пополнения
+            {t("bi.grossRevenueNote")}
           </div>
         </div>
 
@@ -191,7 +185,7 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0, padding: "16px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <span style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--muted, #9ca3af)", letterSpacing: 1.5, textTransform: "uppercase" }}>
-              Премиум-пилоты
+              {t("bi.premiumPilots")}
             </span>
             <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>
               +{kpis.activeSubscribersDelta}% ▲
@@ -201,7 +195,7 @@ export default function BillingInfographics({
             {kpis.activeSubscribers}
           </div>
           <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)" }}>
-            Отток (Churn): {kpis.churnRate}% / мес
+            {t("bi.churn", { rate: kpis.churnRate })}
           </div>
         </div>
 
@@ -209,17 +203,17 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0, padding: "16px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <span style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--muted, #9ca3af)", letterSpacing: 1.5, textTransform: "uppercase" }}>
-              ARPU (Доход/пилот)
+              {t("bi.arpu")}
             </span>
             <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
               LTV ~4 800 ₽
             </span>
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#2ecc71", margin: "8px 0 4px" }}>
-            {kpis.arpu.toLocaleString("ru-RU")} ₽
+            {kpis.arpu.toLocaleString(locale)} ₽
           </div>
           <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)" }}>
-            Средний чек: {kpis.averageOrderValue.toLocaleString("ru-RU")} ₽
+            {t("bi.avgOrder", { value: kpis.averageOrderValue.toLocaleString(locale) })}
           </div>
         </div>
 
@@ -227,17 +221,17 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0, padding: "16px 20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <span style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--muted, #9ca3af)", letterSpacing: 1.5, textTransform: "uppercase" }}>
-              Продажи магазина
+              {t("bi.shopSales")}
             </span>
             <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-              {kpis.cosmeticsSoldTotal} шт
+              {t("bi.pieces", { count: kpis.cosmeticsSoldTotal })}
             </span>
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#fbbf24", margin: "8px 0 4px" }}>
-            {kpis.cosmeticsRevenue.toLocaleString("ru-RU")} ₽
+            {kpis.cosmeticsRevenue.toLocaleString(locale)} ₽
           </div>
           <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)" }}>
-            Рамки, темы, свечения, значки
+            {t("bi.shopNote")}
           </div>
         </div>
       </div>
@@ -248,20 +242,20 @@ export default function BillingInfographics({
           <div>
             <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
               <IconChart size={16} color="#e67e22" />
-              ДИНАМИКА ДОХОДОВ И ПОДПИСОК (MRR / STORE)
+              {t("bi.revenueTitle")}
             </h3>
             <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-              Распределение выручки между регулярными подписками и покупками в премиум-магазине
+              {t("bi.revenueSubtitle")}
             </p>
           </div>
           <div style={{ display: "flex", gap: 16, fontSize: 11, fontFamily: "ui-monospace, monospace" }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               <span style={{ width: 10, height: 10, background: "#e67e22", borderRadius: 1 }} />
-              Подписки
+              {t("bi.subscriptions")}
             </span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               <span style={{ width: 10, height: 10, background: "#3498db", borderRadius: 1 }} />
-              Магазин UI
+              {t("bi.shopUi")}
             </span>
           </div>
         </div>
@@ -278,11 +272,11 @@ export default function BillingInfographics({
         >
           {hoveredRevenue ? (
             <span style={{ background: "#1e2022", padding: "4px 10px", border: "1px solid var(--line, #3a3d40)", borderRadius: 2 }}>
-              Срез от {hoveredRevenue.date}: Итого <strong style={{ color: "#e67e22" }}>{hoveredRevenue.total.toLocaleString("ru-RU")} ₽</strong> (Подписки: {hoveredRevenue.subscriptions.toLocaleString("ru-RU")} ₽ | Магазин: {hoveredRevenue.shop.toLocaleString("ru-RU")} ₽)
+              {t("bi.sliceFrom", { date: hoveredRevenue.date, total: hoveredRevenue.total.toLocaleString(locale), subs: hoveredRevenue.subscriptions.toLocaleString(locale), shop: hoveredRevenue.shop.toLocaleString(locale) })}
             </span>
           ) : (
             <span style={{ color: "var(--muted, #9ca3af)" }}>
-              Наведите курсор на колонку для детализации финансового среза
+              {t("bi.hoverHint")}
             </span>
           )}
         </div>
@@ -376,10 +370,10 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0 }}>
           <h3 style={{ margin: "0 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
             <IconCoins size={16} color="#e67e22" />
-            РАСПРЕДЕЛЕНИЕ ТАРИФОВ ПОДПИСКИ
+            {t("bi.tiersTitle")}
           </h3>
           <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-            Доли активных премиум-командиров по категориям привилегий
+            {t("bi.tiersSubtitle")}
           </p>
 
           <div style={{ display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
@@ -424,7 +418,7 @@ export default function BillingInfographics({
                   {stats.kpis.activeSubscribers}
                 </span>
                 <span style={{ fontSize: 9, color: "var(--muted, #9ca3af)", letterSpacing: 1 }}>
-                  СУБСКРИБЕРОВ
+                  {t("bi.subscribers")}
                 </span>
               </div>
             </div>
@@ -447,7 +441,7 @@ export default function BillingInfographics({
                     <span style={{ color: "var(--text, #eeeeee)" }}>{tier.name}</span>
                   </div>
                   <div style={{ display: "flex", gap: 12 }}>
-                    <span style={{ color: "var(--muted, #9ca3af)" }}>{tier.count} пил.</span>
+                    <span style={{ color: "var(--muted, #9ca3af)" }}>{t("bi.pilots", { count: tier.count })}</span>
                     <strong style={{ color: tier.color, minWidth: 32, textAlign: "right" }}>
                       {tier.percentage}%
                     </strong>
@@ -462,10 +456,10 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0 }}>
           <h3 style={{ margin: "0 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
             <IconActivity size={16} color="#e67e22" />
-            ПРОДАЖИ ПО КАТЕГОРИЯМ МАГАЗИНА
+            {t("bi.categoriesTitle")}
           </h3>
           <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-            Спрос на визуальные модификации интерфейса и позывного
+            {t("bi.categoriesSubtitle")}
           </p>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -482,7 +476,7 @@ export default function BillingInfographics({
                 >
                   <span style={{ color: "var(--text, #eeeeee)" }}>{cat.name}</span>
                   <span style={{ color: "var(--muted, #9ca3af)" }}>
-                    <strong style={{ color: cat.color }}>{cat.unitsSold} шт</strong> · {cat.revenueRub.toLocaleString("ru-RU")} ₽ ({cat.percentage}%)
+                    <strong style={{ color: cat.color }}>{t("bi.categoryLine", { units: cat.unitsSold, revenue: cat.revenueRub.toLocaleString(locale), percent: cat.percentage })}</strong>
                   </span>
                 </div>
                 <div style={{ height: 6, background: "#25282b", borderRadius: 2, overflow: "hidden" }}>
@@ -513,10 +507,10 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0 }}>
           <h3 style={{ margin: "0 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
             <IconUsers size={16} color="#e67e22" />
-            ВОРОНКА КОНВЕРСИИ КОММАНДЕРОВ
+            {t("bi.funnelTitle")}
           </h3>
           <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-            Путь от первого посещения портала до высшего ранга мецената
+            {t("bi.funnelSubtitle")}
           </p>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -534,7 +528,7 @@ export default function BillingInfographics({
                 >
                   <span style={{ color: "var(--text, #eeeeee)" }}>{step.step}</span>
                   <span>
-                    <strong style={{ color: "#e67e22" }}>{step.count.toLocaleString("ru-RU")}</strong>
+                    <strong style={{ color: "#e67e22" }}>{step.count.toLocaleString(locale)}</strong>
                     <span style={{ color: "var(--muted, #9ca3af)", marginLeft: 6 }}>
                       ({step.percentage}%)
                     </span>
@@ -569,10 +563,10 @@ export default function BillingInfographics({
         <div className="card" style={{ margin: 0 }}>
           <h3 style={{ margin: "0 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
             <IconSatellite size={16} color="#e67e22" />
-            ТЕЛЕМЕТРИЯ СЕТИ И КОЛОНИЗАЦИИ
+            {t("bi.telemetryTitle")}
           </h3>
           <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-            Инфраструктурные показатели и техническое состояние узла
+            {t("bi.telemetrySubtitle")}
           </p>
 
           <div
@@ -584,43 +578,43 @@ export default function BillingInfographics({
           >
             <div style={{ padding: "10px 12px", background: "#25282b", border: "1px solid var(--line, #3a3d40)", borderRadius: 2 }}>
               <div style={{ fontSize: 10, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                Заявлено систем
+                {t("bi.claimedSystems")}
               </div>
               <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#3498db", marginTop: 4 }}>
-                {telemetry.totalSystemsClaimed} хабов
+                {t("bi.hubs", { count: telemetry.totalSystemsClaimed })}
               </div>
             </div>
 
             <div style={{ padding: "10px 12px", background: "#25282b", border: "1px solid var(--line, #3a3d40)", borderRadius: 2 }}>
               <div style={{ fontSize: 10, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                Построено станций
+                {t("bi.stationsBuilt")}
               </div>
               <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#2ecc71", marginTop: 4 }}>
-                {telemetry.totalFacilitiesBuilt} объектов
+                {t("bi.facilities", { count: telemetry.totalFacilitiesBuilt })}
               </div>
             </div>
 
             <div style={{ padding: "10px 12px", background: "#25282b", border: "1px solid var(--line, #3a3d40)", borderRadius: 2 }}>
               <div style={{ fontSize: 10, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                Доставлено груза
+                {t("bi.tonnage")}
               </div>
               <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#e67e22", marginTop: 4 }}>
-                {telemetry.totalTonnageHauled.toLocaleString("ru-RU")} т
+                {t("stn.tons", { count: telemetry.totalTonnageHauled.toLocaleString(locale) })}
               </div>
             </div>
 
             <div style={{ padding: "10px 12px", background: "#25282b", border: "1px solid var(--line, #3a3d40)", borderRadius: 2 }}>
               <div style={{ fontSize: 10, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                Парсер журналов
+                {t("bi.journalParser")}
               </div>
               <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#a855f7", marginTop: 4 }}>
-                {telemetry.journalEventsParsed.toLocaleString("ru-RU")} соб.
+                {t("bi.events", { count: telemetry.journalEventsParsed.toLocaleString(locale) })}
               </div>
             </div>
 
             <div style={{ padding: "10px 12px", background: "#25282b", border: "1px solid var(--line, #3a3d40)", borderRadius: 2 }}>
               <div style={{ fontSize: 10, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                Отклик сервера
+                {t("bi.serverLatency")}
               </div>
               <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#10b981", marginTop: 4 }}>
                 {telemetry.avgLatencyMs} ms
@@ -629,7 +623,7 @@ export default function BillingInfographics({
 
             <div style={{ padding: "10px 12px", background: "#25282b", border: "1px solid var(--line, #3a3d40)", borderRadius: 2 }}>
               <div style={{ fontSize: 10, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                Аптайм платформы
+                {t("bi.uptime")}
               </div>
               <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#2ecc71", marginTop: 4 }}>
                 {telemetry.serverUptimePct}%

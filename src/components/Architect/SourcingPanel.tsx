@@ -17,6 +17,7 @@ import {
   type SourcingPlan,
 } from '@/lib/architect/sourcing';
 import { formatTons } from '@/lib/architect/planner';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   cardStyle,
   errorText,
@@ -52,6 +53,7 @@ function numberInput(value: string): number {
 }
 
 export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps) {
+  const { t, locale } = useI18n();
   const [capacity, setCapacity] = useState('400');
   const [radius, setRadius] = useState('80');
   const [loading, setLoading] = useState(false);
@@ -87,13 +89,13 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
       const data = await response.json().catch(() => null);
       if (!response.ok) {
         setResult(null);
-        setError(String(data?.error || `Ошибка сервера (${response.status})`));
+        setError(String(data?.error || t('src.serverError', { status: response.status })));
         return;
       }
       setResult(data as SourcingResponse);
     } catch (err) {
       setResult(null);
-      setError(err instanceof Error ? err.message : 'Не удалось посчитать закупки');
+      setError(err instanceof Error ? err.message : t('src.failed'));
     } finally {
       setLoading(false);
     }
@@ -105,15 +107,15 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
   return (
     <section style={cardStyle}>
       <div style={rowStyle}>
-        <h3 style={sectionTitle}>Где купить</h3>
+        <h3 style={sectionTitle}>{t('src.title')}</h3>
         <span style={mutedText}>
-          {commodityCount > 0 ? `${commodityCount} товаров · ${formatTons(totalTons)}` : 'план пока без грузов'}
+          {commodityCount > 0 ? t('src.commodities', { count: commodityCount, tons: formatTons(totalTons) }) : t('src.noCargo')}
         </span>
       </div>
 
       <div style={{ ...rowStyle, marginTop: 10 }}>
         <label style={{ ...mutedText, display: 'flex', alignItems: 'center', gap: 6 }}>
-          вместимость, т
+          {t('src.capacity')}
           <input
             value={capacity}
             onChange={(event) => setCapacity(event.target.value)}
@@ -122,7 +124,7 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
           />
         </label>
         <label style={{ ...mutedText, display: 'flex', alignItems: 'center', gap: 6 }}>
-          радиус, св. лет
+          {t('src.radius')}
           <input
             value={radius}
             onChange={(event) => setRadius(event.target.value)}
@@ -131,7 +133,7 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
           />
         </label>
         <button type="button" onClick={() => void run()} disabled={loading || commodityCount === 0} style={primaryButton}>
-          {loading ? 'Расчёт…' : 'Рассчитать закупки'}
+          {loading ? t('src.calculating') : t('src.calculate')}
         </button>
       </div>
 
@@ -142,27 +144,26 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
           <div style={{ marginTop: 10 }}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
               <span style={{ fontSize: 20, color: 'var(--cyan)', fontFamily: 'ui-monospace, monospace' }}>
-                {summary.coveragePercent.toLocaleString('ru-RU')} %
+                {summary.coveragePercent.toLocaleString(locale)} %
               </span>
               <span style={mutedText}>
-                закрыто {formatTons(summary.coveredTons)} из {formatTons(summary.neededTons)}
-                {summary.remainingTons > 0 ? ` · осталось ${formatTons(summary.remainingTons)}` : ''}
+                {t('src.covered', { covered: formatTons(summary.coveredTons), needed: formatTons(summary.neededTons) })}
+                {summary.remainingTons > 0 ? t('src.remaining', { tons: formatTons(summary.remainingTons) }) : ''}
               </span>
             </div>
             <div style={{ ...mutedText, marginTop: 4 }}>
-              Оценка: {formatCredits(summary.estimatedCost)} · {summary.stationCount} станц.
-              {' · '}≈{summary.trips} рейс(ов) при {formatTons(result.plan.options.capacityTons)}
-              {result.rowsScanned > 0 ? ` · просмотрено записей рынков: ${result.rowsScanned}` : ''}
+              {t('src.estimate', { cost: formatCredits(summary.estimatedCost), count: summary.stationCount })}
+              {' · '}{t('src.tripsAt', { trips: summary.trips, capacity: formatTons(result.plan.options.capacityTons) })}
+              {result.rowsScanned > 0 ? t('src.rowsScanned', { count: result.rowsScanned }) : ''}
             </div>
             {!result.originFound && (
               <div style={{ ...mutedText, marginTop: 4, color: 'var(--orange)' }}>
-                Координаты системы не найдены — сортировка по расстоянию недоступна.
+                {t('src.noCoords')}
               </div>
             )}
             {result.empty && (
               <div style={{ ...mutedText, marginTop: 4, color: 'var(--orange)' }}>
-                В базе EDDN нет цен по товарам этого плана. Цены появляются, когда кто-то выгружает рынки
-                через Colonial Helper или EDDN-поток сайта.
+                {t('src.noEddn')}
               </div>
             )}
           </div>
@@ -170,11 +171,11 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
           <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 10 }}>
             <thead>
               <tr>
-                <th style={thStyle}>Товар</th>
-                <th style={thStyle}>Нужно</th>
-                <th style={thStyle}>Возьмём</th>
-                <th style={thStyle}>Осталось</th>
-                <th style={thStyle}>Ближайший рынок</th>
+                <th style={thStyle}>{t('src.colCommodity')}</th>
+                <th style={thStyle}>{t('src.colNeeded')}</th>
+                <th style={thStyle}>{t('src.colTake')}</th>
+                <th style={thStyle}>{t('src.colRemaining')}</th>
+                <th style={thStyle}>{t('src.colNearest')}</th>
               </tr>
             </thead>
             <tbody>
@@ -184,7 +185,7 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
                   <td style={tdStyle}>{formatTons(item.neededTons)}</td>
                   <td style={{ ...tdStyle, color: item.coveredTons > 0 ? 'var(--text)' : 'var(--muted)' }}>
                     {formatTons(item.coveredTons)}
-                    {item.averagePrice != null ? <div style={{ fontSize: 11, color: 'var(--muted)' }}>≈{item.averagePrice.toLocaleString('ru-RU')} кр/т</div> : null}
+                    {item.averagePrice != null ? <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('src.perTon', { price: item.averagePrice.toLocaleString(locale) })}</div> : null}
                   </td>
                   <td style={{ ...tdStyle, color: item.remainingTons > 0 ? 'var(--red)' : 'var(--muted)' }}>
                     {item.remainingTons > 0 ? formatTons(item.remainingTons) : '—'}
@@ -192,8 +193,8 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
                   <td style={{ ...tdStyle, fontSize: 11, color: 'var(--muted)' }}>
                     {item.offers.length > 0
                       ? `${item.offers[0].stationName} (${item.offers[0].systemName})`
-                        + (item.offers[0].distanceLy != null ? ` · ${item.offers[0].distanceLy} св. лет` : '')
-                      : 'не найдено'}
+                        + (item.offers[0].distanceLy != null ? t('src.lyShort', { value: item.offers[0].distanceLy }) : '')
+                      : t('src.notFound')}
                   </td>
                 </tr>
               ))}
@@ -203,7 +204,7 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
           {result.plan.stops.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ ...mutedText, textTransform: 'uppercase', letterSpacing: 1, fontSize: 11 }}>
-                Остановки перевозчика
+                {t('src.stops')}
               </div>
               {result.plan.stops.map((stop) => (
                 <div
@@ -216,13 +217,13 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
                   <div style={{ fontSize: 13, color: 'var(--text)' }}>
                     {stop.stationName}
                     <span style={mutedText}> · {stop.systemName}</span>
-                    {stop.distanceLy != null ? <span style={mutedText}> · {stop.distanceLy} св. лет</span> : null}
+                    {stop.distanceLy != null ? <span style={mutedText}>{t('src.lyShort', { value: stop.distanceLy })}</span> : null}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
-                    {formatTons(stop.totalTons)} · {stop.trips} рейс(ов) · {formatCredits(stop.totalCost)}
+                    {t('src.stopLine', { tons: formatTons(stop.totalTons), trips: stop.trips, cost: formatCredits(stop.totalCost) })}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    {stop.items.map((item) => `${item.label}: ${formatTons(item.tons)} по ${item.price.toLocaleString('ru-RU')} кр/т`).join(' · ')}
+                    {stop.items.map((item) => t('src.stopItem', { label: item.label, tons: formatTons(item.tons), price: item.price.toLocaleString(locale) })).join(' · ')}
                   </div>
                 </div>
               ))}
@@ -232,13 +233,13 @@ export default function SourcingPanel({ systemName, cargo }: SourcingPanelProps)
           {uncovered.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <div style={mutedText}>
-                Не хватило данных по товарам: {uncovered.map((item) => item.label).join(', ')}.
+                {t('src.missingData', { list: uncovered.map((item) => item.label).join(', ') })}
               </div>
               <Link
                 href={`/atlas?system=${encodeURIComponent(systemName)}&tab=market`}
                 style={{ ...ghostButton, marginTop: 6 }}
               >
-                Поиск рынка по EDSM
+                {t('src.searchEdsm')}
               </Link>
             </div>
           )}

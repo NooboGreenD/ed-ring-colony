@@ -3,6 +3,7 @@ import { IconHeadphones, IconMic, IconMicOff, IconVolume, IconVolumeOff, IconPho
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface VoiceRoom {
   id: number;
@@ -51,6 +52,7 @@ const SPEAKING_THRESHOLD = 15;
 const VAD_CHECK_INTERVAL = 100;
 
 export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myName }: Props) {
+  const { t } = useI18n();
   const [rooms, setRooms] = useState<VoiceRoom[]>([]);
   const [currentRoom, setCurrentRoom] = useState<number | null>(null);
   const [participants, setParticipants] = useState<VoiceParticipant[]>([]);
@@ -95,7 +97,7 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
       localStreamRef.current = stream;
       return stream;
     } catch (e) {
-      setError('Не удалось получить доступ к микрофону. Проверьте разрешения браузера.');
+      setError(t('svc.micDenied'));
       throw e;
     }
   };
@@ -271,7 +273,7 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
         if (signal.sender_id !== userId) await processSignal(signal, stream);
       }
     } catch (e: any) {
-      setError(e.message || 'Ошибка подключения');
+      setError(e.message || t('svc.connectError'));
     } finally {
       setLoading(false);
     }
@@ -385,7 +387,7 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
   };
 
   const deleteRoom = async (roomId: number) => {
-    if (!confirm('Удалить голосовую комнату?')) return;
+    if (!confirm(t('svc.confirmDelete'))) return;
     await fetch(`/api/squadrons/${squadronId}/voice`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -400,24 +402,24 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
         <div>
           <div className='voice-header' style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <h3 style={{ margin: 0, fontSize: 14, color: 'var(--muted)', fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase', letterSpacing: 1 }}>
-              Голосовые каналы
+              {t('svc.channels')}
             </h3>
             {isOfficer && (
               <button onClick={() => setShowCreateForm(!showCreateForm)} className='btn' style={{ fontSize: 11, padding: '4px 10px' }}>
-                {showCreateForm ? 'Отмена' : '+ Канал'}
+                {showCreateForm ? t('svc.cancel') : t('svc.addChannel')}
               </button>
             )}
           </div>
           {showCreateForm && isOfficer && (
             <div className='card' style={{ marginBottom: 16, background: '#25282b', padding: 12 }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <input placeholder='Название канала' value={newRoomName} onChange={(e) => setNewRoomName(e.target.value)} style={{ fontSize: 13 }} />
-                <input placeholder='Описание (необязательно)' value={newRoomDesc} onChange={(e) => setNewRoomDesc(e.target.value)} style={{ fontSize: 13 }} />
+                <input placeholder={t('svc.namePlaceholder')} value={newRoomName} onChange={(e) => setNewRoomName(e.target.value)} style={{ fontSize: 13 }} />
+                <input placeholder={t('svc.descPlaceholder')} value={newRoomDesc} onChange={(e) => setNewRoomDesc(e.target.value)} style={{ fontSize: 13 }} />
                 <label style={{ fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
                   <input type='checkbox' checked={newRoomOfficer} onChange={(e) => setNewRoomOfficer(e.target.checked)} />
-                  Только для офицеров
+                  {t('svc.officersOnly')}
                 </label>
-                <button onClick={createRoom} className='btn btn-cyan' style={{ fontSize: 12 }}>Создать канал</button>
+                <button onClick={createRoom} className='btn btn-cyan' style={{ fontSize: 12 }}>{t('svc.createChannel')}</button>
               </div>
             </div>
           )}
@@ -439,12 +441,12 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
                     <IconCircleFill size={8} color='#22c55e' /> {room.participant_count}
                   </span>
                   {isOfficer && (
-                    <button onClick={(e) => { e.stopPropagation(); deleteRoom(room.id); }} style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 16, padding: '0 4px' }} title='Удалить'><IconTrash size={14} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); deleteRoom(room.id); }} style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 16, padding: '0 4px' }} title={t('svc.deleteRoom')}><IconTrash size={14} /></button>
                   )}
                 </div>
               </div>
             ))}
-            {rooms.length === 0 && <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 20 }}>Голосовых каналов пока нет</p>}
+            {rooms.length === 0 && <p style={{ color: 'var(--muted)', textAlign: 'center', padding: 20 }}>{t('svc.noChannels')}</p>}
           </div>
         </div>
       )}
@@ -453,17 +455,17 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
           <div className='voice-header' style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
             <div>
               <h3 style={{ margin: 0, fontSize: 14, color: '#22c55e', fontFamily: 'ui-monospace, monospace' }}>
-                <IconCircleFill size={8} color='#22c55e' /> Подключено: {rooms.find((r) => r.id === currentRoom)?.name || 'Канал'}
+                <IconCircleFill size={8} color='#22c55e' /> {t('svc.connected', { name: rooms.find((r) => r.id === currentRoom)?.name || t('svc.channelFallback') })}
               </h3>
-              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{participants.length} пилотов в канале</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{t('svc.pilotsInChannel', { count: participants.length })}</div>
             </div>
-            <button onClick={leaveRoom} className='btn' style={{ fontSize: 11, padding: '4px 12px', borderColor: '#e74c3c', color: '#e74c3c' }}>Отключиться</button>
+            <button onClick={leaveRoom} className='btn' style={{ fontSize: 11, padding: '4px 12px', borderColor: '#e74c3c', color: '#e74c3c' }}>{t('svc.disconnect')}</button>
           </div>
           {error && (
             <div style={{ color: '#e74c3c', fontSize: 12, marginBottom: 12, padding: 8, background: 'rgba(231,76,60,0.1)', borderRadius: 4 }}>{error}</div>
           )}
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>Пилоты в канале</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>{t('svc.pilotsTitle')}</div>
             <div className='voice-participants-row' style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {participants.map((p) => {
                 const isSpeaking = speaking[p.user_id];
@@ -477,7 +479,7 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
                       </div>
                     )}
                     <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', color: isSpeaking ? '#22c55e' : 'var(--text)', transition: 'color 0.15s ease' }}>
-                      {p.cmdr_name || 'Неизвестный'}{p.user_id === userId && ' (Вы)'}
+                      {p.cmdr_name || t('svc.unknownPilot')}{p.user_id === userId && t('svc.youSuffix')}
                     </span>
                     {isSpeaking && <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', animation: 'pulse 1s infinite', flexShrink: 0 }} />}
                     {p.is_muted && !isSpeaking && <span style={{ fontSize: 10, color: '#e74c3c', display: 'flex', alignItems: 'center' }}><IconMicOff size={10} /></span>}
@@ -489,10 +491,10 @@ export default function SquadronVoiceChat({ squadronId, userId, isOfficer, myNam
           </div>
           <div className='voice-controls' style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <button onClick={toggleMute} className='btn' style={{ fontSize: 12, padding: '8px 16px', background: isMuted ? 'rgba(231,76,60,0.15)' : 'rgba(34,197,94,0.15)', borderColor: isMuted ? '#e74c3c' : '#22c55e', color: isMuted ? '#e74c3c' : '#22c55e' }}>
-              {isMuted ? <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconMicOff size={14} /> Включить микрофон</span></> : <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconMic size={14} /> Выключить микрофон</span></>}
+              {isMuted ? <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconMicOff size={14} /> {t('svc.unmuteMic')}</span></> : <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconMic size={14} /> {t('svc.muteMic')}</span></>}
             </button>
             <button onClick={toggleDeafen} className='btn' style={{ fontSize: 12, padding: '8px 16px', background: isDeafened ? 'rgba(231,76,60,0.15)' : undefined, borderColor: isDeafened ? '#e74c3c' : undefined, color: isDeafened ? '#e74c3c' : undefined }}>
-              {isDeafened ? <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconVolume size={14} /> Включить звук</span></> : <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconHeadphones size={14} /> Выключить звук</span></>}
+              {isDeafened ? <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconVolume size={14} /> {t('svc.undeafen')}</span></> : <><span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><IconHeadphones size={14} /> {t('svc.deafen')}</span></>}
             </button>
           </div>
         </div>

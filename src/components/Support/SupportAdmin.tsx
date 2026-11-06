@@ -48,10 +48,10 @@ type StaffProfile = {
 };
 
 const CATEGORIES: Record<string, string> = {
-  bug: "Баг",
-  feature_request: "Фича",
-  account_issue: "Аккаунт",
-  other: "Другое",
+  bug: "sup.catBug",
+  feature_request: "sup.catFeature",
+  account_issue: "sup.catAccount",
+  other: "sup.catOther",
 };
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -70,15 +70,15 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
-  open: "Открыт",
-  in_progress: "В работе",
-  waiting_user: "Ждёт ответа",
-  resolved: "Решён",
-  closed: "Закрыт",
+  open: "sup.statusOpen",
+  in_progress: "sup.statusInProgress",
+  waiting_user: "sup.statusWaiting",
+  resolved: "sup.statusResolved",
+  closed: "sup.statusClosed",
 };
 
-function fmtDate(d: string) {
-  return new Date(d).toLocaleString("ru-RU", {
+function fmtDate(locale: string, d: string) {
+  return new Date(d).toLocaleString(locale, {
     day: "numeric",
     month: "short",
     hour: "2-digit",
@@ -87,7 +87,9 @@ function fmtDate(d: string) {
 }
 
 export default function SupportAdmin() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const statusLabel = (status: string) => (STATUS_LABELS[status] ? t(STATUS_LABELS[status]) : status);
+  const categoryLabel = (category: string) => (CATEGORIES[category] ? t(CATEGORIES[category]) : category);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [selected, setSelected] = useState<Ticket | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -115,23 +117,23 @@ export default function SupportAdmin() {
         cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error([data.error, data.details].filter(Boolean).join(": ") || "Не удалось загрузить тикеты");
+      if (!res.ok) throw new Error([data.error, data.details].filter(Boolean).join(": ") || t("sup.loadTicketsFailed"));
       setTickets(data.tickets || []);
       setLoadError(null);
     } catch (error) {
       // Keep the last successful list visible during a transient API failure;
       // previously both staff and users saw a misleading empty state here.
-      setLoadError(error instanceof Error ? error.message : "Не удалось загрузить тикеты");
+      setLoadError(error instanceof Error ? error.message : t("sup.loadTicketsFailed"));
     } finally {
       setLoading(false);
     }
-  }, [filterStatus]);
+  }, [filterStatus, t]);
 
   const loadUnread = useCallback(async () => {
     try {
       const res = await authFetch("/api/support/unread", { credentials: "include", cache: "no-store" });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Не удалось загрузить счётчик тикетов");
+      if (!res.ok) throw new Error(data.error || t("sup.loadCounterFailed"));
       setUnreadCount(data.count || 0);
     } catch {
       // The ticket list remains usable even if the optional badge fails.
@@ -159,7 +161,7 @@ export default function SupportAdmin() {
         cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Не удалось загрузить тикет");
+      if (!res.ok) throw new Error(data.error || t("sup.loadTicketFailed"));
       if (data.ticket) {
         setSelected(data.ticket);
         setMessages(data.messages || []);
@@ -167,7 +169,7 @@ export default function SupportAdmin() {
         setMsg("");
       }
     } catch (error) {
-      setMsg(error instanceof Error ? error.message : "Не удалось загрузить тикет");
+      setMsg(error instanceof Error ? error.message : t("sup.loadTicketFailed"));
     }
   }, []);
 
@@ -198,7 +200,7 @@ export default function SupportAdmin() {
         body: JSON.stringify({ content: reply, is_internal: isInternal }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Не удалось отправить ответ");
+      if (!res.ok) throw new Error(data.error || t("sup.sendFailed"));
       if (data.message) {
         setReply("");
         setIsInternal(false);
@@ -206,10 +208,10 @@ export default function SupportAdmin() {
         await loadTickets();
         await loadUnread();
       } else {
-        setMsg(data.error || "Не удалось отправить ответ");
+        setMsg(data.error || t("sup.sendFailed"));
       }
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : "Ошибка сети");
+      setMsg(e instanceof Error ? e.message : t("sup.networkError"));
     } finally {
       setSending(false);
     }
@@ -225,13 +227,13 @@ export default function SupportAdmin() {
         body: JSON.stringify(updates),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Не удалось обновить тикет");
+      if (!res.ok) throw new Error(data.error || t("sup.updateFailed"));
       if (data.ticket) {
         await loadDetails(selected.id);
         await loadTickets();
       }
     } catch (error) {
-      setMsg(error instanceof Error ? error.message : "Не удалось обновить тикет");
+      setMsg(error instanceof Error ? error.message : t("sup.updateFailed"));
     }
   };
 
@@ -247,12 +249,12 @@ export default function SupportAdmin() {
         body: formData,
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Не удалось загрузить файл");
+      if (!res.ok) throw new Error(data.error || t("sup.uploadFailed"));
       if (data.attachment) {
         await loadDetails(selected.id);
       }
     } catch (error) {
-      setMsg(error instanceof Error ? error.message : "Не удалось загрузить файл");
+      setMsg(error instanceof Error ? error.message : t("sup.uploadFailed"));
     }
   };
 
@@ -283,19 +285,19 @@ export default function SupportAdmin() {
       <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <div className="stat-box" style={{ padding: "10px 14px", minWidth: 100 }}>
           <div className="num" style={{ fontSize: 20 }}>{openCount}</div>
-          <div className="lbl" style={{ fontSize: 10 }}>Открытых</div>
+          <div className="lbl" style={{ fontSize: 10 }}>{t("sup.statOpen")}</div>
         </div>
         <div className="stat-box" style={{ padding: "10px 14px", minWidth: 100 }}>
           <div className="num" style={{ fontSize: 20 }}>{tickets.filter((t) => t.status === "resolved").length}</div>
-          <div className="lbl" style={{ fontSize: 10 }}>Решённых</div>
+          <div className="lbl" style={{ fontSize: 10 }}>{t("sup.statResolved")}</div>
         </div>
         <div className="stat-box" style={{ padding: "10px 14px", minWidth: 100 }}>
           <div className="num" style={{ fontSize: 20 }}>{tickets.filter((t) => t.status === "closed").length}</div>
-          <div className="lbl" style={{ fontSize: 10 }}>Закрытых</div>
+          <div className="lbl" style={{ fontSize: 10 }}>{t("sup.statClosed")}</div>
         </div>
         <div className="stat-box" style={{ padding: "10px 14px", minWidth: 100 }}>
           <div className="num" style={{ fontSize: 20, color: "#e74c3c" }}>{unreadCount}</div>
-          <div className="lbl" style={{ fontSize: 10 }}>Ожидают</div>
+          <div className="lbl" style={{ fontSize: 10 }}>{t("sup.statWaiting")}</div>
         </div>
       </div>
 
@@ -303,32 +305,32 @@ export default function SupportAdmin() {
         <aside style={{ width: 380, flexShrink: 0, display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} style={{ flex: 1, minWidth: 100 }}>
-              <option value="all">Все статусы</option>
+              <option value="all">{t("sup.allStatuses")}</option>
               {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
+                <option key={k} value={k}>{t(v)}</option>
               ))}
             </select>
             <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} style={{ flex: 1, minWidth: 100 }}>
-              <option value="all">Все категории</option>
+              <option value="all">{t("sup.allCategories")}</option>
               {Object.entries(CATEGORIES).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
+                <option key={k} value={k}>{t(v)}</option>
               ))}
             </select>
           </div>
-          <input placeholder="Поиск по тикетам..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", margin: 0 }} />
+          <input placeholder={t("sup.searchPlaceholder")} value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", margin: 0 }} />
           {loadError && (
             <div role="alert" className="card" style={{ padding: 10, color: "#e74c3c", fontSize: 12 }}>
-              Не удалось обновить тикеты: {loadError}{" "}
-              <button type="button" onClick={loadTickets} style={{ fontSize: 11, padding: "3px 7px", marginLeft: 4 }}>Повторить</button>
+              {t("sup.refreshFailed", { error: loadError })}{" "}
+              <button type="button" onClick={loadTickets} style={{ fontSize: 11, padding: "3px 7px", marginLeft: 4 }}>{t("sup.retry")}</button>
             </div>
           )}
 
           {loading && tickets.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>Загрузка...</p>
+            <p style={{ color: "var(--muted)" }}>{t("sup.loading")}</p>
           ) : filteredTickets.length === 0 ? (
             <div className="card" style={{ textAlign: "center", padding: 24 }}>
               <p style={{ color: loadError ? "#e74c3c" : "var(--muted)" }}>
-                {loadError ? "Список тикетов недоступен. Повторите попытку." : "Тикетов не найдено"}
+                {loadError ? t("sup.listUnavailable") : t("sup.noneFound")}
               </p>
             </div>
           ) : (
@@ -337,17 +339,17 @@ export default function SupportAdmin() {
                 <button key={t.id} onClick={() => loadDetails(t.id)} style={{ textAlign: "left", background: selected?.id === t.id ? "rgba(230,126,34,0.08)" : "var(--panel)", border: `1px solid ${selected?.id === t.id ? "var(--orange)" : "var(--line)"}`, borderRadius: 4, padding: 10, cursor: "pointer", transition: "all 0.15s", width: "100%", position: "relative" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
                     <span style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, paddingRight: 8 }}>{t.title}</span>
-                    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: STATUS_COLORS[t.status] + "20", color: STATUS_COLORS[t.status], flexShrink: 0 }}>{STATUS_LABELS[t.status]}</span>
+                    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: STATUS_COLORS[t.status] + "20", color: STATUS_COLORS[t.status], flexShrink: 0 }}>{statusLabel(t.status)}</span>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "var(--muted)", flexWrap: "wrap" }}>
                     <span style={{ color: PRIORITY_COLORS[t.priority] || "var(--muted)" }}>{t.priority}</span>
                     <span>·</span>
-                    <span>{CATEGORIES[t.category] || t.category}</span>
+                    <span>{categoryLabel(t.category)}</span>
                     <span>·</span>
                     <PilotIdentity userId={t.user_id} cmdrName={t.user?.cmdr_name || t.user?.email || "—"} showAvatar={false} link={false} showTier={false} fontSize={12} />
                   </div>
                   <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
-                    {fmtDate(t.updated_at)}
+                    {fmtDate(locale, t.updated_at)}
                     {t.assigned?.cmdr_name && <span> · {t.assigned.cmdr_name}</span>}
                   </div>
                 </button>
@@ -365,17 +367,17 @@ export default function SupportAdmin() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>{selected.title}</h3>
                     <div style={{ fontSize: 11, color: "var(--muted)", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                      <span>Пользователь: <b style={{ color: "var(--text)" }}>{selected.user?.cmdr_name || selected.user?.email || "—"}</b></span>
-                      <span>Создан: {fmtDate(selected.created_at)}</span>
+                      <span>{t("sup.user")} <b style={{ color: "var(--text)" }}>{selected.user?.cmdr_name || selected.user?.email || "—"}</b></span>
+                      <span>{t("sup.created")} {fmtDate(locale, selected.created_at)}</span>
                       {selected.page_url && (
-                        <a href={selected.page_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11 }}>Страница <IconExternalLink size={10} /></a>
+                        <a href={selected.page_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11 }}>{t("sup.page")} <IconExternalLink size={10} /></a>
                       )}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                     <select value={selected.status} onChange={(e) => updateTicket({ status: e.target.value })} style={{ width: "auto", fontSize: 12 }}>
                       {Object.entries(STATUS_LABELS).map(([k, v]) => (
-                        <option key={k} value={k}>{v}</option>
+                        <option key={k} value={k}>{t(v)}</option>
                       ))}
                     </select>
                     <select value={selected.priority} onChange={(e) => updateTicket({ priority: e.target.value })} style={{ width: "auto", fontSize: 12 }}>
@@ -385,7 +387,7 @@ export default function SupportAdmin() {
                       <option value="critical">Critical</option>
                     </select>
                     <select value={selected.assigned_to || ""} onChange={(e) => updateTicket({ assigned_to: e.target.value || null })} style={{ width: "auto", fontSize: 12 }}>
-                      <option value="">Не назначен</option>
+                      <option value="">{t("sup.unassigned")}</option>
                       {staffList.map((s) => (
                         <option key={s.id} value={s.id}>{s.cmdr_name || s.id.slice(0, 8)} ({s.role})</option>
                       ))}
@@ -397,7 +399,7 @@ export default function SupportAdmin() {
               <div className="card" style={{ flex: 1, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column", minHeight: 400 }}>
                 <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
                   {messages.length === 0 ? (
-                    <p style={{ color: "var(--muted)", textAlign: "center" }}>Нет сообщений</p>
+                    <p style={{ color: "var(--muted)", textAlign: "center" }}>{t("sup.noMessages")}</p>
                   ) : (
                     messages.map((m) => (
                       <div key={m.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", alignSelf: m.is_internal ? "flex-end" : "flex-start", flexDirection: "row", maxWidth: "90%" }}>
@@ -411,10 +413,10 @@ export default function SupportAdmin() {
                             <span style={{ color: m.is_internal ? "#e74c3c" : "var(--orange)", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
                               {m.is_internal ? (m.sender?.cmdr_name || "—") : <PilotIdentity userId={m.sender_id} cmdrName={m.sender?.cmdr_name || "—"} showAvatar={false} fontSize={11} />}
                               {m.is_internal && (
-                                <span style={{ fontSize: 9, background: "#e74c3c", color: "#fff", padding: "1px 4px", borderRadius: 3, marginLeft: 4 }}>ВНУТР</span>
+                                <span style={{ fontSize: 9, background: "#e74c3c", color: "#fff", padding: "1px 4px", borderRadius: 3, marginLeft: 4 }}>{t("sup.internal")}</span>
                               )}
                             </span>
-                            <span style={{ color: "var(--muted)" }}>{fmtDate(m.created_at)}</span>
+                            <span style={{ color: "var(--muted)" }}>{fmtDate(locale, m.created_at)}</span>
                           </div>
                           <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.content}</div>
                         </div>
@@ -435,15 +437,15 @@ export default function SupportAdmin() {
                 </div>
 
                 <div style={{ borderTop: "1px solid var(--line)", padding: "10px 14px", display: "flex", gap: 8, alignItems: "flex-end" }}>
-                  <textarea placeholder="Ответ пользователю..." value={reply} onChange={(e) => setReply(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }} style={{ flex: 1, minHeight: 48, maxHeight: 120, resize: "none", margin: 0, fontSize: 13 }} />
+                  <textarea placeholder={t("sup.replyPlaceholder")} value={reply} onChange={(e) => setReply(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }} style={{ flex: 1, minHeight: 48, maxHeight: 120, resize: "none", margin: 0, fontSize: 13 }} />
                   <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{ display: "none" }} accept="image/*,.pdf,.txt" />
-                  <button onClick={() => fileInputRef.current?.click()} style={{ padding: "10px", fontSize: 14 }} title="Прикрепить файл"><IconPaperclip size={14} /></button>
+                  <button onClick={() => fileInputRef.current?.click()} style={{ padding: "10px", fontSize: 14 }} title={t("sup.attach")}><IconPaperclip size={14} /></button>
                   <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--muted)", cursor: "pointer", whiteSpace: "nowrap" }}>
                     <input type="checkbox" checked={isInternal} onChange={(e) => setIsInternal(e.target.checked)} style={{ margin: 0 }} />
-                    Внутр.
+                    {t("sup.internalShort")}
                   </label>
                   <button onClick={sendReply} disabled={!reply.trim() || sending} className="btn btn-orange" style={{ padding: "10px 18px", fontSize: 11 }}>
-                    {sending ? "..." : "Ответить"}
+                    {sending ? "..." : t("sup.reply")}
                   </button>
                 </div>
               </div>
@@ -451,7 +453,7 @@ export default function SupportAdmin() {
             </div>
           ) : (
             <div className="card" style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>
-              <p>Выберите тикет из списка слева</p>
+              <p>{t("sup.pickTicket")}</p>
             </div>
           )}
         </section>

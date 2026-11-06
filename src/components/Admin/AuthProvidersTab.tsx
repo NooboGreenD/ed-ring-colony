@@ -5,6 +5,7 @@ import { authFetch } from '@/lib/supabaseClient';
 import type { AuthProviderMeta } from '@/lib/authProviders/registry';
 import { IconInfo } from '@/components/Icons';
 import MailSettingsCard from '@/components/Admin/MailSettingsCard';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 type PublicSetting = { enabled: boolean; client_id: string; notes: string; updated_at: string | null; has_secret: boolean };
 type Payload = {
@@ -18,7 +19,7 @@ type Payload = {
 type Draft = { enabled: boolean; client_id: string; client_secret: string; clear_secret: boolean; notes: string };
 
 const KIND_LABEL: Record<AuthProviderMeta['kind'], string> = {
-  builtin: 'встроено', gotrue: 'Supabase Auth (GoTrue)', site: 'поток сайта', planned: 'план',
+  builtin: 'authprov.kindBuiltin', gotrue: 'Supabase Auth (GoTrue)', site: 'authprov.kindSite', planned: 'authprov.kindPlanned',
 };
 const KIND_COLOR: Record<AuthProviderMeta['kind'], string> = {
   builtin: '#9ca3af', gotrue: '#3ecf8e', site: '#0077ff', planned: '#e67e22',
@@ -27,49 +28,52 @@ const KIND_COLOR: Record<AuthProviderMeta['kind'], string> = {
 const inputStyle = { width: '100%', background: '#141618', border: '1px solid #323538', color: '#e5e7eb', padding: '6px 8px', fontSize: 13, borderRadius: 2 } as const;
 
 function Status({ meta, setting, env }: { meta: AuthProviderMeta; setting: PublicSetting; env: Payload['env'] }) {
+  const { t } = useI18n();
   let text = ''; let color = '#9ca3af';
   if (meta.kind === 'gotrue') {
     const allowed = env.gotrueAllowed.includes(meta.gotrue!);
-    if (allowed && setting.enabled) { text = 'кнопка показывается'; color = '#22c55e'; }
-    else if (allowed) { text = 'разрешён в env, скрыт админом'; color = '#e67e22'; }
-    else if (setting.enabled) { text = 'включён здесь, но нет в AUTH_OAUTH_PROVIDERS'; color = '#e67e22'; }
-    else text = 'выключен';
+    if (allowed && setting.enabled) { text = t('authprov.stShown'); color = '#22c55e'; }
+    else if (allowed) { text = t('authprov.stAllowedHidden'); color = '#e67e22'; }
+    else if (setting.enabled) { text = t('authprov.stNotInEnv'); color = '#e67e22'; }
+    else text = t('authprov.stDisabled');
   } else if (meta.id === 'vk' || meta.id === 'yandex') {
     const site = meta.id === 'vk' ? env.vk : env.yandex;
     const hasId = Boolean(setting.client_id) || site.client_id;
-    if (setting.enabled && hasId && env.serviceRole) { text = 'кнопка показывается'; color = '#22c55e'; }
-    else if (setting.enabled && !hasId) { text = 'включён, но нет Client ID'; color = '#e67e22'; }
-    else if (setting.enabled && !env.serviceRole) { text = 'нет SUPABASE_SERVICE_ROLE_KEY'; color = '#ef4444'; }
-    else { text = 'скрыт (готов к включению)'; }
-  } else if (meta.id === 'email') { text = env.emailEnabled ? 'регистрация по почте включена' : 'только вход/пароль (AUTH_EMAIL_ENABLED=false)'; }
-  else if (meta.id === 'frontier') { text = env.frontier.client_id ? 'Client ID задан в env' : 'используется встроенный Client ID'; }
-  else if (meta.kind === 'planned') { text = 'не реализовано — настройки сохраняются на будущее'; }
+    if (setting.enabled && hasId && env.serviceRole) { text = t('authprov.stShown'); color = '#22c55e'; }
+    else if (setting.enabled && !hasId) { text = t('authprov.stNoClientId'); color = '#e67e22'; }
+    else if (setting.enabled && !env.serviceRole) { text = t('authprov.stNoServiceRole'); color = '#ef4444'; }
+    else { text = t('authprov.stReadyHidden'); }
+  } else if (meta.id === 'email') { text = env.emailEnabled ? t('authprov.stEmailOn') : t('authprov.stEmailOff'); }
+  else if (meta.id === 'frontier') { text = env.frontier.client_id ? t('authprov.stFrontierEnv') : t('authprov.stFrontierBuiltin'); }
+  else if (meta.kind === 'planned') { text = t('authprov.stPlanned'); }
   return <span style={{ fontSize: 12, color }}>{text}</span>;
 }
 
 function HelpButton({ meta, open, onToggle }: { meta: AuthProviderMeta; open: boolean; onToggle: () => void }) {
+  const { t } = useI18n();
   const help = meta.help;
   if (!help && !meta.docs) return null;
   return <span style={{ position: 'relative', display: 'inline-flex' }}>
-    <button type="button" aria-label={`Как настроить ${meta.label}`} aria-expanded={open} title="Как это настроить" onClick={onToggle}
+    <button type="button" aria-label={t('authprov.helpAria', { label: meta.label })} aria-expanded={open} title={t('authprov.helpTitle')} onClick={onToggle}
       style={{ width: 22, height: 22, padding: 0, borderRadius: '50%', border: '1px solid #4b5563', background: open ? 'rgba(255,157,46,0.15)' : 'transparent', color: '#e67e22', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
       <IconInfo size={13} color="#e67e22" />
     </button>
-    {open && <div role="dialog" aria-label={`Подсказка: ${meta.label}`}
+    {open && <div role="dialog" aria-label={t('authprov.helpDialog', { label: meta.label })}
       style={{ position: 'absolute', top: 28, left: 0, zIndex: 20, width: 'min(420px, 80vw)', background: '#1b1e21', border: '1px solid #4b5563', borderRadius: 2, padding: '10px 12px', fontSize: 12, color: '#d1d5db', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
-      <strong style={{ display: 'block', marginBottom: 6, color: '#f3f4f6' }}>Как включить {meta.label}</strong>
+      <strong style={{ display: 'block', marginBottom: 6, color: '#f3f4f6' }}>{t('authprov.helpEnable', { label: meta.label })}</strong>
       {help && <ol style={{ margin: '0 0 8px', paddingLeft: 18, display: 'grid', gap: 4 }}>
         {help.steps.map((step, i) => <li key={i}>{step}</li>)}
       </ol>}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        {help?.guide && <a href={help.guide} target="_blank" rel="noreferrer">📄 {help.guideLabel || 'Подробная инструкция'}</a>}
-        {meta.docs && <a href={meta.docs} target="_blank" rel="noreferrer">↗ Консоль провайдера</a>}
+        {help?.guide && <a href={help.guide} target="_blank" rel="noreferrer">📄 {help.guideLabel || t('authprov.guideFallback')}</a>}
+        {meta.docs && <a href={meta.docs} target="_blank" rel="noreferrer">↗ {t('authprov.providerConsole')}</a>}
       </div>
     </div>}
   </span>;
 }
 
 export default function AuthProvidersTab() {
+  const { t, locale } = useI18n();
   const [data, setData] = useState<Payload | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -89,7 +93,7 @@ export default function AuthProvidersTab() {
     try {
       const res = await authFetch('/api/admin/auth-providers', { cache: 'no-store' });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Ошибка загрузки');
+      if (!res.ok) throw new Error(json.error || t('authprov.loadError'));
       setData(json);
       const next: Record<string, Draft> = {};
       for (const meta of json.registry as AuthProviderMeta[]) {
@@ -97,8 +101,8 @@ export default function AuthProvidersTab() {
         next[meta.id] = { enabled: s.enabled, client_id: s.client_id, client_secret: '', clear_secret: false, notes: s.notes };
       }
       setDrafts(next);
-    } catch (e: any) { setMsg(e.message || 'Ошибка загрузки'); }
-  }, []);
+    } catch (e: any) { setMsg(e.message || t('authprov.loadError')); }
+  }, [t]);
   useEffect(() => { void load(); }, [load]);
 
   const save = async (id: string, patch?: Partial<Draft>) => {
@@ -110,15 +114,15 @@ export default function AuthProvidersTab() {
       else if (d.client_secret) body.client_secret = d.client_secret;
       const res = await authFetch('/api/admin/auth-providers', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [id]: body }) });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Не сохранено');
+      if (!res.ok) throw new Error(json.error || t('authprov.notSaved'));
       setData(prev => prev ? { ...prev, settings: json.settings } : prev);
       setDrafts(prev => ({ ...prev, [id]: { ...d, client_secret: '', clear_secret: false } }));
-      setMsg('Сохранено. Кнопки на /login и /account обновятся при следующей загрузке страницы.');
-    } catch (e: any) { setMsg(e.message || 'Не сохранено'); }
+      setMsg(t('authprov.saved'));
+    } catch (e: any) { setMsg(e.message || t('authprov.notSaved')); }
     finally { setBusy(null); }
   };
 
-  if (!data) return <p>{msg || 'Загрузка…'}</p>;
+  if (!data) return <p>{msg || t('authprov.loading')}</p>;
   const visible = data.registry.filter(meta => showAll || meta.kind !== 'gotrue' || data.env.gotrueAllowed.includes(meta.gotrue!) || ['discord', 'google', 'github'].includes(meta.id));
 
   return <div>
@@ -127,23 +131,21 @@ export default function AuthProvidersTab() {
         частый инцидент этого раздела, а раньше SMTP настраивался только по SSH. */}
     <MailSettingsCard />
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-      <h2 style={{ margin: 0 }}>Сервисы авторизации</h2>
+      <h2 style={{ margin: 0 }}>{t('authprov.title')}</h2>
       <label style={{ fontSize: 12, color: '#9ca3af' }}>
-        <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} /> показать все известные ({data.registry.length})
+        <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} /> {t('authprov.showAll', { count: data.registry.length })}
       </label>
     </div>
     <p style={{ color: '#9ca3af', fontSize: 13, margin: '8px 0 12px' }}>
-      Переключатель «показывать» управляет кнопками на страницах входа и профиля. Секреты хранятся только на сервере
-      (для GoTrue-провайдеров они настраиваются в окружении Supabase Auth; поля здесь — памятка и заготовка).
-      Секрет никогда не возвращается в браузер — показывается только факт его наличия.
+      {t('authprov.intro')}
     </p>
     <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12, display: 'grid', gap: 2 }}>
-      <span>Redirect для GoTrue-провайдеров: <code>{data.redirects.gotrue}</code></span>
-      <span>Redirect для VK ID: <code>{data.redirects.vk}</code></span>
-      <span>Redirect для Яндекс ID: <code>{data.redirects.yandex}</code></span>
-      <span>Разрешены в AUTH_OAUTH_PROVIDERS: <code>{data.env.gotrueAllowed.join(', ') || '—'}</code></span>
+      <span>{t('authprov.redirectGotrue')} <code>{data.redirects.gotrue}</code></span>
+      <span>{t('authprov.redirectVk')} <code>{data.redirects.vk}</code></span>
+      <span>{t('authprov.redirectYandex')} <code>{data.redirects.yandex}</code></span>
+      <span>{t('authprov.allowedEnv')} <code>{data.env.gotrueAllowed.join(', ') || '—'}</code></span>
     </div>
-    {msg && <p role="status" style={{ color: msg.startsWith('Сохранено') ? '#22c55e' : '#ef4444', fontSize: 13 }}>{msg}</p>}
+    {msg && <p role="status" style={{ color: msg.startsWith(t('authprov.saved')) ? '#22c55e' : '#ef4444', fontSize: 13 }}>{msg}</p>}
 
     <div style={{ display: 'grid', gap: 8 }}>
       {visible.map(meta => {
@@ -155,47 +157,47 @@ export default function AuthProvidersTab() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <strong style={{ minWidth: 180 }}>{meta.label}</strong>
             <HelpButton meta={meta} open={help === meta.id} onToggle={() => setHelp(help === meta.id ? null : meta.id)} />
-            <span style={{ fontSize: 11, padding: '2px 6px', border: `1px solid ${KIND_COLOR[meta.kind]}`, color: KIND_COLOR[meta.kind], borderRadius: 2 }}>{KIND_LABEL[meta.kind]}</span>
+            <span style={{ fontSize: 11, padding: '2px 6px', border: `1px solid ${KIND_COLOR[meta.kind]}`, color: KIND_COLOR[meta.kind], borderRadius: 2 }}>{t(KIND_LABEL[meta.kind])}</span>
             <Status meta={meta} setting={s} env={data.env} />
             <span style={{ flex: 1 }} />
             {canToggle && <label style={{ fontSize: 13 }}>
               <input type="checkbox" checked={d.enabled} disabled={busy === meta.id}
-                onChange={e => { const enabled = e.target.checked; setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], enabled } })); void save(meta.id, { enabled }); }} /> показывать
+                onChange={e => { const enabled = e.target.checked; setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], enabled } })); void save(meta.id, { enabled }); }} /> {t('authprov.toggleShow')}
             </label>}
             <button type="button" className="tab" style={{ fontSize: 12, padding: '3px 8px' }} onClick={() => setOpen(expanded ? null : meta.id)}>
-              {expanded ? 'свернуть' : 'настройки'}
+              {expanded ? t('authprov.collapse') : t('authprov.settings')}
             </button>
           </div>
           {expanded && <div style={{ marginTop: 10, display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
             <label style={{ fontSize: 12, color: '#9ca3af' }}>Client ID
               <input style={inputStyle} value={d.client_id} onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], client_id: e.target.value } }))}
-                placeholder={meta.id === 'vk' && data.env.vk.client_id ? 'задан в env (VK_ID_CLIENT_ID)'
-                  : meta.id === 'yandex' && data.env.yandex.client_id ? 'задан в env (YANDEX_ID_CLIENT_ID)' : ''} />
+                placeholder={meta.id === 'vk' && data.env.vk.client_id ? t('authprov.placeholderEnvVk')
+                  : meta.id === 'yandex' && data.env.yandex.client_id ? t('authprov.placeholderEnvYandex') : ''} />
             </label>
-            <label style={{ fontSize: 12, color: '#9ca3af' }}>Client Secret {s.has_secret && <span style={{ color: '#22c55e' }}>(сохранён)</span>}
+            <label style={{ fontSize: 12, color: '#9ca3af' }}>Client Secret {s.has_secret && <span style={{ color: '#22c55e' }}>{t('authprov.secretSaved')}</span>}
               <input style={inputStyle} type="password" autoComplete="new-password" value={d.client_secret}
                 onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], client_secret: e.target.value, clear_secret: false } }))}
-                placeholder={s.has_secret ? '•••••• (оставьте пустым, чтобы не менять)'
-                  : (meta.id === 'vk' && data.env.vk.client_secret) || (meta.id === 'yandex' && data.env.yandex.client_secret) ? 'задан в env' : ''} />
+                placeholder={s.has_secret ? t('authprov.secretPlaceholder')
+                  : (meta.id === 'vk' && data.env.vk.client_secret) || (meta.id === 'yandex' && data.env.yandex.client_secret) ? t('authprov.envSet') : ''} />
               {s.has_secret && <label style={{ display: 'block', marginTop: 4 }}>
-                <input type="checkbox" checked={d.clear_secret} onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], clear_secret: e.target.checked } }))} /> удалить сохранённый секрет
+                <input type="checkbox" checked={d.clear_secret} onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], clear_secret: e.target.checked } }))} /> {t('authprov.clearSecret')}
               </label>}
             </label>
-            <label style={{ fontSize: 12, color: '#9ca3af', gridColumn: '1 / -1' }}>Заметки
+            <label style={{ fontSize: 12, color: '#9ca3af', gridColumn: '1 / -1' }}>{t('authprov.notes')}
               <textarea style={{ ...inputStyle, minHeight: 48 }} value={d.notes} onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], notes: e.target.value } }))} />
             </label>
             <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#9ca3af', display: 'grid', gap: 2 }}>
-              <span>Переменные окружения: <code>{meta.env.join(', ')}</code></span>
-              {meta.redirect === 'gotrue' && <span>Redirect URI у провайдера: <code>{data.redirects.gotrue}</code></span>}
-              {meta.redirect === 'site-vk' && <span>Redirect URI у провайдера: <code>{data.redirects.vk}</code></span>}
-              {meta.redirect === 'site-yandex' && <span>Redirect URI у провайдера: <code>{data.redirects.yandex}</code></span>}
-              {meta.docs && <span>Консоль разработчика: <a href={meta.docs} target="_blank" rel="noreferrer">{meta.docs}</a></span>}
+              <span>{t('authprov.envVars')} <code>{meta.env.join(', ')}</code></span>
+              {meta.redirect === 'gotrue' && <span>{t('authprov.redirectUri')} <code>{data.redirects.gotrue}</code></span>}
+              {meta.redirect === 'site-vk' && <span>{t('authprov.redirectUri')} <code>{data.redirects.vk}</code></span>}
+              {meta.redirect === 'site-yandex' && <span>{t('authprov.redirectUri')} <code>{data.redirects.yandex}</code></span>}
+              {meta.docs && <span>{t('authprov.devConsole')} <a href={meta.docs} target="_blank" rel="noreferrer">{meta.docs}</a></span>}
               {meta.note && <span>{meta.note}</span>}
-              {s.updated_at && <span>Обновлено: {new Date(s.updated_at).toLocaleString('ru-RU')}</span>}
+              {s.updated_at && <span>{t('authprov.updatedAt', { time: new Date(s.updated_at).toLocaleString(locale) })}</span>}
             </div>
             <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8 }}>
-              <button type="button" className="btn btn-cyan" disabled={busy === meta.id} onClick={() => void save(meta.id)}>Сохранить</button>
-              <button type="button" className="btn" disabled={busy === meta.id} onClick={() => void load()}>Отменить</button>
+              <button type="button" className="btn btn-cyan" disabled={busy === meta.id} onClick={() => void save(meta.id)}>{t('authprov.save')}</button>
+              <button type="button" className="btn" disabled={busy === meta.id} onClick={() => void load()}>{t('authprov.cancel')}</button>
             </div>
           </div>}
         </div>;

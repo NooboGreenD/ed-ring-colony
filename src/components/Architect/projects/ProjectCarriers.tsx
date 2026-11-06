@@ -10,6 +10,7 @@
  */
 
 import Link from 'next/link';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useMemo, useState } from 'react';
 import {
   cardStyle,
@@ -44,6 +45,7 @@ interface Props {
 }
 
 export default function ProjectCarriers({ base, detail, leaders, onChanged, onNotice }: Props) {
+  const { t } = useI18n();
   const perms = detail.viewer.permissions;
   const [reference, setReference] = useState('');
   const [systemId, setSystemId] = useState('');
@@ -55,7 +57,7 @@ export default function ProjectCarriers({ base, detail, leaders, onChanged, onNo
 
   const bind = async () => {
     if (!reference.trim()) {
-      setError('Введите Carrier ID или позывной');
+      setError(t('pcar.enterRef'));
       return;
     }
     setBusy(true);
@@ -71,37 +73,39 @@ export default function ProjectCarriers({ base, detail, leaders, onChanged, onNo
     }
     setReference('');
     setPurpose('');
-    onNotice(`Авианосец ${result.data?.name ?? result.data?.callsign ?? ''} привязан${result.data?.shareCargo ? ', груз виден участникам' : ''}`);
+    onNotice(result.data?.shareCargo
+      ? t('pcar.boundCargo', { name: result.data?.name ?? result.data?.callsign ?? '' })
+      : t('pcar.bound', { name: result.data?.name ?? result.data?.callsign ?? '' }));
     await onChanged();
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {perms.bindOwnCarrier || perms.bindAnyCarrier ? (
-        <section style={cardStyle} aria-label="Привязать авианосец">
-          <h2 style={sectionTitle}>Привязать авианосец</h2>
+        <section style={cardStyle} aria-label={t('pcar.bindAria')}>
+          <h2 style={sectionTitle}>{t('pcar.bindAria')}</h2>
           <p style={{ ...mutedText, margin: '6px 0 10px' }}>
             {perms.bindAnyCarrier
-              ? 'Можно привязать любой авианосец по Carrier ID или позывному. Груз виден, только если носитель привязал его владелец или офицер эскадрильи.'
-              : 'Привяжите свой авианосец или носитель эскадрильи, где вы офицер: участники увидят его положение и груз. Финансы не показываются.'}
-            {' '}Свой носитель и его Carrier ID — в профиле, вкладка <Link href="/account?tab=carrier" style={{ color: 'var(--cyan)' }}>«Авианосец»</Link>.
+              ? t('pcar.hintAny')
+              : t('pcar.hintOwn')}
+            {' '}{t('pcar.hintProfile')} <Link href="/account?tab=carrier" style={{ color: 'var(--cyan)' }}>{t('pcar.carrierTab')}</Link>.
           </p>
           <div style={rowStyle}>
-            <input value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Carrier ID или позывной (ABC-123)" aria-label="Авианосец" style={{ ...inputStyle, flex: '1 1 220px' }} />
-            <select value={systemId} onChange={(event) => setSystemId(event.target.value)} style={inputStyle} aria-label="Система проекта">
-              <option value="">— обслуживает проект —</option>
+            <input value={reference} onChange={(event) => setReference(event.target.value)} placeholder={t('pcar.phRef')} aria-label={t('pcar.ariaCarrier')} style={{ ...inputStyle, flex: '1 1 220px' }} />
+            <select value={systemId} onChange={(event) => setSystemId(event.target.value)} style={inputStyle} aria-label={t('pcar.ariaProjectSystem')}>
+              <option value="">{t('pcar.optionProjectWide')}</option>
               {detail.systems.map((system) => <option key={system.id} value={system.id}>{system.name}</option>)}
             </select>
-            <input value={purpose} onChange={(event) => setPurpose(event.target.value)} maxLength={PROJECT_LIMITS.purpose} placeholder="Роль: склад стали, челнок…" style={{ ...inputStyle, flex: '1 1 200px' }} />
-            <button type="button" style={primaryButton} disabled={busy} onClick={() => void bind()}>Привязать</button>
+            <input value={purpose} onChange={(event) => setPurpose(event.target.value)} maxLength={PROJECT_LIMITS.purpose} placeholder={t('pcar.phPurpose')} style={{ ...inputStyle, flex: '1 1 200px' }} />
+            <button type="button" style={primaryButton} disabled={busy} onClick={() => void bind()}>{t('pcar.bindButton')}</button>
           </div>
           {error && <p style={errorText}>{error}</p>}
-          <div style={{ ...mutedText, marginTop: 6 }}>{detail.carriers.length}/{detail.limits.carriers} авианосцев</div>
+          <div style={{ ...mutedText, marginTop: 6 }}>{t('pcar.carriersCount', { current: detail.carriers.length, limit: detail.limits.carriers })}</div>
         </section>
       ) : null}
 
       {detail.carriers.length === 0 ? (
-        <EmptyState>К проекту не привязано ни одного авианосца.</EmptyState>
+        <EmptyState>{t('pcar.empty')}</EmptyState>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
           {detail.carriers.map((link) => (
@@ -131,10 +135,11 @@ function CarrierCard({ base, link, detail, deliveredTons, deliveredBy, onChanged
   onChanged: () => Promise<void> | void;
   onNotice: (message: string) => void;
 }) {
+  const { t, locale } = useI18n();
   const carrier = link.carrier;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const title = carrier ? [carrier.name, carrier.callsign].filter(Boolean).join(' · ') || `Авианосец ${link.carrierId}` : `Авианосец ${link.carrierId}`;
+  const title = carrier ? [carrier.name, carrier.callsign].filter(Boolean).join(' · ') || t('pcar.titleFallback', { id: link.carrierId }) : t('pcar.titleFallback', { id: link.carrierId });
   const space = carrier?.space ?? null;
   const usage = space?.cargoCapacity ? ((space.cargo ?? 0) / space.cargoCapacity) * 100 : null;
 
@@ -152,7 +157,7 @@ function CarrierCard({ base, link, detail, deliveredTons, deliveredBy, onChanged
   };
 
   const unbind = async () => {
-    if (!window.confirm(`Отвязать ${title} от проекта?`)) return;
+    if (!window.confirm(t('pcar.unbindQuestion', { title }))) return;
     setBusy(true);
     const result = await apiJson(`${base}/carriers?carrierId=${encodeURIComponent(link.carrierId)}`, { method: 'DELETE' });
     setBusy(false);
@@ -160,7 +165,7 @@ function CarrierCard({ base, link, detail, deliveredTons, deliveredBy, onChanged
       setError(result.error);
       return;
     }
-    onNotice(`${title} отвязан от проекта`);
+    onNotice(t('pcar.unbound', { title }));
     await onChanged();
   };
 
@@ -169,35 +174,35 @@ function CarrierCard({ base, link, detail, deliveredTons, deliveredBy, onChanged
       <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
         <strong style={{ fontSize: 15 }}>{title}</strong>
         <Badge tone={carrier?.type === 'SquadronCarrier' ? 'var(--cyan)' : 'var(--muted)'}>
-          {carrier?.type === 'SquadronCarrier' ? 'эскадренный' : 'личный'}
+          {carrier?.type === 'SquadronCarrier' ? t('pcar.typeSquadron') : t('pcar.typePersonal')}
         </Badge>
-        {link.shareCargo && <Badge tone="var(--green)">груз виден проекту</Badge>}
-        {carrier?.relation === 'own' && <Badge tone="var(--orange)">ваш</Badge>}
+        {link.shareCargo && <Badge tone="var(--green)">{t('pcar.badgeCargoShared')}</Badge>}
+        {carrier?.relation === 'own' && <Badge tone="var(--orange)">{t('pcar.badgeOwn')}</Badge>}
       </div>
       <div style={{ ...mutedText, display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span>
-          Стоит: <b style={{ color: 'var(--text)' }}>{carrier?.location.system ?? 'неизвестно'}</b>
+          {t('pcar.location')} <b style={{ color: 'var(--text)' }}>{carrier?.location.system ?? t('pcar.unknown')}</b>
           {carrier?.location.body ? ` · ${carrier.location.body}` : ''}
-          {carrier?.location.estimated ? ' (по расписанию прыжка)' : ''}
+          {carrier?.location.estimated ? t('pcar.byJumpSchedule') : ''}
           {carrier?.location.at ? ` · ${formatAgo(carrier.location.at)}` : ''}
         </span>
         {carrier?.jump && (
           <span style={{ color: 'var(--orange)' }}>
-            {carrier.jump.state === 'jumping' ? 'Прыгает' : 'Прыжок'} → {carrier.jump.system}
-            {carrier.jump.departureAt ? ` · вылет ${new Date(carrier.jump.departureAt).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}` : ''}
+            {carrier.jump.state === 'jumping' ? t('pcar.jumping') : t('pcar.jump')} → {carrier.jump.system}
+            {carrier.jump.departureAt ? t('pcar.departure', { time: new Date(carrier.jump.departureAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' }) }) : ''}
           </span>
         )}
-        {carrier?.status.dockingLabel && <span>Стыковка: {carrier.status.dockingLabel}</span>}
+        {carrier?.status.dockingLabel && <span>{t('pcar.docking', { label: carrier.status.dockingLabel })}</span>}
         <span>
-          Обслуживает: {link.systemName ?? 'весь проект'}{link.purpose ? ` · ${link.purpose}` : ''}
-          {link.addedByName ? ` · привязал ${link.addedByName}` : ''}
+          {t('pcar.serves')} {link.systemName ?? t('pcar.wholeProject')}{link.purpose ? ` · ${link.purpose}` : ''}
+          {link.addedByName ? t('pcar.boundBy', { name: link.addedByName }) : ''}
         </span>
       </div>
 
       {space && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-            <span style={{ color: 'var(--muted)' }}>Трюм</span>
+            <span style={{ color: 'var(--muted)' }}>{t('pcar.hold')}</span>
             <span style={{ fontFamily: 'ui-monospace, monospace' }}>
               {formatTons(space.cargo)}{space.cargoCapacity ? ` / ${formatTons(space.cargoCapacity)}` : ''}
             </span>
@@ -209,7 +214,7 @@ function CarrierCard({ base, link, detail, deliveredTons, deliveredBy, onChanged
       {carrier?.cargo ? (
         carrier.cargo.items.length ? (
           <div>
-            <div style={{ ...mutedText, marginBottom: 4 }}>Груз ({formatTons(carrier.cargo.trackedTotal)}, учёт {formatAgo(carrier.cargo.updatedAt ?? carrier.cargo.baselineAt)})</div>
+            <div style={{ ...mutedText, marginBottom: 4 }}>{t('pcar.cargoTitle', { tons: formatTons(carrier.cargo.trackedTotal), ago: formatAgo(carrier.cargo.updatedAt ?? carrier.cargo.baselineAt) })}</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '2px 12px' }}>
               {carrier.cargo.items.slice(0, 16).map((item) => (
                 <span key={item.commodity} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, gap: 6 }}>
@@ -219,19 +224,19 @@ function CarrierCard({ base, link, detail, deliveredTons, deliveredBy, onChanged
               ))}
             </div>
           </div>
-        ) : <span style={mutedText}>Трюм пуст по учёту журналов.</span>
+        ) : <span style={mutedText}>{t('pcar.holdEmpty')}</span>
       ) : (
-        <span style={mutedText}>Груз скрыт: носитель привязан без показа груза.</span>
+        <span style={mutedText}>{t('pcar.cargoHidden')}</span>
       )}
 
       {carrier && carrier.orders.length > 0 && (
         <div style={{ ...mutedText, fontSize: 11 }}>
-          Заказы: {carrier.orders.slice(0, 6).map((order) => `${order.name}${order.purchase ? ` покупка ${compactTons(order.purchase)}` : ''}${order.sale ? ` продажа ${compactTons(order.sale)}` : ''}`).join(' · ')}
+          {t('pcar.orders')} {carrier.orders.slice(0, 6).map((order) => `${order.name}${order.purchase ? t('pcar.orderBuy', { tons: compactTons(order.purchase) }) : ''}${order.sale ? t('pcar.orderSell', { tons: compactTons(order.sale) }) : ''}`).join(' · ')}
         </div>
       )}
 
       <div style={{ ...mutedText, fontSize: 12 }}>
-        Сдано на носитель пилотами проекта: <b style={{ color: 'var(--text)' }}>{formatTons(deliveredTons)}</b>
+        {t('pcar.deliveredTo')} <b style={{ color: 'var(--text)' }}>{formatTons(deliveredTons)}</b>
         {deliveredBy.length > 0 && ` · ${deliveredBy.filter((slice) => slice.key !== '__other').slice(0, 3).map((slice) => `${slice.label} ${compactTons(slice.tons)}`).join(', ')}`}
       </div>
 
@@ -241,23 +246,23 @@ function CarrierCard({ base, link, detail, deliveredTons, deliveredBy, onChanged
             <select
               value={link.systemId ?? ''}
               disabled={busy}
-              onChange={(event) => void patch({ systemId: event.target.value || null }, 'Система носителя изменена')}
+              onChange={(event) => void patch({ systemId: event.target.value || null }, t('pcar.systemChanged'))}
               style={{ ...inputStyle, padding: '4px 8px' }}
-              aria-label="Система носителя"
+              aria-label={t('pcar.ariaCarrierSystem')}
             >
-              <option value="">весь проект</option>
+              <option value="">{t('pcar.wholeProject')}</option>
               {detail.systems.map((system) => <option key={system.id} value={system.id}>{system.name}</option>)}
             </select>
           )}
           {link.canShare && !link.shareCargo && (
-            <button type="button" style={ghostButton} disabled={busy} onClick={() => void patch({ shareCargo: true }, 'Груз носителя открыт участникам проекта')}>Показать груз проекту</button>
+            <button type="button" style={ghostButton} disabled={busy} onClick={() => void patch({ shareCargo: true }, t('pcar.cargoShown'))}>{t('pcar.showCargo')}</button>
           )}
           {link.shareCargo && link.canManage && (
-            <button type="button" style={ghostButton} disabled={busy} onClick={() => void patch({ shareCargo: false }, 'Груз носителя скрыт от проекта')}>Скрыть груз</button>
+            <button type="button" style={ghostButton} disabled={busy} onClick={() => void patch({ shareCargo: false }, t('pcar.cargoHiddenMsg'))}>{t('pcar.hideCargo')}</button>
           )}
           {link.canManage && (
             <button type="button" style={{ ...ghostButton, borderColor: 'var(--red)', color: 'var(--red)', marginLeft: 'auto' }} disabled={busy} onClick={() => void unbind()}>
-              Отвязать
+              {t('pcar.unbind')}
             </button>
           )}
         </div>

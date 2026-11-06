@@ -5,6 +5,7 @@ import type { BillingPlan, UserSubscription } from "@/types/billing";
 import { IconCheck, IconCrown, IconSearch, IconX, IconRefresh } from "@/components/Icons";
 import { authFetch } from "@/lib/supabaseClient";
 import ProfilePicker, { type PickedProfile } from "./ProfilePicker";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 interface Props {
   currentAdminCmdr?: string;
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }: Props) {
+  const { t, locale } = useI18n();
   const [plans, setPlans] = useState<BillingPlan[]>([]);
   const [subscriptions, setSubscriptions] = useState<UserSubscription[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,7 +58,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
       if (plansData.success) setPlans(plansData.plans || []);
       if (subsData.success) setSubscriptions(subsData.subscriptions || []);
     } catch (err: any) {
-      showToast("Ошибка загрузки данных: " + err.message, false);
+      showToast(t("bsub.loadError", { message: err.message }), false);
     } finally {
       setLoading(false);
     }
@@ -69,7 +71,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
   const handleGrant = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!grantProfile) {
-      showToast("Выберите зарегистрированного пилота", false);
+      showToast(t("bsub.choosePilot"), false);
       return;
     }
 
@@ -84,14 +86,14 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
           userId: grantProfile.id,
           planId: grantPlanId,
           durationDays: Number(grantDuration),
-          notes: grantNotes.trim() || "Назначено через панель администратора",
+          notes: grantNotes.trim() || t("bsub.defaultNote"),
         }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка выдачи");
+      if (!res.ok) throw new Error(data.error || t("bsub.grantError"));
 
-      showToast(`Подписка успешно выдана командиру ${grantProfile.cmdr_name || grantProfile.id}`);
+      showToast(t("bsub.granted", { name: grantProfile.cmdr_name || grantProfile.id }));
       setShowGrantModal(false);
       setGrantProfile(null);
       setGrantNotes("");
@@ -118,7 +120,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      showToast(`Подписка продлена на ${days} дней`);
+      showToast(t("bsub.extended", { days }));
       loadData();
       if (onRefreshStats) onRefreshStats();
     } catch (err: any) {
@@ -127,7 +129,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
   };
 
   const handleCancel = async (subId: string) => {
-    if (!confirm("Вы уверены, что хотите отозвать эту подписку?")) return;
+    if (!confirm(t("bsub.confirmRevoke"))) return;
     try {
       const res = await authFetch(`/api/admin/billing/subscriptions?id=${subId}&reason=Отозвано_администратором`, {
         method: "DELETE",
@@ -135,7 +137,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      showToast("Подписка успешно отозвана");
+      showToast(t("bsub.revoked"));
       loadData();
       if (onRefreshStats) onRefreshStats();
     } catch (err: any) {
@@ -144,7 +146,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
   };
 
   const handleSelfVipGrant = async () => {
-    const name = currentAdminCmdr || "Администратор";
+    const name = currentAdminCmdr || t("bsub.admin");
     try {
       const res = await authFetch("/api/admin/billing/subscriptions", {
         method: "POST",
@@ -154,13 +156,13 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
           cmdrName: name,
           planId: plans.find((p) => p.id === "admiral")?.id || plans[plans.length - 1]?.id,
           durationDays: 365,
-          notes: "Тестовая VIP-подписка администратора",
+          notes: t("bsub.testNote"),
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      showToast(`Вам активирована тестовая подписка «Флотоводец VIP» на 365 дней!`);
+      showToast(t("bsub.testGranted"));
       loadData();
       if (onRefreshStats) onRefreshStats();
     } catch (err: any) {
@@ -185,7 +187,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      showToast(`Тариф «${editingPlan.name}» успешно обновлен`);
+      showToast(t("bsub.planUpdated", { name: editingPlan.name }));
       setEditingPlan(null);
       loadData();
       if (onRefreshStats) onRefreshStats();
@@ -222,10 +224,10 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 18, color: "var(--text, #eeeeee)" }}>
-            УПРАВЛЕНИЕ ТАРИФАМИ И ПОДПИСКАМИ
+            {t("bsub.header")}
           </h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted, #9ca3af)" }}>
-            Назначение премиальных статусов, управление привилегиями и сроками действия
+            {t("bsub.headerHint")}
           </p>
         </div>
 
@@ -244,7 +246,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
             }}
           >
             <IconCrown size={14} color="#c084fc" />
-            Выдать VIP себе (Тест)
+            {t("bsub.grantSelf")}
           </button>
 
           <button
@@ -253,7 +255,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
             onClick={() => setShowGrantModal(true)}
             style={{ padding: "8px 16px" }}
           >
-            + Выдать подписку
+            {t("bsub.grantNew")}
           </button>
         </div>
       </div>
@@ -300,17 +302,17 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                     <h3 style={{ margin: "6px 0 0", color: "var(--text, #eeeeee)", fontSize: 16 }}>{p.name}</h3>
                   </div>
                   <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-                    {subsCount} активных
+                    {t("bsub.activeCount", { count: subsCount })}
                   </span>
                 </div>
 
                 <div style={{ margin: "10px 0 14px", display: "flex", alignItems: "baseline", gap: 6 }}>
                   <span style={{ fontSize: 24, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: p.color }}>
-                    {p.price_rub.toLocaleString("ru-RU")} ₽
+                    {p.price_rub.toLocaleString(locale)} ₽
                   </span>
-                  <span style={{ fontSize: 12, color: "var(--muted, #9ca3af)" }}>/ 30 дней</span>
+                  <span style={{ fontSize: 12, color: "var(--muted, #9ca3af)" }}>{t("bsub.per30")}</span>
                   <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", marginLeft: 6 }}>
-                    ({p.price_credits.toLocaleString("ru-RU")} Кр.)
+                    {t("bsub.creditsPrice", { value: p.price_credits.toLocaleString(locale) })}
                   </span>
                 </div>
 
@@ -344,7 +346,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                   color: "var(--muted, #9ca3af)",
                 }}
               >
-                Настроить цену и перки
+                {t("bsub.tune")}
               </button>
             </div>
           );
@@ -368,7 +370,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
             <div style={{ position: "relative", minWidth: 220 }}>
               <input
                 type="text"
-                placeholder="Поиск по позывному..."
+                placeholder={t("bsub.searchPlaceholder")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 style={{ width: "100%", paddingLeft: 30 }}
@@ -379,23 +381,23 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
             </div>
 
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-              <option value="all">Все статусы</option>
-              <option value="active">Только активные</option>
-              <option value="trial">Пробные</option>
-              <option value="canceled">Отмененные</option>
-              <option value="expired">Истекшие</option>
+              <option value="all">{t("bsub.statusAll")}</option>
+              <option value="active">{t("bsub.statusActive")}</option>
+              <option value="trial">{t("bsub.statusTrial")}</option>
+              <option value="canceled">{t("bsub.statusCanceled")}</option>
+              <option value="expired">{t("bsub.statusExpired")}</option>
             </select>
 
             <select value={planFilter} onChange={(e) => setPlanFilter(e.target.value)}>
-              <option value="all">Все тарифы</option>
-              <option value="pioneer">Пионер Кольца</option>
-              <option value="elite">Элита Колонии</option>
-              <option value="admiral">Флотоводец VIP</option>
+              <option value="all">{t("bsub.planAll")}</option>
+              <option value="pioneer">{t("bsub.planPioneer")}</option>
+              <option value="elite">{t("bsub.planElite")}</option>
+              <option value="admiral">{t("bsub.planAdmiral")}</option>
             </select>
           </div>
 
           <div style={{ fontSize: 12, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-            Найдено: {subscriptions.length} записей
+            {t("bsub.found", { count: subscriptions.length })}
           </div>
         </div>
 
@@ -404,26 +406,26 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
           <table>
             <thead>
               <tr>
-                <th style={{ textAlign: "left" }}>КОМАНДИР</th>
-                <th style={{ textAlign: "left" }}>ТАРИФ</th>
-                <th style={{ textAlign: "left" }}>СТАТУС</th>
-                <th style={{ textAlign: "left" }}>СРОК ДЕЙСТВИЯ</th>
-                <th style={{ textAlign: "left" }}>АВТОПРОДЛЕНИЕ</th>
-                <th style={{ textAlign: "left" }}>ПРИМЕЧАНИЕ</th>
-                <th style={{ textAlign: "right" }}>ДЕЙСТВИЯ</th>
+                <th style={{ textAlign: "left" }}>{t("bsub.colCmdr")}</th>
+                <th style={{ textAlign: "left" }}>{t("bsub.colPlan")}</th>
+                <th style={{ textAlign: "left" }}>{t("bsub.colStatus")}</th>
+                <th style={{ textAlign: "left" }}>{t("bsub.colTerm")}</th>
+                <th style={{ textAlign: "left" }}>{t("bsub.colAuto")}</th>
+                <th style={{ textAlign: "left" }}>{t("bsub.colNote")}</th>
+                <th style={{ textAlign: "right" }}>{t("bsub.colActions")}</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
                   <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--muted, #9ca3af)" }}>
-                    Загрузка подписок...
+                    {t("bsub.loading")}
                   </td>
                 </tr>
               ) : subscriptions.length === 0 ? (
                 <tr>
                   <td colSpan={7} style={{ textAlign: "center", padding: 24, color: "var(--muted, #9ca3af)" }}>
-                    Подписки не найдены
+                    {t("bsub.empty")}
                   </td>
                 </tr>
               ) : (
@@ -474,17 +476,17 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                             textTransform: "uppercase",
                           }}
                         >
-                          {s.status === "active" ? (isExpiring ? "Истекает" : "Активна") : s.status}
+                          {s.status === "active" ? (isExpiring ? t("bsub.expiring") : t("bsub.statusActiveLabel")) : s.status}
                         </span>
                       </td>
 
                       <td style={{ fontSize: 12, fontFamily: "ui-monospace, monospace", color: "var(--muted, #9ca3af)" }}>
-                        {s.expires_at ? new Date(s.expires_at).toLocaleDateString("ru-RU") : "Бессрочно"}
+                        {s.expires_at ? new Date(s.expires_at).toLocaleDateString(locale) : t("bsub.perpetual")}
                       </td>
 
                       <td>
                         <span style={{ fontSize: 11, color: s.auto_renew ? "#2ecc71" : "var(--muted, #9ca3af)" }}>
-                          {s.auto_renew ? "Включено" : "Выключено"}
+                          {s.auto_renew ? t("bsub.on") : t("bsub.off")}
                         </span>
                       </td>
 
@@ -504,7 +506,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                               color: "var(--cyan, #3498db)",
                             }}
                           >
-                            +30 дн
+                            {t("bsub.plus30")}
                           </button>
                           {s.status === "active" && (
                             <button
@@ -517,7 +519,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                                 color: "#e74c3c",
                               }}
                             >
-                              Отозвать
+                              {t("bsub.revoke")}
                             </button>
                           )}
                         </div>
@@ -548,7 +550,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
         >
           <div className="card" style={{ maxWidth: 480, margin: 0, padding: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ margin: 0, color: "var(--orange, #e67e22)" }}>ВЫДАЧА ПРЕМИУМ-ПОДПИСКИ</h3>
+              <h3 style={{ margin: 0, color: "var(--orange, #e67e22)" }}>{t("bsub.grantTitle")}</h3>
               <button
                 type="button"
                 onClick={() => setShowGrantModal(false)}
@@ -561,14 +563,14 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
             <form onSubmit={handleGrant}>
               <label style={{ display: "block", marginBottom: 12 }}>
                 <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                  Позывной командира (CMDR):
+                  {t("bsub.cmdrLabel")}
                 </span>
                 <ProfilePicker value={grantProfile} onChange={setGrantProfile} autoFocus />
               </label>
 
               <label style={{ display: "block", marginBottom: 12 }}>
                 <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                  Тарифный статус:
+                  {t("bsub.planLabel")}
                 </span>
                 <select
                   value={grantPlanId}
@@ -577,7 +579,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                 >
                   {plans.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.price_rub} ₽/мес)
+                      {t("bsub.planPrice", { name: p.name, price: p.price_rub })}
                     </option>
                   ))}
                 </select>
@@ -585,28 +587,28 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
 
               <label style={{ display: "block", marginBottom: 12 }}>
                 <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                  Срок действия:
+                  {t("bsub.termLabel")}
                 </span>
                 <select
                   value={grantDuration}
                   onChange={(e) => setGrantDuration(e.target.value)}
                   style={{ width: "100%" }}
                 >
-                  <option value="30">30 дней (1 месяц)</option>
-                  <option value="90">90 дней (3 месяца)</option>
-                  <option value="180">180 дней (полгода)</option>
-                  <option value="365">365 дней (1 год)</option>
-                  <option value="3650">Бессрочно / Пожизненно</option>
+                  <option value="30">{t("bsub.term30")}</option>
+                  <option value="90">{t("bsub.term90")}</option>
+                  <option value="180">{t("bsub.term180")}</option>
+                  <option value="365">{t("bsub.term365")}</option>
+                  <option value="3650">{t("bsub.termForever")}</option>
                 </select>
               </label>
 
               <label style={{ display: "block", marginBottom: 20 }}>
                 <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
-                  Основание / Примечание:
+                  {t("bsub.noteLabel")}
                 </span>
                 <input
                   type="text"
-                  placeholder="Например: Награда за победу в исследовательской экспедиции"
+                  placeholder={t("bsub.notePlaceholder")}
                   value={grantNotes}
                   onChange={(e) => setGrantNotes(e.target.value)}
                   style={{ width: "100%" }}
@@ -619,10 +621,10 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                   onClick={() => setShowGrantModal(false)}
                   style={{ borderColor: "var(--line, #3a3d40)", color: "var(--muted, #9ca3af)" }}
                 >
-                  Отмена
+                  {t("bsub.cancel")}
                 </button>
                 <button type="submit" disabled={granting} className="btn-orange">
-                  {granting ? "Выдача..." : "Подтвердить выдачу"}
+                  {granting ? t("bsub.granting") : t("bsub.confirmGrant")}
                 </button>
               </div>
             </form>
@@ -647,7 +649,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
         >
           <div className="card" style={{ maxWidth: 500, margin: 0, padding: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ margin: 0, color: editingPlan.color }}>ТАРИФ: {editingPlan.name.toUpperCase()}</h3>
+              <h3 style={{ margin: 0, color: editingPlan.color }}>{t("bsub.planHeader", { name: editingPlan.name.toUpperCase() })}</h3>
               <button
                 type="button"
                 onClick={() => setEditingPlan(null)}
@@ -660,7 +662,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
               <label>
                 <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase" }}>
-                  Цена (руб):
+                  {t("bsub.priceRub")}
                 </span>
                 <input
                   type="number"
@@ -671,7 +673,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
               </label>
               <label>
                 <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase" }}>
-                  Цена (кредиты):
+                  {t("bsub.priceCredits")}
                 </span>
                 <input
                   type="number"
@@ -684,7 +686,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
 
             <div style={{ marginBottom: 16 }}>
               <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase", display: "block", marginBottom: 6 }}>
-                Привилегии и бонусы:
+                {t("bsub.perks")}
               </span>
               {editPerks.map((p, idx) => (
                 <div key={idx} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
@@ -709,10 +711,10 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
               ))}
               <button
                 type="button"
-                onClick={() => setEditPerks([...editPerks, "Новая привилегия"])}
+                onClick={() => setEditPerks([...editPerks, t("bsub.newPerk")])}
                 style={{ fontSize: 11, padding: "4px 8px", marginTop: 4 }}
               >
-                + Добавить пункт
+                {t("bsub.addPerk")}
               </button>
             </div>
 
@@ -722,7 +724,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                 onClick={() => setEditingPlan(null)}
                 style={{ borderColor: "var(--line, #3a3d40)", color: "var(--muted, #9ca3af)" }}
               >
-                Отмена
+                {t("bsub.cancel")}
               </button>
               <button
                 type="button"
@@ -730,7 +732,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                 disabled={savingPlan}
                 className="btn-orange"
               >
-                {savingPlan ? "Сохранение..." : "Сохранить тариф"}
+                {savingPlan ? t("bsub.saving") : t("bsub.savePlan")}
               </button>
             </div>
           </div>

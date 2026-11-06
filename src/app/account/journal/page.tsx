@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { IconJournal, IconCheck, IconError, IconBuilding, IconTrash } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface ParsedDepot {
   timestamp: string;
@@ -33,6 +34,7 @@ interface ParseResult {
 }
 
 export default function JournalPage() {
+  const { t, locale } = useI18n();
   const [dragOver, setDragOver] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [parseProgress, setParseProgress] = useState(0);
@@ -54,7 +56,7 @@ export default function JournalPage() {
 
     const file = e.dataTransfer.files[0];
     if (!file || !file.name.endsWith('.log')) {
-      setError('Только .log файлы');
+      setError(t('jr.onlyLog'));
       return;
     }
     await parseFile(file);
@@ -138,7 +140,7 @@ export default function JournalPage() {
           importId = data.importId;
         }
         if (!importId) {
-          throw new Error('Сервер не вернул идентификатор импорта');
+          throw new Error(t('jr.noImportId'));
         }
       }
 
@@ -166,14 +168,14 @@ export default function JournalPage() {
         throw new Error(data.error || 'Reset failed');
       }
       const r = data.reset || {};
-      setResetResult(
-        `Очищено: поставок — ${r.deliveriesDeleted ?? 0}, ` +
-        `импортов — ${r.journalImportsDeleted ?? 0}, ` +
-        `событий стройки — ${r.legacyEventsDeleted ?? 0}, ` +
-        `сканов тел — ${r.systemScansDeleted ?? 0}, ` +
-        `площадок отвязано — ${r.sitesDetached ?? 0}. ` +
-        `Сводка пилота: ${r.pilotStatsDeleted ? 'сброшена' : 'не тронута'}.`
-      );
+      setResetResult(t('jr.resetSummary', {
+        deliveries: r.deliveriesDeleted ?? 0,
+        imports: r.journalImportsDeleted ?? 0,
+        events: r.legacyEventsDeleted ?? 0,
+        scans: r.systemScansDeleted ?? 0,
+        sites: r.sitesDetached ?? 0,
+        stats: r.pilotStatsDeleted ? t('jr.statsReset') : t('jr.statsKept'),
+      }));
       setResult(null);
       setImported(false);
     } catch (err: any) {
@@ -188,12 +190,12 @@ export default function JournalPage() {
     <div style={{ padding: '24px 20px', maxWidth: 1200 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', margin: 0 }}>
-          ЖУРНАЛ CMDR
+          {t('jr.title')}
         </h2>
         {confirmingReset ? (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <span style={{ fontSize: 12, color: '#e74c3c', fontFamily: 'ui-monospace' }}>
-              Точно очистить все логи?
+              {t('jr.confirmReset')}
             </span>
             <button
               className="btn btn-danger"
@@ -201,7 +203,7 @@ export default function JournalPage() {
               disabled={resetting}
               style={{ padding: '6px 12px', fontSize: 12 }}
             >
-              {resetting ? 'Очистка...' : 'Да, очистить'}
+              {resetting ? t('jr.resetting') : t('jr.yesReset')}
             </button>
             <button
               className="btn"
@@ -209,7 +211,7 @@ export default function JournalPage() {
               disabled={resetting}
               style={{ padding: '6px 12px', fontSize: 12 }}
             >
-              Отмена
+              {t('jr.cancel')}
             </button>
           </div>
         ) : (
@@ -218,10 +220,10 @@ export default function JournalPage() {
             onClick={() => { setError(null); setResetResult(null); setConfirmingReset(true); }}
             disabled={resetting || importing || parsing}
             style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', fontSize: 12 }}
-            title="Очистить все ранее загруженные журнальные данные и пересчитать логи заново"
+            title={t('jr.resetTooltip')}
           >
             <IconTrash size={14} />
-            Перезагрузить логи с нуля (очистить)
+            {t('jr.resetButton')}
           </button>
         )}
       </div>
@@ -237,7 +239,7 @@ export default function JournalPage() {
         <input id="journal-file" type="file" accept=".log" style={{ display: 'none' }} onChange={handleFileInput} />
         <IconJournal size={32} color="#e67e22" />
         <p style={{ marginTop: 12, color: '#9ca3af', fontSize: 14 }}>
-          Перетащите .log файл сюда или нажмите для выбора
+          {t('jr.dropzone')}
         </p>
         <p style={{ marginTop: 4, color: '#6b7280', fontSize: 12, fontFamily: 'ui-monospace' }}>
           %USERPROFILE%\Saved Games\Frontier Developments\Elite Dangerous\
@@ -251,7 +253,7 @@ export default function JournalPage() {
             <div className="journal-progress-fill" style={{ width: `${parseProgress}%` }} />
           </div>
           <p style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af', marginTop: 8, letterSpacing: '2px', textTransform: 'uppercase' }}>
-            Парсинг журнала...
+            {t('jr.parsing')}
           </p>
         </div>
       )}
@@ -265,7 +267,7 @@ export default function JournalPage() {
             />
           </div>
           <p style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af', marginTop: 8, letterSpacing: '2px', textTransform: 'uppercase' }}>
-            Импорт пакета {importProgress.current} из {importProgress.total}...
+            {t('jr.importPart', { current: importProgress.current, total: importProgress.total })}
           </p>
         </div>
       )}
@@ -293,7 +295,7 @@ export default function JournalPage() {
             <div className="journal-progress-fill" style={{ width: '60%' }} />
           </div>
           <p style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af', marginTop: 8, letterSpacing: '2px', textTransform: 'uppercase' }}>
-            Очистка журнальных данных...
+            {t('jr.resettingProgress')}
           </p>
         </div>
       )}
@@ -303,19 +305,19 @@ export default function JournalPage() {
         <div className="stat-grid" style={{ margin: '24px 0' }}>
           <div className="stat-box">
             <div className="num">{result.stats.eventsParsed}</div>
-            <div className="lbl">Событий</div>
+            <div className="lbl">{t('jr.statEvents')}</div>
           </div>
           <div className="stat-box">
             <div className="num">{result.stats.depotEventsFound}</div>
-            <div className="lbl">Строек</div>
+            <div className="lbl">{t('jr.statSites')}</div>
           </div>
           <div className="stat-box">
             <div className="num">{result.stats.contributionEventsFound}</div>
-            <div className="lbl">Взносов</div>
+            <div className="lbl">{t('jr.statContribs')}</div>
           </div>
           <div className="stat-box">
             <div className="num">{result.stats.fsdJumps}</div>
-            <div className="lbl">Прыжков</div>
+            <div className="lbl">{t('jr.statJumps')}</div>
           </div>
           {result.cmdrName && (
             <div className="stat-box">
@@ -329,14 +331,14 @@ export default function JournalPage() {
       {/* Import button */}
       {result && (result.depotEvents.length > 0 || result.contributionEvents.length > 0) && !imported && (
         <button className="btn btn-orange" onClick={handleImport} disabled={importing} style={{ marginBottom: 24 }}>
-          {importing ? 'Импорт...' : 'Импортировать в проект'}
+          {importing ? t('jr.importing') : t('jr.importToProject')}
         </button>
       )}
 
       {imported && (
         <div className="journal-success-box" style={{ marginBottom: 24 }}>
           <IconCheck size={16} color="#2ecc71" />
-          Импорт завершён
+          {t('jr.importDone')}
         </div>
       )}
 
@@ -344,17 +346,17 @@ export default function JournalPage() {
       {result && result.depotEvents.length > 0 && (
         <>
           <h3 style={{ fontSize: 16, fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: '#e67e22', marginBottom: 12 }}>
-            Найденные объекты стройки
+            {t('jr.depotTitle')}
           </h3>
           <div className="table-scroll">
             <table>
               <thead>
                 <tr>
-                  <th>Система</th>
-                  <th>Объект</th>
-                  <th>Прогресс</th>
-                  <th>Ресурсы</th>
-                  <th>Дата</th>
+                  <th>{t('jr.colSystem')}</th>
+                  <th>{t('jr.colSite')}</th>
+                  <th>{t('jr.colProgress')}</th>
+                  <th>{t('jr.colResources')}</th>
+                  <th>{t('jr.colDate')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -386,7 +388,7 @@ export default function JournalPage() {
                       )}
                     </td>
                     <td style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af' }}>
-                      {new Date(ev.timestamp).toLocaleString('ru-RU')}
+                      {new Date(ev.timestamp).toLocaleString(locale)}
                     </td>
                   </tr>
                 ))}
@@ -399,16 +401,16 @@ export default function JournalPage() {
       {result && result.contributionEvents.length > 0 && (
         <>
           <h3 style={{ fontSize: 16, fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: '#60a5fa', margin: '24px 0 12px' }}>
-            Взносы в строительство
+            {t('jr.contribTitle')}
           </h3>
           <div className="table-scroll">
             <table>
               <thead>
                 <tr>
-                  <th>Система</th>
-                  <th>Товар</th>
-                  <th>Сумма в журнале</th>
-                  <th>Дата</th>
+                  <th>{t('jr.colSystem')}</th>
+                  <th>{t('jr.colCommodity')}</th>
+                  <th>{t('jr.colAmount')}</th>
+                  <th>{t('jr.colDate')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -416,9 +418,9 @@ export default function JournalPage() {
                   <tr key={`${event.timestamp}-${event.marketId ?? ''}-${event.commodity}-${index}`}>
                     <td>{event.systemName || '—'}</td>
                     <td>{event.commodityLocalised || event.commodity}</td>
-                    <td style={{ fontFamily: 'ui-monospace', color: '#60a5fa' }}>{event.amount.toLocaleString('ru-RU')} т</td>
+                    <td style={{ fontFamily: 'ui-monospace', color: '#60a5fa' }}>{t('jr.tons', { count: event.amount.toLocaleString(locale) })}</td>
                     <td style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af' }}>
-                      {event.timestamp ? new Date(event.timestamp).toLocaleString('ru-RU') : '—'}
+                      {event.timestamp ? new Date(event.timestamp).toLocaleString(locale) : '—'}
                     </td>
                   </tr>
                 ))}
