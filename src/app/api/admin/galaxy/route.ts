@@ -20,6 +20,7 @@ import {
   startGalaxyPointsPublish,
   startGalaxyUnpack,
 } from '@/lib/galaxyImportJob';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,6 +60,7 @@ const headers = { 'Cache-Control': 'no-store' };
  *                       уже лежит на диске данных, карта его отдаёт.
  */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
@@ -111,6 +113,7 @@ function allowedDumpUrl(url: string, configured: string): boolean {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
@@ -142,7 +145,7 @@ export async function POST(req: Request) {
     const requestedUrl = typeof body.url === 'string' && body.url.trim() ? body.url.trim() : undefined;
     if (requestedUrl && !allowedDumpUrl(requestedUrl, configured)) {
       return NextResponse.json(
-        { error: `Допустим только источник https://downloads.spansh.co.uk/… или настроенный GALAXY_IMPORT_URL (${configured})` },
+        { error: t('adm.galaxySource', { configured }) },
         { status: 400, headers },
       );
     }
@@ -150,7 +153,7 @@ export async function POST(req: Request) {
     const requestedVariant = isDumpVariant(body.variant) ? body.variant : body.variant === 'auto' ? 'auto' : undefined;
     if (body.variant !== undefined && requestedVariant === undefined) {
       return NextResponse.json(
-        { error: `Неизвестный дамп: ожидается auto или один из ${DUMP_LADDER.join(', ')}` },
+        { error: t('adm.galaxyDumpUnknown', { list: DUMP_LADDER.join(', ') }) },
         { status: 400, headers },
       );
     }
@@ -232,7 +235,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error:
-            'Ожидается action: "start", "cancel", "download", "cancel-download", "unpack", "cancel-unpack", "plan", "cleanup", "check-db", "build-points" или "publish-points"',
+            t('adm.galaxyActionExpected'),
         },
         { status: 400, headers },
       );

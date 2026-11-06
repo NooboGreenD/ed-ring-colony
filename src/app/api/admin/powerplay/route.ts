@@ -42,6 +42,7 @@ import {
   stopEddnListener,
   type EddnEnsureResult,
 } from '@/lib/eddn/listener';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -125,6 +126,7 @@ function eddnStatus(result: EddnEnsureResult | null, error: string | null) {
   };
 }
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   const nowMs = Date.now();
@@ -137,7 +139,7 @@ export async function GET(req: Request) {
       summary = await readPowerplaySummary(svc);
     } catch (error) {
       summaryError = /powerplay_admin_summary|schema cache|does not exist/i.test(String((error as Error)?.message))
-        ? 'Сводка по державам появится после миграции 20261018180000_powerplay_sync_progress.sql'
+        ? t('adm.ppSummaryAfterMigration')
         : `Сводка недоступна: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
     }
     const live = getPowerplayLiveRun();
@@ -157,7 +159,7 @@ export async function GET(req: Request) {
     try {
       eddn = await ensureEddnListener(svc);
     } catch (error) {
-      eddnError = `Состояние EDDN недоступно: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
+      eddnError = t('adm.eddnStateUnavailable', { message: String((error as Error)?.message ?? error).slice(0, 200) });
     }
     return NextResponse.json(
       {
@@ -217,7 +219,7 @@ export async function GET(req: Request) {
       {
         success: false,
         error: missing
-          ? 'Таблиц PowerPlay нет в базе: примените миграции 20261018120000_powerplay_systems.sql и 20261018180000_powerplay_sync_progress.sql (deploy/update-project.sh делает это сам)'
+          ? t('adm.ppTablesMissing')
           : `Не удалось прочитать состояние PowerPlay: ${message.slice(0, 300)}`,
       },
       { status: 503, headers },
@@ -226,6 +228,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   let body: { action?: unknown; force?: unknown; segments?: unknown } = {};
@@ -238,13 +241,13 @@ export async function POST(req: Request) {
   const mode = Object.prototype.hasOwnProperty.call(RUN_ACTIONS, action) ? RUN_ACTIONS[action] : null;
   if (mode) {
     if (body.segments !== undefined && body.segments !== null && !(Number(body.segments) >= 1 && Number(body.segments) <= POWERPLAY_MAX_SEGMENTS)) {
-      return NextResponse.json({ success: false, error: `Соединений к EDSM: от 1 до ${POWERPLAY_MAX_SEGMENTS}` }, { status: 400, headers });
+      return NextResponse.json({ success: false, error: t('adm.edsmConnections', { max: POWERPLAY_MAX_SEGMENTS }) }, { status: 400, headers });
     }
     let svc;
     try {
       svc = createServiceClient();
     } catch (error) {
-      return NextResponse.json({ success: false, error: `Нет подключения к базе: ${String((error as Error)?.message ?? error).slice(0, 200)}` }, { status: 503, headers });
+      return NextResponse.json({ success: false, error: t('adm.dbUnavailable', { message: String((error as Error)?.message ?? error).slice(0, 200) }) }, { status: 503, headers });
     }
     const force = body.force === true;
     const segments = body.segments == null ? undefined : clampPowerplaySegments(body.segments);
@@ -271,7 +274,7 @@ export async function POST(req: Request) {
   if (action === 'eddn-start' || action === 'eddn-stop') {
     const enable = action === 'eddn-start';
     if (enable && eddnListenerForbidden()) {
-      return NextResponse.json({ success: false, error: 'На сервере задано EDDN_LISTENER=off — слушатель запрещён' }, { status: 409, headers });
+      return NextResponse.json({ success: false, error: t('adm.eddnDisabled') }, { status: 409, headers });
     }
     try {
       const svc = createServiceClient();
@@ -282,13 +285,13 @@ export async function POST(req: Request) {
       const message = String((error as Error)?.message ?? error);
       const missing = /eddn_listener_state|schema cache|does not exist/i.test(message);
       return NextResponse.json(
-        { success: false, error: missing ? 'Нет таблицы eddn_listener_state: примените миграцию 20261021130000_eddn_listener.sql' : `Не удалось переключить EDDN: ${message.slice(0, 200)}` },
+        { success: false, error: missing ? t('adm.eddnStateTableMissing') : `Не удалось переключить EDDN: ${message.slice(0, 200)}` },
         { status: 503, headers },
       );
     }
   }
   return NextResponse.json(
-    { success: false, error: 'Неизвестное действие: нужен start, download, split, import, cancel, cleanup, eddn-start или eddn-stop' },
+    { success: false, error: t('adm.actionPowerplay') },
     { status: 400, headers },
   );
 }
