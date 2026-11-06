@@ -6,6 +6,7 @@ import { enabledOAuthProviders } from '@/lib/oauthProviders';
 import { getSiteUrl, DEFAULT_SUPABASE_URL } from '@/lib/siteUrl';
 import { vkRedirectUri } from '@/lib/vkId';
 import { yandexRedirectUri } from '@/lib/yandexId';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,6 +27,7 @@ function envState() {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
@@ -47,12 +49,13 @@ export async function GET(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
     const body = await req.json();
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      return NextResponse.json({ error: 'Ожидается объект { <provider>: { enabled, client_id, client_secret, notes } }' }, { status: 400, headers });
+      return NextResponse.json({ error: t('adm.providerObjectExpected') }, { status: 400, headers });
     }
     const settings = await updateAuthProviderSettings(body);
     return NextResponse.json({ success: true, settings: publicAuthProviderSettings(settings) }, { headers });

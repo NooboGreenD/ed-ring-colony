@@ -8,6 +8,7 @@ import {
   syncGalnet,
   translatePending,
 } from '../../../../../scripts/lib/galnet-sync.mjs';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -29,6 +30,7 @@ function intParam(url: URL, key: string, fallback: number, max: number): number 
  * неудобно. Запросы идут тем же кодом, что и крон: scripts/lib/galnet-sync.mjs.
  */
 async function handle(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 
@@ -42,7 +44,7 @@ async function handle(request: Request) {
     supabase = createAdminClient();
   } catch {
     return NextResponse.json(
-      { success: false, error: 'SUPABASE_SERVICE_ROLE_KEY не задан — админский пайплайн недоступен' },
+      { success: false, error: t('adm.serviceRoleMissing') },
       { status: 500, ...NO_STORE },
     );
   }
@@ -51,7 +53,7 @@ async function handle(request: Request) {
     return NextResponse.json(
       {
         success: false,
-        error: 'YANDEX_TRANSLATE_API_KEY не задан: статьи будут собраны, но переводы останутся в статусе pending',
+        error: t('adm.translateKeyMissing'),
         translateConfigured: false,
       },
       { status: 412, ...NO_STORE },
@@ -94,18 +96,20 @@ async function handle(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     return await handle(request);
   } catch (error) {
     console.error('[admin/content] failed', error instanceof Error ? error.message : 'Unknown error');
     return NextResponse.json(
-      { success: false, error: 'Пайплайн контента завершился с ошибкой; подробности в журнале web' },
+      { success: false, error: t('adm.contentPipelineFailed') },
       { status: 500, ...NO_STORE },
     );
   }
 }
 
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   // Тот же обработчик: GET удобнее для «проверить очередь».
   return handle(request);
 }

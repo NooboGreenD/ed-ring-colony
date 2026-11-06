@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import { getServerMonitorSnapshot } from '@/lib/serverMonitor';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -12,6 +13,7 @@ export const runtime = 'nodejs';
  * errors, logs, environment values, URLs, IDs, or credentials.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -24,7 +26,7 @@ export async function GET(request: Request) {
   } catch {
     console.error('[monitor] unable to collect server status');
     return NextResponse.json(
-      { error: 'Не удалось собрать статус сервера. Проверьте закрытые журналы приложения.' },
+      { error: t('adm.monitorStatusFailed') },
       { status: 500, headers: { 'Cache-Control': 'no-store' } },
     );
   }

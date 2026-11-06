@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import { callUpdateAgent, getUpdateAgentStatus } from '@/lib/updateAgent';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,6 +23,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  * всех остальных есть публичный /api/status с одной стадией и процентом.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -40,11 +42,12 @@ export async function GET(request: Request) {
       pendingMigrations: update.pendingMigrations,
     }, NO_STORE);
   } catch {
-    return NextResponse.json({ error: 'Не удалось получить статус обновления' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.updateStatusFailed') }, { status: 500, ...NO_STORE });
   }
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -71,7 +74,7 @@ export async function POST(request: Request) {
 
     // A rebuild of production must be an explicit action, never a stray POST.
     if (body?.confirm !== true) {
-      return NextResponse.json({ error: 'Нужно подтверждение: confirm=true' }, { status: 400, ...NO_STORE });
+      return NextResponse.json({ error: t('adm.confirmRequired') }, { status: 400, ...NO_STORE });
     }
     // Флажки приходят из панели мониторинга: с тестами / с бэкапом БД /
     // с миграциями, плюс отдельный режим «применить только миграции»
@@ -94,7 +97,7 @@ export async function POST(request: Request) {
   } catch {
     console.error('[admin/update] unable to start the updater');
     return NextResponse.json(
-      { error: 'Не удалось запустить обновление. Подробности — в закрытых журналах приложения.' },
+      { error: t('adm.updateStartFailed') },
       { status: 500, ...NO_STORE },
     );
   }
@@ -102,6 +105,7 @@ export async function POST(request: Request) {
 
 /** Stops a running update (SIGTERM to the updater process group). */
 export async function DELETE(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -112,6 +116,6 @@ export async function DELETE(request: Request) {
     }
     return NextResponse.json({ success: true, update: result.update }, NO_STORE);
   } catch {
-    return NextResponse.json({ error: 'Не удалось остановить обновление' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.updateStopFailed') }, { status: 500, ...NO_STORE });
   }
 }

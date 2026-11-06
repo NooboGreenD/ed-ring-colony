@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import { SMTP_KEYS, listSmtpKeys, saveSmtpKey, deleteSmtpKey, type SmtpKeyName } from '@/lib/updateAgent';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,6 +19,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  * можно только заменить целиком.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -44,11 +46,12 @@ export async function GET(request: Request) {
       keys: Array.isArray(result.payload?.keys) ? result.payload.keys : [],
     }, NO_STORE);
   } catch {
-    return NextResponse.json({ error: 'Не удалось получить настройки почты' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.mailFetchFailed') }, { status: 500, ...NO_STORE });
   }
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -58,12 +61,12 @@ export async function POST(request: Request) {
     const value = typeof body?.value === 'string' ? body.value : null;
     if (!(SMTP_KEYS as readonly string[]).includes(key)) {
       return NextResponse.json(
-        { error: `Ключ должен быть одним из: ${SMTP_KEYS.join(', ')}` },
+        { error: t('adm.mailKeyAllowed', { keys: SMTP_KEYS.join(', ') }) },
         { status: 400, ...NO_STORE },
       );
     }
     if (value == null || /[\r\n]/.test(value) || Buffer.byteLength(value, 'utf8') > 8 * 1024) {
-      return NextResponse.json({ error: 'Значение: одна строка до 8 КБ без перевода строки' }, { status: 400, ...NO_STORE });
+      return NextResponse.json({ error: t('adm.envValue') }, { status: 400, ...NO_STORE });
     }
 
     const result = await saveSmtpKey(key as SmtpKeyName, value);
@@ -80,11 +83,12 @@ export async function POST(request: Request) {
       masked: result.payload?.masked ?? null,
     }, { status: result.payload?.created ? 201 : 200, ...NO_STORE });
   } catch {
-    return NextResponse.json({ error: 'Не удалось сохранить ключ' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.keySaveFailed') }, { status: 500, ...NO_STORE });
   }
 }
 
 export async function DELETE(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -92,7 +96,7 @@ export async function DELETE(request: Request) {
     const key = new URL(request.url).searchParams.get('key') || '';
     if (!(SMTP_KEYS as readonly string[]).includes(key)) {
       return NextResponse.json(
-        { error: `Ключ должен быть одним из: ${SMTP_KEYS.join(', ')}` },
+        { error: t('adm.mailKeyAllowed', { keys: SMTP_KEYS.join(', ') }) },
         { status: 400, ...NO_STORE },
       );
     }
@@ -106,6 +110,6 @@ export async function DELETE(request: Request) {
     }
     return NextResponse.json({ success: true, key }, NO_STORE);
   } catch {
-    return NextResponse.json({ error: 'Не удалось удалить ключ' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.keyDeleteFailed') }, { status: 500, ...NO_STORE });
   }
 }

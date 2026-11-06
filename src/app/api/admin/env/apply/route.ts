@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import { applyEnvKeys } from '@/lib/updateAgent';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,6 +16,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  * the bundle at build time — they need the full «Обновить сейчас».
  */
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -32,7 +34,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, update: result.update }, { status: 202, ...NO_STORE });
   } catch {
     return NextResponse.json(
-      { error: 'Не удалось применить изменения окружения' },
+      { error: t('adm.envApplyFailed') },
       { status: 500, ...NO_STORE },
     );
   }
