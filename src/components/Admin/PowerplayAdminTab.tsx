@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authFetch } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import type { TFn } from '@/lib/i18n/gameLabels';
 import ArchiveUploadControl from '@/components/Admin/ArchiveUploadControl';
 import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconPower, IconRefresh, IconTrash, IconXCircle } from '@/components/Icons';
 import { POWER_ALLEGIANCE_LABEL, formatPowerplayDate, powerInfo } from '@/lib/powerplay';
@@ -208,45 +210,51 @@ const STAGE_COLORS: Record<PowerplayStageProgress['status'], string> = {
 const SEGMENT_CHOICES = [1, 2, 4, 6, 8, 12, 16];
 
 const RUNNING_PILL: Record<RunMode, string> = {
-  full: 'идёт загрузка дампа',
-  download: 'идёт скачивание архива на сервер',
-  split: 'идёт разбивка архива на куски',
-  import: 'идёт запись кусков в базу',
+  full: 'ppAdmin.runningFull',
+  download: 'ppAdmin.runningDownload',
+  split: 'ppAdmin.runningSplit',
+  import: 'ppAdmin.runningImport',
 };
 
 const innerCardStyle = { background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px', fontSize: 12, color: MUTED } as const;
 
-function formatTime(value: string | null | undefined): string {
+function formatTime(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const at = Date.parse(value);
-  return Number.isFinite(at) ? new Date(at).toLocaleString('ru-RU') : value;
+  return Number.isFinite(at) ? new Date(at).toLocaleString(locale) : value;
 }
 
-function formatClock(value: string): string {
+function formatClock(value: string, locale: string): string {
   const at = Date.parse(value);
-  return Number.isFinite(at) ? new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+  return Number.isFinite(at)
+    ? new Date(at).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '';
 }
 
-function formatUtc(value: string | null | undefined): string {
+function formatUtc(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const at = Date.parse(value);
   if (!Number.isFinite(at)) return value;
   const date = new Date(at);
-  return `${formatTime(value)} (${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')} UTC)`;
+  return `${formatTime(value, locale)} (${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')} UTC)`;
 }
 
-function stageStatusLabel(stage: PowerplayStageProgress, phase: PowerplaySyncProgress['phase']): string {
+function stageStatusLabel(
+  t: TFn,
+  stage: PowerplayStageProgress,
+  phase: PowerplaySyncProgress['phase'],
+): string {
   switch (stage.status) {
     case 'running':
-      return 'идёт';
+      return t('ppAdmin.stageRunning');
     case 'done':
-      return 'готово';
+      return t('ppAdmin.stageDone');
     case 'skipped':
-      return 'не нужен';
+      return t('ppAdmin.stageSkipped');
     case 'error':
-      return phase === 'cancelled' ? 'остановлен' : 'ошибка';
+      return phase === 'cancelled' ? t('ppAdmin.stageStopped') : t('ppAdmin.stageError');
     default:
-      return 'ждёт';
+      return t('ppAdmin.stageWaiting');
   }
 }
 
@@ -257,13 +265,18 @@ function stageDuration(stage: PowerplayStageProgress, serverNow: number): string
   return Number.isFinite(start) && Number.isFinite(end) ? formatPowerplayDuration(Math.max(0, end - start)) : '';
 }
 
-function phasePill(status: AdminStatus | null): { text: string; color: string } {
-  if (!status) return { text: 'загрузка…', color: MUTED };
-  if (status.running) return { text: RUNNING_PILL[status.mode ?? 'full'] ?? RUNNING_PILL.full, color: PP };
-  if (status.interrupted) return { text: 'загрузка прервана перезапуском сайта', color: '#e67e22' };
-  if (status.state.status === 'error') return { text: status.state.rows_total > 0 ? 'ошибка последней загрузки' : 'ошибка — данных нет', color: '#ef4444' };
-  if (status.state.rows_total > 0) return { text: 'данные загружены', color: '#22c55e' };
-  return { text: 'данных нет', color: MUTED };
+function phasePill(t: TFn, status: AdminStatus | null): { text: string; color: string } {
+  if (!status) return { text: t('ppAdmin.pillLoading'), color: MUTED };
+  if (status.running) return { text: t(RUNNING_PILL[status.mode ?? 'full'] ?? RUNNING_PILL.full), color: PP };
+  if (status.interrupted) return { text: t('ppAdmin.pillInterrupted'), color: '#e67e22' };
+  if (status.state.status === 'error') {
+    return {
+      text: status.state.rows_total > 0 ? t('ppAdmin.pillErrorLast') : t('ppAdmin.pillErrorNoData'),
+      color: '#ef4444',
+    };
+  }
+  if (status.state.rows_total > 0) return { text: t('ppAdmin.pillLoaded'), color: '#22c55e' };
+  return { text: t('ppAdmin.pillNoData'), color: MUTED };
 }
 
 function ProgressBar({ fraction, color, height = 8, indeterminate = false, label }: { fraction: number; color: string; height?: number; indeterminate?: boolean; label?: string }) {
@@ -292,6 +305,7 @@ function ProgressBar({ fraction, color, height = 8, indeterminate = false, label
 }
 
 export default function PowerplayAdminTab() {
+  const { t, locale } = useI18n();
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -342,7 +356,7 @@ export default function PowerplayAdminTab() {
   const connections = segments ?? status?.config.segments ?? 4;
 
   const act = async (action: Action) => {
-    if (action === 'cleanup' && !window.confirm('Удалить архив дампа PowerPlay и куски с сервера? Следующая загрузка скачает дамп заново.')) return;
+    if (action === 'cleanup' && !window.confirm(t('ppAdmin.confirmCleanup'))) return;
     setBusy(action);
     setMessage('');
     setIsError(false);
@@ -357,33 +371,33 @@ export default function PowerplayAdminTab() {
       });
       const payload = await response.json().catch(() => null);
       if (response.status === 409) {
-        setMessage(payload?.reason || 'Импорт уже идёт');
+        setMessage(payload?.reason || t('ppAdmin.importRunning'));
       } else if (!response.ok || payload?.success === false) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       } else if (action === 'cancel') {
         setMessage(payload?.cancelled
-          ? 'Останавливаю импорт… Скачанное и разбитое останется на сервере — следующий запуск продолжит с того же места.'
-          : 'Импорт не выполнялся');
+          ? t('ppAdmin.cancelStarted')
+          : t('ppAdmin.cancelNothing'));
       } else if (action === 'cleanup') {
         setMessage(payload?.removed
-          ? `Архив и куски удалены с сервера — освобождено ${formatPowerplayBytes(payload?.freed)}`
-          : 'На сервере нет ни архива, ни кусков');
+          ? t('ppAdmin.cleanupDone', { freed: formatPowerplayBytes(payload?.freed) })
+          : t('ppAdmin.cleanupNothing'));
       } else if (action === 'eddn-start') {
-        setMessage('Живые данные EDDN включены: слушатель подключается к реле. Флаг сохранён — после перезапуска сайта слушатель поднимется сам.');
+        setMessage(t('ppAdmin.eddnOn'));
       } else if (action === 'eddn-stop') {
-        setMessage('Живые данные EDDN выключены: накопленные наблюдения дописаны, подписка закрыта.');
+        setMessage(t('ppAdmin.eddnStatusOff'));
       } else if (action === 'download') {
-        setMessage(`Архив скачивается на сервер в ${connections} соедин. При обрыве или перезапуске скачивание продолжится с того же места.`);
+        setMessage(t('ppAdmin.downloadStarted', { connections }));
       } else if (action === 'split') {
-        setMessage('Разбивка архива на куски запущена — она не обращается к EDSM.');
+        setMessage(t('ppAdmin.splitStarted'));
       } else if (action === 'import') {
-        setMessage('Запись в базу запущена: то, что уже на сервере, без обращения к EDSM.');
+        setMessage(t('ppAdmin.importStarted'));
       } else {
         setMessage(force
-          ? 'Загрузка запущена принудительно: дамп загружается, даже если он тот же, что в прошлый раз, и принимается, даже если он заметно меньше прошлого.'
+          ? t('ppAdmin.startForced')
           : status?.archive?.uploaded && status.archive.complete
-            ? 'Загрузка запущена: архив, загруженный с компьютера, разбивается на куски, затем куски пишутся в базу — без EDSM.'
-            : `Загрузка запущена: архив целиком скачивается на сервер (${connections} соедин.), затем разбивается на куски, затем куски пишутся в базу. Если дамп тот же, что в прошлый раз, загрузка закончится сразу — данные актуальны.`);
+            ? t('ppAdmin.startUploaded')
+            : t('ppAdmin.startFull', { connections }));
       }
       stickToBottom.current = true;
       await load();
@@ -407,7 +421,7 @@ export default function PowerplayAdminTab() {
     }
   };
 
-  const pill = phasePill(status);
+  const pill = phasePill(t, status);
   const progress = status?.progress ?? null;
   const serverNow = status ? Date.parse(status.serverTime) || Date.now() : Date.now();
   const elapsed = progress ? Math.max(0, (progress.finishedAt ? Date.parse(progress.finishedAt) : serverNow) - Date.parse(progress.startedAt)) : 0;
@@ -455,11 +469,11 @@ export default function PowerplayAdminTab() {
       <style>{'@keyframes pp-admin-indeterminate { 0% { left: -30%; } 100% { left: 100%; } }'}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <IconPower size={16} color={PP} /> PowerPlay: системы держав (EDSM)
+          <IconPower size={16} color={PP} /> {t('ppAdmin.title')}
         </h3>
         <span style={{ fontSize: 12, color: pill.color }} data-pp-admin-pill="">● {pill.text}</span>
         <button type="button" className="btn" style={{ fontSize: 12, padding: '3px 8px' }} onClick={() => void load()}>
-          <IconRefresh size={12} color="#9ca3af" /> Обновить
+          <IconRefresh size={12} color="#9ca3af" /> {t('mon.refresh')}
         </button>
       </div>
 
@@ -471,85 +485,100 @@ export default function PowerplayAdminTab() {
 
       {/* ── Что сейчас на сайте ── */}
       <div style={cardStyle} data-pp-admin-data="">
-        <div style={labelStyle}>Данные на сайте</div>
+        <div style={labelStyle}>{t('ppAdmin.dataOnSite')}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 10 }}>
-          <Stat label="Систем в базе" value={formatPowerplayCount(total)} color={total > 0 ? '#22c55e' : MUTED} />
-          <Stat label="Держав" value={summary ? String(summary.powers.filter((row) => row.total > 0).length) : '—'} />
+          <Stat
+            label={t('ppAdmin.systemsInDb')}
+            value={formatPowerplayCount(total)}
+            color={total > 0 ? '#22c55e' : MUTED}
+          />
+          <Stat
+            label={t('ppAdmin.powersCount')}
+            value={summary ? String(summary.powers.filter((row) => row.total > 0).length) : '—'}
+          />
           {basesKnown && (
-            <Stat label="Владелец не определён" value={formatPowerplayCount(unknownOwners)} color={unknownOwners > 0 ? '#fbbf24' : '#22c55e'} />
+            <Stat
+              label={t('ppAdmin.unknownOwner')}
+              value={formatPowerplayCount(unknownOwners)}
+              color={unknownOwners > 0 ? '#fbbf24' : '#22c55e'}
+            />
           )}
-          <Stat label="Дамп EDSM от" value={formatTime(status?.state.dump_generated_at)} small />
-          <Stat label="Записано на сайт" value={formatTime(status?.state.synced_at)} small />
-          <Stat label="Проверено источником" value={formatTime(status?.state.checked_at)} small />
+          <Stat label={t('ppAdmin.dumpFrom')} value={formatTime(status?.state.dump_generated_at, locale)} small />
+          <Stat label={t('ppAdmin.savedToSite')} value={formatTime(status?.state.synced_at, locale)} small />
+          <Stat label={t('ppAdmin.checkedBySource')} value={formatTime(status?.state.checked_at, locale)} small />
         </div>
         {total > 0 && summary && (
           <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
-            Оплоты {formatPowerplayCount(stateTotals.Stronghold)} · укреплённые {formatPowerplayCount(stateTotals.Fortified)} ·
-            эксплуатируемые {formatPowerplayCount(stateTotals.Exploited)}
+            {t('ppAdmin.stateTotals', {
+              stronghold: formatPowerplayCount(stateTotals.Stronghold),
+              fortified: formatPowerplayCount(stateTotals.Fortified),
+              exploited: formatPowerplayCount(stateTotals.Exploited),
+            })}
             {summary.oldestObservation && summary.newestObservation && (
-              <> · наблюдения пилотов {formatPowerplayDate(summary.oldestObservation)} – {formatPowerplayDate(summary.newestObservation)}</>
+              <>
+                {t('ppAdmin.pilotObservations', {
+                  from: formatPowerplayDate(summary.oldestObservation),
+                  to: formatPowerplayDate(summary.newestObservation),
+                })}
+              </>
             )}
           </div>
         )}
         {basesKnown && total > 0 && (
           <div style={{ fontSize: 12, color: MUTED, marginBottom: 8, lineHeight: 1.5 }} data-pp-admin-bases="">
-            Владелец системы: по журналам (ControllingPower) {formatPowerplayCount(summary?.bases?.journal ?? 0)} ·
-            по дампу EDSM, где держава одна, {formatPowerplayCount(summary?.bases?.sole ?? 0)} ·
-            сохранён из прошлых точных данных {formatPowerplayCount(summary?.bases?.kept ?? 0)} ·
-            не определён {formatPowerplayCount(unknownOwners)}
-            {legacyRows > 0 && <> · по прежнему разбору (до перезагрузки) {formatPowerplayCount(legacyRows)}</>}
+            {t('ppAdmin.basesLine', {
+              journal: formatPowerplayCount(summary?.bases?.journal ?? 0),
+              sole: formatPowerplayCount(summary?.bases?.sole ?? 0),
+              kept: formatPowerplayCount(summary?.bases?.kept ?? 0),
+              unknown: formatPowerplayCount(unknownOwners),
+            })}
+            {legacyRows > 0 && t('ppAdmin.legacyBasis', { count: formatPowerplayCount(legacyRows) })}
             {unknownOwners > 0 && (
-              <div style={{ color: DIM, marginTop: 2 }}>
-                Дамп EDSM перечисляет у системы все державы, чьи зоны её накрывают, и не говорит, какая из них владелец.
-                У таких систем владельца называют только журналы пилотов и EDDN — включите «Живые данные EDDN» ниже, чтобы
-                число «не определён» таяло. «+N?» в таблице — в скольких таких системах держава среди претендентов: её
-                настоящее число систем — от «Всего» до «Всего + N».
-              </div>
+              <div style={{ color: DIM, marginTop: 2 }}>{t('ppAdmin.unknownHint')}</div>
             )}
           </div>
         )}
         {summary && (pilotRows > 0 || (summary.vacated ?? 0) > 0) && (
           <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }} data-pp-admin-pilots="">
-            Из журналов пилотов (Colonial Helper, загрузка на сайте, CAPI): {formatPowerplayCount(pilotRows)} систем свежее дампа
-            {(summary.vacated ?? 0) > 0 && <> · {formatPowerplayCount(summary.vacated ?? 0)} систем пилоты увидели свободными</>}
+            {t('ppAdmin.pilotRows', { count: formatPowerplayCount(pilotRows) })}
+            {(summary.vacated ?? 0) > 0 && t('ppAdmin.vacated', { count: formatPowerplayCount(summary.vacated ?? 0) })}
           </div>
         )}
         {status && total === 0 && !running && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 13, color: '#fbbf24', marginBottom: 8 }}>
             <IconAlert size={14} color="#fbbf24" />
-            <span>
-              Систем PowerPlay в базе нет — вкладка «PowerPlay» в Atlas пуста. Нажмите «Загрузить данные» ниже: дамп EDSM весит
-              ≈3,6 МБ, загрузка обычно занимает секунды, ход виден по этапам и в журнале. Если сеть сервера не пускает к EDSM —
-              загрузите архив с компьютера.
-            </span>
+            <span>{t('ppAdmin.emptyDb')}</span>
           </div>
         )}
         {status?.state.status === 'error' && status.state.error && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 13, color: '#ef4444', marginBottom: 8 }} data-pp-admin-error="">
             <IconXCircle size={14} color="#ef4444" />
             <span>
-              Последняя загрузка не удалась: {status.state.error}
-              {status.state.rows_total > 0 ? ' — на карте остались данные прошлой удачной загрузки.' : ''}
+              {t('ppAdmin.lastLoadFailed', { error: status.state.error })}
+              {status.state.rows_total > 0 ? t('ppAdmin.lastLoadKept') : ''}
             </span>
           </div>
         )}
         {status?.summaryError && <div style={{ fontSize: 12, color: '#e67e22', marginBottom: 8 }}>{status.summaryError}</div>}
 
         {summary && summary.powers.length > 0 && (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }} aria-label="Системы по державам">
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }} aria-label={t('ppAdmin.powersTableAria')}>
             <thead>
               <tr style={{ color: DIM, textAlign: 'left' }}>
-                <th style={{ padding: '4px 6px', fontWeight: 500 }}>Держава</th>
-                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>Оплоты</th>
-                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>Укреплённые</th>
-                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>Эксплуат.</th>
-                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>Всего</th>
+                <th style={{ padding: '4px 6px', fontWeight: 500 }}>{t('ppAdmin.colPower')}</th>
+                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>{t('ppAdmin.colStronghold')}</th>
+                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>{t('ppAdmin.colFortified')}</th>
+                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>{t('ppAdmin.colExploitedShort')}</th>
+                <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}>{t('ppAdmin.colTotal')}</th>
                 {basesKnown && (
-                  <th style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }} title="Систем с неопределённым владельцем, где держава среди претендентов">
-                    +спорных
+                  <th
+                    style={{ padding: '4px 6px', fontWeight: 500, textAlign: 'right' }}
+                    title={t('ppAdmin.colContestedTitle')}
+                  >
+                    {t('ppAdmin.colContested')}
                   </th>
                 )}
-                {basesKnown && <th style={{ padding: '4px 6px', fontWeight: 500 }}>Откуда известно</th>}
+                {basesKnown && <th style={{ padding: '4px 6px', fontWeight: 500 }}>{t('ppAdmin.colBasis')}</th>}
                 <th style={{ padding: '4px 6px', width: '18%' }} aria-hidden="true" />
               </tr>
             </thead>
@@ -557,10 +586,10 @@ export default function PowerplayAdminTab() {
               {summary.powers.map((row) => {
                 const info = powerInfo(row.power);
                 const basisParts = [
-                  row.journal ? `журнал ${formatPowerplayCount(row.journal)}` : '',
+                  row.journal ? t('ppAdmin.journalNote', { count: formatPowerplayCount(row.journal) }) : '',
                   row.sole ? `EDSM ${formatPowerplayCount(row.sole)}` : '',
-                  row.kept ? `прошлое ${formatPowerplayCount(row.kept)}` : '',
-                  row.legacy ? `старый разбор ${formatPowerplayCount(row.legacy)}` : '',
+                  row.kept ? t('ppAdmin.pastNote', { count: formatPowerplayCount(row.kept) }) : '',
+                  row.legacy ? t('ppAdmin.legacyNote', { count: formatPowerplayCount(row.legacy) }) : '',
                 ].filter(Boolean);
                 return (
                   <tr key={row.power} data-pp-admin-power={row.power} style={{ borderTop: '1px solid #24272a' }}>
@@ -589,16 +618,16 @@ export default function PowerplayAdminTab() {
                 <tr data-pp-admin-power="unknown" style={{ borderTop: '1px solid #24272a', color: '#fbbf24' }}>
                   <td style={{ padding: '4px 6px', whiteSpace: 'nowrap', fontStyle: 'italic' }}>
                     <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: powerInfo('?').color, marginRight: 6, verticalAlign: 'middle' }} />
-                    Владелец не определён
+                    {t('ppAdmin.unknownOwner')}
                   </td>
                   <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(summary.unknown.Stronghold)}</td>
                   <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(summary.unknown.Fortified)}</td>
                   <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatPowerplayCount(summary.unknown.Exploited)}</td>
                   <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{formatPowerplayCount(summary.unknown.total)}</td>
                   <td style={{ padding: '4px 6px' }} />
-                  <td style={{ padding: '4px 6px', color: DIM, fontSize: 11 }}>EDSM: несколько держав</td>
+                  <td style={{ padding: '4px 6px', color: DIM, fontSize: 11 }}>{t('ppAdmin.edsmMulti')}</td>
                   <td style={{ padding: '4px 6px' }}>
-                    <ProgressBar fraction={summary.unknown.total / maxPower} color={powerInfo('?').color} height={6} label={`Не определён: ${summary.unknown.total}`} />
+                    <ProgressBar fraction={summary.unknown.total / maxPower} color={powerInfo('?').color} height={6} label={t('ppAdmin.unknownLabel', { count: summary.unknown.total })} />
                   </td>
                 </tr>
               )}
@@ -609,32 +638,32 @@ export default function PowerplayAdminTab() {
 
       {/* ── Загрузка дампа EDSM: архив → куски → база ── */}
       <div style={cardStyle} data-pp-admin-sync="">
-        <div style={labelStyle}>Загрузка из EDSM (powerPlay.json.gz)</div>
+        <div style={labelStyle}>{t('ppAdmin.dumpSection')}</div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
-          Как у фракций и в «Каталоге систем», шаги по очереди: <strong style={{ color: TEXT }}>архив скачивается на сервер целиком</strong> →{' '}
-          <strong style={{ color: TEXT }}>затем разбивается на куски</strong> по {formatPowerplayCount(shardSystems)} систем →{' '}
-          <strong style={{ color: TEXT }}>затем куски загружаются в базу</strong>. Каждый шаг начинается, когда предыдущий закончен, и
-          его можно запустить отдельно — кнопками в карточках ниже. Серверу, которому EDSM недоступен, архив можно загрузить с компьютера.
+          {t('ppAdmin.stepsIntro')} <strong style={{ color: TEXT }}>{t('ppAdmin.stepArchive')}</strong> →{' '}
+          <strong style={{ color: TEXT }}>{t('ppAdmin.stepShards')}</strong> {t('ppAdmin.stepShardsCount', { count: formatPowerplayCount(shardSystems) })} →{' '}
+          <strong style={{ color: TEXT }}>{t('ppAdmin.stepDb')}</strong>. {t('ppAdmin.stepsEach')}
+          {t('ppAdmin.stepsTail')}
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
           <button type="button" className="btn btn-cyan" disabled={busy !== null || running || uploading} onClick={() => void act('start')} data-pp-admin-action="start">
-            {total > 0 ? 'Загрузить сейчас' : 'Загрузить данные'}
+            {t(total > 0 ? 'ppAdmin.loadNow' : 'ppAdmin.loadData')}
           </button>
           <button
             type="button"
             className="btn"
             disabled={busy !== null || running || uploading}
             onClick={() => void act('force')}
-            title="Загрузить дамп, даже если он тот же, что в прошлый раз, и принять его, даже если он заметно меньше прошлого"
+            title={t('ppAdmin.forceHint')}
             data-pp-admin-action="force"
           >
-            Перекачать принудительно
+            {t('ppAdmin.force')}
           </button>
           <button type="button" className="btn btn-danger" disabled={busy !== null || !running} onClick={() => void act('cancel')} data-pp-admin-action="cancel">
-            Остановить
+            {t('atlas.ui.stop')}
           </button>
-          <label style={{ fontSize: 12, color: MUTED, display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Сколько параллельных соединений к EDSM открывать для скачивания архива: если сеть сервера режет соединения, несколько соединений коротких запросов качают быстрее">
-            Соединений к EDSM:
+          <label style={{ fontSize: 12, color: MUTED, display: 'inline-flex', alignItems: 'center', gap: 6 }} title={t('ppAdmin.connectionsHint')}>
+            {t('ppAdmin.connectionsLabel')}
             <select
               value={connections}
               disabled={busy !== null || running}
@@ -650,39 +679,38 @@ export default function PowerplayAdminTab() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10, marginBottom: 10 }}>
           {archive && (
             <div style={innerCardStyle} data-pp-admin-archive="">
-              <div style={{ ...labelStyle, marginBottom: 4 }}>1 · Архив на сервере</div>
+              <div style={{ ...labelStyle, marginBottom: 4 }}>{t('ppAdmin.step1')}</div>
               {archive.exists ? (
                 archive.complete ? (
                   <div style={{ color: '#22c55e' }} data-pp-admin-archive-state={archive.uploaded ? 'uploaded' : 'complete'}>
                     {archive.uploaded
-                      ? <>Загружен с компьютера целиком: {formatPowerplayBytes(archive.bytes)}{archive.uploadName ? ` (${archive.uploadName})` : ''}</>
-                      : <>Скачан целиком: {formatPowerplayBytes(archive.bytes)}{archive.lastModified ? ` (дамп от ${archive.lastModified})` : ''}</>}
+                      ? <>{t('ppAdmin.uploadedWhole')} {formatPowerplayBytes(archive.bytes)}{archive.uploadName ? ` (${archive.uploadName})` : ''}</>
+                      : <>{t('ppAdmin.downloadWhole')} {formatPowerplayBytes(archive.bytes)}{archive.lastModified ? ' ' + t('ppAdmin.dumpOf', { date: archive.lastModified }) : ''}</>}
                   </div>
                 ) : archive.manual ? (
                   <div style={{ color: '#fbbf24' }} data-pp-admin-archive-state="manual">
-                    Файл архива без метки ({formatPowerplayBytes(archive.bytes)}) — похоже, положен на сервер вручную: «Загрузить данные» примет его
-                    как загруженный с компьютера
+                    {t('ppAdmin.manualFile', { size: formatPowerplayBytes(archive.bytes) })} {t('ppAdmin.manualFileTail')}
                   </div>
                 ) : (
                   <>
                     <div style={{ color: running ? PP : '#fbbf24' }} data-pp-admin-archive-state="partial">
-                      {running ? 'Качается' : 'Скачан не полностью'}: {formatPowerplayBytes(archiveDownloaded)}
-                      {archiveTotal ? ` из ${formatPowerplayBytes(archiveTotal)} (${Math.floor((archiveDownloaded / Math.max(1, archiveTotal)) * 100)} %)` : ''}
-                      {running ? '' : ' — следующий запуск докачает'}
+                      {t(running ? 'ppAdmin.downloading' : 'ppAdmin.partial')}: {formatPowerplayBytes(archiveDownloaded)}
+                      {archiveTotal ? ' ' + t('ppAdmin.totalOf', { size: formatPowerplayBytes(archiveTotal), percent: Math.floor((archiveDownloaded / Math.max(1, archiveTotal)) * 100) }) : ''}
+                      {running ? '' : t('ppAdmin.nextRunFinish')}
                     </div>
                     {archiveTotal ? (
                       <div style={{ marginTop: 4 }}>
-                        <ProgressBar fraction={archiveDownloaded / Math.max(1, archiveTotal)} color={running ? PP : '#fbbf24'} height={5} label="Скачано архива" />
+                        <ProgressBar fraction={archiveDownloaded / Math.max(1, archiveTotal)} color={running ? PP : '#fbbf24'} height={5} label={t('ppAdmin.archiveDownloadedLabel')} />
                       </div>
                     ) : null}
                   </>
                 )
               ) : (
-                <div>Архива нет — «Загрузить данные» или «Скачать архив» скачают его (после удачной загрузки архив удаляется)</div>
+                <div>{t('ppAdmin.noArchive')}</div>
               )}
               <div style={{ marginTop: 2 }}>
-                до {connections} соединений, куски файла по {formatPowerplayBytes(pieceBytes)}
-                {archive.freeBytes != null ? ` · свободно на диске ${formatPowerplayBytes(archive.freeBytes)}` : ''}
+                {t('ppAdmin.segmentsLine', { connections, size: formatPowerplayBytes(pieceBytes) })}
+                {archive.freeBytes != null ? t('ppAdmin.freeDisk', { size: formatPowerplayBytes(archive.freeBytes) }) : ''}
               </div>
               <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{archive.path}</code></div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
@@ -692,10 +720,10 @@ export default function PowerplayAdminTab() {
                   style={{ fontSize: 12, padding: '3px 8px' }}
                   disabled={busy !== null || running || uploading}
                   onClick={() => void act('download')}
-                  title="Только скачать архив на сервер (в базу ничего не пишется)"
+                  title={t('ppAdmin.downloadOnlyHint')}
                   data-pp-admin-action="download"
                 >
-                  {archive.exists && !archive.complete ? 'Докачать архив' : 'Скачать архив'}
+                  {t(archive.exists && !archive.complete ? 'ppAdmin.reDownload' : 'ppAdmin.downloadArchive')}
                 </button>
                 <button
                   type="button"
@@ -703,10 +731,10 @@ export default function PowerplayAdminTab() {
                   style={{ fontSize: 12, padding: '3px 8px' }}
                   disabled={busy !== null || running || uploading || !(archive.exists || shards?.exists)}
                   onClick={() => void act('cleanup')}
-                  title="Удалить архив и куски с сервера"
+                  title={t('ppAdmin.cleanupHint')}
                   data-pp-admin-action="cleanup"
                 >
-                  <IconTrash size={12} /> Удалить архив и куски
+                  <IconTrash size={12} /> {t('ppAdmin.cleanupButton')}
                 </button>
               </div>
               <ArchiveUploadControl
@@ -730,36 +758,36 @@ export default function PowerplayAdminTab() {
             </div>
           )}
           <div style={innerCardStyle} data-pp-admin-shards="">
-            <div style={{ ...labelStyle, marginBottom: 4 }}>2 · Куски (шарды) → 3 · база</div>
+            <div style={{ ...labelStyle, marginBottom: 4 }}>{t('ppAdmin.step2')}</div>
             {shards?.exists && (shards.shards > 0 || shards.complete) ? (
               <>
                 <div style={{ color: shards.complete ? TEXT : splitting ? PP : '#fbbf24' }}>
-                  {formatPowerplayCount(shards.shards)} кусков · {formatPowerplayCount(shards.systems)} систем · {formatPowerplayBytes(shards.bytes)}
-                  {shards.complete ? ' — архив разбит до конца' : splitting ? ' — разбивка идёт' : ' — разбит не до конца, следующий запуск разобьёт заново'}
+                  {t('ppAdmin.shardCounts', { shards: formatPowerplayCount(shards.shards), systems: formatPowerplayCount(shards.systems), size: formatPowerplayBytes(shards.bytes) })}
+                  {shards.complete ? t('ppAdmin.shardDone') : splitting ? t('ppAdmin.shardSplitting') : t('ppAdmin.shardNotDone')}
                 </div>
                 <div style={{ color: shards.imported === shards.shards && shards.complete ? '#22c55e' : MUTED, marginTop: 2 }}>
-                  В базе: {formatPowerplayCount(shards.imported)} из {formatPowerplayCount(shards.shards)} кусков ({formatPowerplayCount(shards.importedSystems)} систем)
+                  {t('ppAdmin.importedOf', { imported: formatPowerplayCount(shards.imported), shards: formatPowerplayCount(shards.shards), systems: formatPowerplayCount(shards.importedSystems) })}
                 </div>
                 {shards.shards > 0 && (
                   <div style={{ marginTop: 4 }}>
-                    <ProgressBar fraction={shards.imported / Math.max(1, shards.shards)} color={shards.imported === shards.shards ? '#22c55e' : PP} height={5} label="Кусков в базе" />
+                    <ProgressBar fraction={shards.imported / Math.max(1, shards.shards)} color={shards.imported === shards.shards ? '#22c55e' : PP} height={5} label={t('ppAdmin.shardsInDbLabel')} />
                   </div>
                 )}
               </>
             ) : (
               <div>
                 {archive?.complete
-                  ? 'Кусков нет — архив на сервере: «Разбить на куски» или «Загрузить данные» разобьют его'
+                  ? t('ppAdmin.noShardsReady')
                   : running
-                    ? 'Кусков пока нет — архив разобьётся на куски, когда будет на сервере целиком'
-                    : 'Кусков нет — они появятся, когда архив будет на сервере целиком'}
+                    ? t('ppAdmin.noShardsRunning')
+                    : t('ppAdmin.noShardsIdle')}
               </div>
             )}
             <div style={{ marginTop: 2 }} data-pp-admin-writer="">
-              Запись в базу:{' '}
+              {t('ppAdmin.writerLabel')}{' '}
               {writer?.backend === 'pg'
-                ? <>прямой Postgres{writer.host ? ` (${writer.host})` : ''} — кусок одним вызовом</>
-                : <>PostgREST — пачками по {formatPowerplayCount(status?.config.batchSize ?? 2000)} систем{writer?.disabled ? ' (POWERPLAY_DB_DIRECT=0)' : ''}</>}
+                ? <>{(writer.host ? t('ppAdmin.writerDirectHost', { host: writer.host }) : t('ppAdmin.writerDirect')) + t('ppAdmin.writerDirectTail')}</>
+                : <>{t('ppAdmin.writerPostgrest', { size: formatPowerplayCount(status?.config.batchSize ?? 2000) })}{writer?.disabled ? ' (POWERPLAY_DB_DIRECT=0)' : ''}</>}
             </div>
             {shards?.dir && <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{shards.dir}</code></div>}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
@@ -769,10 +797,10 @@ export default function PowerplayAdminTab() {
                 style={{ fontSize: 12, padding: '3px 8px' }}
                 disabled={busy !== null || running || uploading || !archive?.complete}
                 onClick={() => void act('split')}
-                title={archive?.complete ? 'Разбить архив на куски (без EDSM и без записи в базу)' : 'Сначала скачайте архив целиком или загрузите его с компьютера'}
+                title={archive?.complete ? t('ppAdmin.splitHint') : t('ppAdmin.splitFirst')}
                 data-pp-admin-action="split"
               >
-                Разбить на куски
+                {t('ppAdmin.splitButton')}
               </button>
               <button
                 type="button"
@@ -780,10 +808,10 @@ export default function PowerplayAdminTab() {
                 style={{ fontSize: 12, padding: '3px 8px' }}
                 disabled={busy !== null || running || uploading || !(archive?.complete || shards?.complete)}
                 onClick={() => void act('import')}
-                title="Записать в базу то, что уже на сервере (архив или куски), без обращения к EDSM"
+                title={t('ppAdmin.importHint')}
                 data-pp-admin-action="import"
               >
-                Загрузить куски в базу
+                {t('ppAdmin.importButton')}
               </button>
             </div>
           </div>
@@ -794,30 +822,30 @@ export default function PowerplayAdminTab() {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: MUTED, marginBottom: 4, flexWrap: 'wrap' }}>
               <span style={{ color: progress.phase === 'running' ? PP : progress.phase === 'error' ? '#ef4444' : progress.phase === 'cancelled' ? '#e67e22' : '#22c55e' }}>
                 {progress.phase === 'running'
-                  ? 'Идёт загрузка'
+                  ? t('ppAdmin.runningLoad')
                   : progress.phase === 'ok' && progress.mode === 'download'
-                    ? 'Последний запуск: архив скачан'
+                    ? t('ppAdmin.lastDownload')
                     : progress.phase === 'ok' && progress.mode === 'split'
-                      ? 'Последний запуск: архив разбит на куски'
-                      : `Последняя загрузка: ${POWERPLAY_PHASE_LABEL[progress.phase]}`}
+                      ? t('ppAdmin.lastSplit')
+                      : t('ppAdmin.lastLoad', { phase: POWERPLAY_PHASE_LABEL[progress.phase] })}
                 {' · '}{progress.percent.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} %
               </span>
               <span>
-                <IconClock size={11} /> {formatPowerplayDuration(elapsed)} · {formatTime(progress.startedAt)}
+                <IconClock size={11} /> {formatPowerplayDuration(elapsed)} · {formatTime(progress.startedAt, locale)}
               </span>
             </div>
             <ProgressBar
               fraction={progress.percent / 100}
               color={progress.phase === 'error' ? '#ef4444' : progress.phase === 'cancelled' ? '#e67e22' : progress.phase === 'running' ? PP : '#22c55e'}
               height={10}
-              label="Общий ход загрузки"
+              label={t('ppAdmin.overallProgress')}
             />
             <div style={{ fontSize: 12, color: TEXT, marginTop: 6 }} data-pp-admin-message="">{progress.message}</div>
             <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>
-              Запуск: {POWERPLAY_TRIGGER_LABEL[progress.trigger]} · {POWERPLAY_MODE_LABEL[progress.mode] ?? POWERPLAY_MODE_LABEL.full}{progress.force ? ' · принудительно' : ''}
+              {t('ppAdmin.triggerLine', { trigger: POWERPLAY_TRIGGER_LABEL[progress.trigger], mode: POWERPLAY_MODE_LABEL[progress.mode] ?? POWERPLAY_MODE_LABEL.full })}{progress.force ? t('ppAdmin.forced') : ''}
             </div>
 
-            <ol style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 7 }} aria-label="Этапы загрузки">
+            <ol style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 7 }} aria-label={t('ppAdmin.stagesAria')}>
               {POWERPLAY_SYNC_STAGES.map((def) => {
                 const stage = progress.stages.find((item) => item.id === def.id);
                 if (!stage) return null;
@@ -837,11 +865,11 @@ export default function PowerplayAdminTab() {
                         style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                         title={stage.detail || undefined}
                       >
-                        {stage.detail || stageStatusLabel(stage, progress.phase)}
+                        {stage.detail || stageStatusLabel(t, stage, progress.phase)}
                       </span>
                     </span>
                     <span style={{ fontSize: 11, color: DIM, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                      {stageStatusLabel(stage, progress.phase)}
+                      {stageStatusLabel(t, stage, progress.phase)}
                       {stageDuration(stage, serverNow) ? <><br />{stageDuration(stage, serverNow)}</> : null}
                     </span>
                   </li>
@@ -853,22 +881,22 @@ export default function PowerplayAdminTab() {
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-pp-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
                 {progress.mode === 'download'
-                  ? <>Архив на сервере: {formatPowerplayBytes(progress.result.archiveBytes)} · за {formatPowerplayDuration(progress.result.durationMs)} — в базу пока ничего не записано</>
-                  : <>Кусков: {formatPowerplayCount(progress.result.shards)} · систем {formatPowerplayCount(progress.result.systems)} · за {formatPowerplayDuration(progress.result.durationMs)} — в базу пока ничего не записано</>}
+                  ? <>{t('ppAdmin.resultDownload', { size: formatPowerplayBytes(progress.result.archiveBytes), duration: formatPowerplayDuration(progress.result.durationMs) })}</>
+                  : <>{t('ppAdmin.resultSplit', { shards: formatPowerplayCount(progress.result.shards), systems: formatPowerplayCount(progress.result.systems), duration: formatPowerplayDuration(progress.result.durationMs) })}</>}
               </div>
             )}
             {progress.phase === 'ok' && progress.result && progress.mode !== 'download' && progress.mode !== 'split' && (
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-pp-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
-                Записано {formatPowerplayCount(progress.result.rows)} систем, удалено пропавших {formatPowerplayCount(progress.result.deleted)},
-                всего на карте {formatPowerplayCount(progress.result.total)}
-                {progress.result.shards ? <> · кусков {formatPowerplayCount(progress.result.shards)}</> : null} · за {formatPowerplayDuration(progress.result.durationMs)}
+                {t('ppAdmin.resultImported', { rows: formatPowerplayCount(progress.result.rows), deleted: formatPowerplayCount(progress.result.deleted), total: formatPowerplayCount(progress.result.total) })}
+                {progress.result.shards ? <>{' '}{t('ppAdmin.resultShardTail', { shards: formatPowerplayCount(progress.result.shards) })}</> : null}{' '}
+                {t('ppAdmin.resultDuration', { duration: formatPowerplayDuration(progress.result.durationMs) })}
               </div>
             )}
             {progress.phase === 'not_modified' && (
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-pp-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
-                Дамп EDSM тот же, что при прошлой загрузке, — данные на сайте актуальны. «Перекачать принудительно» загрузит его ещё раз.
+                {t('ppAdmin.notModified')}
               </div>
             )}
             {(progress.phase === 'error' || progress.phase === 'cancelled') && progress.result?.error && (
@@ -880,45 +908,33 @@ export default function PowerplayAdminTab() {
           </div>
         ) : (
           <div style={{ fontSize: 12, color: MUTED }}>
-            {status ? 'Загрузок с момента обновления сайта ещё не было. Нажмите «Загрузить данные» — прогресс появится здесь.' : 'Загружаю состояние…'}
+            {status ? t('ppAdmin.noLoadsYet') : t('ppAdmin.loadingState')}
           </div>
         )}
 
         {status?.interrupted && (
           <div style={{ fontSize: 12, color: '#e67e22', marginTop: 8 }} data-pp-admin-interrupted="">
-            Прошлая загрузка оборвалась вместе с процессом сайта (обновление или перезапуск). Скачанное и разбитое осталось на
-            сервере — «Загрузить сейчас» продолжит с того же места (уже записанные куски повторно не пишутся); задача
-            powerplay-sync и открытие вкладки PowerPlay сделают это сами.
+            {t('ppAdmin.interrupted')}
           </div>
         )}
 
         <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, marginTop: 12 }}>
-          Источник: <code>{dumpUrl}</code> — ночной дамп EDSM (≈3–4 МБ gzip): все системы, о состоянии PowerPlay которых пилоты
-          сообщали за последние ~30 дней. На сайт попадают системы под контролем (оплоты, укреплённые, эксплуатируемые);
-          Unoccupied отбрасываются. Архив качается на сервер целиком в{` ${connections} `}соединений (<code>POWERPLAY_DOWNLOAD_SEGMENTS</code>),
-          куски файла по {formatPowerplayBytes(pieceBytes)}; обрыв и перезапуск сайта не теряют скачанного. Соединение, молчащее
-          {` ${stallSeconds} `}с (<code>POWERPLAY_STALL_SECONDS</code>), переподключается сразу, а не через 70 с ожидания ОС.
+          <code>{dumpUrl}</code> {t('ppAdmin.src1')}
+          {t('ppAdmin.src2')}
+          {t('ppAdmin.src3', { connections, size: formatPowerplayBytes(pieceBytes), stall: stallSeconds })}
           {shortRequests === 'off'
-            ? ' Короткие запросы выключены (POWERPLAY_REQUEST_KB=off).'
+            ? t('ppAdmin.srcShortOff')
             : typeof shortRequests === 'number'
-              ? ` Запросы — по ${formatPowerplayBytes(shortRequests)}, каждый в новом соединении (POWERPLAY_REQUEST_KB).`
-              : ' Если соединения замирают, успев передать лишь несколько килобайт (так сеть сервера режет сессии к зарубежным CDN, а EDSM — за Cloudflare), загрузка сама переходит на короткие запросы меньше этого порога, каждый в новом соединении.'}
-          {' '}Когда архив на сервере, записи одной системы собираются вместе (EDSM пишет по записи на каждую державу в системе) и
-          системы раскладываются в куски по {formatPowerplayCount(shardSystems)}, затем куски пишутся в базу; кусок — единица
-          продолжения. Если EDSM пересоберёт дамп посреди скачивания, скачивание начнётся заново со свежим дампом. После удачной
-          загрузки архив и куски
-          {status?.config.archiveKeep ? ' остаются на сервере (POWERPLAY_ARCHIVE_KEEP=1)' : ' удаляются с сервера'}.
+              ? t('ppAdmin.srcShortOn', { size: formatPowerplayBytes(shortRequests) })
+              : t('ppAdmin.srcShortAuto')}
+          {t('ppAdmin.srcSplit', { shards: formatPowerplayCount(shardSystems) })}
+          {status?.config.archiveKeep ? t('ppAdmin.srcKeep') : t('ppAdmin.srcDelete')}
           <br />
-          Автоматически: задача планировщика <code>powerplay-sync</code> раз в 12 часов
-          {status?.config.nextScheduledRun ? <> (ближайший запуск — {formatUtc(status.config.nextScheduledRun)}, если задача включена в <code>JOBS_ENABLED</code>)</> : null},
-          а также при открытии вкладки PowerPlay, если данных нет или они старше {status?.config.staleAfterHours ?? 26} ч
-          (после неудачи — не чаще раза в {status?.config.retryAfterMinutes ?? 30} мин
-          {status?.config.nextLazyAttempt ? <>, следующая попытка не раньше {formatTime(status.config.nextLazyAttempt)}</> : null}).
-          Тот же дамп, что в прошлый раз, второй раз не качается.
+          {t('ppAdmin.srcAuto', { stale: status?.config.staleAfterHours ?? 26, retry: status?.config.retryAfterMinutes ?? 30 })}
+          {status?.config.nextScheduledRun ? <> {t('ppAdmin.srcAutoNext', { time: formatUtc(status.config.nextScheduledRun, locale) })}{status?.config.nextLazyAttempt ? <> {' '}{t('ppAdmin.srcAutoRetry', { time: formatTime(status.config.nextLazyAttempt, locale) })}</> : null}</> : null}
+          {t('ppAdmin.srcAutoTail')}
           <br />
-          Защита данных: битый gzip, ошибка HTTP, меньше {status?.config.minRows ?? 100} систем или дамп меньше половины прошлого
-          таблицу не трогают — карта остаётся со вчерашними данными. «Перекачать принудительно» загружает тот же дамп ещё раз и
-          снимает проверку на «усохший» дамп.
+          {t('ppAdmin.srcGuard', { min: status?.config.minRows ?? 100 })}
         </div>
       </div>
 
@@ -935,9 +951,9 @@ export default function PowerplayAdminTab() {
       {/* ── Журнал ── */}
       <div style={cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <div style={{ ...labelStyle, marginBottom: 0 }}>Журнал процесса{status?.log.length ? ` (${status.log.length})` : ''}</div>
+          <div style={{ ...labelStyle, marginBottom: 0 }}>{t('ppAdmin.logTitle')}{status?.log.length ? ` (${status.log.length})` : ''}</div>
           <button type="button" className="btn" style={{ fontSize: 11, padding: '2px 8px' }} onClick={() => void copyLog()} disabled={!status?.log.length}>
-            <IconCopy size={11} /> {copied ? 'Скопировано' : 'Скопировать'}
+            <IconCopy size={11} /> {t(copied ? 'ppAdmin.logCopied' : 'ppAdmin.logCopy')}
           </button>
         </div>
         {status?.log.length ? (
@@ -973,17 +989,16 @@ export default function PowerplayAdminTab() {
                   marginTop: /^Запуск импорта/.test(line.text) && index > 0 ? 4 : undefined,
                 }}
               >
-                <span style={{ color: DIM }}>{formatClock(line.at)}</span> {line.text}
+                <span style={{ color: DIM }}>{formatClock(line.at, locale)}</span> {line.text}
               </div>
             ))}
           </pre>
         ) : (
-          <div style={{ fontSize: 12, color: DIM }}>Журнал пуст — он появится с первой загрузкой.</div>
+          <div style={{ fontSize: 12, color: DIM }}>{t('ppAdmin.logEmpty')}</div>
         )}
         {status && !status.progressPersisted && !running && (
           <div style={{ fontSize: 11, color: DIM, marginTop: 6 }}>
-            Журнал хранится в базе после миграции <code>20261018180000_powerplay_sync_progress.sql</code>; без неё он виден до
-            перезапуска сайта.
+            {t('ppAdmin.logMigrationNote')}
           </div>
         )}
       </div>
@@ -995,39 +1010,43 @@ export default function PowerplayAdminTab() {
   );
 }
 
-const EDDN_STATUS: Record<EddnAdminStatus['status'], { text: string; color: string }> = {
-  off: { text: 'выключено', color: MUTED },
-  connecting: { text: 'подключение к реле…', color: PP },
-  connected: { text: 'получает данные', color: '#22c55e' },
-  waiting: { text: 'ждёт переподключения', color: '#fbbf24' },
+const EDDN_STATUS_COLOR: Record<EddnAdminStatus['status'], string> = {
+  off: MUTED,
+  connecting: PP,
+  connected: '#22c55e',
+  waiting: '#fbbf24',
+};
+
+const EDDN_STATUS_KEY: Record<EddnAdminStatus['status'], string> = {
+  off: 'ppAdmin.eddnStatusOff',
+  connecting: 'ppAdmin.eddnConnecting',
+  connected: 'ppAdmin.eddnConnected',
+  waiting: 'ppAdmin.eddnWaiting',
 };
 
 function EddnCard({ eddn, busy, onStart, onStop }: { eddn: EddnAdminStatus; busy: string | null; onStart: () => void; onStop: () => void }) {
+  const { t, locale } = useI18n();
   const stats = eddn.stats ?? {};
-  const pill = eddn.running ? EDDN_STATUS[eddn.status] ?? EDDN_STATUS.off : eddn.enabled ? { text: 'включено, слушатель не запущен', color: '#fbbf24' } : EDDN_STATUS.off;
+  const pill = eddn.running
+    ? { text: t(EDDN_STATUS_KEY[eddn.status] ?? 'ppAdmin.eddnStatusOff'), color: EDDN_STATUS_COLOR[eddn.status] ?? MUTED }
+    : { text: t(eddn.enabled ? 'ppAdmin.eddnEnabledNoListener' : 'ppAdmin.eddnStatusOff'), color: eddn.enabled ? '#fbbf24' : MUTED };
   const log = (eddn.log ?? []).slice(-15);
   const count = (value: number | undefined) => formatPowerplayCount(value ?? 0);
   return (
     <div style={cardStyle} data-pp-admin-eddn={eddn.running ? eddn.status : eddn.enabled ? 'enabled' : 'off'}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-        <div style={{ ...labelStyle, marginBottom: 0 }}>Живые данные EDDN — владелец систем из журналов пилотов</div>
+        <div style={{ ...labelStyle, marginBottom: 0 }}>{t('ppAdmin.eddnTitle')}</div>
         <span style={{ fontSize: 12, color: pill.color }}>● {pill.text}</span>
       </div>
       <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
-        Дамп EDSM не говорит, какая держава владеет спорной системой. Это знает журнал игры (поле ControllingPower), а его шлют
-        в EDDN тысячи пилотов — оттуда же данные у EDSM, Spansh и Inara. Слушатель берёт из потока прыжки и входы в игру и
-        обновляет PowerPlay (владелец, состояние) и фракции — тем же разбором, что журналы Colonial Helper.
+        {t('ppAdmin.eddnLead')}
         <br />
-        <span style={{ color: DIM }}>
-          Трафик — около 2–5 ГБ в сутки (реле не фильтрует по типу данных). Сервер в России: долгие соединения к зарубежным
-          хостингам ТСПУ может «замораживать» — слушатель тогда сам переподключается, а журнал ниже покажет, сколько данных
-          успевает прийти до замирания.
-        </span>
+        <span style={{ color: DIM }}>{t('ppAdmin.eddnTraffic')}</span>
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
         {eddn.enabled ? (
           <button type="button" className="btn btn-danger" disabled={busy !== null} onClick={onStop} data-pp-admin-action="eddn-stop">
-            Выключить EDDN
+            {t('ppAdmin.eddnStop')}
           </button>
         ) : (
           <button
@@ -1037,38 +1056,38 @@ function EddnCard({ eddn, busy, onStart, onStop }: { eddn: EddnAdminStatus; busy
             onClick={onStart}
             data-pp-admin-action="eddn-start"
           >
-            Включить EDDN
+            {t('ppAdmin.eddnStart')}
           </button>
         )}
-        <span style={{ fontSize: 11, color: DIM, alignSelf: 'center' }}>реле {eddn.relay}</span>
+        <span style={{ fontSize: 11, color: DIM, alignSelf: 'center' }}>{t('ppAdmin.eddnRelay', { relay: eddn.relay })}</span>
       </div>
       {!eddn.supported && (
         <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 8 }}>
-          Нет таблицы <code>eddn_listener_state</code>: примените миграцию <code>20261021130000_eddn_listener.sql</code> (Мониторинг → «Обновить сейчас»).
+          {t('ppAdmin.eddnNoTable')}
         </div>
       )}
       {eddn.forbidden && (
         <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 8 }}>
-          На сервере задано <code>EDDN_LISTENER=off</code> — слушатель запрещён, пока переменную не уберут.
+          {t('ppAdmin.eddnForbidden')}
         </div>
       )}
       {(eddn.running || (stats.messages ?? 0) > 0) && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8, marginBottom: 8 }} data-pp-admin-eddn-stats="">
-          <Stat label="Сообщений" value={count(stats.messages)} small />
-          <Stat label="Прыжков в слои" value={count(stats.observations)} small />
-          <Stat label="PowerPlay применено" value={count(stats.powerplay?.applied)} small color="#22c55e" />
-          <Stat label="Владельцев названо" value={count(stats.powerplay?.resolved)} small color="#22c55e" />
-          <Stat label="Фракции применено" value={count(stats.factions?.applied)} small />
-          <Stat label="Трафик" value={formatBytesShort(stats.bytes ?? 0)} small />
-          <Stat label="Сессий / «тишин»" value={`${count(stats.sessions)} / ${count(stats.stalls)}`} small />
-          <Stat label="Последнее сообщение" value={formatTime(stats.lastMessageAt)} small />
+          <Stat label={t('ppAdmin.statMessages')} value={count(stats.messages)} small />
+          <Stat label={t('ppAdmin.statObservations')} value={count(stats.observations)} small />
+          <Stat label={t('ppAdmin.statPpApplied')} value={count(stats.powerplay?.applied)} small color="#22c55e" />
+          <Stat label={t('ppAdmin.statResolved')} value={count(stats.powerplay?.resolved)} small color="#22c55e" />
+          <Stat label={t('ppAdmin.statFactions')} value={count(stats.factions?.applied)} small />
+          <Stat label={t('ppAdmin.statBytes')} value={formatBytesShort(t, locale, stats.bytes ?? 0)} small />
+          <Stat label={t('ppAdmin.statSessions')} value={`${count(stats.sessions)} / ${count(stats.stalls)}`} small />
+          <Stat label={t('ppAdmin.statLastMessage')} value={formatTime(stats.lastMessageAt, locale)} small />
         </div>
       )}
       {eddn.running && (eddn.pending ?? 0) > 0 && (
-        <div style={{ fontSize: 11, color: DIM, marginBottom: 6 }}>В очереди на запись: {count(eddn.pending)} систем (пачка — раз в минуту)</div>
+        <div style={{ fontSize: 11, color: DIM, marginBottom: 6 }}>{t('ppAdmin.statQueue', { count: count(eddn.pending) })}</div>
       )}
       {eddn.running && eddn.status === 'waiting' && eddn.nextAttemptAt && (
-        <div style={{ fontSize: 11, color: DIM, marginBottom: 6 }}>Следующая попытка: {formatTime(eddn.nextAttemptAt)}</div>
+        <div style={{ fontSize: 11, color: DIM, marginBottom: 6 }}>{t('ppAdmin.statNextAttempt', { time: formatTime(eddn.nextAttemptAt, locale) })}</div>
       )}
       {eddn.error && <div style={{ fontSize: 12, color: '#f87171', marginBottom: 6 }} data-pp-admin-eddn-error="">{eddn.error}</div>}
       {log.length > 0 && (
@@ -1081,7 +1100,7 @@ function EddnCard({ eddn, busy, onStart, onStop }: { eddn: EddnAdminStatus; busy
         >
           {log.map((line, index) => (
             <div key={`${line.at}-${index}`} data-level={line.level} style={{ color: line.level === 'error' ? '#f87171' : line.level === 'warn' ? '#fbbf24' : MUTED }}>
-              <span style={{ color: DIM }}>{formatClock(line.at)}</span> {line.text}
+              <span style={{ color: DIM }}>{formatClock(line.at, locale)}</span> {line.text}
             </div>
           ))}
         </pre>
@@ -1090,10 +1109,12 @@ function EddnCard({ eddn, busy, onStart, onStop }: { eddn: EddnAdminStatus; busy
   );
 }
 
-function formatBytesShort(value: number): string {
-  if (value < 1024 * 1024) return `${Math.round(value / 1024)} КБ`;
-  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1).replace('.', ',')} МБ`;
-  return `${(value / 1024 / 1024 / 1024).toFixed(2).replace('.', ',')} ГБ`;
+function formatBytesShort(t: TFn, locale: string, value: number): string {
+  if (value < 1024 * 1024) return t('ppAdmin.bytesKb', { value: String(Math.round(value / 1024)) });
+  if (value < 1024 * 1024 * 1024) {
+    return t('ppAdmin.bytesMb', { value: (value / 1024 / 1024).toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+  }
+  return t('ppAdmin.bytesGb', { value: (value / 1024 / 1024 / 1024).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) });
 }
 
 function Stat({ label, value, color, small = false }: { label: string; value: string; color?: string; small?: boolean }) {
