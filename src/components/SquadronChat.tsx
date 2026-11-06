@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { authFetch, getAuthenticatedSupabase } from '@/lib/supabaseClient';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { IconSend, IconTrash, IconLock } from '@/components/Icons';
@@ -51,6 +52,7 @@ function renderMentions(text: string) {
 }
 
 export default function SquadronChat({ squadronId, userId, isOfficer, members }: Props) {
+  const { t } = useI18n();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [chatType, setChatType] = useState<'general' | 'officer'>('general');
@@ -155,7 +157,7 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
   };
 
   const deleteMessage = async (messageId: number) => {
-    if (!confirm('Удалить сообщение?')) return;
+    if (!confirm(t('sqchat.confirmDelete'))) return;
     try {
       const res = await authFetch(`/api/squadrons/${squadronId}/chat/${messageId}`, {
         method: 'DELETE',
@@ -216,14 +218,14 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
           className={`btn ${chatType === 'general' ? 'btn-primary' : 'btn-outline'}`}
           onClick={() => setChatType('general')}
         >
-          Общий
+          {t('sqchat.general')}
         </button>
         {isOfficer && (
           <button
             className={`btn ${chatType === 'officer' ? 'btn-primary' : 'btn-outline'} flex items-center gap-1`}
             onClick={() => setChatType('officer')}
           >
-            <IconLock size={12} /> Офицерский
+            <IconLock size={12} /> {t('sqchat.officer')}
           </button>
         )}
       </div>
@@ -232,7 +234,7 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
       <div className="chat-box">
         {messages.map((msg) => {
           const isMe = msg.user_id === userId;
-          const name = msg.profiles?.cmdr_name || 'Неизвестный';
+          const name = msg.profiles?.cmdr_name || t('wa.unknownAuthor');
           const avatar = msg.profiles?.avatar_url;
           return (
             <div
@@ -246,7 +248,7 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
                 {isMe && (
                   <button
                     onClick={() => deleteMessage(msg.id)}
-                    title="Удалить"
+                    title={t('sq.delete')}
                     style={{
                       color: '#ef4444',
                       background: 'none',
@@ -333,14 +335,14 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !showMentions) sendMessage();
           }}
-          placeholder="Написать сообщение..."
+          placeholder={t('sqchat.placeholder')}
         />
         <button
           onClick={sendMessage}
           disabled={loading || !input.trim()}
           className="btn btn-primary flex items-center gap-1"
         >
-          <IconSend size={14} /> Отправить
+          <IconSend size={14} /> {t('forum.send')}
         </button>
       </div>
     </div>
