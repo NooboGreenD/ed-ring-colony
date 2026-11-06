@@ -1,4 +1,4 @@
-import { translations } from './translations';
+import { translations } from './translations.ts';
 
 /**
  * Активная локаль для чистых функций форматирования (даты, числа, единицы),

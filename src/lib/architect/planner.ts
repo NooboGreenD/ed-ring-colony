@@ -29,6 +29,7 @@ import {
   PRE_REQS,
   SYSTEM_UNLOCKS,
 } from './catalogue.ts';
+import { formatTranslate } from '../i18n/format.ts';
 import { economyBodyFit } from './economy.ts';
 import type {
   ArchitectBody,
@@ -125,6 +126,10 @@ export function listInstallations(filter: {
 
 /** Русское имя товара; если перевода нет — человекочитаемое из ключа. */
 export function commodityLabel(key: string): string {
+  // Подпись на языке интерфейса; русское имя — запасной вариант и основа для
+  // разбора ввода (см. projectLeaders).
+  const translated = formatTranslate(`commodity.${key}`);
+  if (translated !== `commodity.${key}`) return translated;
   const known = COMMODITY_LABELS_RU[key];
   if (known) return known;
   const spaced = key.replace(/([a-z])([A-Z])/g, '$1 $2').trim();

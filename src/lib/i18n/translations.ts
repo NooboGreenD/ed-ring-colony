@@ -1,8 +1,9 @@
 import type { Locale } from "./types";
-import { engineersTranslations } from "./engineers";
-import { outfittingTranslations } from "./outfitting";
-import { outfittingAnalysisTranslations } from "./outfittingAnalysis";
-import { outfittingSpecialsTranslations } from "./outfittingSpecials";
+import { engineersTranslations } from "./engineers.ts";
+import { commodityTranslations } from "./commodities.ts";
+import { outfittingTranslations } from "./outfitting.ts";
+import { outfittingAnalysisTranslations } from "./outfittingAnalysis.ts";
+import { outfittingSpecialsTranslations } from "./outfittingSpecials.ts";
 
 /** Базовый словарь сайта; большие разделы подмешиваются ниже отдельными файлами. */
 const baseTranslations: Record<string, Record<string, string>> = {
@@ -49004,6 +49005,7 @@ const sectionTranslations = [
   outfittingAnalysisTranslations,
   outfittingSpecialsTranslations,
   engineersTranslations,
+  commodityTranslations,
 ];
 
 export const translations: Record<string, Record<string, string>> = Object.fromEntries(
