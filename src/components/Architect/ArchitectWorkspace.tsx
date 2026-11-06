@@ -1171,7 +1171,7 @@ function BodyCard({
   onEdit: (siteId: string) => void;
   onTogglePrimary: (siteId: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const surfaceLimit = predictSurfaceSlots(body);
   const surfaceSites = sites.filter((site) => getInstallation(site.installationId)?.location === 'surface');
   const orbitalSites = sites.filter((site) => getInstallation(site.installationId)?.location !== 'surface');
@@ -1197,7 +1197,7 @@ function BodyCard({
       <div
         className="architect-body-header"
         onClick={onToggleCollapse}
-        title={collapsed ? 'Развернуть карточку тела' : 'Свернуть карточку тела'}
+        title={collapsed ? t('arch.expandCard') : t('arch.collapseCard')}
       >
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'baseline', justifyContent: 'space-between' }}>
           <div style={{ minWidth: 0 }}>
@@ -1206,12 +1206,12 @@ function BodyCard({
               {' '}{body.name}
               {sites.length > 0 && (
                 <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--orange)' }}>
-                  построек: {sites.length}
+                  {t('arch.sitesCount', { count: sites.length })}
                 </span>
               )}
               {errorCount > 0 && (
                 <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--red)', border: '1px solid var(--red)', borderRadius: 3, padding: '0 5px' }}>
-                  проблем: {errorCount}
+                  {t('arch.problemsCount', { count: errorCount })}
                 </span>
               )}
             </div>
@@ -1224,20 +1224,20 @@ function BodyCard({
               */}
               {body.subType && body.subType !== 'Неизвестно'
                 ? body.subType
-                : <span style={{ color: 'var(--orange)' }}>класс тела неизвестен</span>}
-              {' · '}{t(KIND_LABELS[body.kind])} · {formatNumber(body.distanceLs)} св. с
-              {body.radiusKm > 0 ? ` · R ${formatNumber(body.radiusKm)} км` : ''}
-              {body.tempK > 0 ? ` · ${formatNumber(body.tempK)} K` : ''}
-              {body.gravity > 0 ? ` · ${formatNumber(body.gravity)} g` : ''}
+                : <span style={{ color: 'var(--orange)' }}>{t('arch.unknownClass')}</span>}
+              {' · '}{t(KIND_LABELS[body.kind])} · {formatNumber(body.distanceLs, locale)} {t('arch.unitLs')}
+              {body.radiusKm > 0 ? ` · R ${formatNumber(body.radiusKm, locale)} ${t('arch.unitKm')}` : ''}
+              {body.tempK > 0 ? ` · ${formatNumber(body.tempK, locale)} K` : ''}
+              {body.gravity > 0 ? ` · ${formatNumber(body.gravity, locale)} g` : ''}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <span style={{ fontSize: 12, color: surfaceLimit > 0 || allowOrbital ? 'var(--muted)' : 'var(--red)' }}>
               {body.kind !== 'star' && (surfaceLimit > 0
-                ? `наземных: ${surfaceUsed} из ${surfaceLimit}`
+                ? t('arch.surfaceOf', { used: surfaceUsed, limit: surfaceLimit })
                 : blocked)}
               {body.kind !== 'star' && ' · '}
-              орбитальных: {orbitalUsed}{orbitalSlots === null ? '' : ` из ${orbitalSlots}`}
+              {orbitalSlots === null ? t('arch.orbitalPlain', { used: orbitalUsed }) : t('arch.orbitalOf', { used: orbitalUsed, limit: orbitalSlots })}
             </span>
             <button
               type="button"
@@ -1247,17 +1247,17 @@ function BodyCard({
               }}
               style={primaryButton}
             >
-              + постройка
+              {t('arch.addStructure')}
             </button>
           </div>
         </div>
         {body.kind !== 'star' && surfaceLimit > 0 && (
-          <div className="architect-slotbar" title={`Занято наземных слотов: ${surfaceUsed} из ${surfaceLimit}`}>
+          <div className="architect-slotbar" title={t('arch.surfaceSlotsTitle', { used: surfaceUsed, limit: surfaceLimit })}>
             <div className="architect-slotbar-fill" style={{ width: `${Math.min(100, (surfaceUsed / surfaceLimit) * 100)}%`, background: slotTone }} />
           </div>
         )}
         {orbitalSlots !== null && orbitalSlots > 0 && (
-          <div className="architect-slotbar" title={`Занято орбитальных слотов: ${orbitalUsed} из ${orbitalSlots}`} style={{ marginTop: 3 }}>
+          <div className="architect-slotbar" title={t('arch.orbitalSlotsTitle', { used: orbitalUsed, limit: orbitalSlots })} style={{ marginTop: 3 }}>
             <div className="architect-slotbar-fill" style={{ width: `${Math.min(100, (orbitalUsed / orbitalSlots) * 100)}%`, background: orbitalTone }} />
           </div>
         )}
@@ -1266,11 +1266,11 @@ function BodyCard({
       {!collapsed && (
         <>
           <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <Tag tone={body.landable ? 'var(--green)' : 'var(--muted)'} label={body.landable ? 'есть посадка' : 'нет посадки'} />
-            {body.terraformable && <Tag tone="var(--cyan)" label="терраформируемое" />}
-            {body.hasAtmosphere && <Tag tone="var(--cyan)" label="атмосфера" />}
-            {body.volcanism && <Tag tone="var(--cyan)" label="вулканизм" />}
-            {body.hasRings && <Tag tone="var(--cyan)" label="кольца / пояс" />}
+            <Tag tone={body.landable ? 'var(--green)' : 'var(--muted)'} label={body.landable ? t('arch.landable') : t('arch.notLandable')} />
+            {body.terraformable && <Tag tone="var(--cyan)" label={t('arch.terraformable')} />}
+            {body.hasAtmosphere && <Tag tone="var(--cyan)" label={t('arch.atmosphere')} />}
+            {body.volcanism && <Tag tone="var(--cyan)" label={t('arch.volcanism')} />}
+            {body.hasRings && <Tag tone="var(--cyan)" label={t('arch.rings')} />}
             {/*
               Сигналы тела: биология и всё остальное, что нашёл сканер. Для
               застройки это важные подсказки — биология рядом со стройкой
@@ -1291,16 +1291,16 @@ function BodyCard({
               className="architect-orbital-slots"
               style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', fontSize: 12 }}
             >
-              <span style={{ color: 'var(--muted)' }}>Орбитальные слоты:</span>
+              <span style={{ color: 'var(--muted)' }}>{t('arch.orbitalSlots')}</span>
               <button
                 type="button"
-                aria-label="Уменьшить число орбитальных слотов"
+                aria-label={t('arch.orbitalFewer')}
                 onClick={() => onSetOrbitalSlots(Math.max(0, orbitalSlots - 1))}
                 disabled={orbitalSlots <= 0}
                 style={linkButton}
               >−</button>
               <input
-                aria-label={`Орбитальные слоты тела ${body.name}`}
+                aria-label={t('arch.orbitalFor', { name: body.name })}
                 type="number"
                 min={0}
                 max={ORBITAL_SLOT_LIMIT}
@@ -1310,20 +1310,20 @@ function BodyCard({
               />
               <button
                 type="button"
-                aria-label="Увеличить число орбитальных слотов"
+                aria-label={t('arch.orbitalMore')}
                 onClick={() => onSetOrbitalSlots(orbitalSlots + 1)}
                 disabled={orbitalSlots >= ORBITAL_SLOT_LIMIT}
                 style={linkButton}
               >+</button>
               <span style={{ color: orbitalSlotsCustom ? 'var(--cyan)' : 'var(--muted)', fontSize: 11 }}>
-                {orbitalSlotsCustom ? 'задано вручную' : 'не подтверждено — сверьте с картой системы'}
+                {orbitalSlotsCustom ? t('arch.slotsCustom') : t('arch.slotsUnconfirmed')}
               </span>
             </div>
           )}
 
           {boostedEconomies.length > 0 && (
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
-              🏭 усиливает экономики:{' '}
+              {t('arch.boostsEconomies')}{' '}
               <span style={{ color: 'var(--green)' }}>
                 {boostedEconomies.map((economy) => ECONOMY_LABELS_RU[economy]).join(', ')}
               </span>
@@ -1332,19 +1332,19 @@ function BodyCard({
 
           {body.signals.genuses.length > 0 && (
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
-              роды биологии: {body.signals.genuses.join(', ')}
+              {t('arch.bioGenuses', { list: body.signals.genuses.join(', ') })}
             </div>
           )}
           {body.signals.bio > 0 && body.landable && (
             <div style={{ marginTop: 6, fontSize: 11, color: SIGNAL_META.bio.color }}>
-              На теле есть биология — соберите образцы до начала стройки: поселение уничтожает находки рядом с собой.
+              {t('arch.bioWarn')}
             </div>
           )}
 
           {showSurfaceGroup && (
             <SiteGroup
-              title="Наземные постройки"
-              counter={` ${surfaceUsed} из ${surfaceLimit}`}
+              title={t('arch.surfaceGroup')}
+              counter={` ${t('arch.counterOf', { used: surfaceUsed, limit: surfaceLimit })}`}
               body={body}
               onAdd={() => onAdd('surface')}
               sites={surfaceSites}
@@ -1358,8 +1358,8 @@ function BodyCard({
           )}
           {showOrbitalGroup && (
             <SiteGroup
-              title="Орбитальные постройки"
-              counter={orbitalSlots === null ? ` ${orbitalUsed}` : ` ${orbitalUsed} из ${orbitalSlots}`}
+              title={t('arch.orbitalGroup')}
+              counter={orbitalSlots === null ? ` ${orbitalUsed}` : ` ${t('arch.counterOf', { used: orbitalUsed, limit: orbitalSlots })}`}
               body={body}
               canAdd={allowOrbital && (orbitalSlots === null || orbitalUsed < orbitalSlots)}
               onAdd={() => onAdd('orbital')}
@@ -1406,6 +1406,7 @@ function SiteGroup({
   onEdit: (siteId: string) => void;
   onTogglePrimary: (siteId: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="architect-sitegroup">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
@@ -1413,11 +1414,11 @@ function SiteGroup({
           {title}
           <span style={{ color: 'var(--text)' }}>{counter}</span>
         </span>
-        <button type="button" onClick={onAdd} disabled={!canAdd} style={{ ...linkButton, margin: 0, opacity: canAdd ? 1 : 0.45 }}>+ добавить</button>
+        <button type="button" onClick={onAdd} disabled={!canAdd} style={{ ...linkButton, margin: 0, opacity: canAdd ? 1 : 0.45 }}>{t('arch.addMore')}</button>
       </div>
       {sites.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--muted)', border: '1px dashed var(--line)', borderRadius: 3, padding: '6px 8px' }}>
-          Пока ничего не запланировано.
+          {t('arch.nothingPlanned')}
         </div>
       )}
       {sites.map((site) => (
@@ -1463,8 +1464,8 @@ function SiteRow({
   if (!installation) {
     return (
       <div key={site.id} style={{ color: 'var(--red)', fontSize: 12, margin: '4px 0' }}>
-        Неизвестная постройка «{site.installationId}»{' '}
-        <button type="button" style={linkButton} onClick={() => onRemove(site.id)}>удалить</button>
+        {t('arch.unknownStructure', { id: site.installationId })}{' '}
+        <button type="button" style={linkButton} onClick={() => onRemove(site.id)}>{t('arch.delete')}</button>
       </div>
     );
   }
@@ -1490,29 +1491,29 @@ function SiteRow({
     >
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 13, color: 'var(--text)' }}>
-          {isPrimary && <span style={{ color: 'var(--orange)' }} title="Основной порт системы">★ </span>}
+          {isPrimary && <span style={{ color: 'var(--orange)' }} title={t('arch.primaryPortTitle')}>★ </span>}
           {installation.nameRu}
           <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {installation.id}</span>
         </div>
         {!body && (
           <div style={{ fontSize: 11, color: 'var(--orange)' }}>
             {site.bodyName
-              ? `тело: ${site.bodyName} — не найдено в каталоге системы`
-              : 'тело не указано источником — выберите его в редакторе записи'}
+              ? t('arch.bodyUnknown', { name: site.bodyName })
+              : t('arch.bodyNotSpecified')}
           </div>
         )}
         <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-          {installation.location === 'surface' ? 'поверхность' : 'орбита'} · T{installation.tier}
+          {installation.location === 'surface' ? t('arch.locationSurface') : t('arch.locationOrbital')} · T{installation.tier}
           {' · '}
           {formatTons(tons)}
-          {isPrimary ? ' (основной порт)' : ''}
-          {installation.needs.count > 0 ? ` · нужно ${installation.needs.count} очк. T${installation.needs.tier}` : ''}
-          {installation.gives.count > 0 ? ` · даёт ${installation.gives.count} очк. T${installation.gives.tier}` : ''}
+          {isPrimary ? ` ${t('arch.primarySuffix')}` : ''}
+          {installation.needs.count > 0 ? t('arch.needsPoints', { count: installation.needs.count, tier: installation.needs.tier }) : ''}
+          {installation.gives.count > 0 ? t('arch.givesPoints', { count: installation.gives.count, tier: installation.gives.tier }) : ''}
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-          <span>экономика:</span>
+          <span>{t('arch.economy')}</span>
           <span
-            title="Экономика, которую постройка добавляет системе"
+            title={t('arch.economyAddsTitle')}
             style={{ ...chipStyle, padding: '1px 5px', color: installation.influence === 'none' ? 'var(--muted)' : 'var(--cyan)' }}
           >
             {ECONOMY_LABELS_RU[installation.influence]}
@@ -1522,7 +1523,7 @@ function SiteRow({
               style={{ marginLeft: 6, color: economyFit.level === 'boost' ? 'var(--green)' : 'var(--orange)' }}
               title={economyFit.reason}
             >
-              {economyFit.level === 'boost' ? '▲ усилена телом' : '▽ слабо на этом теле'}
+              {economyFit.level === 'boost' ? t('arch.boostedByBody') : t('arch.weakOnBody')}
             </span>
           )}
         </div>
@@ -1531,12 +1532,12 @@ function SiteRow({
         )}
         {actual && (
           <div style={{ fontSize: 11, marginTop: 2, color: actual.complete ? 'var(--green)' : 'var(--cyan)' }}>
-            площадка: {Math.round(actual.progress)} %
+            {t('arch.siteProgress', { percent: Math.round(actual.progress) })}
             {siteProgress?.deliveredTons != null && siteProgress?.requiredTons != null
-              ? ` · ${formatTons(siteProgress.deliveredTons)} из ${formatTons(siteProgress.requiredTons)}`
+              ? t('arch.deliveredOf', { delivered: formatTons(siteProgress.deliveredTons), required: formatTons(siteProgress.requiredTons) })
               : ''}
-            {siteProgress?.matchKind === 'type' ? ' · совпало по типу' : ''}
-            {siteProgress?.matchKind === 'body' ? ' · совпало по телу' : ''}
+            {siteProgress?.matchKind === 'type' ? t('arch.matchType') : ''}
+            {siteProgress?.matchKind === 'body' ? t('arch.matchBody') : ''}
           </div>
         )}
         {siteProgress?.mismatch && (
@@ -1548,16 +1549,14 @@ function SiteRow({
           <button
             type="button"
             onClick={() => onTogglePrimary(site.id)}
-            title={isPrimary
-              ? 'Снять пометку основного порта'
-              : 'Назначить основным портом: строится с колониального корабля, очков не тратит, материалов больше'}
+            title={isPrimary ? t('arch.unsetPrimary') : t('arch.setPrimary')}
             style={{
               ...ghostButton,
               ...(isPrimary ? { borderColor: 'var(--orange)', color: 'var(--orange)' } : {}),
               padding: '6px 8px',
             }}
           >
-            {isPrimary ? '★ основной' : '☆ основной'}
+            {isPrimary ? t('arch.primaryStar') : t('arch.primaryOutline')}
           </button>
         )}
         <button
@@ -1568,10 +1567,10 @@ function SiteRow({
           {t(STATUS_LABELS[site.status])}
         </button>
         <button type="button" style={ghostButton} onClick={() => onEdit(site.id)}>
-          изменить
+          {t('arch.edit')}
         </button>
         <button type="button" style={{ ...ghostButton, color: 'var(--red)' }} onClick={() => onRemove(site.id)}>
-          удалить
+          {t('arch.delete')}
         </button>
       </div>
     </div>
@@ -1579,8 +1578,8 @@ function SiteRow({
 }
 
 /** Число в русском формате: разделитель разрядов, не больше двух знаков дроби. */
-function formatNumber(value: number): string {
-  return value.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+function formatNumber(value: number, locale: string): string {
+  return value.toLocaleString(locale, { maximumFractionDigits: 2 });
 }
 
 function Tag({ label, tone }: { label: string; tone: string }) {
