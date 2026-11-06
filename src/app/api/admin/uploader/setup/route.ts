@@ -14,6 +14,7 @@ import {
 import { LAUNCHER_UPLOAD_CHUNK_BYTES } from '@/lib/launcherUploadProtocol';
 import { publicOrigin } from '@/lib/siteUrl';
 import { readSetup, removeSetup, saveSetupBinary } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -41,11 +42,11 @@ function publicSetupUrl(_request: Request, platform: string): string {
   return `${publicOrigin()}/api/uploader/setup/${encodeURIComponent(platform)}`;
 }
 
-function jsonError(error: unknown, fallback = 'Загрузка установщика не выполнена') {
+function jsonError(error: unknown, t: (key: string, params?: Record<string, string | number>) => string, fallback = t('adm.publishFailed')) {
   const status = error instanceof LauncherUploadError ? error.status : 500;
   const detail = error instanceof Error ? error.message : String(error);
   const message = /EACCES|permission denied/i.test(detail)
-    ? 'Хранилище недоступно для записи. Исправьте права тома uploader-store.'
+    ? t('adm.storageNotWritable')
     : `${fallback}: ${detail}`;
   return NextResponse.json({ ok: false, error: message }, { status, ...NO_STORE });
 }
@@ -60,15 +61,15 @@ async function setupPayload(platform: string, request: Request) {
   };
 }
 
-async function readChunkBody(request: Request): Promise<Buffer> {
+async function readChunkBody(request: Request, t: (key: string, params?: Record<string, string | number>) => string): Promise<Buffer> {
   const contentLength = request.headers.get('content-length');
   if (contentLength !== null) {
     const declared = Number(contentLength);
     if (!Number.isSafeInteger(declared) || declared < 0) {
-      throw new LauncherUploadError('Некорректная длина части загрузки', 400);
+      throw new LauncherUploadError(t('adm.chunkLengthInvalid'), 400);
     }
     if (declared > LAUNCHER_UPLOAD_CHUNK_BYTES) {
-      throw new LauncherUploadError('Часть загрузки превышает допустимые 4 МиБ', 413);
+      throw new LauncherUploadError(t('adm.chunkTooLarge4Mib'), 413);
     }
   }
   if (!request.body) return Buffer.alloc(0);
@@ -82,7 +83,7 @@ async function readChunkBody(request: Request): Promise<Buffer> {
       total += value.byteLength;
       if (total > LAUNCHER_UPLOAD_CHUNK_BYTES) {
         await reader.cancel().catch(() => undefined);
-        throw new LauncherUploadError('Часть загрузки превышает допустимые 4 МиБ', 413);
+        throw new LauncherUploadError(t('adm.chunkTooLarge4Mib'), 413);
       }
       chunks.push(Buffer.from(value));
     }
@@ -92,21 +93,21 @@ async function readChunkBody(request: Request): Promise<Buffer> {
   return Buffer.concat(chunks, total);
 }
 
-async function postChunk(request: Request) {
+async function postChunk(request: Request, t: (key: string, params?: Record<string, string | number>) => string) {
   const uploadId = request.headers.get('x-helper-upload-id') ?? '';
   const rawIndex = request.headers.get('x-helper-chunk-index') ?? '';
   if (!/^(0|[1-9]\d*)$/.test(rawIndex)) {
-    return NextResponse.json({ ok: false, error: 'Неверный номер части загрузки' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('adm.chunkIndexInvalid') }, { status: 400, ...NO_STORE });
   }
-  const data = await readChunkBody(request);
+  const data = await readChunkBody(request, t);
   await writeLauncherUploadChunk(uploadId, Number(rawIndex), data);
   return NextResponse.json({ ok: true }, NO_STORE);
 }
 
-async function completeUpload(request: Request, uploadId: string) {
+async function completeUpload(request: Request, uploadId: string, t: (key: string, params?: Record<string, string | number>) => string) {
   await getLauncherUploadSession(uploadId);
   if (!(await acquireLauncherUploadFinalizeLock(uploadId))) {
-    return NextResponse.json({ ok: false, error: 'Файл уже собирается на сервере' }, { status: 409, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('adm.buildAlreadyRunning') }, { status: 409, ...NO_STORE });
   }
   try {
     const { session, data } = await assembleLauncherUpload(uploadId);
@@ -118,7 +119,7 @@ async function completeUpload(request: Request, uploadId: string) {
       publicSetupUrl(request, platform),
     );
     if (!result.ok) {
-      return NextResponse.json({ ok: false, error: result.error || 'Установщик не сохранён' }, { status: 400, ...NO_STORE });
+      return NextResponse.json({ ok: false, error: result.error || t('adm.setupNotSaved') }, { status: 400, ...NO_STORE });
     }
     // Части больше не нужны: собранный файл уже лежит в хранилище.
     await cancelLauncherUpload(uploadId).catch(() => undefined);
@@ -134,17 +135,19 @@ async function completeUpload(request: Request, uploadId: string) {
 }
 
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
   const platform = (new URL(request.url).searchParams.get('platform') ?? 'win64').trim().toLowerCase();
   try {
     return NextResponse.json(await setupPayload(platform, request), NO_STORE);
   } catch (error) {
-    return jsonError(error, 'Не удалось прочитать установщик');
+    return jsonError(error, t, 'adm.setupReadFailed');
   }
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 
@@ -152,12 +155,12 @@ export async function POST(request: Request) {
   const chunkAction = request.headers.get('x-helper-upload-action')?.toLowerCase();
   if (contentType === 'application/octet-stream') {
     if (chunkAction !== 'chunk') {
-      return NextResponse.json({ ok: false, error: 'Не указана операция части загрузки' }, { status: 400, ...NO_STORE });
+      return NextResponse.json({ ok: false, error: t('adm.chunkOperationMissing') }, { status: 400, ...NO_STORE });
     }
     try {
-      return await postChunk(request);
+      return await postChunk(request, t);
     } catch (error) {
-      return jsonError(error, 'Не удалось принять часть установщика');
+      return jsonError(error, t, 'adm.setupUploadChunkFailed');
     }
   }
 
@@ -168,7 +171,7 @@ export async function POST(request: Request) {
     body = null;
   }
   if (!body || typeof body !== 'object') {
-    return NextResponse.json({ ok: false, error: 'Некорректный запрос загрузки установщика' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('adm.setupUploadRequestInvalid') }, { status: 400, ...NO_STORE });
   }
 
   const action = String(body.action ?? '');
@@ -188,20 +191,20 @@ export async function POST(request: Request) {
         totalChunks: session.totalChunks,
       }, { status: 201, ...NO_STORE });
     } catch (error) {
-      return jsonError(error, 'Не удалось начать загрузку установщика');
+      return jsonError(error, t, 'adm.setupUploadStartFailed');
     }
   }
 
   const uploadId = String(body.uploadId ?? '');
   if (!uploadId) {
-    return NextResponse.json({ ok: false, error: 'Не указан идентификатор загрузки' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('adm.uploadIdMissing') }, { status: 400, ...NO_STORE });
   }
 
   if (action === 'complete') {
     try {
-      return await completeUpload(request, uploadId);
+      return await completeUpload(request, uploadId, t);
     } catch (error) {
-      return jsonError(error, 'Не удалось собрать установщик');
+      return jsonError(error, t, 'adm.setupUploadAssembleFailed');
     }
   }
 
@@ -210,20 +213,21 @@ export async function POST(request: Request) {
       await cancelLauncherUpload(uploadId);
       return NextResponse.json({ ok: true }, NO_STORE);
     } catch (error) {
-      return jsonError(error, 'Не удалось отменить загрузку установщика');
+      return jsonError(error, t, 'adm.setupUploadCancelFailed');
     }
   }
 
-  return NextResponse.json({ ok: false, error: 'Неизвестная операция загрузки установщика' }, { status: 400, ...NO_STORE });
+  return NextResponse.json({ ok: false, error: t('adm.setupOpUnknown') }, { status: 400, ...NO_STORE });
 }
 
 export async function DELETE(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
   const platform = (new URL(request.url).searchParams.get('platform') ?? 'win64').trim().toLowerCase();
   const info = await readSetup(platform);
   if (!info) {
-    return NextResponse.json({ ok: false, error: 'Установщик ещё не загружен' }, { status: 404, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('adm.setupNotUploaded') }, { status: 404, ...NO_STORE });
   }
   const removed = await removeSetup(platform);
   return NextResponse.json(removed, { status: removed.ok ? 200 : 400, ...NO_STORE });
