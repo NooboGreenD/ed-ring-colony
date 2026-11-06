@@ -6,6 +6,7 @@ import { IconUpload } from '@/components/Icons';
 import { postArchiveUpload, uploadArchiveFile, type ArchiveUploadSession } from '@/lib/archiveUploadClient';
 import { formatImportBytes, formatImportSpeed } from '@/lib/importProgress';
 import { authFetch } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * «Загрузить архив с компьютера» — общий блок карточки «1 · Архив на сервере»
@@ -64,6 +65,7 @@ export default function ArchiveUploadControl({
   /** Загрузка закончилась (как угодно) — раздел перечитывает состояние. */
   onSettled: () => void | Promise<void>;
 }) {
+  const { t } = useI18n();
   const [upload, setUpload] = useState<ArchiveUploadSession | null>(null);
   const abort = useRef<AbortController | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -83,15 +85,14 @@ export default function ArchiveUploadControl({
         onProgress: (sent) => setUpload((current) => (current ? { ...current, sent } : current)),
       });
       onMessage(
-        `Архив загружен на сервер: ${formatImportBytes(done.bytes)}${done.sameAsEdsm ? ' — это тот же дамп, что сейчас на EDSM' : ''}. `
-          + 'Нажмите «Загрузить данные»: архив разобьётся на куски и запишется в базу, EDSM не понадобится.',
+        t('auc.uploaded', { size: formatImportBytes(done.bytes) }) + (done.sameAsEdsm ? t('auc.sameDump') : '') + t('auc.uploadedHint'),
         false,
       );
     } catch (error) {
       if (controller.signal.aborted) {
-        onMessage('Загрузка архива остановлена. Принятое осталось на сервере — выберите тот же файл, и загрузка продолжится.', false);
+        onMessage(t('auc.stopped'), false);
       } else {
-        onMessage(`Архив не загружен: ${(error as Error).message}`, true);
+        onMessage(t('auc.failed', { error: (error as Error).message }), true);
       }
     } finally {
       abort.current = null;
@@ -103,10 +104,10 @@ export default function ArchiveUploadControl({
   };
 
   const discardUpload = async () => {
-    if (!window.confirm('Удалить незаконченную загрузку архива с сервера?')) return;
+    if (!window.confirm(t('auc.confirmDiscard'))) return;
     try {
       const result = await postArchiveUpload(endpoint, { action: 'cancel' }, authFetch);
-      onMessage(result.removed ? `Незаконченная загрузка удалена — освобождено ${formatImportBytes(result.freed)}` : 'Незаконченной загрузки нет', false);
+      onMessage(result.removed ? t('auc.discarded', { size: formatImportBytes(result.freed) }) : t('auc.nothingToDiscard'), false);
     } catch (error) {
       onMessage((error as Error).message, true);
     }
@@ -122,7 +123,7 @@ export default function ArchiveUploadControl({
       {upload ? (
         <>
           <div style={{ color: RUN }} {...attrs(prefix, 'upload-progress')}>
-            Загружаю {upload.name}: {formatImportBytes(upload.sent)} из {formatImportBytes(upload.size)}
+            {t('auc.uploading', { name: upload.name, sent: formatImportBytes(upload.sent), size: formatImportBytes(upload.size) })}
             {` (${Math.floor(fraction * 100)} %)`}
             {speed > 0 ? ` · ${formatImportSpeed(speed)}` : ''}
           </div>
@@ -131,7 +132,7 @@ export default function ArchiveUploadControl({
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(fraction * 100)}
-            aria-label="Загружено с компьютера"
+            aria-label={t('auc.progressAria')}
             style={{ height: 5, background: '#22252a', borderRadius: 3, overflow: 'hidden', marginTop: 4 }}
           >
             <div style={{ width: `${Math.max(0, Math.min(100, fraction * 100))}%`, height: '100%', background: RUN, transition: 'width 0.5s' }} />
@@ -143,17 +144,16 @@ export default function ArchiveUploadControl({
             onClick={() => abort.current?.abort()}
             {...attrs(prefix, 'action', 'upload-stop')}
           >
-            Остановить загрузку
+            {t('auc.stop')}
           </button>
         </>
       ) : (
         <>
           {pendingUpload && (
             <div style={{ color: '#fbbf24', marginBottom: 6 }} {...attrs(prefix, 'upload-pending')}>
-              Незаконченная загрузка: {pendingUpload.name} — {formatImportBytes(pendingUpload.received)} из {formatImportBytes(pendingUpload.size)}.
-              Выберите тот же файл — загрузка продолжится с этого места.{' '}
+              {t('auc.pending', { name: pendingUpload.name ?? '', received: formatImportBytes(pendingUpload.received), size: formatImportBytes(pendingUpload.size) })}{' '}
               <button type="button" className="btn" style={{ fontSize: 11, padding: '1px 6px' }} onClick={() => void discardUpload()} {...attrs(prefix, 'action', 'upload-discard')}>
-                Удалить
+                {t('auc.delete')}
               </button>
             </div>
           )}
@@ -163,10 +163,10 @@ export default function ArchiveUploadControl({
             style={{ fontSize: 12, padding: '3px 8px' }}
             disabled={disabled}
             onClick={() => fileInput.current?.click()}
-            title={`Передать на сервер ${sourceName}, скачанный на этом компьютере`}
+            title={t('auc.uploadTitle', { name: sourceName })}
             {...attrs(prefix, 'action', 'upload')}
           >
-            <IconUpload size={12} /> Загрузить архив с компьютера
+            <IconUpload size={12} /> {t('auc.uploadButton')}
           </button>
           <input
             ref={fileInput}
@@ -180,9 +180,8 @@ export default function ArchiveUploadControl({
             }}
           />
           <div style={{ fontSize: 11, color: DIM, marginTop: 4, lineHeight: 1.5 }}>
-            Серверу не скачать архив с EDSM (в журнале соединения «замолкают» или «замирают»)? Скачайте{' '}
-            <a href={dumpUrl} target="_blank" rel="noreferrer" style={{ color: accent }}>{sourceName}</a> на этом
-            компьютере и загрузите его сюда — дальше «Загрузить данные» разобьёт его на куски и запишет в базу без EDSM.
+            {t('auc.hintBefore')}{' '}
+            <a href={dumpUrl} target="_blank" rel="noreferrer" style={{ color: accent }}>{sourceName}</a>{' '}{t('auc.hintAfter')}
           </div>
         </>
       )}
