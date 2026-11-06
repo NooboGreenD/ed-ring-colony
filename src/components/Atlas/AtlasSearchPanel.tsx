@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { IconAlert, IconBolt } from '@/components/Icons';
 import type { WorldType } from '@/types/atlas';
 
@@ -63,6 +64,7 @@ interface AtlasSearchPanelProps {
 }
 
 export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPanelProps) {
+  const { t, locale } = useI18n();
   const [refSystem, setRefSystem] = useState('Sol');
   const [cubeSize, setCubeSize] = useState(500);
   const [selectedTypes, setSelectedTypes] = useState<WorldType[]>(['earth_like']);
@@ -95,11 +97,11 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
   };
 
   const validationError = useMemo(() => {
-    if (!refSystem.trim()) return 'Укажите систему отсчёта';
-    if (selectedTypes.length === 0) return 'Выберите хотя бы один тип мира';
-    if (cubeSize < 100) return 'Размер области — минимум 100 св.л.';
+    if (!refSystem.trim()) return t('atlas.ui.errPickRef');
+    if (selectedTypes.length === 0) return t('atlas.ui.errPickType');
+    if (cubeSize < 100) return t('atlas.ui.errMinArea');
     return null;
-  }, [cubeSize, refSystem, selectedTypes.length]);
+  }, [cubeSize, refSystem, selectedTypes.length, t]);
 
   const handleSubmit = () => {
     setTouched(true);
@@ -128,18 +130,18 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
 
   return (
     <div className="atlas-search-panel">
-      <h3>Поиск миров</h3>
+      <h3>{t('atlas.searchWorlds')}</h3>
 
       <SystemSearchInput
-        label="Система отсчёта"
+        label={t('atlas.ui.refSystem')}
         value={refSystem}
         onChange={setRefSystem}
         placeholder="Sol, Colonia, Sagittarius A*…"
-        hint={selectedTypes.length > 1 ? `Типов выбрано: ${selectedTypes.length}` : undefined}
+        hint={selectedTypes.length > 1 ? t('atlas.ui.typesSelected', { count: selectedTypes.length }) : undefined}
         onSubmit={() => handleSubmit()}
       />
 
-      <div className="atlas-preset-row" role="group" aria-label="Быстрые системы">
+      <div className="atlas-preset-row" role="group" aria-label={t('atlas.ui.presetsAria')}>
         {PRESETS.map((preset) => (
           <button
             key={preset}
@@ -154,7 +156,7 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
 
       <div className="atlas-search-field">
         <label htmlFor="atlas-cube-size">
-          Область поиска: <strong>{cubeSize.toLocaleString('ru-RU')} св.л.</strong>
+          {t('atlas.ui.searchAreaLabel')} <strong>{cubeSize.toLocaleString(locale)} {t('atlas.ui.unitLightYears')}</strong>
         </label>
         <input
           id="atlas-cube-size"
@@ -170,8 +172,11 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
 
       <div className="atlas-search-field">
         <div className="atlas-field-label-row">
-          <span>Типы миров</span>
-          <span className="atlas-field-hint">{selectedTypes.length} из {WORLD_TYPE_OPTIONS.length + ROCKY_OPTIONS.length + STAR_OPTIONS.length}</span>
+          <span>{t('atlas.ui.worldTypesTitle')}</span>
+          <span className="atlas-field-hint">{t('atlas.ui.selectedOfTotal', {
+            selected: selectedTypes.length,
+            total: WORLD_TYPE_OPTIONS.length + ROCKY_OPTIONS.length + STAR_OPTIONS.length,
+          })}</span>
         </div>
         <div className="atlas-type-grid">
           {[...WORLD_TYPE_OPTIONS, ...ROCKY_OPTIONS, ...STAR_OPTIONS].map((type) => {
@@ -196,21 +201,21 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
             className="atlas-link-btn"
             onClick={() => setSelectedTypes([...WORLD_TYPE_OPTIONS, ...ROCKY_OPTIONS, ...STAR_OPTIONS].map((type) => type.value))}
           >
-            Выбрать все
+            {t('atlas.ui.selectAll')}
           </button>
-          <button type="button" className="atlas-link-btn" onClick={() => setSelectedTypes([])}>Сбросить</button>
+          <button type="button" className="atlas-link-btn" onClick={() => setSelectedTypes([])}>{t('atlas.reset')}</button>
         </div>
       </div>
 
       <details className="atlas-details">
-        <summary>Дополнительные фильтры</summary>
+        <summary>{t('atlas.ui.moreFilters')}</summary>
         <label className="atlas-checkbox-row">
           <input type="checkbox" checked={requireLandable} onChange={(event) => setRequireLandable(event.target.checked)} />
-          Только с посадкой (landable)
+          {t('atlas.ui.landableOnly')}
         </label>
         <div className="atlas-two-col">
           <div className="atlas-search-field">
-            <label htmlFor="atlas-min-value">Мин. стоимость скана, CR</label>
+            <label htmlFor="atlas-min-value">{t('atlas.ui.minScanValue')}</label>
             <input
               id="atlas-min-value"
               type="number"
@@ -222,7 +227,7 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
             />
           </div>
           <div className="atlas-search-field">
-            <label htmlFor="atlas-max-dist">Макс. удаление от звезды, св.с.</label>
+            <label htmlFor="atlas-max-dist">{t('atlas.ui.maxDistLs')}</label>
             <input
               id="atlas-max-dist"
               type="number"
@@ -245,17 +250,17 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
       {loading && progress && (
         <div className="atlas-progress" aria-live="polite">
           <div className="atlas-progress-head">
-            <span>ATLAS SEARCH · {progress.serverMessage || progress.phase}</span>
-            <span>{Math.round(progressPercent)}% · {(progress.elapsedMs / 1000).toFixed(1)} с</span>
+            <span>{t('atlas.ui.progressHead', { message: progress.serverMessage || progress.phase })}</span>
+            <span>{Math.round(progressPercent)}% · {t('atlas.ui.seconds', { value: (progress.elapsedMs / 1000).toFixed(1) })}</span>
           </div>
           <div className="atlas-progress-bar">
             <div style={{ width: `${progressPercent}%` }} />
           </div>
           <div className="atlas-progress-meta">
-            Найдено кандидатов: <strong>{progress.found.toLocaleString('ru-RU')}</strong>
+            {t('atlas.ui.foundCandidates', { count: progress.found.toLocaleString(locale) })}
           </div>
           <div className="atlas-progress-steps">
-            Каталог Spansh → кэш тел → EDSM/Spansh → сохранение. Ход поиска виден на 3D-карте.
+            {t('atlas.ui.progressSteps')}
           </div>
         </div>
       )}
@@ -265,13 +270,13 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
         onClick={handleSubmit}
         disabled={loading || !!validationError}
         className="atlas-scan-btn"
-        title={validationError || 'Запустить поиск по выбранным условиям'}
+        title={validationError || t('atlas.ui.startSearchTitle')}
       >
         {loading ? (
-          'Сканирование…'
+          t('atlas.ui.scanning')
         ) : (
           <>
-            <IconBolt size={13} /> Сканировать сектор
+            <IconBolt size={13} /> {t('atlas.ui.scanSector')}
           </>
         )}
       </button>

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useAtlas } from '@/components/Atlas/AtlasContext';
 import { IconCopy, IconCrosshair, IconRoute, IconSearch, IconStar, IconX } from '@/components/Icons';
 import { toast } from '@/components/ui/Toaster';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   copyText,
   favoriteKey,
@@ -31,6 +32,7 @@ interface Props {
 const PAGE_SIZE = 60;
 
 export function AtlasCandidateList({ candidates, onSelect, selectedId, total, onLoadMore, loadingMore }: Props) {
+  const { t, locale } = useI18n();
   const { favoriteKeys, favorites, addFavorite, removeFavorite } = useAtlas();
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<AtlasCandidateSort>('distance');
@@ -46,7 +48,7 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
   const hasMoreLoaded = filtered.length > visible.length;
 
   if (candidates.length === 0) {
-    return <p className="empty">Пока нет кандидатов. Запустите поиск — результаты появятся здесь.</p>;
+    return <p className="empty">{t('atlas.ui.noCandidates')}</p>;
   }
 
   const toggleFavorite = async (candidate: AtlasCandidate) => {
@@ -55,17 +57,17 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
     );
     if (existing) {
       await removeFavorite(existing.id);
-      toast('Убрано из избранного', 'info');
+      toast(t('atlas.ui.removedFromFavorites'), 'info');
       return;
     }
     const ok = await addFavorite(candidate);
-    toast(ok ? 'Добавлено в избранное' : 'Не удалось добавить', ok ? 'success' : 'error');
+    toast(ok ? t('atlas.ui.addedToFavorites') : t('atlas.ui.addFavoriteFailed'), ok ? 'success' : 'error');
   };
 
   const onCopy = async (candidate: AtlasCandidate) => {
     const text = `${candidate.system_name} (${formatCoordinates(candidate)})`;
     const ok = await copyText(text);
-    toast(ok ? 'Координаты скопированы' : 'Буфер обмена недоступен', ok ? 'success' : 'error');
+    toast(ok ? t('atlas.ui.coordsCopied') : t('atlas.ui.clipboardUnavailable'), ok ? 'success' : 'error');
   };
 
   return (
@@ -80,11 +82,11 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
               setQuery(event.target.value);
               setVisibleCount(PAGE_SIZE);
             }}
-            placeholder="Фильтр: система, тело, тип"
-            aria-label="Фильтр кандидатов"
+            placeholder={t('atlas.ui.filterPlaceholder')}
+            aria-label={t('atlas.ui.filterCandidatesAria')}
           />
           {query && (
-            <button type="button" onClick={() => setQuery('')} aria-label="Очистить фильтр">
+            <button type="button" onClick={() => setQuery('')} aria-label={t('atlas.clearFilter')}>
               <IconX size={11} />
             </button>
           )}
@@ -93,12 +95,12 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
           <select
             value={sort}
             onChange={(event) => setSort(event.target.value as AtlasCandidateSort)}
-            aria-label="Сортировка кандидатов"
+            aria-label={t('atlas.ui.sortCandidatesAria')}
           >
-            <option value="distance">Сначала ближние</option>
-            <option value="value">Сначала дорогие</option>
-            <option value="type">По типу мира</option>
-            <option value="name">По имени системы</option>
+            <option value="distance">{t('atlas.ui.sortDistance')}</option>
+            <option value="value">{t('atlas.ui.sortValue')}</option>
+            <option value="type">{t('atlas.ui.sortType')}</option>
+            <option value="name">{t('atlas.ui.sortName')}</option>
           </select>
           <button
             type="button"
@@ -108,19 +110,19 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
               setVisibleCount(PAGE_SIZE);
             }}
             aria-pressed={favoritesOnly}
-            title="Показать только избранное"
+            title={t('atlas.ui.onlyFavoritesTitle')}
           >
-            <IconStar size={12} /> Избранное
+            <IconStar size={12} /> {t('atlas.favorites')}
           </button>
         </div>
       </div>
 
       <p className="atlas-list-counter">
-        Показано {visible.length} из {filtered.length}
-        {typeof total === 'number' && total > candidates.length ? ` · всего в сессии ${total.toLocaleString('ru-RU')}` : ''}
+        {t('atlas.shownOf', { shown: visible.length, total: filtered.length })}
+        {typeof total === 'number' && total > candidates.length ? t('atlas.ui.sessionTotal', { count: total.toLocaleString(locale) }) : ''}
       </p>
 
-      {filtered.length === 0 && <p className="atlas-muted">Ничего не найдено по фильтру.</p>}
+      {filtered.length === 0 && <p className="atlas-muted">{t('atlas.ui.nothingFound')}</p>}
 
       <div className="atlas-candidate-list">
         {visible.map((candidate, index) => {
@@ -146,19 +148,19 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
                 <button
                   type="button"
                   className={`atlas-icon-btn${isFavorite ? ' active' : ''}`}
-                  title={isFavorite ? 'Убрать из избранного' : 'Добавить в избранное'}
+                  title={isFavorite ? t('atlas.ui.removeFavorite') : t('atlas.ui.addFavorite')}
                   aria-pressed={isFavorite}
                   onClick={() => void toggleFavorite(candidate)}
                 >
                   <IconStar size={12} />
                 </button>
-                <button type="button" className="atlas-icon-btn" title="Показать на карте" onClick={() => onSelect(candidate)}>
+                <button type="button" className="atlas-icon-btn" title={t('atlas.showOnMap')} onClick={() => onSelect(candidate)}>
                   <IconCrosshair size={12} />
                 </button>
-                <button type="button" className="atlas-icon-btn" title={`Маршрут корабля до ${candidate.system_name}`} onClick={() => window.dispatchEvent(new CustomEvent('atlas-route-target-selected', { detail: { name: candidate.system_name } }))}>
+                <button type="button" className="atlas-icon-btn" title={t('atlas.ui.shipRouteTo', { system: candidate.system_name })} onClick={() => window.dispatchEvent(new CustomEvent('atlas-route-target-selected', { detail: { name: candidate.system_name } }))}>
                   <IconRoute size={12} />
                 </button>
-                <button type="button" className="atlas-icon-btn" title="Скопировать координаты" onClick={() => void onCopy(candidate)}>
+                <button type="button" className="atlas-icon-btn" title={t('atlas.ui.copyCoords')} onClick={() => void onCopy(candidate)}>
                   <IconCopy size={12} />
                 </button>
               </span>
@@ -169,12 +171,12 @@ export function AtlasCandidateList({ candidates, onSelect, selectedId, total, on
 
       {hasMoreLoaded && (
         <button type="button" className="atlas-secondary-btn" onClick={() => setVisibleCount((current) => current + PAGE_SIZE)}>
-          Показать ещё {Math.min(PAGE_SIZE, filtered.length - visible.length)}
+          {t('atlas.ui.showMore', { count: Math.min(PAGE_SIZE, filtered.length - visible.length) })}
         </button>
       )}
       {!hasMoreLoaded && onLoadMore && typeof total === 'number' && total > candidates.length && (
         <button type="button" className="atlas-secondary-btn" onClick={onLoadMore} disabled={loadingMore}>
-          {loadingMore ? 'Загрузка…' : `Загрузить ещё из сессии (${total - candidates.length})`}
+          {loadingMore ? t('atlas.loadingDots') : t('atlas.ui.loadMoreSession', { count: total - candidates.length })}
         </button>
       )}
     </div>

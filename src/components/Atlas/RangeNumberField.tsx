@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { parseRingParam } from '@/lib/atlasRingParams';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface Props {
   id: string;
@@ -23,7 +24,9 @@ interface Props {
  * Оба управляют одним значением. В поле можно печатать любое целое число в
  * диапазоне: применяется по Enter или при потере фокуса, Escape возвращает прежнее.
  */
-export function RangeNumberField({ id, label, min, max, step, value, onChange, disabled, hint, unit = 'св.л.' }: Props) {
+export function RangeNumberField({ id, label, min, max, step, value, onChange, disabled, hint, unit }: Props) {
+  const { t, locale } = useI18n();
+  const unitLabel = unit ?? t('atlas.ui.unitLightYears');
   const [draft, setDraft] = useState<string | null>(null);
 
   const commit = (raw: string) => {
@@ -36,7 +39,7 @@ export function RangeNumberField({ id, label, min, max, step, value, onChange, d
     <div className="atlas-search-field">
       <label htmlFor={id}>
         <span>{label}</span>{' '}
-        <strong>{value.toLocaleString('ru-RU')} {unit}</strong>
+        <strong>{value.toLocaleString(locale)} {unitLabel}</strong>
       </label>
       <div className="atlas-range-row">
         <input
@@ -59,7 +62,7 @@ export function RangeNumberField({ id, label, min, max, step, value, onChange, d
           max={max}
           step={1}
           value={draft ?? String(value)}
-          aria-label={`${label}: ввод с клавиатуры`}
+          aria-label={t('atlas.ui.keyboardInput', { label })}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={() => commit(draft ?? String(value))}
           onKeyDown={(event) => {
@@ -75,8 +78,8 @@ export function RangeNumberField({ id, label, min, max, step, value, onChange, d
         />
       </div>
       <div className="atlas-range-scale">
-        <span>{min.toLocaleString('ru-RU')}</span>
-        <span>{max.toLocaleString('ru-RU')}</span>
+        <span>{min.toLocaleString(locale)}</span>
+        <span>{max.toLocaleString(locale)}</span>
       </div>
       {hint && <p id={`${id}-hint`} className="atlas-muted atlas-range-hint">{hint}</p>}
     </div>
