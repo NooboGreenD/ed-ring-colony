@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import regionPack from '@/lib/galacticRegions.json';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 const SAGA = { x: 25.21875, y: -20.90625, z: 25899.96875 };
 
@@ -84,12 +85,13 @@ function getSectorIntel(id: number, name: string, distToSgrA: number, distToSol:
 }
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await context.params;
   const id = Number(resolvedParams.id);
 
   const region = (regionPack as any).regions.find((item: any) => item.id === id);
   if (!region) {
-    return NextResponse.json({ error: 'Сектор не найден' }, { status: 404 });
+    return NextResponse.json({ error: t('api.sectorNotFound') }, { status: 404 });
   }
 
   // Galactic Coordinates (Sol = 0, 0, 0)

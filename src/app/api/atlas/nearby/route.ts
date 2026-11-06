@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { searchNearbySystems } from '@/lib/atlasNearbySearch';
+import { apiTranslate } from '@/lib/i18n/apiT';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   const body = await request.json().catch(() => null);
   if (
     !body ||
@@ -15,7 +17,7 @@ export async function POST(request: Request) {
     body.radius > 50
   ) {
     return NextResponse.json(
-      { error: 'Укажите систему, сферу/куб и радиус от 1 до 50 св.л.' },
+      { error: t('api.nearbyParams') },
       { status: 400 }
     );
   }
@@ -29,7 +31,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ...result,
-          error: 'Ни один источник не ответил. Повторите поиск позже.',
+          error: t('api.nearbyAllSourcesDown'),
         },
         { status: 503 }
       );

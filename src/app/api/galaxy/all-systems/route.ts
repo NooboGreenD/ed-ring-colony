@@ -14,6 +14,7 @@ import { readPointsFromPg, readPointsFromSupabase } from '@/lib/galaxyImport';
 import { galaxyDbUrl } from '@/lib/pgModule';
 import { resolvePointsBudget } from '@/lib/galaxyImportJob';
 import { pointsCacheDir, pointsCachePath, uploadPointsToStorage } from '@/lib/galaxyPointsPublish';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 // A cold PostgREST build over 10⁸ rows can take minutes; nginx gives up at 310 s.
@@ -220,6 +221,7 @@ function shorterThanUpload(file: PointsFile, uploadedCount: number | null): bool
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const local = tryLocal();
   const stats = await getGalaxyStats().catch(() => null);
   // The catalog knows whether a file was published (Storage marker) — if it
@@ -266,7 +268,7 @@ export async function GET(req: Request) {
   // browser console, and tells proxies the answer may change soon.
   return NextResponse.json(
     {
-      error: 'Каталог всех систем пуст: файл точек не найден ни локально, ни в storage, ни в galaxy_systems.',
+      error: t('api.galaxyCatalogEmpty'),
       hint:
         'Запустите импорт дампа Spansh — Админка → «Каталог систем» (или POST /api/cron/galaxy-import ' +
         'с секретом CRON_SECRET); на машине с доступом к downloads.spansh.co.uk — npm run spansh:import.',

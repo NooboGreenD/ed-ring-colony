@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,17 +20,17 @@ const HEADERS = {
  * every CAPI request itself. Keep this route as an explicit response so older
  * Helper builds fail safely rather than silently starting a second binding.
  */
-function retired() {
+function retired(t: (key: string) => string) {
   return NextResponse.json({
-    error: 'Этот обмен токенами отключён. Подключите Frontier на сайте; Colonial Helper использует /api/capi/helper.',
+    error: t('api.capiTokenExchangeDisabled'),
     code: 'capi_token_bridge_retired',
   }, { status: 410, headers: HEADERS });
 }
 
 export async function GET() {
-  return retired();
+  return retired(await apiTranslate());
 }
 
 export async function POST() {
-  return retired();
+  return retired(await apiTranslate());
 }

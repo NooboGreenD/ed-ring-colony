@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -89,6 +90,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const svc = serviceClient();
     const userId = await resolveHelperUser(req, svc);
@@ -105,7 +107,7 @@ export async function POST(req: Request) {
     }
     if (!tokenRow || tokenRow.is_active === false) {
       return NextResponse.json({
-        error: 'Сначала привяжите Frontier CAPI в личном кабинете сайта',
+        error: t('api.capiLinkFirst'),
         needsSiteLink: true,
       }, { status: 403, headers: HEADERS });
     }
@@ -113,7 +115,7 @@ export async function POST(req: Request) {
     // CAPI is intentionally serialized behind the website-owned binding. No
     // refresh/access token is accepted from or returned to Colonial Helper.
     if (!checkRateLimit(`capi-helper-sync:${userId}`, 1)) {
-      return NextResponse.json({ error: 'Синхронизация CAPI доступна не чаще раза в минуту' }, { status: 429, headers: HEADERS });
+      return NextResponse.json({ error: t('api.capiTooOften') }, { status: 429, headers: HEADERS });
     }
 
     // Helper already uploads local Journal files through the project API.

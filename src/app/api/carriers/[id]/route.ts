@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { resolveRequestUser } from '@/lib/helperAuth';
 import { parseCarrierReference } from '@/lib/fleetCarriers';
 import { buildViews, findCarrier, viewerContext } from '@/lib/fleetCarrierStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,10 +14,11 @@ export const dynamic = 'force-dynamic';
  * службы, рынок); груз — владельцу и его эскадрилье.
  */
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   try {
     const { id } = await params;
     const reference = parseCarrierReference(decodeURIComponent(id));
-    if (!reference) return NextResponse.json({ error: 'Укажите Carrier ID или позывной вида ABC-123' }, { status: 400 });
+    if (!reference) return NextResponse.json({ error: t('api.carrierIdRequired') }, { status: 400 });
     const svc = createServiceClient();
     const row = await findCarrier(svc, reference);
     if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 });

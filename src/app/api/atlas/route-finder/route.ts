@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { catalogIsComplete, findSystemByName, findSystemsInCube, getGalaxyStats } from '@/lib/galaxySystemsDb';
 import { boxAround, listCachedSystemsInBox, saveCachedSystems } from '@/lib/atlasSystemCache';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 const MAX_RETRIES = 3;
 const MAX_JUMP = 15;
@@ -144,6 +145,7 @@ function findRouteAStar(
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const startTime = Date.now();
   try {
     const body = await req.json();
@@ -293,7 +295,7 @@ export async function POST(req: Request) {
     let syntheticWaypoints = false;
     if (!route && routeMode === 'ship') {
       return NextResponse.json({
-        error: 'Маршрут по известным системам не найден. Atlas не будет подставлять расчётные точки, которые нельзя выбрать в игре.',
+        error: t('api.routeFinderNotFound'),
         from: { name: from_system, ...fromCoords },
         to: { name: to_system, ...toCoords },
         direct_distance: Math.round(directDist * 100) / 100,
