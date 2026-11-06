@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { catalogIsComplete, findSystemsInCube, getGalaxyStats } from '@/lib/galaxySystemsDb';
 import { listCachedSystemsNear, saveCachedSystems } from '@/lib/atlasSystemCache';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Уточнение уже построенного кольца: расчётные точки заменяются реальными
@@ -84,6 +85,7 @@ async function edsmNear(point: Point, radius: number): Promise<Point[]> {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => ({}));
     const input: Point[] = Array.isArray(body?.route) ? body.route : [];
@@ -106,7 +108,7 @@ export async function POST(req: Request) {
       : (p: Point) => deviationFrom2D(p, center!, ringRadius);
     const geomCenter = has3D ? ringCenterIn! : center!;
     if (input.length < 3 || !center) {
-      return NextResponse.json({ error: 'Недостаточно данных для уточнения маршрута' }, { status: 400 });
+      return NextResponse.json({ error: t('api.ringRefineNoData') }, { status: 400 });
     }
 
     let catalogReady = false;

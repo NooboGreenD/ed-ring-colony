@@ -4,6 +4,7 @@ import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { uploadImageToStorage } from '@/lib/imageStorage';
 import { SQUADRON_IMAGE_LIMITS } from '@/lib/imageLimits';
 import { getSquadronMembership } from '@/lib/squadronData';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,33 +23,34 @@ function json(body: unknown, status = 200) {
   return NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 }
 
-async function canEdit(req: Request, squadronId: number) {
+async function canEdit(req: Request, squadronId: number, t: (key: string) => string) {
   const { user, supabase } = await authFromRequest(req);
-  if (!user) return { ok: false as const, status: 401, error: 'Войдите в аккаунт' };
+  if (!user) return { ok: false as const, status: 401, error: t('api.signInRequired') };
   const [{ data: squadron }, membership] = await Promise.all([
     supabase.from('squadrons').select('created_by').eq('id', squadronId).maybeSingle(),
     getSquadronMembership(supabase, squadronId, user.id),
   ]);
-  if (!squadron) return { ok: false as const, status: 404, error: 'Эскадрилья не найдена' };
+  if (!squadron) return { ok: false as const, status: 404, error: t('api.squadronNotFound') };
   if (squadron.created_by !== user.id && !membership?.can_edit_squadron) {
-    return { ok: false as const, status: 403, error: 'Нет права редактировать оформление эскадрильи' };
+    return { ok: false as const, status: 403, error: t('api.squadronBrandingDenied') };
   }
   return { ok: true as const, user };
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const squadronId = Number((await params).id);
   if (!Number.isSafeInteger(squadronId) || squadronId <= 0) return json({ error: 'Not found' }, 404);
-  const access = await canEdit(req, squadronId);
+  const access = await canEdit(req, squadronId, t);
   if (!access.ok) return json({ error: access.error }, access.status);
 
   const form = await req.formData().catch(() => null);
   const kind = String(form?.get('kind') ?? '') as Kind;
   const file = form?.get('file');
-  if (!Object.hasOwn(LIMITS, kind)) return json({ error: 'kind должен быть logo или banner' }, 400);
-  if (!(file instanceof File) || file.size <= 0) return json({ error: 'Выберите изображение' }, 400);
+  if (!Object.hasOwn(LIMITS, kind)) return json({ error: t('api.brandingKind') }, 400);
+  if (!(file instanceof File) || file.size <= 0) return json({ error: t('api.chooseImage') }, 400);
   const ext = ALLOWED[file.type.toLowerCase()];
-  if (!ext) return json({ error: 'Поддерживаются JPG, PNG, WebP и GIF' }, 415);
+  if (!ext) return json({ error: t('api.avatarFormats') }, 415);
   if (file.size > LIMITS[kind]) return json({ error: `${kind === 'logo' ? 'Логотип' : 'Фон'} слишком большой` }, 413);
 
   const bytes = Buffer.from(await file.arrayBuffer());
@@ -69,7 +71,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       if (error) throw new Error(error.message);
     } catch (error) {
       console.error('[squadron branding] storage:', stored.error, '| database:', error);
-      return json({ error: 'Не удалось сохранить изображение: Storage и резервное сохранение недоступны. Администратору нужно проверить БД и применить миграции.' }, 503);
+      return json({ error: t('api.brandingSaveFailed') }, 503);
     }
     storage = 'database';
     url = `/api/squadrons/${squadronId}/images/${kind}?v=${hash}`;
@@ -83,12 +85,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const squadronId = Number((await params).id);
   if (!Number.isSafeInteger(squadronId) || squadronId <= 0) return json({ error: 'Not found' }, 404);
-  const access = await canEdit(req, squadronId);
+  const access = await canEdit(req, squadronId, t);
   if (!access.ok) return json({ error: access.error }, access.status);
   const kind = new URL(req.url).searchParams.get('kind') as Kind;
-  if (!Object.hasOwn(LIMITS, kind)) return json({ error: 'kind должен быть logo или banner' }, 400);
+  if (!Object.hasOwn(LIMITS, kind)) return json({ error: t('api.brandingKind') }, 400);
   const svc = createServiceClient();
   const column = kind === 'logo' ? 'logo_url' : 'banner_url';
   const { data, error } = await svc.from('squadrons').update({ [column]: null }).eq('id', squadronId).select('*').single();

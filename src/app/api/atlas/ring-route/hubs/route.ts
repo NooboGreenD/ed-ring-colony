@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { findHubsForAnchors, type AnchorHubResult } from '@/lib/atlasRingHubSearch';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Поиск кандидатов на строительные хабы рядом с опорными точками кольца.
@@ -21,13 +22,14 @@ interface AnchorInput {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => ({}));
     const anchorsInput: AnchorInput[] = Array.isArray(body?.anchors) ? body.anchors : [];
     const spanshBudget = Math.min(20, Math.max(0, Number(body?.spansh_budget) || 10));
 
     if (anchorsInput.length === 0) {
-      return NextResponse.json({ error: 'Нет опорных точек для поиска хабов' }, { status: 400 });
+      return NextResponse.json({ error: t('api.ringNoAnchors') }, { status: 400 });
     }
 
     const anchors = anchorsInput
@@ -40,7 +42,7 @@ export async function POST(req: Request) {
       .filter((a) => a.name && Number.isFinite(a.x) && Number.isFinite(a.y) && Number.isFinite(a.z));
 
     if (anchors.length === 0) {
-      return NextResponse.json({ error: 'Опорные точки не содержат валидных координат' }, { status: 400 });
+      return NextResponse.json({ error: t('api.ringAnchorsInvalid') }, { status: 400 });
     }
 
     const startedAt = Date.now();

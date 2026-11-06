@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient, authFromRequest } from '@/lib/supabaseServer'
 import { z } from 'zod'
 import { getSquadronMembership } from '@/lib/squadronData'
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 const rankSchema = z.object({
@@ -25,6 +26,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -47,7 +49,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       .eq('squadron_id', squadronId)
 
     if (count && count >= 20) {
-      return NextResponse.json({ error: 'Достигнут лимит званий (максимум 20)' }, { status: 400 })
+      return NextResponse.json({ error: t('api.ranksLimit') }, { status: 400 })
     }
 
     const { data, error } = await supabase
@@ -73,6 +75,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -126,6 +129,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -152,7 +156,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       return NextResponse.json({ error: 'Rank not found' }, { status: 404 })
     }
     if (targetRank.is_default) {
-      return NextResponse.json({ error: 'Нельзя удалить стандартное звание' }, { status: 400 })
+      return NextResponse.json({ error: t('api.rankDefaultUndeletable') }, { status: 400 })
     }
 
     // Проверка: нет ли пилотов с этим званием
@@ -163,7 +167,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       .limit(1)
 
     if (membersWithRank && membersWithRank.length > 0) {
-      return NextResponse.json({ error: 'Сначала переведите всех пилотов с этого звания на другое' }, { status: 400 })
+      return NextResponse.json({ error: t('api.rankStillInUse') }, { status: 400 })
     }
 
     await supabase

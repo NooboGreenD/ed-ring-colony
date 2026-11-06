@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { finalizeRingSession } from '@/lib/atlasRingSearch';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Сборка замкнутого кольца из пройденных сегментов.
@@ -13,11 +14,12 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => ({}));
     const sessionId = String(body?.session_id || '').trim();
     if (!sessionId) {
-      return NextResponse.json({ error: 'session_id обязателен' }, { status: 400 });
+      return NextResponse.json({ error: t('api.ringSessionRequired') }, { status: 400 });
     }
 
     const result = await finalizeRingSession(sessionId);

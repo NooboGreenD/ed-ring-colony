@@ -8,6 +8,7 @@ import {
   type RingPlan,
   type RingStepResult,
 } from '@/lib/atlasRingSearch';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Поиск Галактического кольца — пошагово.
@@ -79,6 +80,7 @@ function stepEnvelope(step: RingStepResult) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = (await req.json().catch(() => ({}))) as RequestBody;
     const stepSectors = Math.max(1, Math.min(60, Number(body.step_sectors) || DEFAULT_STEP_SECTORS));
@@ -86,10 +88,10 @@ export async function POST(req: Request) {
     let plan: RingPlan | null = null;
     if (body.session_id) {
       plan = await loadRingSession(String(body.session_id));
-      if (!plan) return NextResponse.json({ error: 'Сессия поиска кольца не найдена' }, { status: 404 });
+      if (!plan) return NextResponse.json({ error: t('api.ringSessionNotFound') }, { status: 404 });
     } else {
       if (!body.start_system || !String(body.start_system).trim()) {
-        return NextResponse.json({ error: 'Укажите начальную систему кольца' }, { status: 400 });
+        return NextResponse.json({ error: t('api.ringStartRequired') }, { status: 400 });
       }
       const supabase = await createClient();
       const { data: { user } } = await supabase.auth.getUser();
@@ -136,13 +138,14 @@ export async function POST(req: Request) {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const { searchParams } = new URL(req.url);
   const sessionId = searchParams.get('session_id');
   if (!sessionId) {
-    return NextResponse.json({ error: 'session_id обязателен' }, { status: 400 });
+    return NextResponse.json({ error: t('api.ringSessionRequired') }, { status: 400 });
   }
   const plan = await loadRingSession(sessionId);
-  if (!plan) return NextResponse.json({ error: 'Сессия не найдена' }, { status: 404 });
+  if (!plan) return NextResponse.json({ error: t('api.sessionNotFound') }, { status: 404 });
   return NextResponse.json({
     session: sessionEnvelope(plan),
     anchors: plan.anchors,
