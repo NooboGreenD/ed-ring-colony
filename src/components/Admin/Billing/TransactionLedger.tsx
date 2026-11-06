@@ -4,12 +4,30 @@ import React, { useState, useEffect, useCallback } from "react";
 import type { BillingTransaction } from "@/types/billing";
 import { IconSearch, IconCheck, IconX, IconRefresh } from "@/components/Icons";
 import { authFetch } from "@/lib/supabaseClient";
+import { useI18n } from "@/lib/i18n/I18nContext";
+
+const KIND_KEYS: Record<string, string> = {
+  subscription: "tl.kindSubscription",
+  shop_purchase: "tl.kindShop",
+  credit_topup: "tl.kindTopup",
+  admin_grant: "tl.kindGrant",
+  refund: "tl.kindRefund",
+};
+
+const METHOD_KEYS: Record<string, string> = {
+  sbp: "tl.methodSbp",
+  card: "tl.methodCard",
+  credits: "tl.methodCredits",
+  admin: "tl.methodAdmin",
+};
+
 
 interface Props {
   onRefreshStats?: () => void;
 }
 
 export default function TransactionLedger({ onRefreshStats }: Props) {
+  const { t, locale } = useI18n();
   const [transactions, setTransactions] = useState<BillingTransaction[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -36,7 +54,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
         setTotal(data.total || 0);
       }
     } catch (err: any) {
-      showToast("Ошибка загрузки транзакций: " + err.message, false);
+      showToast(t("tl.loadFailed", { error: err.message }), false);
     } finally {
       setLoading(false);
     }
@@ -47,7 +65,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
   }, [loadTransactions]);
 
   const handleRefund = async (txId: string) => {
-    const reason = prompt("Укажите причину возврата средств:");
+    const reason = prompt(t("tl.refundPrompt"));
     if (!reason) return;
 
     setRefundingId(txId);
@@ -58,9 +76,9 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
         body: JSON.stringify({ transactionId: txId, reason }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка возврата");
+      if (!res.ok) throw new Error(data.error || t("tl.refundFailed"));
 
-      showToast(`Транзакция ${txId} успешно аннулирована, средства возвращены`);
+      showToast(t("tl.refundDone", { id: txId }));
       loadTransactions();
       if (onRefreshStats) onRefreshStats();
     } catch (err: any) {
@@ -96,10 +114,10 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 18, color: "var(--text, #eeeeee)" }}>
-            РЕЕСТР ФИНАНСОВЫХ ТРАНЗАКЦИЙ
+            {t("tl.title")}
           </h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted, #9ca3af)" }}>
-            Полная история платежей, покупок косметики, списаний кредитов и возвратов
+            {t("tl.subtitle")}
           </p>
         </div>
 
@@ -116,7 +134,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
           }}
         >
           <IconRefresh size={12} />
-          Обновить реестр
+          {t("tl.refresh")}
         </button>
       </div>
 
@@ -126,7 +144,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
           <div style={{ position: "relative", minWidth: 240, flex: 1 }}>
             <input
               type="text"
-              placeholder="Поиск по номеру TX, пилоту или товару..."
+              placeholder={t("tl.searchPlaceholder")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               style={{ width: "100%", paddingLeft: 30 }}
@@ -137,23 +155,23 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
           </div>
 
           <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-            <option value="all">Все типы операций</option>
-            <option value="subscription">Подписки</option>
-            <option value="shop_purchase">Магазин косметики</option>
-            <option value="credit_topup">Пополнения баланса</option>
-            <option value="refund">Возвраты</option>
-            <option value="admin_grant">Выдачи администратором</option>
+            <option value="all">{t("tl.allTypes")}</option>
+            <option value="subscription">{t("tl.typeSubscription")}</option>
+            <option value="shop_purchase">{t("tl.typeShop")}</option>
+            <option value="credit_topup">{t("tl.typeTopup")}</option>
+            <option value="refund">{t("tl.typeRefund")}</option>
+            <option value="admin_grant">{t("tl.typeGrant")}</option>
           </select>
 
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option value="all">Все статусы</option>
-            <option value="completed">Успешно</option>
-            <option value="refunded">Возвращено</option>
-            <option value="pending">В обработке</option>
+            <option value="all">{t("tl.allStatuses")}</option>
+            <option value="completed">{t("tl.statusCompleted")}</option>
+            <option value="refunded">{t("tl.statusRefunded")}</option>
+            <option value="pending">{t("tl.statusPending")}</option>
           </select>
 
           <div style={{ fontSize: 12, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-            Показано {transactions.length} из {total}
+            {t("tl.shown", { shown: transactions.length, total })}
           </div>
         </div>
       </div>
@@ -164,29 +182,29 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
           <table>
             <thead>
               <tr>
-                <th style={{ textAlign: "left" }}>ID ОПЕРАЦИИ</th>
-                <th style={{ textAlign: "left" }}>ВРЕМЯ (UTC)</th>
-                <th style={{ textAlign: "left" }}>КОМАНДИР</th>
-                <th style={{ textAlign: "left" }}>ТИП</th>
-                <th style={{ textAlign: "left" }}>НАИМЕНОВАНИЕ</th>
-                <th style={{ textAlign: "right" }}>СУММА (₽)</th>
-                <th style={{ textAlign: "right" }}>КРЕДИТЫ</th>
-                <th style={{ textAlign: "left" }}>МЕТОД</th>
-                <th style={{ textAlign: "left" }}>СТАТУС</th>
-                <th style={{ textAlign: "right" }}>ДЕЙСТВИЯ</th>
+                <th style={{ textAlign: "left" }}>{t("tl.colId")}</th>
+                <th style={{ textAlign: "left" }}>{t("tl.colTime")}</th>
+                <th style={{ textAlign: "left" }}>{t("tl.colCmdr")}</th>
+                <th style={{ textAlign: "left" }}>{t("tl.colType")}</th>
+                <th style={{ textAlign: "left" }}>{t("tl.colName")}</th>
+                <th style={{ textAlign: "right" }}>{t("tl.colAmount")}</th>
+                <th style={{ textAlign: "right" }}>{t("tl.colCredits")}</th>
+                <th style={{ textAlign: "left" }}>{t("tl.colMethod")}</th>
+                <th style={{ textAlign: "left" }}>{t("tl.colStatus")}</th>
+                <th style={{ textAlign: "right" }}>{t("tl.colActions")}</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
                   <td colSpan={10} style={{ textAlign: "center", padding: 24, color: "var(--muted, #9ca3af)" }}>
-                    Загрузка журнала...
+                    {t("tl.loading")}
                   </td>
                 </tr>
               ) : transactions.length === 0 ? (
                 <tr>
                   <td colSpan={10} style={{ textAlign: "center", padding: 24, color: "var(--muted, #9ca3af)" }}>
-                    Записи отсутствуют
+                    {t("tl.empty")}
                   </td>
                 </tr>
               ) : (
@@ -199,7 +217,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
                       </td>
 
                       <td style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: "var(--muted, #9ca3af)" }}>
-                        {new Date(tx.created_at).toLocaleString("ru-RU", {
+                        {new Date(tx.created_at).toLocaleString(locale, {
                           day: "2-digit",
                           month: "2-digit",
                           hour: "2-digit",
@@ -237,15 +255,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
                             border: "1px solid currentColor",
                           }}
                         >
-                          {tx.type === "subscription"
-                            ? "ПОДПИСКА"
-                            : tx.type === "shop_purchase"
-                            ? "МАГАЗИН"
-                            : tx.type === "credit_topup"
-                            ? "ПОПОЛНЕНИЕ"
-                            : tx.type === "admin_grant"
-                            ? "ВЫДАЧА"
-                            : "ВОЗВРАТ"}
+                          {t(KIND_KEYS[tx.type] ?? "tl.kindRefund")}
                         </span>
                       </td>
 
@@ -254,21 +264,15 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
                       </td>
 
                       <td style={{ textAlign: "right", fontFamily: "ui-monospace, monospace", fontWeight: 700, color: tx.amount_rub > 0 ? "var(--text, #eeeeee)" : "var(--muted, #9ca3af)" }}>
-                        {tx.amount_rub > 0 ? `${tx.amount_rub.toLocaleString("ru-RU")} ₽` : "—"}
+                        {tx.amount_rub > 0 ? `${tx.amount_rub.toLocaleString(locale)} ₽` : "—"}
                       </td>
 
                       <td style={{ textAlign: "right", fontFamily: "ui-monospace, monospace", color: tx.amount_credits > 0 ? "#38bdf8" : "var(--muted, #9ca3af)" }}>
-                        {tx.amount_credits > 0 ? `${tx.amount_credits.toLocaleString("ru-RU")} Кр.` : "—"}
+                        {tx.amount_credits > 0 ? t("tl.creditsAmount", { value: tx.amount_credits.toLocaleString(locale) }) : "—"}
                       </td>
 
                       <td style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--muted, #9ca3af)", textTransform: "uppercase" }}>
-                        {tx.payment_method === "sbp"
-                          ? "СБП"
-                          : tx.payment_method === "card"
-                          ? "Карта"
-                          : tx.payment_method === "credits"
-                          ? "Кредиты"
-                          : "Админ"}
+                        {t(METHOD_KEYS[tx.payment_method ?? ""] ?? "tl.methodAdmin")}
                       </td>
 
                       <td>
@@ -283,7 +287,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
                             border: `1px solid ${isRefunded ? "#e74c3c" : "#2ecc71"}`,
                           }}
                         >
-                          {isRefunded ? "ВОЗВРАЩЕНО" : "ОПЛАЧЕНО"}
+                          {isRefunded ? t("tl.stateRefunded") : t("tl.statePaid")}
                         </span>
                       </td>
 
@@ -300,7 +304,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
                               color: "#e74c3c",
                             }}
                           >
-                            {refundingId === tx.id ? "..." : "Возврат"}
+                            {refundingId === tx.id ? "..." : t("tl.refund")}
                           </button>
                         )}
                       </td>
