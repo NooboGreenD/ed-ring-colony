@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function CopyButton({
   text,
@@ -12,6 +13,7 @@ export default function CopyButton({
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  const { t } = useI18n();
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -48,10 +50,10 @@ export default function CopyButton({
       type="button"
       onClick={copy}
       className={className}
-      title="Скопировать"
+      title={t('det.copyTitle')}
       style={copied ? { borderColor: 'var(--green)', color: 'var(--green)' } : undefined}
     >
-      {copied ? 'Скопировано' : (children ?? 'Копировать')}
+      {copied ? t('det.copied') : (children ?? t('det.copy'))}
     </button>
   );
 }

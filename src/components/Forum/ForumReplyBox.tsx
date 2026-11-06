@@ -5,6 +5,7 @@ import { useState, useRef } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 import { MarkdownToolbar } from "./MarkdownToolbar";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 interface ForumReplyBoxProps {
   threadId: number;
@@ -17,6 +18,7 @@ interface ForumReplyBoxProps {
 }
 
 export function ForumReplyBox({ threadId, threadLocked, user, profile, onReply, quote, onClearQuote }: ForumReplyBoxProps) {
+  const { t } = useI18n();
   const [reply, setReply] = useState(quote || "");
   const [sending, setSending] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -43,13 +45,13 @@ export function ForumReplyBox({ threadId, threadLocked, user, profile, onReply, 
   };
 
   if (threadLocked) {
-    return <p style={{ color: "#e74c3c", marginTop: 16, fontSize: 14 }}><IconLock size={16} color='#e74c3c' /> Тема закрыта.</p>;
+    return <p style={{ color: "#e74c3c", marginTop: 16, fontSize: 14 }}><IconLock size={16} color='#e74c3c' /> {t('frb.closed')}</p>;
   }
 
   if (!user) {
     return (
       <p style={{ color: "#9ca3af", marginTop: 16, fontSize: 14 }}>
-        <a href="/login" style={{ color: "#e67e22" }}>Войдите</a>, чтобы ответить.
+        <a href="/login" style={{ color: "#e67e22" }}>{t('frb.login')}</a>{t('frb.toReply')}
       </p>
     );
   }
@@ -59,7 +61,7 @@ export function ForumReplyBox({ threadId, threadLocked, user, profile, onReply, 
       {quote && (
         <div style={{ padding: "8px 12px", background: "#323538", borderRadius: 6, borderLeft: "3px solid #e67e22", fontSize: 13, color: "#9ca3af" }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <span>Цитата:</span>
+            <span>{t('frb.quote')}</span>
             <button onClick={onClearQuote} style={{ fontSize: 11, background: "transparent", color: "#9ca3af" }}><IconX size={12} /></button>
           </div>
           <div style={{ marginTop: 4, fontStyle: "italic" }}>{quote.slice(0, 200)}{quote.length > 200 ? "…" : ""}</div>
@@ -74,7 +76,7 @@ export function ForumReplyBox({ threadId, threadLocked, user, profile, onReply, 
 
       <textarea
         ref={textareaRef}
-        placeholder="Ваш ответ… (поддерживается Markdown)"
+        placeholder={t('frb.placeholder')}
         value={reply}
         onChange={(e) => setReply(e.target.value)}
         style={{ minHeight: 100, fontSize: 14 }}
@@ -82,9 +84,9 @@ export function ForumReplyBox({ threadId, threadLocked, user, profile, onReply, 
       />
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <button onClick={send} disabled={sending}>
-          {sending ? "Отправка…" : "Ответить"}
+          {sending ? t('ef.sending') : t('frb.reply')}
         </button>
-        <span style={{ fontSize: 12, color: "#9ca3af" }}>Ctrl+Enter — быстрая отправка</span>
+        <span style={{ fontSize: 12, color: "#9ca3af" }}>{t('frb.hint')}</span>
       </div>
     </div>
   );

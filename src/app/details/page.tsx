@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { REQUISITES, requisitesAsPlainText } from './requisites';
 import CopyButton from './CopyButton';
+import { Tr } from '@/components/Translate';
 
 export const metadata: Metadata = {
   title: 'Реквизиты — ED Ring Colony',
@@ -14,10 +15,9 @@ export default function DetailsPage() {
     <div className="details-page">
       <main className="card details-card">
         <p className="details-kicker">Internal document</p>
-        <h1>Реквизиты</h1>
+        <h1><Tr k="det.title" /></h1>
         <p className="details-note">
-          Страница доступна только по прямой ссылке и не индексируется поисковыми
-          системами.
+          <Tr k="det.note" />
         </p>
 
         {REQUISITES.map((group) => (
@@ -46,7 +46,7 @@ export default function DetailsPage() {
 
         <div className="details-actions">
           <CopyButton text={requisitesAsPlainText()}>
-            Скопировать всё
+            <Tr k="det.copyAll" />
           </CopyButton>
         </div>
       </main>
