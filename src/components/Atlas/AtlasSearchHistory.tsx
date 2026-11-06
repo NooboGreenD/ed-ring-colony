@@ -5,6 +5,7 @@ import { useAtlas } from '@/components/Atlas/AtlasContext';
 import { CollapsibleSection } from '@/components/Atlas/CollapsibleSection';
 import { IconRefresh, IconSearch, IconTrash, IconX } from '@/components/Icons';
 import { formatDateTime, relativeTime, worldTypeLabel } from '@/lib/atlas';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { AtlasSearchSession } from '@/types/atlas';
 
 interface Props {
@@ -12,13 +13,14 @@ interface Props {
 }
 
 const STATUS_LABELS: Record<string, { text: string; color: string }> = {
-  pending: { text: 'в очереди', color: '#f39c12' },
-  running: { text: 'выполняется', color: '#60a5fa' },
-  completed: { text: 'готово', color: '#4ade80' },
-  failed: { text: 'ошибка', color: '#e74c3c' },
+  pending: { text: 'atlas.ui.statusPending', color: '#f39c12' },
+  running: { text: 'atlas.ui.statusRunning', color: '#60a5fa' },
+  completed: { text: 'atlas.ui.statusDone', color: '#4ade80' },
+  failed: { text: 'atlas.ui.statusFailed', color: '#e74c3c' },
 };
 
 export function AtlasSearchHistory({ onSelectSession }: Props) {
+  const { t, locale } = useI18n();
   const { sessions, sessionsLoading, sessionsNeedAuth, refreshSessions, removeSession } = useAtlas();
   const [query, setQuery] = useState('');
   const [onlyCompleted, setOnlyCompleted] = useState(false);
@@ -35,11 +37,11 @@ export function AtlasSearchHistory({ onSelectSession }: Props) {
 
   return (
     <CollapsibleSection
-      title="История поисков"
+      title={t('atlas.ui.historyTitle')}
       count={sessions.length}
       storageKey="history"
       actions={
-        <button type="button" className="atlas-icon-btn" onClick={() => void refreshSessions()} title="Обновить историю">
+        <button type="button" className="atlas-icon-btn" onClick={() => void refreshSessions()} title={t('atlas.ui.refreshHistory')}>
           <IconRefresh size={12} />
         </button>
       }
@@ -52,59 +54,62 @@ export function AtlasSearchHistory({ onSelectSession }: Props) {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Фильтр по системе или типу"
-              aria-label="Фильтр истории поисков"
+            placeholder={t('atlas.ui.historyFilterPlaceholder')}
+            aria-label={t('atlas.ui.historyFilterAria')}
             />
             {query && (
-              <button type="button" onClick={() => setQuery('')} aria-label="Очистить фильтр">
+              <button type="button" onClick={() => setQuery('')} aria-label={t('atlas.clearFilter')}>
                 <IconX size={11} />
               </button>
             )}
           </div>
           <label className="atlas-checkbox-row">
             <input type="checkbox" checked={onlyCompleted} onChange={(event) => setOnlyCompleted(event.target.checked)} />
-            Только завершённые
+            {t('atlas.ui.onlyCompleted')}
           </label>
         </>
       )}
 
-      {sessionsLoading && sessions.length === 0 && <p className="atlas-muted">Загрузка…</p>}
+      {sessionsLoading && sessions.length === 0 && <p className="atlas-muted">{t('atlas.loadingDots')}</p>}
       {!sessionsLoading && sessions.length === 0 && (
         <p className="atlas-muted">
-          {sessionsNeedAuth
-            ? 'Войдите в профиль, чтобы история поисков сохранялась между сессиями.'
-            : 'История пуста — запустите первый поиск.'}
+          {sessionsNeedAuth ? t('atlas.ui.historySignIn') : t('atlas.ui.historyEmpty')}
         </p>
       )}
-      {sessions.length > 0 && visible.length === 0 && <p className="atlas-muted">Ничего не найдено по фильтру.</p>}
+      {sessions.length > 0 && visible.length === 0 && <p className="atlas-muted">{t('atlas.ui.nothingFound')}</p>}
 
       <div className="atlas-list">
         {visible.map((session) => {
-          const status = STATUS_LABELS[session.status] || { text: session.status, color: 'var(--muted)' };
+          const meta = STATUS_LABELS[session.status];
+          const statusLabel = meta ? t(meta.text) : session.status;
+          const statusColor = meta ? meta.color : 'var(--muted)';
           const isLocal = session.id.startsWith('local:');
           return (
             <div key={session.id} className="atlas-history-item">
               <button type="button" className="atlas-history-main" onClick={() => onSelectSession(session)}>
                 <span className="row">
                   <span className="ref">{session.reference_system}</span>
-                  <span className="status" style={{ color: status.color }}>{status.text}</span>
+                  <span className="status" style={{ color: statusColor }}>{statusLabel}</span>
                 </span>
                 <span className="meta">
-                  {session.cube_size_ly > 0 ? `${session.cube_size_ly} св.л. · ` : ''}
+                  {session.cube_size_ly > 0 ? `${t('atlas.ui.cubeSize', { value: session.cube_size_ly })} · ` : ''}
                   {session.world_types.length > 0
-                    ? `${session.world_types.length} тип(ов): ${session.world_types.slice(0, 3).map(worldTypeLabel).join(', ')}${session.world_types.length > 3 ? '…' : ''}`
-                    : 'без фильтра по типам'}
+                    ? `${t('atlas.ui.worldTypesList', {
+                      count: session.world_types.length,
+                      types: session.world_types.slice(0, 3).map(worldTypeLabel).join(', '),
+                    })}${session.world_types.length > 3 ? '…' : ''}`
+                    : t('atlas.ui.noTypeFilter')}
                 </span>
-                <span className="date" title={formatDateTime(session.created_at)}>
-                  {relativeTime(session.created_at)}
-                  {isLocal ? ' · локально' : ''}
+                <span className="date" title={formatDateTime(session.created_at, locale)}>
+                  {relativeTime(session.created_at, new Date(), t)}
+                  {isLocal ? t('atlas.ui.localSuffix') : ''}
                 </span>
               </button>
               {isLocal && (
                 <button
                   type="button"
                   className="atlas-icon-btn danger"
-                  title="Удалить из локальной истории"
+                  title={t('atlas.ui.deleteLocal')}
                   onClick={() => removeSession(session.id)}
                 >
                   <IconTrash size={12} />
