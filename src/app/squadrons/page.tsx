@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase, authFetch } from "@/lib/supabaseClient";
 import { toast } from "@/components/ui/Toaster";
+import { useI18n } from "@/lib/i18n/I18nContext";
 import { useRouter } from "next/navigation";
 import {
   ED_POWERS,
@@ -52,6 +53,7 @@ type SquadronItem = {
 };
 
 export default function SquadronsListPage() {
+  const { t } = useI18n();
   const router = useRouter();
   const [squadrons, setSquadrons] = useState<SquadronItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,7 +105,7 @@ export default function SquadronsListPage() {
 
   const createSquadron = async () => {
     if (!createForm.name.trim()) {
-      toast("Введите название эскадрильи", "error");
+      toast(t("sqn.enterName"), "error");
       return;
     }
     if (creating) return;
@@ -125,7 +127,7 @@ export default function SquadronsListPage() {
       });
     } catch (err) {
       setCreating(false);
-      toast(err instanceof Error ? err.message : "Сервер недоступен", "error");
+      toast(err instanceof Error ? err.message : t("sqn.serverDown"), "error");
       return;
     }
     const json = await res.json().catch(() => ({}));
@@ -136,11 +138,11 @@ export default function SquadronsListPage() {
       const detail = Array.isArray(json.errors) && json.errors.length
         ? json.errors.join(". ")
         : json.error;
-      toast(detail || `Ошибка создания (HTTP ${res.status})`, "error");
+      toast(detail || t("sqn.createHttp", { status: res.status }), "error");
       return;
     }
     if (json.warning) toast(json.warning, "error");
-    toast("Эскадрилья создана!", "success");
+    toast(t("sqn.created"), "success");
     setShowCreate(false);
     setCreateForm({
       name: "", tag: "", description: "", color: "#e67e22",
@@ -154,12 +156,12 @@ export default function SquadronsListPage() {
 
   const applyToSquadron = async (squadronId: number) => {
     if (!user) {
-      toast("Войдите в аккаунт, чтобы подать заявку", "error");
+      toast(t("sqn.loginToApply"), "error");
       router.push("/login");
       return;
     }
     if (mySquadronId) {
-      toast("Вы уже состоите в эскадрилье. Сначала покиньте текущую.", "error");
+      toast(t("sqn.alreadyMember"), "error");
       return;
     }
     const res = await authFetch(`/api/squadrons/${squadronId}/members`, {
@@ -169,27 +171,27 @@ export default function SquadronsListPage() {
     });
     const json = await res.json();
     if (!res.ok) {
-      toast(json.error || "Ошибка подачи заявки", "error");
+      toast(json.error || t("sqn.applyError"), "error");
       return;
     }
-    toast("Заявка подана! Ожидайте подтверждения командира.", "success");
+    toast(t("sqn.applied"), "success");
     setMySquadronId(squadronId);
   };
 
   const leaveSquadron = async () => {
     if (!user || !mySquadronId) return;
-    if (!confirm("Покинуть эскадрилью?")) return;
+    if (!confirm(t("sqn.confirmLeave"))) return;
     const res = await authFetch(`/api/squadrons/${mySquadronId}/members`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: user.id }),
     });
     if (res.ok) {
-      toast("Вы покинули эскадрилью", "success");
+      toast(t("sqn.left"), "success");
       setMySquadronId(null);
       loadSquadrons();
     } else {
-      toast("Ошибка", "error");
+      toast(t("sqn.error"), "error");
     }
   };
 
@@ -200,10 +202,10 @@ export default function SquadronsListPage() {
 
   const statusLabel = (s: string) => {
     switch (s) {
-      case "active": return "Активна";
-      case "recruiting": return "Набор";
-      case "closed": return "Закрыта";
-      case "disbanded": return "Расформирована";
+      case "active": return t("sqn.statusActive");
+      case "recruiting": return t("sqn.statusRecruiting");
+      case "closed": return t("sqn.statusClosed");
+      case "disbanded": return t("sqn.statusDisbanded");
       default: return s;
     }
   };
@@ -231,22 +233,22 @@ export default function SquadronsListPage() {
     <main className="card" style={{ width: "100%" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
         <div>
-          <div className="kicker">Реестр эскадрилий</div>
-          <h1 style={{ marginTop: 8 }}>Эскадрильи колонизации</h1>
+          <div className="kicker">{t("sqn.kicker")}</div>
+          <h1 style={{ marginTop: 8 }}>{t("sqn.title")}</h1>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {mySquadronId && (
             <button onClick={leaveSquadron} className="btn" style={{ borderColor: "#e74c3c", color: "#e74c3c" }}>
-              Покинуть эскадрилью
+              {t("sqn.leave")}
             </button>
           )}
           <button
             onClick={() => setShowCreate(!showCreate)}
             className="btn btn-orange"
             disabled={!!mySquadronId}
-            title={mySquadronId ? "Сначала покиньте текущую эскадрилью" : ""}
+            title={mySquadronId ? t("sqn.leaveFirst") : ""}
           >
-            {showCreate ? "Отмена" : "+ Создать эскадрилью"}
+            {showCreate ? t("sqn.cancel") : t("sqn.create")}
           </button>
         </div>
       </div>
@@ -259,7 +261,7 @@ export default function SquadronsListPage() {
             onClick={() => setFilter(f)}
             className={filter === f ? "tab tab-active" : "tab"}
           >
-            {f === "all" ? "Все" : f === "active" ? "Активные" : "Набор открыт"}
+            {f === "all" ? t("sqn.filterAll") : f === "active" ? t("sqn.filterActive") : t("sqn.filterRecruiting")}
             {" "}({f === "all" ? squadrons.length : squadrons.filter((s) => s.status === f).length})
           </button>
         ))}
@@ -268,11 +270,11 @@ export default function SquadronsListPage() {
       {/* Форма создания */}
       {showCreate && (
         <div className="card" style={{ marginBottom: 24, background: "#25282b" }}>
-          <h3 style={{ margin: "0 0 16px", color: "var(--text)" }}>Новая эскадрилья</h3>
+          <h3 style={{ margin: "0 0 16px", color: "var(--text)" }}>{t("sqn.newTitle")}</h3>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 800 }}>
-            <input placeholder="Название эскадрильи *" value={createForm.name} onChange={(e) => setCreateForm((p) => ({ ...p, name: e.target.value }))} style={{ width: "100%" }} />
+            <input placeholder={t("sqn.namePlaceholder")} value={createForm.name} onChange={(e) => setCreateForm((p) => ({ ...p, name: e.target.value }))} style={{ width: "100%" }} />
             <input
-              placeholder="Тег: 2–10 латинских букв или цифр (необязательно)"
+              placeholder={t("sqn.tagPlaceholder")}
               value={createForm.tag}
               maxLength={12}
               // Скобки и пробелы из привычной записи «[RCV]» убираются сразу,
@@ -281,47 +283,47 @@ export default function SquadronsListPage() {
               style={{ width: "100%" }}
             />
             <span style={{ fontSize: 12, color: "var(--muted)", marginTop: -6 }}>
-              Если тег не указать, он будет составлен из названия — изменить можно в настройках эскадрильи.
+              {t("sqn.tagHint")}
             </span>
-            <textarea placeholder="Описание эскадрильи..." value={createForm.description} onChange={(e) => setCreateForm((p) => ({ ...p, description: e.target.value }))} style={{ minHeight: 80 }} />
+            <textarea placeholder={t("sqn.descPlaceholder")} value={createForm.description} onChange={(e) => setCreateForm((p) => ({ ...p, description: e.target.value }))} style={{ minHeight: 80 }} />
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <label style={fieldLabel}>Цвет:</label>
+              <label style={fieldLabel}>{t("sqn.color")}</label>
               <input type="color" value={createForm.color} onChange={(e) => setCreateForm((p) => ({ ...p, color: e.target.value }))} style={{ width: 60, height: 36, border: "none", borderRadius: 2, cursor: "pointer" }} />
               <span style={{ color: createForm.color, fontSize: 13, fontWeight: 600, fontFamily: "ui-monospace, monospace" }}>{createForm.color}</span>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 12 }}>
               <div>
-                <label style={fieldLabel}>Принадлежность</label>
+                <label style={fieldLabel}>{t("sqn.allegiance")}</label>
                 <select value={createForm.allegiance} onChange={(e) => setCreateForm((p) => ({ ...p, allegiance: e.target.value }))} style={{ width: "100%" }}>
                   {ED_ALLEGIANCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
                 </select>
               </div>
               <div>
-                <label style={fieldLabel}>Сила (Power)</label>
+                <label style={fieldLabel}>{t("sqn.power")}</label>
                 <select value={createForm.power} onChange={(e) => setCreateForm((p) => ({ ...p, power: e.target.value }))} style={{ width: "100%" }}>
                   {ED_POWERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                 </select>
               </div>
               <div>
-                <label style={fieldLabel}>Язык</label>
+                <label style={fieldLabel}>{t("sqn.language")}</label>
                 <select value={createForm.language} onChange={(e) => setCreateForm((p) => ({ ...p, language: e.target.value }))} style={{ width: "100%" }}>
                   {LANGUAGES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
                 </select>
               </div>
               <div>
-                <label style={fieldLabel}>Часовой пояс</label>
+                <label style={fieldLabel}>{t("sqn.timezone")}</label>
                 <select value={createForm.timezone} onChange={(e) => setCreateForm((p) => ({ ...p, timezone: e.target.value }))} style={{ width: "100%" }}>
                   {TIMEZONES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
               <div>
-                <label style={fieldLabel}>Лимит участников</label>
-                <input type="number" value={SQUADRON_MEMBER_LIMIT} disabled style={{ width: "100%", opacity: 0.6 }} title="Фиксированный лимит Elite Dangerous" />
-                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>Фиксировано: {SQUADRON_MEMBER_LIMIT}</div>
+                <label style={fieldLabel}>{t("sqn.memberLimit")}</label>
+                <input type="number" value={SQUADRON_MEMBER_LIMIT} disabled style={{ width: "100%", opacity: 0.6 }} title={t("sqn.fixedLimit")} />
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{t("sqn.fixed", { value: SQUADRON_MEMBER_LIMIT })}</div>
               </div>
               <div>
-                <label style={fieldLabel}>Тип активности</label>
+                <label style={fieldLabel}>{t("sqn.activityType")}</label>
                 <select value={createForm.activity_type} onChange={(e) => setCreateForm((p) => ({ ...p, activity_type: e.target.value }))} style={{ width: "100%" }}>
                   {ACTIVITY_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
                 </select>
@@ -331,31 +333,31 @@ export default function SquadronsListPage() {
                 <input placeholder="https://discord.gg/..." value={createForm.discord_url} onChange={(e) => setCreateForm((p) => ({ ...p, discord_url: e.target.value }))} style={{ width: "100%" }} />
               </div>
               <div>
-                <label style={fieldLabel}>Веб-сайт</label>
+                <label style={fieldLabel}>{t("sqn.website")}</label>
                 <input placeholder="https://..." value={createForm.website_url} onChange={(e) => setCreateForm((p) => ({ ...p, website_url: e.target.value }))} style={{ width: "100%" }} />
               </div>
               <div>
-                <label style={fieldLabel}>Домашняя система</label>
-                <input placeholder="Напр. Shinrarta Dezhra" value={createForm.home_system} onChange={(e) => setCreateForm((p) => ({ ...p, home_system: e.target.value }))} style={{ width: "100%" }} />
+                <label style={fieldLabel}>{t("sqn.homeSystem")}</label>
+                <input placeholder={t("sqn.homePlaceholder")} value={createForm.home_system} onChange={(e) => setCreateForm((p) => ({ ...p, home_system: e.target.value }))} style={{ width: "100%" }} />
               </div>
             </div>
 
             <button onClick={createSquadron} disabled={creating} className="btn btn-cyan" style={{ alignSelf: "flex-start", opacity: creating ? 0.6 : 1 }}>
-              Создать эскадрилью
+              {t("sqn.createButton")}
             </button>
           </div>
         </div>
       )}
 
       {loading ? (
-        <p style={{ color: "var(--muted)", fontFamily: "ui-monospace, monospace", letterSpacing: 2, textTransform: "uppercase", fontSize: 12 }}>Загрузка эскадрилий...</p>
+        <p style={{ color: "var(--muted)", fontFamily: "ui-monospace, monospace", letterSpacing: 2, textTransform: "uppercase", fontSize: 12 }}>{t("sqn.loading")}</p>
       ) : filtered.length === 0 ? (
         <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--muted)" }}>
           <div style={{ fontSize: 48, marginBottom: 16, display: "flex", justifyContent: "center" }}>
             <IconSquadron size={48} color="#9ca3af" />
           </div>
-          <h3 style={{ color: "var(--text)", marginBottom: 8 }}>Эскадрилий не найдено</h3>
-          <p>Создайте первую эскадрилью для координации строительства</p>
+          <h3 style={{ color: "var(--text)", marginBottom: 8 }}>{t("sqn.emptyTitle")}</h3>
+          <p>{t("sqn.emptyHint")}</p>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -387,7 +389,7 @@ export default function SquadronsListPage() {
                         background: "rgba(34,197,94,0.15)", color: "#22c55e", fontWeight: 600,
                         fontFamily: "ui-monospace, monospace", letterSpacing: 0.5, textTransform: "uppercase",
                       }}>
-                        Свободный набор
+                        {t("sqn.openRecruitment")}
                       </span>
                     )}
                   </div>
@@ -406,7 +408,7 @@ export default function SquadronsListPage() {
                       color: "#22c55e", fontSize: 11, fontWeight: 600,
                       fontFamily: "ui-monospace, monospace", letterSpacing: 1, textTransform: "uppercase",
                     }}>
-                      В составе
+                      {t("sqn.inSquadron")}
                     </span>
                   )}
                 </div>
@@ -422,32 +424,32 @@ export default function SquadronsListPage() {
               {/* Бейджи с параметрами */}
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 10px", margin: "0 0 12px 22px", alignItems: "center" }}>
                 {s.allegiance && (
-                  <span style={badgeStyle} title="Принадлежность">
+                  <span style={badgeStyle} title={t("sqn.allegiance")}>
                     {allegianceIcon(s.allegiance)} {s.allegiance}
                   </span>
                 )}
                 {s.power && (
-                  <span style={{ ...badgeStyle, borderColor: "#e67e2255", color: "#f39c12" }} title="Сила (Power)">
+                  <span style={{ ...badgeStyle, borderColor: "#e67e2255", color: "#f39c12" }} title={t("sqn.power")}>
                     <IconPower size={12} color="#f39c12" /> {s.power}
                   </span>
                 )}
                 {s.activity_type && s.activity_type !== "Mixed" && (
-                  <span style={{ ...badgeStyle, borderColor: "#60a5fa55", color: "#60a5fa" }} title="Тип активности">
+                  <span style={{ ...badgeStyle, borderColor: "#60a5fa55", color: "#60a5fa" }} title={t("sqn.activityType")}>
                     <IconActivity size={12} color="#60a5fa" /> {s.activity_type}
                   </span>
                 )}
                 {s.home_system && (
-                  <span style={{ ...badgeStyle, borderColor: "#c4b5fd55", color: "#c4b5fd" }} title="Домашняя система">
+                  <span style={{ ...badgeStyle, borderColor: "#c4b5fd55", color: "#c4b5fd" }} title={t("sqn.homeSystem")}>
                     <IconHomeSystem size={12} color="#c4b5fd" /> {s.home_system}
                   </span>
                 )}
                 {s.language && (
-                  <span style={badgeStyle} title="Язык">
+                  <span style={badgeStyle} title={t("sqn.language")}>
                     <IconLanguage size={12} color="#9ca3af" /> {s.language}
                   </span>
                 )}
                 {s.timezone && (
-                  <span style={badgeStyle} title="Часовой пояс">
+                  <span style={badgeStyle} title={t("sqn.timezone")}>
                     <IconTimezone size={12} color="#9ca3af" /> {s.timezone}
                   </span>
                 )}
@@ -457,8 +459,8 @@ export default function SquadronsListPage() {
                   </a>
                 )}
                 {s.website_url && (
-                  <a href={s.website_url} target="_blank" rel="noreferrer" style={{ ...badgeStyle, borderColor: "#22c55e55", color: "#22c55e", textDecoration: "none" }} title="Веб-сайт">
-                    <IconWebsite size={12} color="#22c55e" /> Сайт
+                  <a href={s.website_url} target="_blank" rel="noreferrer" style={{ ...badgeStyle, borderColor: "#22c55e55", color: "#22c55e", textDecoration: "none" }} title={t("sqn.website")}>
+                    <IconWebsite size={12} color="#22c55e" /> {t("sqn.site")}
                   </a>
                 )}
               </div>
@@ -467,11 +469,11 @@ export default function SquadronsListPage() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginLeft: 22 }}>
                 <div style={{ display: "flex", gap: 16, fontSize: 12, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>
                   <span><IconMembers size={12} color="#9ca3af" /> {s.member_count || 0} / {s.member_limit || SQUADRON_MEMBER_LIMIT}</span>
-                  <span><IconProjects size={12} color="#9ca3af" /> {s.project_count || 0} проектов</span>
+                  <span><IconProjects size={12} color="#9ca3af" /> {t("sqn.projects", { count: s.project_count || 0 })}</span>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <Link href={`/squadrons/${s.id}`} className="btn" style={{ fontSize: 11, padding: "6px 12px" }}>
-                    Подробнее
+                    {t("sqn.details")}
                   </Link>
                   {s.status === "recruiting" && mySquadronId !== s.id && (
                     <button
@@ -480,7 +482,7 @@ export default function SquadronsListPage() {
                       style={{ fontSize: 11, padding: "6px 12px" }}
                       disabled={!!mySquadronId}
                     >
-                      Подать заявку
+                      {t("sqn.apply")}
                     </button>
                   )}
                 </div>
