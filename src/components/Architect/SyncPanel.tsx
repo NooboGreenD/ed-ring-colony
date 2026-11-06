@@ -13,6 +13,7 @@
 
 import type { SyncSourceState, SystemSyncReport, SyncStatus } from '@/lib/architect/bodySync';
 import { cardStyle, ghostButton, mutedText, rowStyle, sectionTitle } from '@/components/Architect/panelStyles';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 const STATUS_TONES: Record<SyncStatus, string> = {
   ok: 'var(--green)',
@@ -22,31 +23,33 @@ const STATUS_TONES: Record<SyncStatus, string> = {
 };
 
 const STATUS_LABELS: Record<SyncStatus, string> = {
-  ok: 'данные получены',
-  empty: 'нет данных',
-  unavailable: 'недоступен',
-  skipped: 'пропущен',
+  ok: 'syn.okStatus',
+  empty: 'syn.emptyStatus',
+  unavailable: 'syn.unavailableStatus',
+  skipped: 'syn.skippedStatus',
 };
 
 const NOTE_LABELS: Record<string, string> = {
-  'too-large': 'дамп слишком большой',
-  timeout: 'таймаут',
-  'not-found': 'система не найдена',
-  error: 'ошибка сети',
-  'id64 системы неизвестен': 'id64 системы неизвестен',
+  'too-large': 'syn.noteTooLarge',
+  timeout: 'syn.noteTimeout',
+  'not-found': 'syn.noteNotFound',
+  error: 'syn.noteError',
+  'id64 системы неизвестен': 'syn.noteId64',
 };
 
-function ago(iso: string | null): string {
+type Translate = ReturnType<typeof useI18n>['t'];
+
+function ago(iso: string | null, t: Translate): string {
   if (!iso) return '';
   const value = Date.parse(iso);
   if (!Number.isFinite(value)) return '';
   const days = Math.floor((Date.now() - value) / 86_400_000);
-  if (days <= 0) return 'сегодня';
-  if (days === 1) return 'вчера';
-  if (days < 30) return `${days} дн. назад`;
+  if (days <= 0) return t('syn.today');
+  if (days === 1) return t('syn.yesterday');
+  if (days < 30) return t('syn.daysAgo', { days });
   const months = Math.floor(days / 30);
-  if (months < 12) return `${months} мес. назад`;
-  return `${Math.floor(days / 365)} г. назад`;
+  if (months < 12) return t('syn.monthsAgo', { months });
+  return t('syn.yearsAgo', { years: Math.floor(days / 365) });
 }
 
 interface SyncPanelProps {
@@ -59,23 +62,24 @@ interface SyncPanelProps {
 }
 
 export default function SyncPanel({ system, report, extra = [], loading = false, onRefresh }: SyncPanelProps) {
+  const { t } = useI18n();
   const sources = [...(report?.sources ?? []), ...extra];
   const winners = report?.winners;
 
   return (
     <section style={cardStyle}>
       <div style={rowStyle}>
-        <h3 style={sectionTitle}>Источники данных</h3>
+        <h3 style={sectionTitle}>{t('syn.title')}</h3>
         {onRefresh && (
           <button type="button" onClick={onRefresh} disabled={loading} style={ghostButton}>
-            {loading ? 'Обновление…' : 'Обновить'}
+            {loading ? t('syn.updating') : t('syn.refresh')}
           </button>
         )}
       </div>
 
       {sources.length === 0 ? (
         <div style={mutedText}>
-          {system ? 'Система ещё не загружена.' : 'Укажите систему, чтобы свериться с источниками.'}
+          {system ? t('syn.notLoaded') : t('syn.pickSystem')}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
@@ -91,13 +95,13 @@ export default function SyncPanel({ system, report, extra = [], loading = false,
               />
               <span style={{ minWidth: 104, color: 'var(--text)' }}>{source.label}</span>
               <span style={{ color: STATUS_TONES[source.status] }}>
-                {STATUS_LABELS[source.status]}
+                {t(STATUS_LABELS[source.status])}
                 {source.status === 'ok' && source.count > 0 ? ` · ${source.count}` : ''}
               </span>
               <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11 }}>
                 {source.note
-                  ? NOTE_LABELS[source.note] ?? source.note
-                  : ago(source.updatedAt)}
+                  ? (NOTE_LABELS[source.note] ? t(NOTE_LABELS[source.note]) : source.note)
+                  : ago(source.updatedAt, t)}
               </span>
             </div>
           ))}
@@ -106,18 +110,18 @@ export default function SyncPanel({ system, report, extra = [], loading = false,
 
       {winners && winners.total > 0 && (
         <div style={{ ...mutedText, marginTop: 10, lineHeight: 1.5 }}>
-          Сверка: {winners.total} тел · из базы {winners.database} · EDSM {winners.edsm}
-          {winners.spansh > 0 ? ` · Spansh ${winners.spansh}` : ''}
-          {winners.merged > 0 ? ` · дополнено ${winners.merged}` : ''}
-          {report && report.cached > 0 ? ` · сохранено в базу ${report.cached}` : ''}
+          {t('syn.reconcile', { total: winners.total, database: winners.database, edsm: winners.edsm })}
+          {winners.spansh > 0 ? t('syn.spansh', { count: winners.spansh }) : ''}
+          {winners.merged > 0 ? t('syn.merged', { count: winners.merged }) : ''}
+          {report && report.cached > 0 ? t('syn.cached', { count: report.cached }) : ''}
         </div>
       )}
 
       {report && Object.keys(report.duplicates).length > 0 && (
         <div style={{ marginTop: 6, fontSize: 11, color: 'var(--orange)' }}>
-          склеены повторы в источниках: {Object.entries(report.duplicates)
+          {t('syn.duplicates', { list: Object.entries(report.duplicates)
             .map(([id, count]) => `${id} ×${count}`)
-            .join(', ')}
+            .join(', ') })}
         </div>
       )}
     </section>
