@@ -12,6 +12,9 @@ import {
   publishAtlasSearchProgress,
   startAtlasSearchProgress,
 } from '@/lib/atlasSearchProgress';
+import { useI18n } from '@/lib/i18n/I18nContext';
+
+type TFn = (key: string, params?: Record<string, string | number>) => string;
 
 interface ApiRoutePoint {
   name: string;
@@ -80,18 +83,18 @@ type SearchPhase =
   | { stage: 'done'; message: string };
 
 const PHASES: { stage: Exclude<SearchPhase['stage'], 'idle'>; message: string; delay: number }[] = [
-  { stage: 'coords', message: 'Получение координат систем из EDSM…', delay: 700 },
-  { stage: 'scan', message: 'Сканирование систем вдоль маршрута…', delay: 1200 },
-  { stage: 'astar', message: 'Построение оптимального маршрута (A*)…', delay: 900 },
-  { stage: 'done', message: 'Финализация результатов…', delay: 500 },
+  { stage: 'coords', message: 'atlas.ui.phaseCoordsMsg', delay: 700 },
+  { stage: 'scan', message: 'atlas.ui.phaseScanMsg', delay: 1200 },
+  { stage: 'astar', message: 'atlas.ui.phaseAstarMsg', delay: 900 },
+  { stage: 'done', message: 'atlas.ui.phaseDoneMsg', delay: 500 },
 ];
 
 const MAX_JUMPS_IN_LIST = 400;
 
-function formatDuration(ms: number): string {
+function formatDuration(ms: number, t: TFn): string {
   if (!Number.isFinite(ms)) return '—';
-  if (ms < 1000) return `${Math.round(ms)} мс`;
-  return `${(ms / 1000).toFixed(1)} с`;
+  if (ms < 1000) return t('atlas.ui.msValue', { value: Math.round(ms) });
+  return t('atlas.ui.secondsValue', { value: (ms / 1000).toFixed(1) });
 }
 
 export default function AtlasRouteFinder({
@@ -103,6 +106,7 @@ export default function AtlasRouteFinder({
   rangeDescription,
   rangeIssues = [],
 }: Props) {
+  const { t, locale } = useI18n();
   const shipMode = mode === 'ship';
   const jumpLimit = shipMode ? Math.max(1, Math.min(100, maxJumpRange ?? 100)) : 14.99;
   const [fromSystem, setFromSystem] = useState(initialFrom);
@@ -132,20 +136,20 @@ export default function AtlasRouteFinder({
     PHASES.forEach((item, index) => {
       elapsed += item.delay;
       const timer = window.setTimeout(() => {
-        setPhase({ stage: item.stage, message: item.message, current: index + 1, total: PHASES.length - 1 } as SearchPhase);
+        setPhase({ stage: item.stage, message: t(item.message), current: index + 1, total: PHASES.length - 1 } as SearchPhase);
         publishAtlasSearchProgress({
           active: true,
           kind: 'route',
-          title: shipMode ? 'МАРШРУТ ПО ДАЛЬНОСТИ КОРАБЛЯ' : 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
+          title: shipMode ? t('atlas.ui.routeOverlayShip') : t('atlas.ui.routeOverlayColony'),
           stage: item.stage,
           percent: percentages[index],
-          message: item.message,
+          message: t(item.message),
           elapsedMs: Date.now() - startedAt,
         });
       }, elapsed);
       phaseTimers.current.push(timer);
     });
-  }, [clearPhaseTimers, shipMode]);
+  }, [clearPhaseTimers, shipMode, t]);
 
   /**
    * Координаты точки маршрута для карты: сначала локальный каталог проекта,
@@ -173,25 +177,25 @@ export default function AtlasRouteFinder({
 
   const findRoute = useCallback(async () => {
     if (!fromSystem.trim() || !toSystem.trim()) {
-      toast('Укажите обе системы', 'error');
+      toast(t('atlas.ui.errBothSystems'), 'error');
       return;
     }
     if (fromSystem.trim().toLowerCase() === toSystem.trim().toLowerCase()) {
-      toast('Точка А и точка Б совпадают', 'error');
+      toast(t('atlas.ui.errSamePoints'), 'error');
       return;
     }
     const startedAt = Date.now();
     setLoading(true);
     setResult(null);
     setRouteFilter('');
-    setPhase({ stage: 'coords', message: 'Получение координат систем из EDSM…' });
+    setPhase({ stage: 'coords', message: t('atlas.ui.phaseCoordsMsg') });
     startAtlasSearchProgress({
       kind: 'route',
-      title: shipMode ? 'МАРШРУТ ПО ДАЛЬНОСТИ КОРАБЛЯ' : 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
+      title: shipMode ? t('atlas.ui.routeOverlayShip') : t('atlas.ui.routeOverlayColony'),
       stage: 'coords',
       percent: 4,
-      message: `Определяем координаты ${fromSystem.trim()} и ${toSystem.trim()}`,
-      counters: { 'Точка А': fromSystem.trim(), 'Точка Б': toSystem.trim() },
+      message: t('atlas.ui.routeDetermining', { from: fromSystem.trim(), to: toSystem.trim() }),
+      counters: { [t('atlas.ui.counterPointA')]: fromSystem.trim(), [t('atlas.ui.counterPointB')]: toSystem.trim() },
     });
     animatePhases(startedAt);
 
@@ -206,7 +210,7 @@ export default function AtlasRouteFinder({
         kind: 'route',
         corridor,
         beam: { ...corridor.from, label: fromSystem.trim() },
-        message: `Сканируем коридор ${fromSystem.trim()} → ${toSystem.trim()}`,
+        message: t('atlas.ui.routeScanningCorridor', { from: fromSystem.trim(), to: toSystem.trim() }),
       });
     }
 
@@ -222,7 +226,7 @@ export default function AtlasRouteFinder({
           x: points[0].x + (points[1].x - points[0].x) * Math.min(1, elapsedMs / 6000),
           y: points[0].y + (points[1].y - points[0].y) * Math.min(1, elapsedMs / 6000),
           z: points[0].z + (points[1].z - points[0].z) * Math.min(1, elapsedMs / 6000),
-          label: 'сканирование',
+          label: t('atlas.ui.scanningLabel'),
         }
         : null;
       publishAtlasSearchProgress({
@@ -230,10 +234,10 @@ export default function AtlasRouteFinder({
         kind: 'route',
         stage: 'scan',
         percent,
-        message: 'Перебор систем вдоль трассы…',
+        message: t('atlas.ui.routeScanningPath'),
         elapsedMs,
         beam,
-        counters: { 'Систем проверено': estimatedScanned },
+        counters: { [t('atlas.ui.counterSystemsChecked')]: estimatedScanned },
       });
     }, 400);
 
@@ -254,15 +258,15 @@ export default function AtlasRouteFinder({
       try {
         data = responseText ? JSON.parse(responseText) : {};
       } catch {
-        throw new Error(`Сервер вернул некорректный ответ (${res.status}). Уменьшите радиус сканирования или повторите поиск.`);
+        throw new Error(t('atlas.ui.errBadResponse', { status: res.status }));
       }
       if (!res.ok) {
-        throw new Error(data.error || `Маршрут не найден (HTTP ${res.status})`);
+        throw new Error(data.error || t('atlas.ui.errRouteNotFound', { status: res.status }));
       }
       if (!Array.isArray(data.route) || data.route.length === 0) {
-        throw new Error('Сервис вернул пустой маршрут — попробуйте увеличить радиус сканирования');
+        throw new Error(t('atlas.ui.errEmptyRoute'));
       }
-      setPhase({ stage: 'done', message: 'Готово!' });
+      setPhase({ stage: 'done', message: t('atlas.ui.doneExclaim') });
       setResult(data);
       const mappedRoute: RoutePoint[] = data.route.map((point: ApiRoutePoint, index: number) => ({
         id: -(index + 1),
@@ -286,37 +290,37 @@ export default function AtlasRouteFinder({
         kind: 'route',
         stage: 'done',
         percent: 100,
-        message: data.summary.synthetic_waypoints ? 'Маршрут готов, в него добавлены расчётные точки' : 'Маршрут построен',
+        message: data.summary.synthetic_waypoints ? t('atlas.ui.routeWithSynthetic') : t('atlas.ui.routeBuilt'),
         elapsedMs: Date.now() - startedAt,
         path: data.route.map((point: ApiRoutePoint) => ({ ...point, kind: 'system' as const })),
         beam: null,
-        summary: `Прыжков ${data.summary.total_jumps} · систем в маршруте ${data.summary.total_systems} · найдено систем ${data.process?.systems_scanned ?? sample.length}`,
+        summary: t('atlas.ui.routeSummary', { jumps: data.summary.total_jumps, systems: data.summary.total_systems, scanned: data.process?.systems_scanned ?? sample.length }),
         counters: {
-          'Прыжков': data.summary.total_jumps,
-          'Систем проверено': data.process?.systems_scanned ?? 0,
-          'Из кэша проекта': data.process?.cache_hits ?? 0,
+          [t('atlas.ui.counterJumps')]: data.summary.total_jumps,
+          [t('atlas.ui.counterSystemsChecked')]: data.process?.systems_scanned ?? 0,
+          [t('atlas.ui.counterCacheHits')]: data.process?.cache_hits ?? 0,
         },
       });
       finishAtlasSearchProgress({ active: false });
-      toast(`Маршрут найден: ${data.summary.total_jumps} прыжков`, 'success');
+      toast(t('atlas.ui.routeFound', { count: data.summary.total_jumps }), 'success');
     } catch (err: any) {
       publishAtlasSearchProgress({
         active: true,
         kind: 'route',
         stage: 'failed',
         percent: 0,
-        message: err.message || 'Ошибка поиска',
+        message: err.message || t('atlas.errSearch'),
         elapsedMs: Date.now() - startedAt,
       });
-      finishAtlasSearchProgress({ message: err.message || 'Ошибка поиска' });
-      toast(err.message || 'Ошибка поиска', 'error');
+      finishAtlasSearchProgress({ message: err.message || t('atlas.errSearch') });
+      toast(err.message || t('atlas.errSearch'), 'error');
     } finally {
       window.clearInterval(progressTimer);
       clearPhaseTimers();
       setLoading(false);
       setPhase({ stage: 'idle' });
     }
-  }, [animatePhases, clearPhaseTimers, fromSystem, maxJump, onRouteFound, radius, resolvePointForMap, shipMode, toSystem]);
+  }, [animatePhases, clearPhaseTimers, fromSystem, locale, maxJump, onRouteFound, radius, resolvePointForMap, shipMode, t, toSystem]);
 
   const downloadRoute = useCallback(() => {
     if (!result?.route?.length) return;
@@ -331,12 +335,12 @@ export default function AtlasRouteFinder({
     const text = result.route
       .map((point, index) => {
         const jump = index > 0 ? result.jumps[index - 1]?.distance : null;
-        return `${index + 1}. ${point.name} (${formatCoordinates(point, 2)})${jump ? ` — ${jump} св.л.` : ''}`;
+        return `${index + 1}. ${point.name} (${formatCoordinates(point, 2)})${jump ? ` — ${t('atlas.ui.lightYears', { value: jump })}` : ''}`;
       })
       .join('\n');
     const ok = await copyText(text);
-    toast(ok ? 'Маршрут скопирован в буфер' : 'Буфер обмена недоступен', ok ? 'success' : 'error');
-  }, [result]);
+    toast(ok ? t('atlas.ui.routeCopied') : t('atlas.ui.clipboardUnavailable'), ok ? 'success' : 'error');
+  }, [result, t]);
 
   const sendRouteToHelper = useCallback(async () => {
     if (!result?.route?.length || !shipMode || sendingRoute) return;
@@ -348,14 +352,14 @@ export default function AtlasRouteFinder({
         body: JSON.stringify({ route: result.route }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || (response.status === 401 ? 'Войдите на сайт, чтобы передать маршрут в Helper.' : 'Не удалось передать маршрут.'));
-      toast('Маршрут передан в Colonial Helper. Импортируйте его на вкладке «Маршрут» Helper.', 'success');
+      if (!response.ok) throw new Error(data.error || (response.status === 401 ? t('atlas.ui.helperSignIn') : t('atlas.ui.helperSendFailed')));
+      toast(t('atlas.ui.helperSent'), 'success');
     } catch (error) {
-      toast(error instanceof Error ? error.message : 'Не удалось передать маршрут.', 'error');
+      toast(error instanceof Error ? error.message : t('atlas.ui.helperSendFailed'), 'error');
     } finally {
       setSendingRoute(false);
     }
-  }, [result, sendingRoute, shipMode]);
+  }, [result, sendingRoute, shipMode, t]);
 
   const swapSystems = () => {
     setFromSystem(toSystem);
@@ -382,40 +386,40 @@ export default function AtlasRouteFinder({
   return (
     <div className="atlas-route-finder">
       <div className="atlas-search-panel">
-        <h3>{shipMode ? 'Маршрут корабля' : 'Поиск маршрута колонизации'}</h3>
+        <h3>{shipMode ? t('atlas.tabShip') : t('atlas.routeFinderTitle')}</h3>
         <p className="atlas-route-desc">
           {shipMode
-            ? 'Маршрут строится по текущей дальности из игрового Loadout, с учётом модулей, инженерии, топлива и груза. Этот режим не использует лимит колонизации 14,99 св. л.'
-            : 'Оптимальный маршрут между двумя системами с шагом не больше максимального прыжка. Расчёт идёт по алгоритму A* на данных EDSM; для длинных трасс автоматически включается режим кубов с перекрытием сканирования.'}
+            ? t('atlas.ui.routeDescShip')
+            : t('atlas.ui.routeDescColony')}
         </p>
         {shipMode && rangeDescription && <p className="atlas-list-counter">{rangeDescription}</p>}
-        {shipMode && rangeIssues.length > 0 && <div className="atlas-warning">Некоторые редкие модули Loadout не распознаны; дальность может быть оценочной. {rangeIssues.join(' · ')}</div>}
+        {shipMode && rangeIssues.length > 0 && <div className="atlas-warning">{t('atlas.ui.rangeIssues', { issues: rangeIssues.join(' · ') })}</div>}
 
         <SystemSearchInput
-          label="Точка А (откуда)"
+          label={t('atlas.pointA')}
           value={fromSystem}
           onChange={setFromSystem}
-          placeholder="например, Sol"
+          placeholder={t('atlas.ui.placeholderFrom')}
         />
         <div className="atlas-swap-row">
           <button type="button" className="atlas-link-btn" onClick={swapSystems} disabled={!fromSystem && !toSystem}>
-            <IconRefresh size={12} /> Поменять точки местами
+            <IconRefresh size={12} /> {t('atlas.ui.swapPoints')}
           </button>
         </div>
         <SystemSearchInput
-          label="Точка Б (куда)"
+          label={t('atlas.pointB')}
           value={toSystem}
           onChange={setToSystem}
           onSubmit={() => {
             if (fromSystem.trim() && toSystem.trim()) void findRoute();
           }}
-          placeholder="например, Colonia"
+          placeholder={t('atlas.ui.placeholderTo')}
         />
 
         <div className="atlas-two-col">
           <div className="atlas-search-field">
             <label htmlFor="atlas-max-jump">
-              {shipMode ? 'Предел прыжка' : 'Макс. прыжок'}: <strong>{maxJump.toFixed(2)} св.л.</strong>
+              {shipMode ? t('atlas.ui.jumpLimit') : t('atlas.maxJump')}: <strong>{t('atlas.ui.lightYears', { value: maxJump.toFixed(2) })}</strong>
             </label>
             <input
               id="atlas-max-jump"
@@ -426,13 +430,13 @@ export default function AtlasRouteFinder({
               value={maxJump}
               onChange={(event) => setMaxJump(Number(event.target.value))}
             />
-            <div className="atlas-range-scale"><span>1</span><span>{shipMode ? `расчётный максимум ${jumpLimit.toFixed(2)}` : '14,99 (лимит колонизации)'}</span></div>
+            <div className="atlas-range-scale"><span>1</span><span>{shipMode ? t('atlas.ui.rangeScaleCalc', { value: jumpLimit.toFixed(2) }) : t('atlas.ui.rangeScaleColonyLimit')}</span></div>
           </div>
         </div>
 
         <div className="atlas-search-field">
           <label htmlFor="atlas-radius">
-            Радиус сканирования: <strong>{radius} св.л.</strong>
+            {t('atlas.scanRadius')}: <strong>{t('atlas.ui.lightYears', { value: radius })}</strong>
           </label>
           <input
             id="atlas-radius"
@@ -443,7 +447,7 @@ export default function AtlasRouteFinder({
             value={radius}
             onChange={(event) => setRadius(Number(event.target.value))}
           />
-          <div className="atlas-range-scale"><span>10</span><span>100 (максимум EDSM)</span></div>
+          <div className="atlas-range-scale"><span>10</span><span>{t('atlas.ui.maxEdsm')}</span></div>
         </div>
 
         <button
@@ -452,14 +456,14 @@ export default function AtlasRouteFinder({
           disabled={loading || !fromSystem.trim() || !toSystem.trim()}
           className="atlas-scan-btn"
         >
-          {loading ? 'Поиск…' : 'Найти маршрут'}
+          {loading ? t('atlas.searching') : t('atlas.findRoute')}
         </button>
 
         {loading && phase.stage !== 'idle' && (
           <div className="atlas-progress" aria-live="polite">
             <div className="atlas-progress-head">
               <span className="atlas-progress-live">
-                <span className="atlas-spinner" /> {phase.message}
+                <span className="atlas-spinner" /> {t(phase.message)}
               </span>
             </div>
             <div className="atlas-phase-row">
@@ -470,10 +474,10 @@ export default function AtlasRouteFinder({
                   <div key={item.stage} className="atlas-phase">
                     <div className={`atlas-phase-bar${isDone ? ' done' : isActive ? ' active' : ''}`} />
                     <span className={`atlas-phase-label${isDone ? ' done' : isActive ? ' active' : ''}`}>
-                      {item.stage === 'coords' && 'Координаты'}
-                      {item.stage === 'scan' && 'Сканирование'}
+                      {item.stage === 'coords' && t('atlas.ui.phaseCoords')}
+                      {item.stage === 'scan' && t('atlas.ui.phaseScan')}
                       {item.stage === 'astar' && 'A*'}
-                      {item.stage === 'done' && 'Готово'}
+                      {item.stage === 'done' && t('atlas.ui.phaseDone')}
                     </span>
                   </div>
                 );
@@ -486,46 +490,46 @@ export default function AtlasRouteFinder({
       {result && (
         <div className="atlas-section">
           <div className="atlas-section-head">
-            <h4>Результат</h4>
+            <h4>{t('atlas.result')}</h4>
             <div className="atlas-section-actions">
-              <button type="button" className="atlas-icon-btn" title="Скопировать маршрут текстом" onClick={() => void copyRoute()}>
+              <button type="button" className="atlas-icon-btn" title={t('atlas.ui.copyRouteText')} onClick={() => void copyRoute()}>
                 <IconCopy size={12} />
               </button>
-              <button type="button" className="atlas-icon-btn" title="Скачать CSV" onClick={downloadRoute}>
+              <button type="button" className="atlas-icon-btn" title={t('atlas.ui.downloadCsv')} onClick={downloadRoute}>
                 <IconDownload size={12} />
               </button>
               {shipMode && <button type="button" className="atlas-secondary-btn" onClick={() => void sendRouteToHelper()} disabled={sendingRoute}>
-                {sendingRoute ? 'Передаём…' : 'Передать в Helper'}
+                {sendingRoute ? t('atlas.ui.sendingHelper') : t('atlas.ui.sendToHelper')}
               </button>}
             </div>
           </div>
 
           <div className="atlas-route-summary">
-            <div className="stat-box"><div className="num">{result.summary.total_jumps}</div><div className="lbl">Прыжков</div></div>
-            <div className="stat-box"><div className="num">{result.summary.total_distance}</div><div className="lbl">Св. лет</div></div>
-            <div className="stat-box"><div className="num">{result.summary.max_jump}</div><div className="lbl">Макс. прыжок</div></div>
-            <div className="stat-box"><div className="num">{result.summary.avg_jump}</div><div className="lbl">Средний</div></div>
+            <div className="stat-box"><div className="num">{result.summary.total_jumps}</div><div className="lbl">{t('atlas.jumps')}</div></div>
+            <div className="stat-box"><div className="num">{result.summary.total_distance}</div><div className="lbl">{t('atlas.ui.statRange')}</div></div>
+            <div className="stat-box"><div className="num">{result.summary.max_jump}</div><div className="lbl">{t('atlas.maxJump')}</div></div>
+            <div className="stat-box"><div className="num">{result.summary.avg_jump}</div><div className="lbl">{t('atlas.avgJump')}</div></div>
           </div>
 
           {result.summary.synthetic_waypoints && (
             <p className="atlas-warning">
-              Часть точек рассчитана: EDSM не отдал подходящие известные системы вдоль трассы.
+              {t('atlas.ui.syntheticWarning')}
             </p>
           )}
 
           <div className="atlas-section-head">
-            <h4>Маршрут</h4>
+            <h4>{t('atlas.route')}</h4>
             <div className="atlas-inline-search compact">
               <IconSearch size={12} />
               <input
                 type="search"
                 value={routeFilter}
                 onChange={(event) => setRouteFilter(event.target.value)}
-                placeholder="Найти систему"
-                aria-label="Фильтр маршрута"
+                placeholder={t('atlas.ui.findSystem')}
+                aria-label={t('atlas.ui.routeFilterAria')}
               />
               {routeFilter && (
-                <button type="button" onClick={() => setRouteFilter('')} aria-label="Очистить фильтр">
+                <button type="button" onClick={() => setRouteFilter('')} aria-label={t('atlas.clearFilter')}>
                   <IconX size={11} />
                 </button>
               )}
@@ -533,13 +537,13 @@ export default function AtlasRouteFinder({
           </div>
 
           <p className="atlas-list-counter">
-            Точек: {result.route.length}
-            {routeFilter ? ` · найдено ${filteredRoute.length}` : ''}
-            {!routeFilter && result.route.length > MAX_JUMPS_IN_LIST ? ` · показаны первые ${MAX_JUMPS_IN_LIST}` : ''}
+            {t('atlas.ui.pointsCount', { count: result.route.length })}
+            {routeFilter ? t('atlas.ui.foundSuffix', { count: filteredRoute.length }) : ''}
+            {!routeFilter && result.route.length > MAX_JUMPS_IN_LIST ? t('atlas.ui.shownFirstSuffix', { count: MAX_JUMPS_IN_LIST }) : ''}
           </p>
 
           <div className="atlas-route-list">
-            {filteredRoute.length === 0 && <p className="atlas-muted">В маршруте нет систем по этому фильтру.</p>}
+            {filteredRoute.length === 0 && <p className="atlas-muted">{t('atlas.ui.noRouteMatches')}</p>}
             {filteredRoute.map((point, index) => (
               <div key={`${point.name}-${index}`} className="route-row">
                 <span className="route-idx">{index + 1}</span>
@@ -550,31 +554,31 @@ export default function AtlasRouteFinder({
           </div>
 
           <button type="button" className="atlas-secondary-btn" onClick={() => setShowDetails((current) => !current)}>
-            {showDetails ? 'Скрыть детали расчёта' : 'Показать детали расчёта'}
+            {showDetails ? t('atlas.ui.hideDetails') : t('atlas.ui.showDetails')}
           </button>
 
           {showDetails && result.process && (
             <div className="atlas-details-box">
               <div className="atlas-tag-row">
-                <span className="atlas-tag orange">{result.process.strategy === 'cube-systems' ? 'Кубы EDSM' : 'Сферы EDSM'}</span>
-                <span className="atlas-tag blue">{formatDuration(result.process.elapsed_ms)}</span>
-                <span className="atlas-tag">{result.process.api_requests} API-запросов</span>
+                <span className="atlas-tag orange">{result.process.strategy === 'cube-systems' ? t('atlas.cubesEDSM') : t('atlas.spheresEDSM')}</span>
+                <span className="atlas-tag blue">{formatDuration(result.process.elapsed_ms, t)}</span>
+                <span className="atlas-tag">{result.process.api_requests} {t('atlas.apiRequests')}</span>
               </div>
 
               <div className="atlas-stat-grid">
-                <div>Прямое расстояние</div><div>{formatDistanceLy(result.process.direct_distance, 0)}</div>
-                <div>Точек сканирования</div><div>{result.process.scan_points} / {result.process.estimated_steps}</div>
-                <div>Шаг сканирования</div><div>~{Math.round(result.process.actual_step).toLocaleString('ru-RU')} св.л.</div>
-                <div>Систем просканировано</div><div>{result.process.systems_scanned.toLocaleString('ru-RU')}</div>
-                <div>Узлов в графе</div><div>{result.process.graph_nodes.toLocaleString('ru-RU')}</div>
-                <div>Рёбер в графе</div><div>{result.process.graph_edges.toLocaleString('ru-RU')}</div>
-                <div>Радиус сканирования</div><div>{result.process.radius_around_path.toLocaleString('ru-RU')} св.л.</div>
-                <div>Макс. прыжок</div><div>{result.process.max_jump} св.л.</div>
+                <div>{t('atlas.directDistance')}</div><div>{formatDistanceLy(result.process.direct_distance, 0)}</div>
+                <div>{t('atlas.scanPoints')}</div><div>{result.process.scan_points} / {result.process.estimated_steps}</div>
+                <div>{t('atlas.scanStep')}</div><div>~{t('atlas.ui.lightYears', { value: Math.round(result.process.actual_step).toLocaleString(locale) })}</div>
+                <div>{t('atlas.systemsScanned')}</div><div>{result.process.systems_scanned.toLocaleString(locale)}</div>
+                <div>{t('atlas.graphNodes')}</div><div>{result.process.graph_nodes.toLocaleString(locale)}</div>
+                <div>{t('atlas.graphEdges')}</div><div>{result.process.graph_edges.toLocaleString(locale)}</div>
+                <div>{t('atlas.scanRadius')}</div><div>{t('atlas.ui.lightYears', { value: result.process.radius_around_path.toLocaleString(locale) })}</div>
+                <div>{t('atlas.maxJump')}</div><div>{t('atlas.ui.lightYears', { value: result.process.max_jump })}</div>
               </div>
 
               {result.process.systems_per_scan.length > 0 && histogramMax > 0 && (
                 <div className="atlas-histogram">
-                  <div className="atlas-histogram-title">Систем найдено по точкам сканирования</div>
+                  <div className="atlas-histogram-title">{t('atlas.systemsPerScan')}</div>
                   <div className="atlas-histogram-bars">
                     {result.process.systems_per_scan.map((count, index) => (
                       <div
@@ -584,11 +588,11 @@ export default function AtlasRouteFinder({
                           height: `${Math.max(2, (count / histogramMax) * 100)}%`,
                           background: count > 0 ? '#e67e22' : '#3a3d40',
                         }}
-                        title={`Точка ${index + 1}: ${count} систем`}
+                        title={t('atlas.ui.histogramPoint', { index: index + 1, count })}
                       />
                     ))}
                   </div>
-                  <div className="atlas-histogram-axis"><span>Начало</span><span>Конец</span></div>
+                  <div className="atlas-histogram-axis"><span>{t('atlas.start')}</span><span>{t('atlas.end')}</span></div>
                 </div>
               )}
 
@@ -598,7 +602,7 @@ export default function AtlasRouteFinder({
             </div>
           )}
 
-          <h4>Прыжки</h4>
+          <h4>{t('atlas.jumpsList')}</h4>
           <div className="atlas-jump-list">
             {result.jumps.slice(0, MAX_JUMPS_IN_LIST).map((jump, index) => {
               const color = jump.distance <= 15 ? '#22c55e' : jump.distance <= 25 ? '#e67e22' : '#e74c3c';
@@ -606,12 +610,12 @@ export default function AtlasRouteFinder({
                 <div key={`${jump.from}-${jump.to}-${index}`} className="route-row" style={{ borderLeft: `3px solid ${color}` }}>
                   <span className="route-idx">{index + 1}</span>
                   <span className="route-name">{jump.from} → {jump.to}</span>
-                  <span className="route-coords" style={{ color, fontWeight: 600 }}>{jump.distance} св.л.</span>
+                  <span className="route-coords" style={{ color, fontWeight: 600 }}>{t('atlas.ui.lightYears', { value: jump.distance })}</span>
                 </div>
               );
             })}
             {result.jumps.length > MAX_JUMPS_IN_LIST && (
-              <p className="atlas-muted">Показаны первые {MAX_JUMPS_IN_LIST} прыжков из {result.jumps.length} — полный список есть в CSV.</p>
+              <p className="atlas-muted">{t('atlas.ui.jumpsShown', { shown: MAX_JUMPS_IN_LIST, total: result.jumps.length })}</p>
             )}
           </div>
         </div>
