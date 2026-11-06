@@ -939,21 +939,19 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
   return (
     <div className="atlas-route-finder atlas-ring-finder">
       <div className="atlas-search-panel">
-        <h3>Галактическое кольцо колонизации</h3>
+        <h3>{t('atlas.ui.ringTitle')}</h3>
         <p className="atlas-route-desc">
-          Настройте окружность на карте, затем запустите поиск систем вдоль кольца.
+          {t('atlas.ui.ringIntro')}
         </p>
         <details className="atlas-details atlas-ring-help">
-          <summary>Как строится маршрут</summary>
-          <p className="atlas-muted">Замкнутый маршрут вокруг выбранного центра. Прыжок ≤14,99 св.л.;
-            опоры через 480–490 св.л.; отклонение от окружности — в пределах выбранного допуска.
-            Ключевые системы обязательны для маршрута. После поиска можно уточнить расчётные точки и найти строительные хабы.</p>
+          <summary>{t('atlas.ui.ringHelpTitle')}</summary>
+          <p className="atlas-muted">{t('atlas.ui.ringHelpBody')}</p>
         </details>
         <div className="atlas-ring-section">
-          <h4 className="atlas-ring-section-title">Область поиска</h4>
+          <h4 className="atlas-ring-section-title">{t('atlas.ui.ringArea')}</h4>
 
           <SystemSearchInput
-            label="Начальная система"
+            label={t('atlas.ui.ringStartLabel')}
             value={startSystem}
             disabled={busy}
             onChange={setStartSystem}
@@ -965,38 +963,38 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
 
           <RangeNumberField
             id="ring-radius"
-            label="Удаление от центра"
+            label={t('atlas.ui.ringRadiusField')}
             min={RING_RADIUS_RANGE.min}
             max={RING_RADIUS_RANGE.max}
             step={RING_RADIUS_RANGE.step}
             value={ringRadius}
             onChange={setRingRadius}
             disabled={busy}
-            hint="Радиус окружности кольца от центра расчёта."
+            hint={t('atlas.ui.ringRadiusHint')}
           />
 
           <RangeNumberField
             id="ring-search-radius"
-            label="Радиус поиска известных систем"
+            label={t('atlas.ui.ringSearchRadiusField')}
             min={SEARCH_RADIUS_RANGE.min}
             max={SEARCH_RADIUS_RANGE.max}
             step={SEARCH_RADIUS_RANGE.step}
             value={searchRadius}
             onChange={setSearchRadius}
             disabled={busy}
-            hint="Окно поиска опорной системы вокруг точки кольца."
+            hint={t('atlas.ui.ringSearchRadiusHint')}
           />
 
           <RangeNumberField
             id="ring-deviation"
-            label="Допуск отклонения от окружности"
+            label={t('atlas.ui.ringDeviationField')}
             min={DEVIATION_RANGE.min}
             max={DEVIATION_RANGE.max}
             step={DEVIATION_RANGE.step}
             value={deviationLimit}
             onChange={setDeviationLimit}
             disabled={busy}
-            hint="Максимальное отклонение от идеальной окружности (по умолчанию 100 св.л.). Увеличение допускает больше реальных систем, уменьшение — ведёт к более правильной форме кольца."
+            hint={t('atlas.ui.ringDeviationHint')}
           />
 
         </div>
@@ -1011,12 +1009,12 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
 
         {/* Ключевые системы — обязательные точки маршрута */}
         <div className="atlas-search-field atlas-ring-section">
-          <label>Ключевые системы (через них пройдёт маршрут)</label>
+          <label>{t('atlas.ui.ringKeySystems')}</label>
           <div className="atlas-key-systems">
             {keySystems.map((ks) => (
               <span key={ks.name} className="atlas-key-chip">
                 <IconMapPin size={10} /> {ks.name}
-                <button type="button" onClick={() => removeKeySystem(ks.name)} aria-label="Удалить">×</button>
+                <button type="button" onClick={() => removeKeySystem(ks.name)} aria-label={t('atlas.ui.delete')}>×</button>
               </span>
             ))}
           </div>
@@ -1027,7 +1025,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
               disabled={busy}
               onChange={setKeySystemDraft}
               onSubmit={() => { if (keySystemDraft.trim()) void addKeySystem(keySystemDraft, 'main'); }}
-              placeholder="Имя системы…"
+              placeholder={t('atlas.ui.ringSystemPlaceholder')}
               compact
             />
             <button
@@ -1035,37 +1033,36 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
               className="atlas-secondary-btn"
               onClick={() => { if (keySystemDraft.trim()) void addKeySystem(keySystemDraft, 'main'); }}
               disabled={busy || !keySystemDraft.trim()}
-              title="Добавить ключевую систему"
+              title={t('atlas.ui.ringAddKeyTitle')}
             >
-              <IconPlus size={12} /> Добавить
+              <IconPlus size={12} /> {t('atlas.ui.add')}
             </button>
           </div>
         </div>
 
         <div className="atlas-button-row">
           <button type="button" className="atlas-scan-btn" onClick={search} disabled={busy || !startSystem.trim()}>
-            {loading ? 'Поиск систем кольца…' : 'Построить галактическое кольцо'}
+            {loading ? t('atlas.ui.ringSearchingSystems') : t('atlas.ui.ringBuild')}
           </button>
           {busy && (
-            <button type="button" className="atlas-stop-btn" onClick={stop}>Стоп</button>
+            <button type="button" className="atlas-stop-btn" onClick={stop}>{t('atlas.ui.stop')}</button>
           )}
         </div>
 
         {loading && (
           <div className="atlas-progress" aria-live="polite">
             <div className="atlas-progress-head">
-              <span>{progress.message || 'Подготовка поиска…'}</span>
+              <span>{progress.message || t('atlas.ui.ringPreparing')}</span>
               <strong>{Math.round(progress.percent)}%</strong>
             </div>
             <div className="atlas-progress-bar">
               <div style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }} />
             </div>
             <div className="atlas-progress-meta">
-              Сегмент {progress.sectorsDone} из {progress.sectors} · реальных опор: {progress.realAnchors} ·
-              {' '}расчётных: {progress.triangulatedAnchors} · найдено систем: {progress.systemsFound}
+              {t('atlas.ui.ringProgressMeta', { done: progress.sectorsDone, total: progress.sectors, real: progress.realAnchors, tri: progress.triangulatedAnchors, found: progress.systemsFound })}
             </div>
             <p className="atlas-muted">
-              Ход поиска виден на 3D-карте: кольцо, луч текущего сегмента и найденные системы.
+              {t('atlas.ui.ringProgressHint')}
             </p>
           </div>
         )}
@@ -1073,12 +1070,11 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         {resumable && !busy && (
           <div className="atlas-resume-box">
             <p>
-              Поиск прерван на сегменте {resumable.sectorsDone} из {resumable.sectors}.
-              Прогресс сохранён на сервере.
+              {t('atlas.ui.ringResumeText', { done: resumable.sectorsDone, total: resumable.sectors })}
             </p>
             <div className="atlas-button-row">
-              <button type="button" className="atlas-secondary-btn" onClick={resume}>Продолжить с этого места</button>
-              <button type="button" className="atlas-link-btn" onClick={search}>Начать заново</button>
+              <button type="button" className="atlas-secondary-btn" onClick={resume}>{t('atlas.ui.ringResumeBtn')}</button>
+              <button type="button" className="atlas-link-btn" onClick={search}>{t('atlas.ui.ringRestartBtn')}</button>
             </div>
           </div>
         )}
@@ -1087,56 +1083,56 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       {result && (
         <div className="atlas-section">
           <div className="atlas-section-head">
-            <h4>Результат кольцевого маршрута</h4>
+            <h4>{t('atlas.ui.ringResultTitle')}</h4>
             <div className="atlas-section-actions">
-              <button type="button" className="atlas-icon-btn" title="Скопировать кольцо текстом" onClick={() => void copyRoute()}>
+              <button type="button" className="atlas-icon-btn" title={t('atlas.ui.ringCopyTitle')} onClick={() => void copyRoute()}>
                 <IconCopy size={12} />
               </button>
-              <button type="button" className="atlas-icon-btn" title="Скачать CSV" onClick={exportRingCsv}>
+              <button type="button" className="atlas-icon-btn" title={t('atlas.ui.downloadCsv')} onClick={exportRingCsv}>
                 <IconDownload size={12} />
               </button>
             </div>
           </div>
 
           <div className="atlas-route-summary">
-            <div className="stat-box"><div className="num">{result.totals.points.toLocaleString('ru-RU')}</div><div className="lbl">Точек маршрута</div></div>
-            <div className="stat-box"><div className="num">{result.totals.anchors}</div><div className="lbl">Опорных систем</div></div>
-            <div className="stat-box"><div className="num">{result.totals.realPoints.toLocaleString('ru-RU')}</div><div className="lbl">Реальных точек</div></div>
-            <div className="stat-box"><div className="num">{result.totals.syntheticPoints.toLocaleString('ru-RU')}</div><div className="lbl">Расчётных ({syntheticShare}%)</div></div>
+            <div className="stat-box"><div className="num">{result.totals.points.toLocaleString(locale)}</div><div className="lbl">{t('atlas.ui.counterRoutePoints')}</div></div>
+            <div className="stat-box"><div className="num">{result.totals.anchors}</div><div className="lbl">{t('atlas.ui.counterAnchorSystems')}</div></div>
+            <div className="stat-box"><div className="num">{result.totals.realPoints.toLocaleString(locale)}</div><div className="lbl">{t('atlas.ui.ringRealPoints')}</div></div>
+            <div className="stat-box"><div className="num">{result.totals.syntheticPoints.toLocaleString(locale)}</div><div className="lbl">{t('atlas.ui.ringSyntheticShare', { value: syntheticShare })}</div></div>
           </div>
 
           {/* Инфографика уточнения */}
           <div className="atlas-refine-infograph">
             <div className={`atlas-infograph-cell ${hubsFoundCount > 0 ? 'ok' : ''}`}>
               <div className="num">{hubsFoundCount}</div>
-              <div className="lbl">Хабов найдено</div>
+              <div className="lbl">{t('atlas.ui.counterHubsFound')}</div>
             </div>
             <div className={`atlas-infograph-cell ${hubsMissingCount > 0 ? 'warn' : ''}`}>
               <div className="num">{hubsMissingCount}</div>
-              <div className="lbl">Хабов не найдено</div>
+              <div className="lbl">{t('atlas.ui.ringHubsMissing')}</div>
             </div>
             <div className="atlas-infograph-cell">
               <div className="num">{result.totals.triangulatedAnchors}</div>
-              <div className="lbl">Триангулированных опор</div>
+              <div className="lbl">{t('atlas.ui.ringTriAnchors')}</div>
             </div>
             <div className="atlas-infograph-cell">
               <div className="num">{result.totals.deviationMax}</div>
-              <div className="lbl">Макс. отклонение, св.л</div>
+              <div className="lbl">{t('atlas.ui.ringDeviationMax')}</div>
             </div>
           </div>
 
           <div className="atlas-details-box">
             <div className="atlas-stat-grid">
-              <div>Расчётных опор</div><div>{result.totals.triangulatedAnchors} из {result.totals.anchors}</div>
-              <div>Сегментов с расчётом</div><div>{result.stats.triangulatedSegments ?? '—'}</div>
-              <div>Среднее отклонение</div><div>{result.totals.deviationAvg} св.л.</div>
-              <div>Допуск отклонения</div><div>{result.deviationLimit} св.л.</div>
-              <div>Ключевых систем</div><div>{result.keySystems.length}</div>
-              <div>Систем из каталога Spansh</div><div>{result.stats.catalogHits.toLocaleString('ru-RU')}</div>
-              <div>Систем из кэша Atlas</div><div>{result.stats.cacheHits.toLocaleString('ru-RU')}</div>
-              <div>Запросов к EDSM</div><div>{result.stats.edsmRequests.toLocaleString('ru-RU')}</div>
-              <div>Запросов к Spansh</div><div>{result.stats.spanshRequests.toLocaleString('ru-RU')}</div>
-              <div>Сохранено в кэш проекта</div><div>{result.stats.systemsSaved.toLocaleString('ru-RU')}</div>
+              <div>{t('atlas.ui.ringTriAnchorsShort')}</div><div>{t('atlas.ui.ringOfTotal', { value: result.totals.triangulatedAnchors, total: result.totals.anchors })}</div>
+              <div>{t('atlas.ui.ringTriSegments')}</div><div>{result.stats.triangulatedSegments ?? '—'}</div>
+              <div>{t('atlas.ui.ringDeviationAvg')}</div><div>{t('atlas.ui.lightYears', { value: result.totals.deviationAvg })}</div>
+              <div>{t('atlas.ui.ringDeviationLimit')}</div><div>{t('atlas.ui.lightYears', { value: result.deviationLimit })}</div>
+              <div>{t('atlas.ui.ringKeySystemsCount')}</div><div>{result.keySystems.length}</div>
+              <div>{t('atlas.ui.ringCatalogHits')}</div><div>{result.stats.catalogHits.toLocaleString(locale)}</div>
+              <div>{t('atlas.ui.ringCacheHits')}</div><div>{result.stats.cacheHits.toLocaleString(locale)}</div>
+              <div>{t('atlas.ui.ringEdsmRequests')}</div><div>{result.stats.edsmRequests.toLocaleString(locale)}</div>
+              <div>{t('atlas.ui.ringSpanshRequests')}</div><div>{result.stats.spanshRequests.toLocaleString(locale)}</div>
+              <div>{t('atlas.ui.ringSystemsSaved')}</div><div>{result.stats.systemsSaved.toLocaleString(locale)}</div>
             </div>
           </div>
 
@@ -1144,32 +1140,30 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
 
           <div className="atlas-button-row" style={{ flexWrap: 'wrap' }}>
             <button type="button" className="atlas-secondary-btn" onClick={() => void refine()} disabled={busy || result.totals.syntheticPoints === 0}>
-              {refining ? 'Уточнение…' : 'Заменить расчётные точки реальными системами'}
+              {refining ? t('atlas.ui.ringRefining') : t('atlas.ui.ringRefineBtn')}
             </button>
             <button type="button" className="atlas-secondary-btn" onClick={openRefineModal} disabled={busy}>
-              <IconSettings size={12} /> Уточнить с параметрами / Повторный прогон
+              <IconSettings size={12} /> {t('atlas.ui.ringRefineWithParams')}
             </button>
             <button type="button" className="atlas-secondary-btn" onClick={() => void searchHubs()} disabled={busy || searchingHubs}>
-              <IconBuilding size={12} /> {searchingHubs ? 'Поиск хабов…' : 'Найти строительные хабы'}
+              <IconBuilding size={12} /> {searchingHubs ? t('atlas.ui.ringHubsSearching') : t('atlas.ui.ringFindHubs')}
             </button>
           </div>
 
           {/* Сохранение */}
           <div className="atlas-details-box atlas-save-box">
-            <h4>Сохранить найденное кольцо</h4>
-            <p className="atlas-muted">
-              Кольцо остаётся на 3D-карте, пока вы его не уберёте. Ниже — сохранение в проект и выгрузка файлом.
-            </p>
+            <h4>{t('atlas.ui.ringSaveTitle')}</h4>
+            <p className="atlas-muted">{t('atlas.ui.ringSaveHint')}</p>
 
             <div className="atlas-project-select">
-              <label htmlFor="ring-save-project">Проект:</label>
+              <label htmlFor="ring-save-project">{t('atlas.ui.ringProjectLabel')}</label>
               <select
                 id="ring-save-project"
                 value={saveProjectId}
                 onChange={(event) => setSaveProjectId(event.target.value)}
                 disabled={saving}
               >
-                <option value="">{projects.length > 0 ? 'Выберите проект' : 'Проектов нет'}</option>
+                <option value="">{projects.length > 0 ? t('atlas.pickProject') : t('atlas.ui.noProjects')}</option>
                 {projects.map((project) => (
                   <option key={project.id} value={project.id}>
                     {project.squadron_name ? `[${project.squadron_name}] ` : ''}
@@ -1186,21 +1180,21 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                 onChange={(event) => setIncludeSynthetic(event.target.checked)}
                 disabled={saving}
               />
-              Сохранять и расчётные точки (их {result.totals.syntheticPoints.toLocaleString('ru-RU')})
+              {t('atlas.ui.ringIncludeSynthetic', { count: result.totals.syntheticPoints.toLocaleString(locale) })}
             </label>
 
             <div className="atlas-button-row">
               <button type="button" className="atlas-scan-btn" onClick={() => void saveToProject()} disabled={saving || !saveProjectId}>
-                {saving ? 'Сохраняем…' : 'Сохранить в проект'}
+                {saving ? t('atlas.ui.ringSaving') : t('atlas.ui.saveToProject')}
               </button>
               <button type="button" className="atlas-secondary-btn" onClick={exportRingCsv}>
-                <IconDownload size={12} /> Скачать CSV
+                <IconDownload size={12} /> {t('atlas.ui.downloadCsv')}
               </button>
               <button type="button" className="atlas-secondary-btn" onClick={() => void copyRoute()}>
-                <IconCopy size={12} /> Копировать текстом
+                <IconCopy size={12} /> {t('atlas.ui.ringCopyText')}
               </button>
               <button type="button" className="atlas-link-btn" onClick={() => clearAtlasSearchResult()}>
-                Убрать с карты
+                {t('atlas.ui.ringClearMap')}
               </button>
             </div>
 
@@ -1209,26 +1203,26 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
 
           {/* Список точек */}
           <div className="atlas-section-head">
-            <h4>Точки кольца</h4>
+            <h4>{t('atlas.ui.ringPointsTitle')}</h4>
             <div className="atlas-inline-search compact">
               <IconSearch size={12} />
               <input
                 type="search"
                 value={routeFilter}
                 onChange={(event) => setRouteFilter(event.target.value)}
-                placeholder="Найти точку"
-                aria-label="Фильтр точек кольца"
+                placeholder={t('atlas.ui.ringFindPoint')}
+                aria-label={t('atlas.ui.ringPointsFilterAria')}
               />
               {routeFilter && (
-                <button type="button" onClick={() => setRouteFilter('')} aria-label="Очистить фильтр">
+                <button type="button" onClick={() => setRouteFilter('')} aria-label={t('atlas.clearFilter')}>
                   <IconX size={11} />
                 </button>
               )}
             </div>
           </div>
-          <p className="atlas-list-counter">Показано {Math.min(300, filteredRoute.length)} из {filteredRoute.length}</p>
+          <p className="atlas-list-counter">{t('atlas.shownOf', { shown: Math.min(300, filteredRoute.length), total: filteredRoute.length })}</p>
           <div className="atlas-route-list">
-            {filteredRoute.length === 0 && <p className="atlas-muted">Точек по фильтру нет.</p>}
+            {filteredRoute.length === 0 && <p className="atlas-muted">{t('atlas.ui.ringNoPoints')}</p>}
             {filteredRoute.slice(0, 300).map((point, index) => {
               const hub = result.hubs?.find((h) => h.anchorName === point.name);
               return (
@@ -1236,16 +1230,16 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                   <span className="route-idx">{index + 1}</span>
                   <span className="route-name">
                     {point.name}
-                    {point.isAnchor && <span className="atlas-tag orange">опора</span>}
-                    {point.source === 'triangulated' && <span className="atlas-tag">расчётная</span>}
-                    {hub?.hub.status === 'found' && <span className="atlas-tag atlas-hub-ok">хаб: {hub.hub.systemName}</span>}
-                    {hub?.hub.status === 'missing' && <span className="atlas-tag atlas-hub-bad">хаб не найден</span>}
+                    {point.isAnchor && <span className="atlas-tag orange">{t('atlas.ui.ringTagAnchor')}</span>}
+                    {point.source === 'triangulated' && <span className="atlas-tag">{t('atlas.ui.ringTagSynthetic')}</span>}
+                    {hub?.hub.status === 'found' && <span className="atlas-tag atlas-hub-ok">{t('atlas.ui.ringTagHub', { system: hub.hub.systemName ?? '' })}</span>}
+                    {hub?.hub.status === 'missing' && <span className="atlas-tag atlas-hub-bad">{t('atlas.ui.ringTagHubMissing')}</span>}
                   </span>
                   <span className="route-coords">{formatCoordinates(point)}</span>
                 </div>
               );
             })}
-            {filteredRoute.length > 300 && <p className="atlas-muted">Показаны первые 300 точек — полный список в CSV.</p>}
+            {filteredRoute.length > 300 && <p className="atlas-muted">{t('atlas.ui.ringPointsLimit')}</p>}
           </div>
         </div>
       )}
@@ -1253,44 +1247,40 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       {/* ── Модалка повторного прогона / уточнения ── */}
       {refineModalOpen && (
         <AtlasDialog
-          eyebrow="Уточнение и повторный прогон"
-          title="Параметры перестроения кольца"
+          eyebrow={t('atlas.ui.ringRefineEyebrow')}
+          title={t('atlas.ui.ringRefineTitle')}
           onClose={() => { if (!refining) setRefineModalOpen(false); }}
           busy={refining}
           wide
         >
-          <p>
-            Здесь можно изменить допуск отклонения, радиус уточнения, добавить
-            ключевые точки и перезапустить построение. Триангулированные участки
-            перестроятся с учётом новых параметров.
-          </p>
+          <p>{t('atlas.ui.ringRefineIntro')}</p>
 
           <RangeNumberField
             id="refine-deviation"
-            label="Новый допуск отклонения, св.л."
+            label={t('atlas.ui.ringNewDeviation')}
             min={DEVIATION_RANGE.min}
             max={DEVIATION_RANGE.max}
             step={DEVIATION_RANGE.step}
             value={refineDeviation}
             onChange={setRefineDeviation}
             disabled={refining}
-            hint="Больше допуск — больше реальных систем попадает в опоры; меньше — кольцо ближе к идеальной окружности."
+            hint={t('atlas.ui.ringNewDeviationHint')}
           />
 
           <RangeNumberField
             id="refine-radius"
-            label="Радиус замены расчётных точек, св.л."
+            label={t('atlas.ui.ringRefineRadius')}
             min={10}
             max={120}
             step={5}
             value={refineRadius}
             onChange={setRefineRadius}
             disabled={refining}
-            hint="На каком расстоянии искать реальную систему взамен триангулированной."
+            hint={t('atlas.ui.ringRefineRadiusHint')}
           />
 
           <div className="atlas-search-field">
-            <label>Дополнительные ключевые системы</label>
+            <label>{t('atlas.ui.ringExtraKeys')}</label>
             <div className="atlas-key-systems">
               {refineExtraKeys.map((ks) => (
                 <span key={ks.name} className="atlas-key-chip">
@@ -1305,7 +1295,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                 value={refineKeyDraft}
                 onChange={setRefineKeyDraft}
                 onSubmit={() => { if (refineKeyDraft.trim()) void addKeySystem(refineKeyDraft, 'refine'); }}
-                placeholder="Имя системы…"
+                placeholder={t('atlas.ui.ringSystemPlaceholder')}
                 compact
               />
               <button
@@ -1314,16 +1304,16 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                 onClick={() => { if (refineKeyDraft.trim()) void addKeySystem(refineKeyDraft, 'refine'); }}
                 disabled={refining || !refineKeyDraft.trim()}
               >
-                <IconPlus size={12} /> Добавить
+                <IconPlus size={12} /> {t('atlas.ui.add')}
               </button>
             </div>
           </div>
 
           <div className="atlas-refine-infograph">
-            <div className="atlas-infograph-cell"><div className="num">{result?.totals.syntheticPoints ?? 0}</div><div className="lbl">Расчётных точек сейчас</div></div>
-            <div className="atlas-infograph-cell"><div className="num">{result?.totals.triangulatedAnchors ?? 0}</div><div className="lbl">Триангулированных опор</div></div>
-            <div className="atlas-infograph-cell"><div className="num">{refineDeviation}</div><div className="lbl">Новый допуск</div></div>
-            <div className="atlas-infograph-cell"><div className="num">{refineExtraKeys.length}</div><div className="lbl">Добавлено ключей</div></div>
+            <div className="atlas-infograph-cell"><div className="num">{result?.totals.syntheticPoints ?? 0}</div><div className="lbl">{t('atlas.ui.ringSyntheticNow')}</div></div>
+            <div className="atlas-infograph-cell"><div className="num">{result?.totals.triangulatedAnchors ?? 0}</div><div className="lbl">{t('atlas.ui.ringTriAnchors')}</div></div>
+            <div className="atlas-infograph-cell"><div className="num">{refineDeviation}</div><div className="lbl">{t('atlas.ui.ringNewTolerance')}</div></div>
+            <div className="atlas-infograph-cell"><div className="num">{refineExtraKeys.length}</div><div className="lbl">{t('atlas.ui.ringKeysAdded')}</div></div>
           </div>
 
           {refineLog.length > 0 && (
@@ -1334,13 +1324,13 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
 
           <div className="atlas-modal-footer">
             <button type="button" className="atlas-link-btn" onClick={() => setRefineModalOpen(false)} disabled={refining}>
-              Закрыть
+              {t('atlas.ui.close')}
             </button>
             <button type="button" className="atlas-secondary-btn" onClick={() => void refine({ anchors: true, deviation: refineDeviation, radius: refineRadius })} disabled={refining}>
-              <IconRefresh size={12} /> Уточнить точки (без перезапуска)
+              <IconRefresh size={12} /> {t('atlas.ui.ringRefinePoints')}
             </button>
             <button type="button" className="atlas-scan-btn" onClick={() => void rerun()} disabled={refining}>
-              <IconRefresh size={12} /> Перестроить кольцо
+              <IconRefresh size={12} /> {t('atlas.ui.ringRebuild')}
             </button>
           </div>
         </AtlasDialog>
@@ -1349,39 +1339,34 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       {/* ── Модалка поиска хабов ── */}
       {hubsModalOpen && result && (
         <AtlasDialog
-          eyebrow="Строительные хабы"
-          title="Поиск кандидатов на хабы (радиус 14.99 св.л)"
+          eyebrow={t('atlas.ui.ringHubsEyebrow')}
+          title={t('atlas.ui.ringHubsTitle')}
           onClose={() => { if (!searchingHubs) { stopHubSearch(); setHubsModalOpen(false); } }}
           busy={searchingHubs}
           wide
         >
-          <p>
-            Поиск каменистых тел с возможностью посадки в радиусе 14.99 св.л от каждой
-            опорной точки. Зелёная метка — кандидат найден; красная — в известных
-            системах подходящего тела нет (требуется разведка региона).
-            Источники: кэш Atlas, БД проекта, Spansh, EDSM.
-          </p>
+          <p>{t('atlas.ui.ringHubsIntro')}</p>
 
           <div className="atlas-refine-infograph">
             <div className="atlas-infograph-cell ok">
               <div className="num">
                 <IconCheckCircle size={14} /> {hubProgress.found}
               </div>
-              <div className="lbl">Хабов найдено</div>
+              <div className="lbl">{t('atlas.ui.counterHubsFound')}</div>
             </div>
             <div className="atlas-infograph-cell warn">
               <div className="num">
                 <IconAlert size={14} /> {hubProgress.missing}
               </div>
-              <div className="lbl">Хабов не найдено</div>
+              <div className="lbl">{t('atlas.ui.ringHubsMissing')}</div>
             </div>
             <div className="atlas-infograph-cell">
               <div className="num">{hubProgress.done}/{hubProgress.total}</div>
-              <div className="lbl">Опор обработано</div>
+              <div className="lbl">{t('atlas.ui.ringAnchorsProcessed')}</div>
             </div>
             <div className="atlas-infograph-cell">
               <div className="num">{searchingHubs ? '…' : Math.round((hubProgress.done / Math.max(1, hubProgress.total)) * 100) + '%'}</div>
-              <div className="lbl">Прогресс</div>
+              <div className="lbl">{t('atlas.ui.ringProgressLbl')}</div>
             </div>
           </div>
 
@@ -1399,10 +1384,10 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                 <span className={`atlas-hub-dot ${h.hub.status === 'found' ? 'found' : h.hub.status === 'missing' ? 'missing' : 'searching'}`} />
                 <span className="atlas-hub-name">{h.anchorName}</span>
                 <span className="atlas-hub-meta">
-                  {h.hub.status === 'found' && <>→ <strong className="atlas-hub-ok">{h.hub.systemName}</strong> ({h.hub.distance} св.л; {h.hub.bodySubtype || h.hub.bodyName})</>}
-                  {h.hub.status === 'missing' && <span className="atlas-hub-bad">хаб не найден{h.hub.note ? `: ${h.hub.note}` : ''}</span>}
-                  {h.hub.status === 'searching' && 'поиск…'}
-                  {h.hub.status === 'error' && 'ошибка'}
+                  {h.hub.status === 'found' && <>→ <strong className="atlas-hub-ok">{h.hub.systemName}</strong> ({t('atlas.ui.ringHubFoundLine', { distance: h.hub.distance ?? '', body: h.hub.bodySubtype || h.hub.bodyName || '' })})</>}
+                  {h.hub.status === 'missing' && <span className="atlas-hub-bad">{t('atlas.ui.ringTagHubMissing')}{h.hub.note ? `: ${h.hub.note}` : ''}</span>}
+                  {h.hub.status === 'searching' && t('atlas.ui.ringHubSearching')}
+                  {h.hub.status === 'error' && t('atlas.ui.ringHubError')}
                 </span>
               </div>
               );
@@ -1411,10 +1396,10 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
 
           <div className="atlas-modal-footer">
             {searchingHubs && (
-              <button type="button" className="atlas-link-btn" onClick={stopHubSearch}>Остановить</button>
+              <button type="button" className="atlas-link-btn" onClick={stopHubSearch}>{t('atlas.ui.ringHubStop')}</button>
             )}
             <button type="button" className="atlas-scan-btn" onClick={() => setHubsModalOpen(false)} disabled={searchingHubs}>
-              Закрыть
+              {t('atlas.ui.close')}
             </button>
           </div>
         </AtlasDialog>
@@ -1425,6 +1410,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
 
 /** Панель проверки требований. */
 function RingValidationPanel({ validation: v }: { validation: RingValidation }) {
+  const { t, locale } = useI18n();
   const row = (ok: boolean, title: string, detail: string) => (
     <div className={`atlas-check-row ${ok ? 'ok' : 'fail'}`}>
       <span aria-hidden>{ok ? '✓' : '✗'}</span>
@@ -1435,30 +1421,26 @@ function RingValidationPanel({ validation: v }: { validation: RingValidation }) 
   );
   const spacingOk = v.anchorSpacingViolations === 0;
   return (
-    <div className="atlas-details-box atlas-validation" aria-label="Проверка требований кольца">
-      <h4>Проверка требований</h4>
+    <div className="atlas-details-box atlas-validation" aria-label={t('atlas.ui.ringValidationAria')}>
+      <h4>{t('atlas.ui.ringValidationTitle')}</h4>
       {row(
         v.jumpViolations === 0,
-        `Прыжок не больше ${RING_LIMITS.jump} св.л.`,
-        `максимальный ${v.maxJump.toFixed(2)} св.л.${v.jumpViolations ? `, нарушений: ${v.jumpViolations}` : ''}`,
+        t('atlas.ui.ringValJump', { value: RING_LIMITS.jump }),
+        t('atlas.ui.ringValJumpDetail', { value: v.maxJump.toFixed(2) }) + (v.jumpViolations ? t('atlas.ui.ringValJumpViolations', { count: v.jumpViolations }) : ''),
       )}
       {row(
         spacingOk,
-        `Опоры через ${RING_LIMITS.spacingMin}–${RING_LIMITS.spacingMax} св.л. (не больше ${RING_LIMITS.spacingLimit})`,
-        `от ${v.anchorSpacingMin} до ${v.anchorSpacingMax} св.л., среднее ${v.anchorSpacingAvg}`
-          + (v.anchorSpacingOutside ? `; вне ${RING_LIMITS.spacingMin}–${RING_LIMITS.spacingMax}: ${v.anchorSpacingOutside}` : ''),
+        t('atlas.ui.ringValSpacing', { min: RING_LIMITS.spacingMin, max: RING_LIMITS.spacingMax, limit: RING_LIMITS.spacingLimit }),
+        t('atlas.ui.ringValSpacingDetail', { min: v.anchorSpacingMin, max: v.anchorSpacingMax, avg: v.anchorSpacingAvg })
+          + (v.anchorSpacingOutside ? t('atlas.ui.ringValSpacingOutside', { min: RING_LIMITS.spacingMin, max: RING_LIMITS.spacingMax, count: v.anchorSpacingOutside }) : ''),
       )}
       {row(
         v.anchorDeviationMax <= RING_LIMITS.deviation && v.deviationViolations === 0,
-        `Отклонение от оси до ${RING_LIMITS.deviation} св.л.`,
-        `опоры: макс. ${v.anchorDeviationMax}, среднее ${v.anchorDeviationAvg}; `
-          + `точки маршрута: макс. ${v.routeDeviationMax}`,
+        t('atlas.ui.ringValDeviation', { value: RING_LIMITS.deviation }),
+        t('atlas.ui.ringValDeviationDetail', { max: v.anchorDeviationMax, avg: v.anchorDeviationAvg, route: v.routeDeviationMax }),
       )}
       {v.startOffset > RING_LIMITS.deviation && (
-        <p className="atlas-muted">
-          Стартовая система на {v.startOffset.toLocaleString('ru-RU')} св.л. от окружности кольца:
-          подход к ней и возврат идут отдельным участком.
-        </p>
+        <p className="atlas-muted">{t('atlas.ui.ringValStartOffset', { value: v.startOffset.toLocaleString(locale) })}</p>
       )}
     </div>
   );
