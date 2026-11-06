@@ -7684,6 +7684,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'sq.chatMentionTitle': 'Упоминание в чате эскадрильи',
     'wiki.changeSummaryDefault': 'Редактирование',
     'arch.carrierLabel': 'Авианосец {id}',
+    'meta.siteDescription': 'Платформа для координации колонизации в Elite Dangerous. Эскадрильи, проекты, атлас систем, лидерборд.',
+    'meta.siteDescriptionShort': 'Платформа для координации колонизации в Elite Dangerous',
+    'meta.siteKeywords': 'колонизация,эскадрильи,атлас систем,лидерборд,кольцо галактики',
+    'meta.ogLocale': 'ru_RU',
   },
 
   en: {
@@ -15362,6 +15366,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'sq.chatMentionTitle': 'Mention in the squadron chat',
     'wiki.changeSummaryDefault': 'Edit',
     'arch.carrierLabel': 'Carrier {id}',
+    'meta.siteDescription': 'A platform for coordinating colonisation in Elite Dangerous. Squadrons, projects, the system atlas and the leaderboard.',
+    'meta.siteDescriptionShort': 'A platform for coordinating colonisation in Elite Dangerous',
+    'meta.siteKeywords': 'colonisation,squadrons,system atlas,leaderboard,galaxy ring',
+    'meta.ogLocale': 'en_US',
   },
 
   de: {
@@ -23040,6 +23048,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'sq.chatMentionTitle': 'Erwähnung im Staffelchat',
     'wiki.changeSummaryDefault': 'Bearbeitung',
     'arch.carrierLabel': 'Träger {id}',
+    'meta.siteDescription': 'Eine Plattform zur Koordination der Kolonisierung in Elite Dangerous. Staffeln, Projekte, Systematlas und Rangliste.',
+    'meta.siteDescriptionShort': 'Eine Plattform zur Koordination der Kolonisierung in Elite Dangerous',
+    'meta.siteKeywords': 'Kolonisierung,Staffeln,Systematlas,Rangliste,Galaxiering',
+    'meta.ogLocale': 'de_DE',
   },
   it: {
     'nav.home': 'Home',
@@ -30717,6 +30729,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'sq.chatMentionTitle': 'Menzione nella chat di squadriglia',
     'wiki.changeSummaryDefault': 'Modifica',
     'arch.carrierLabel': 'Portaerei {id}',
+    'meta.siteDescription': 'Una piattaforma per coordinare la colonizzazione in Elite Dangerous. Squadriglie, progetti, atlante dei sistemi e classifica.',
+    'meta.siteDescriptionShort': 'Una piattaforma per coordinare la colonizzazione in Elite Dangerous',
+    'meta.siteKeywords': 'colonizzazione,squadriglie,atlante dei sistemi,classifica,anello galattico',
+    'meta.ogLocale': 'it_IT',
   },
   ko: {
     'nav.home': '홈',
@@ -38394,6 +38410,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'sq.chatMentionTitle': '전대 채팅에서 언급됨',
     'wiki.changeSummaryDefault': '편집',
     'arch.carrierLabel': '항공모함 {id}',
+    'meta.siteDescription': 'Elite Dangerous 식민지 개척을 조율하는 플랫폼입니다. 전대, 프로젝트, 항성계 아틀라스, 리더보드.',
+    'meta.siteDescriptionShort': 'Elite Dangerous 식민지 개척을 조율하는 플랫폼',
+    'meta.siteKeywords': '식민지 개척,전대,항성계 아틀라스,리더보드,은하 링',
+    'meta.ogLocale': 'ko_KR',
   },
   zh: {
     'nav.home': '首页',
@@ -46071,6 +46091,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'sq.chatMentionTitle': '中队聊天中被提及',
     'wiki.changeSummaryDefault': '编辑',
     'arch.carrierLabel': '航母 {id}',
+    'meta.siteDescription': '用于协调 Elite Dangerous 殖民的平台。中队、项目、星系图集与排行榜。',
+    'meta.siteDescriptionShort': '用于协调 Elite Dangerous 殖民的平台',
+    'meta.siteKeywords': '殖民,中队,星系图集,排行榜,银河环线',
+    'meta.ogLocale': 'zh_CN',
   },
   ja: {
     'nav.home': 'ホーム',
@@ -53747,6 +53771,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'sq.chatMentionTitle': '艦隊チャットでのメンション',
     'wiki.changeSummaryDefault': '編集',
     'arch.carrierLabel': '母艦 {id}',
+    'meta.siteDescription': 'Elite Dangerous の植民を調整するためのプラットフォーム。艦隊、プロジェクト、星系アトラス、リーダーボード。',
+    'meta.siteDescriptionShort': 'Elite Dangerous の植民を調整するためのプラットフォーム',
+    'meta.siteKeywords': '植民,艦隊,星系アトラス,リーダーボード,銀河リング',
+    'meta.ogLocale': 'ja_JP',
   },
 };
 
