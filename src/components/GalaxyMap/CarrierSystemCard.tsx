@@ -27,6 +27,7 @@ import {
 } from '@/lib/carrierMap';
 import { carrierSquadronTag } from '@/lib/carrierTags';
 import { CarrierGlyph } from './CarrierGlyph';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 const MUTED = '#9ca3af';
 const DIM = '#6b7280';
@@ -47,12 +48,13 @@ function formatCoordinate(value: number): string {
   return Number.isFinite(value) ? value.toFixed(1) : '?';
 }
 
-function squadronLabel(squadron: NonNullable<MapCarrier['squadron']>): string {
+function squadronLabel(squadron: NonNullable<MapCarrier['squadron']>, fallback: string): string {
   const tag = squadron.tag ? `[${squadron.tag}]` : '';
-  return [tag, squadron.name].filter(Boolean).join(' ') || `эскадрилья #${squadron.id}`;
+  return [tag, squadron.name].filter(Boolean).join(' ') || fallback;
 }
 
 function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
+  const { t } = useI18n();
   const tone = carrierTone(carrier);
   const color = CARRIER_TONE_COLOR[tone];
   const title = carrierTitle(carrier);
@@ -81,42 +83,42 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
           </div>
           <div style={{ marginTop: 4 }}>
             <Chip color={CARRIER_TONE_COLOR[carrier.relation]}>{CARRIER_RELATION_HINT[carrier.relation]}</Chip>
-            {carrier.decommission && <Chip color={CARRIER_TONE_COLOR.decommission} title="В игре носитель разбирают через неделю после запроса">списывается</Chip>}
-            {carrier.estimated && <Chip color="#ffd166" title="Время прыжка прошло, а подтверждения стоянки ещё нет">≈ после прыжка</Chip>}
-            {stale && <Chip color={DIM} title="Данных о стоянке нет больше двух недель">давно не обновлялся</Chip>}
+            {carrier.decommission && <Chip color={CARRIER_TONE_COLOR.decommission} title={t('csc.decommissionTitle')}>{t('csc.decommission')}</Chip>}
+            {carrier.estimated && <Chip color="#ffd166" title={t('csc.estimatedTitle')}>{t('csc.estimated')}</Chip>}
+            {stale && <Chip color={DIM} title={t('csc.staleTitle')}>{t('csc.stale')}</Chip>}
           </div>
 
           <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
             {carrier.owner ? (
-              <div>Владелец: <Link href={`/cmdr/${encodeURIComponent(carrier.owner)}`} style={{ color: TEXT, textDecoration: 'none' }}>CMDR {carrier.owner}</Link></div>
+              <div>{t('csc.owner')}{' '}<Link href={`/cmdr/${encodeURIComponent(carrier.owner)}`} style={{ color: TEXT, textDecoration: 'none' }}>CMDR {carrier.owner}</Link></div>
             ) : carrier.ownerHidden ? (
-              <div>Владелец скрыл местоположение</div>
+              <div>{t('csc.ownerHidden')}</div>
             ) : !carrier.squadron && !javelin ? (
-              <div>Владелец не привязан на сайте</div>
+              <div>{t('csc.ownerNotLinked')}</div>
             ) : null}
             {carrier.squadron ? (
               <div>
-                Эскадрилья:{' '}
+                {t('csc.squadron')}{' '}
                 <Link href={`/squadrons/${carrier.squadron.id}`} style={{ color: '#4ade80', textDecoration: 'none' }}>
-                  {squadronLabel(carrier.squadron)}
+                  {squadronLabel(carrier.squadron, t('csc.squadronFallback', { id: carrier.squadron.id }))}
                 </Link>
               </div>
             ) : javelin ? (
               <div data-carrier-game-squadron={gameTag ?? ''}>
                 {gameTag ? (
-                  <>Эскадрилья в игре: <span style={{ color: TEXT, fontFamily: MONO }}>[{gameTag}]</span> · на сайте не привязана</>
-                ) : 'Эскадрилья на сайте не привязана'}
+                  <>{t('csc.squadronInGame')}{' '}<span style={{ color: TEXT, fontFamily: MONO }}>[{gameTag}]</span>{t('csc.squadronNotLinkedSuffix')}</>
+                ) : t('csc.squadronNotLinked')}
               </div>
             ) : null}
-            {carrier.body && <div>У тела: <span style={{ color: TEXT }}>{carrier.body}</span></div>}
+            {carrier.body && <div>{t('csc.atBody')}{' '}<span style={{ color: TEXT }}>{carrier.body}</span></div>}
             {carrier.docking && (
               <div>
-                Стыковка: <span style={{ color: TEXT }}>{carrier.docking}</span>
-                {carrier.notorious ? <span style={{ color: '#f87171' }}> · пускает преступников</span> : null}
+                {t('csc.docking')}{' '}<span style={{ color: TEXT }}>{carrier.docking}</span>
+                {carrier.notorious ? <span style={{ color: '#f87171' }}>{t('csc.notorious')}</span> : null}
               </div>
             )}
             {services.length > 0 && (
-              <div>Службы: <span style={{ color: TEXT }}>{services.join(', ')}</span>{moreServices > 0 ? ` и ещё ${moreServices}` : ''}</div>
+              <div>{t('csc.services')}{' '}<span style={{ color: TEXT }}>{services.join(', ')}</span>{moreServices > 0 ? t('csc.andMore', { count: moreServices }) : ''}</div>
             )}
             <div style={{ color: DIM }}>{carrierLocationText(carrier, now)}</div>
             {jump && <div style={{ color: '#ffd166' }}>{jump}</div>}
@@ -125,10 +127,10 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
           {(carrier.relation === 'own' || carrier.squadron?.member) && (
             <div style={{ marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11 }}>
               {carrier.relation === 'own' && (
-                <Link href="/account?tab=carrier" style={{ color: CARRIER_TONE_COLOR.own, textDecoration: 'none' }}>Мой носитель: трюм и службы →</Link>
+                <Link href="/account?tab=carrier" style={{ color: CARRIER_TONE_COLOR.own, textDecoration: 'none' }}>{t('csc.myCarrier')}</Link>
               )}
               {carrier.squadron?.member && (
-                <Link href={`/squadrons/${carrier.squadron.id}?tab=carrier`} style={{ color: CARRIER_TONE_COLOR.squadron, textDecoration: 'none' }}>Носитель эскадрильи →</Link>
+                <Link href={`/squadrons/${carrier.squadron.id}?tab=carrier`} style={{ color: CARRIER_TONE_COLOR.squadron, textDecoration: 'none' }}>{t('csc.squadronCarrier')}</Link>
               )}
             </div>
           )}
@@ -147,6 +149,7 @@ export interface CarrierSystemCardProps {
 }
 
 export function CarrierSystemCard({ group, onClose, onFocus, now = Date.now() }: CarrierSystemCardProps) {
+  const { t } = useI18n();
   const variant = carrierIconVariant(group, now);
   const color = CARRIER_TONE_COLOR[variant.tone];
   const systemHref = `/system/${encodeURIComponent(group.system)}`;
@@ -155,7 +158,7 @@ export function CarrierSystemCard({ group, onClose, onFocus, now = Date.now() }:
     <div
       className="carrier-system-card"
       role="dialog"
-      aria-label={`Авианосцы в системе ${group.system}`}
+      aria-label={t('csc.ariaCarriers', { system: group.system })}
       style={{
         position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.92)', backdropFilter: 'blur(8px)',
         border: `1px solid ${color}55`, borderRadius: 8, padding: 12, minWidth: 260, maxWidth: 340, maxHeight: 'calc(100% - 24px)',
@@ -175,21 +178,21 @@ export function CarrierSystemCard({ group, onClose, onFocus, now = Date.now() }:
         <button
           type="button"
           onClick={onClose}
-          title="Закрыть"
-          aria-label="Закрыть карточку"
+          title={t('csc.close')}
+          aria-label={t('csc.closeAria')}
           style={{ background: 'transparent', border: 'none', color: DIM, cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
         >
           ✕
         </button>
       </div>
       <div style={{ marginTop: 4, fontSize: 12, color: MUTED }}>
-        Авианосцы: {carrierCountLabel(group.carriers.length)}
+        {t('csc.carriers')} {carrierCountLabel(group.carriers.length)}
       </div>
       <div style={{ marginTop: 2, fontSize: 11, color: DIM }}>
         <IconMapPin size={11} />{' '}
         {group.position
           ? `${formatCoordinate(group.position.x)}, ${formatCoordinate(group.position.y)}, ${formatCoordinate(group.position.z)}`
-          : 'координаты системы неизвестны'}
+          : t('csc.unknownCoords')}
       </div>
 
       <ul style={{ margin: 0, padding: 0 }}>
@@ -203,7 +206,7 @@ export function CarrierSystemCard({ group, onClose, onFocus, now = Date.now() }:
             onClick={() => onFocus(group)}
             style={{ fontSize: 11, color, background: `${color}14`, border: `1px solid ${color}55`, borderRadius: 4, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}
           >
-            <IconMapPin size={10} /> К системе
+            <IconMapPin size={10} /> {t('csc.toSystem')}
           </button>
         )}
         <a
