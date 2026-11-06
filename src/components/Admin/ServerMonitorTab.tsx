@@ -16,6 +16,7 @@ import {
   IconSync,
   IconXCircle,
 } from '@/components/Icons';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { BACKUP_STAGES, ENV_STAGES, SMTP_STAGES, STORAGE_STAGES, UPDATE_STAGES } from '../../../scripts/lib/update-state.mjs';
 import StorageHealthPanel from '@/components/Admin/StorageHealthPanel';
 import { authFetch } from '@/lib/supabaseClient';
@@ -175,56 +176,56 @@ const KNOWN_ENV_KEYS: Array<{ name: string; hint: string }> = [
 
 
 const LEVEL_META: Record<MonitorLevel, { label: string; className: string }> = {
-  healthy: { label: 'В норме', className: 'healthy' },
-  warning: { label: 'Требует внимания', className: 'warning' },
-  critical: { label: 'Недоступно', className: 'critical' },
-  unknown: { label: 'Нет данных', className: 'unknown' },
+  healthy: { label: 'mon.levelHealthy', className: 'healthy' },
+  warning: { label: 'mon.levelWarning', className: 'warning' },
+  critical: { label: 'mon.levelCritical', className: 'critical' },
+  unknown: { label: 'mon.levelUnknown', className: 'unknown' },
 };
 
 const UPDATE_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
-  idle: { label: 'Обновление не выполняется', level: 'unknown' },
-  running: { label: 'Идёт обновление', level: 'warning' },
-  succeeded: { label: 'Обновление завершено', level: 'healthy' },
-  failed: { label: 'Обновление завершилось с ошибкой', level: 'critical' },
-  aborted: { label: 'Обновление остановлено', level: 'warning' },
+  idle: { label: 'mon.updIdle', level: 'unknown' },
+  running: { label: 'mon.updRunning', level: 'warning' },
+  succeeded: { label: 'mon.updSucceeded', level: 'healthy' },
+  failed: { label: 'mon.updFailed', level: 'critical' },
+  aborted: { label: 'mon.updAborted', level: 'warning' },
 };
 
 const ENV_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
-  idle: { label: 'Ключи не применяются', level: 'unknown' },
-  running: { label: 'Идёт применение ключей', level: 'warning' },
-  succeeded: { label: 'Ключи применены', level: 'healthy' },
-  failed: { label: 'Применение ключей завершилось с ошибкой', level: 'critical' },
-  aborted: { label: 'Применение ключей остановлено', level: 'warning' },
+  idle: { label: 'mon.envIdle', level: 'unknown' },
+  running: { label: 'mon.envRunning', level: 'warning' },
+  succeeded: { label: 'mon.envSucceeded', level: 'healthy' },
+  failed: { label: 'mon.envFailed', level: 'critical' },
+  aborted: { label: 'mon.envAborted', level: 'warning' },
 };
 
 // Отдельный режим кнопки «Применить только миграции» (mode='migrations'):
 // база трогается, контейнеры — нет, поэтому и подписи свои.
 const MIGRATIONS_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
-  idle: { label: 'Миграции не выполняются', level: 'unknown' },
-  running: { label: 'Применяю миграции', level: 'warning' },
-  succeeded: { label: 'Миграции применены', level: 'healthy' },
-  failed: { label: 'Миграции завершились с ошибкой', level: 'critical' },
-  aborted: { label: 'Применение миграций остановлено', level: 'warning' },
+  idle: { label: 'mon.migIdle', level: 'unknown' },
+  running: { label: 'mon.migRunning', level: 'warning' },
+  succeeded: { label: 'mon.migSucceeded', level: 'healthy' },
+  failed: { label: 'mon.migFailed', level: 'critical' },
+  aborted: { label: 'mon.migAborted', level: 'warning' },
 };
 
 // Job kind='smtp': пересоздание auth стека Supabase и web ради настроек
 // почты (Админка → Авторизация → «Отправка писем»).
 const SMTP_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
-  idle: { label: 'Настройки почты не применяются', level: 'unknown' },
-  running: { label: 'Применяю настройки почты (auth + web)', level: 'warning' },
-  succeeded: { label: 'Настройки почты применены', level: 'healthy' },
-  failed: { label: 'Применение настроек почты завершилось с ошибкой', level: 'critical' },
-  aborted: { label: 'Применение настроек почты остановлено', level: 'warning' },
+  idle: { label: 'mon.smtpIdle', level: 'unknown' },
+  running: { label: 'mon.smtpRunning', level: 'warning' },
+  succeeded: { label: 'mon.smtpSucceeded', level: 'healthy' },
+  failed: { label: 'mon.smtpFailed', level: 'critical' },
+  aborted: { label: 'mon.smtpAborted', level: 'warning' },
 };
 
 // Job kind='storage': проверка и перезапуск сервиса Storage стека Supabase.
 // Он живёт вне compose сайта, поэтому у него свои подписи и свои этапы.
 const STORAGE_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
-  idle: { label: 'Storage не перезапускается', level: 'unknown' },
-  running: { label: 'Перезапускаю Storage', level: 'warning' },
-  succeeded: { label: 'Storage работает', level: 'healthy' },
-  failed: { label: 'Storage не поднялся', level: 'critical' },
-  aborted: { label: 'Перезапуск Storage остановлен', level: 'warning' },
+  idle: { label: 'mon.storeIdle', level: 'unknown' },
+  running: { label: 'mon.storeRunning', level: 'warning' },
+  succeeded: { label: 'mon.storeSucceeded', level: 'healthy' },
+  failed: { label: 'mon.storeFailed', level: 'critical' },
+  aborted: { label: 'mon.storeAborted', level: 'warning' },
 };
 
 function stateMetaFor(update: UpdateState | null): { label: string; level: MonitorLevel } {
@@ -249,56 +250,60 @@ function stagesForKind(update: UpdateState | null): Array<{ id: string; label: s
   return UPDATE_STAGES;
 }
 
-function formatDate(value: string | null | undefined): string {
+type TFn = (key: string, params?: Record<string, string | number>) => string;
+
+function formatDate(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const time = Date.parse(value);
   return Number.isFinite(time)
-    ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(time))
+    ? new Intl.DateTimeFormat(locale, { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(time))
     : '—';
 }
 
-function formatBytes(value: number | null | undefined): string {
+function formatBytes(value: number | null | undefined, t: TFn): string {
   if (value == null || !Number.isFinite(value) || value < 0) return '—';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  const units = [t('mon.unitB'), t('mon.unitKB'), t('mon.unitMB'), t('mon.unitGB'), t('mon.unitTB')];
   const index = Math.min(units.length - 1, Math.floor(Math.log(Math.max(value, 1)) / Math.log(1024)));
   const scaled = value / 1024 ** index;
   return `${scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
 }
 
-function formatCount(value: number | null | undefined): string {
+function formatCount(value: number | null | undefined, locale: string): string {
   if (value == null || !Number.isFinite(value)) return '—';
-  return value.toLocaleString('ru-RU');
+  return value.toLocaleString(locale);
 }
 
-function formatDuration(seconds: number | null | undefined): string {
+function formatDuration(seconds: number | null | undefined, t: TFn): string {
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—';
+  const second = t('mon.unitSecond');
   const units = [
-    ['д', 86_400],
-    ['ч', 3_600],
-    ['м', 60],
-    ['с', 1],
+    [t('mon.unitDay'), 86_400],
+    [t('mon.unitHour'), 3_600],
+    [t('mon.unitMinute'), 60],
+    [second, 1],
   ] as const;
   let rest = Math.floor(seconds);
   const parts: string[] = [];
   for (const [label, size] of units) {
     const amount = Math.floor(rest / size);
-    if (amount > 0 || (label === 'с' && parts.length === 0)) parts.push(`${amount}${label}`);
+    if (amount > 0 || (label === second && parts.length === 0)) parts.push(`${amount}${label}`);
     rest %= size;
     if (parts.length === 2) break;
   }
   return parts.join(' ');
 }
 
-function shortSha(value: string | null | undefined): string {
-  return value ? value.slice(0, 12) : 'не задан';
+function shortSha(value: string | null | undefined, t: TFn): string {
+  return value ? value.slice(0, 12) : t('mon.notSet');
 }
 
 function StatusPill({ level, label }: { level: MonitorLevel; label?: string }) {
+  const { t } = useI18n();
   const meta = LEVEL_META[level];
   return (
     <span className={`ops-status ops-status-${meta.className}`}>
       <span className="ops-status-dot" />
-      {label ?? meta.label}
+      {label ?? t(meta.label)}
     </span>
   );
 }
@@ -309,12 +314,14 @@ function containerLevel(container: MonitorContainer): MonitorLevel {
   return 'healthy';
 }
 
-function containerLabel(container: MonitorContainer): string {
-  if (container.state === 'missing') return 'Контейнер не найден';
-  if (container.state === 'stopped') return `Остановлен${container.exitCode != null ? ` · код ${container.exitCode}` : ''}`;
-  if (container.health === 'unhealthy') return 'Healthcheck не пройден';
-  if (container.health === 'starting') return 'Запускается';
-  return container.health === 'healthy' ? 'Работает · healthcheck OK' : 'Работает';
+function containerLabel(container: MonitorContainer, t: TFn): string {
+  if (container.state === 'missing') return t('mon.containerMissing');
+  if (container.state === 'stopped') {
+    return `${t('mon.containerStopped')}${container.exitCode != null ? t('mon.exitCodeSuffix', { code: container.exitCode }) : ''}`;
+  }
+  if (container.health === 'unhealthy') return t('mon.healthcheckFailed');
+  if (container.health === 'starting') return t('mon.startingLabel');
+  return container.health === 'healthy' ? t('mon.runningOk') : t('mon.running');
 }
 
 function jobLevel(job: MonitorJob): MonitorLevel {
@@ -358,27 +365,27 @@ function stageState(index: number, update: UpdateState | null): 'done' | 'active
 
 /** Панель «Диск и размер базы данных». */
 function DiskPanel({ size, disk }: { size: MonitorDatabaseSize; disk: MonitorDisk }) {
+  const { t, locale } = useI18n();
   const total = size.schemaBytes ?? size.databaseBytes ?? 0;
   const biggest = size.largest[0]?.totalBytes ?? 0;
   return (
     <section className="ops-panel">
       <div className="ops-panel-head">
         <div>
-          <h3>Диск и размер базы данных</h3>
+          <h3>{t('mon.diskTitle')}</h3>
           <p>
-            Размер считается прямым запросом к Postgres (<code>pg_database_size</code>, <code>pg_total_relation_size</code>) и не
-            сохраняется: ни строк, ни имён пользователей панель не видит.
+            {t('mon.diskNoteBefore')} (<code>pg_database_size</code>, <code>pg_total_relation_size</code>) {t('mon.diskNoteAfter')}
           </p>
         </div>
         <StatusPill
           level={sizeLevel(size)}
-          label={size.available ? 'Замер получен' : 'Нет прямого подключения'}
+          label={size.available ? t('mon.measuredOk') : t('mon.noDirectConn')}
         />
       </div>
 
       {!size.available && (
         <div className="ops-notice ops-notice-warning">
-          <IconAlert size={16} /> {size.note ?? 'Размер БД недоступен.'}
+          <IconAlert size={16} /> {size.note ?? t('mon.sizeUnavailable')}
         </div>
       )}
 
@@ -386,53 +393,52 @@ function DiskPanel({ size, disk }: { size: MonitorDatabaseSize; disk: MonitorDis
         <>
           <div className="ops-disk-grid">
             <div className="ops-disk-fact">
-              <span>База целиком</span>
-              <strong>{formatBytes(size.databaseBytes)}</strong>
+              <span>{t('mon.dbWhole')}</span>
+              <strong>{formatBytes(size.databaseBytes, t)}</strong>
               <small>{size.databaseName ?? 'postgres'}</small>
             </div>
             <div className="ops-disk-fact">
-              <span>Схема public</span>
-              <strong>{formatBytes(size.schemaBytes)}</strong>
-              <small>таблицы + индексы + TOAST</small>
+              <span>{t('mon.publicSchema')}</span>
+              <strong>{formatBytes(size.schemaBytes, t)}</strong>
+              <small>{t('mon.tablesIdxToast')}</small>
             </div>
             <div className="ops-disk-fact">
-              <span>Данные</span>
-              <strong>{formatBytes(size.tableBytes)}</strong>
-              <small>без индексов</small>
+              <span>{t('mon.data')}</span>
+              <strong>{formatBytes(size.tableBytes, t)}</strong>
+              <small>{t('mon.withoutIndexes')}</small>
             </div>
             <div className="ops-disk-fact">
-              <span>Индексы</span>
-              <strong>{formatBytes(size.indexBytes)}</strong>
-              <small>{size.schemaBytes ? `${Math.round(((size.indexBytes ?? 0) / size.schemaBytes) * 100)}% схемы` : '—'}</small>
+              <span>{t('mon.indexes')}</span>
+              <strong>{formatBytes(size.indexBytes, t)}</strong>
+              <small>{size.schemaBytes ? t('mon.pctOfSchema', { value: Math.round(((size.indexBytes ?? 0) / size.schemaBytes) * 100) }) : '—'}</small>
             </div>
             <div className="ops-disk-fact">
-              <span>TOAST (большие поля)</span>
-              <strong>{formatBytes(size.toastBytes)}</strong>
-              <small>тексты статей и отчётов</small>
+              <span>{t('mon.toast')}</span>
+              <strong>{formatBytes(size.toastBytes, t)}</strong>
+              <small>{t('mon.toastHint')}</small>
             </div>
             <div className="ops-disk-fact">
-              <span>Свободно на диске</span>
-              <strong>{disk.available ? formatBytes(disk.availableBytes) : '—'}</strong>
-              <small>{disk.available ? `из ${formatBytes(disk.totalBytes)} · занято ${disk.usedPercent}%` : 'monitor-agent не отдаёт statfs'}</small>
+              <span>{t('mon.diskFree')}</span>
+              <strong>{disk.available ? formatBytes(disk.availableBytes, t) : '—'}</strong>
+              <small>{disk.available ? t('mon.diskUsageLine', { total: formatBytes(disk.totalBytes, t), percent: disk.usedPercent ?? 0 }) : t('mon.noStatfs')}</small>
             </div>
           </div>
 
           {disk.available && disk.availableBytes != null && disk.availableBytes < 5 * 1024 ** 3 && (
             <div className="ops-notice ops-notice-warning">
-              <IconHardDrive size={16} /> На томе осталось {formatBytes(disk.availableBytes)} — перед импортом каталога Spansh (~6 GiB)
-              и следующей пересборкой образ стоит почистить.
+              <IconHardDrive size={16} /> {t('mon.diskWarning', { free: formatBytes(disk.availableBytes, t) })}
             </div>
           )}
 
           {size.largest.length > 0 ? (
             <>
-              <div className="ops-subhead">Самые крупные таблицы</div>
+              <div className="ops-subhead">{t("mon.topTables")}</div>
               <div className="ops-table-bars">
                 {size.largest.map((table) => (
                   <div className="ops-table-bar" key={table.name}>
                     <div className="ops-table-bar-name" title={table.kind}>
                       {table.name}
-                      <small>{table.liveRows != null ? `${formatCount(table.liveRows)} строк` : '—'}</small>
+                      <small>{table.liveRows != null ? t('mon.rowsCount', { count: formatCount(table.liveRows, locale) }) : '—'}</small>
                     </div>
                     <div className="ops-bar">
                       <div
@@ -441,7 +447,7 @@ function DiskPanel({ size, disk }: { size: MonitorDatabaseSize; disk: MonitorDis
                       />
                     </div>
                     <div className="ops-bar-text">
-                      {formatBytes(table.totalBytes)}
+                      {formatBytes(table.totalBytes, t)}
                       {total > 0 ? ` · ${Math.round((table.totalBytes / total) * 100)}%` : ''}
                     </div>
                   </div>
@@ -449,9 +455,9 @@ function DiskPanel({ size, disk }: { size: MonitorDatabaseSize; disk: MonitorDis
               </div>
             </>
           ) : (
-            <div className="ops-empty">В схеме public нет таблиц — судя по всему, миграции ещё не применены.</div>
+            <div className="ops-empty">{t("mon.noTables")}</div>
           )}
-          <div className="ops-measured">Замерено: {formatDate(size.measuredAt)}</div>
+          <div className="ops-measured">{t("mon.measuredAt", { when: formatDate(size.measuredAt, locale) })}</div>
         </>
       )}
     </section>
@@ -459,6 +465,7 @@ function DiskPanel({ size, disk }: { size: MonitorDatabaseSize; disk: MonitorDis
 }
 
 export default function ServerMonitorTab() {
+  const { t, locale } = useI18n();
   const [snapshot, setSnapshot] = useState<ServerMonitorSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -523,7 +530,7 @@ export default function ServerMonitorTab() {
       setSnapshot(data.monitor);
       setError('');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Не удалось получить статус');
+      setError(cause instanceof Error ? cause.message : t('mon.statusFailed'));
     } finally {
       inFlight.current = false;
       setLoading(false);
@@ -558,13 +565,17 @@ export default function ServerMonitorTab() {
   const startUpdate = useCallback(async () => {
     const ahead = snapshot?.project.aheadBy;
     const pending = snapshot?.project.pendingMigrations.length ?? 0;
-    const migrationNote = pending ? ` Будет применено миграций: ${pending}.` : '';
+    const migrationNote = pending ? t('mon.migrationsPendingNote', { count: pending }) : '';
     const options = [
-      runTests ? 'тесты: прогнать' : 'тесты: пропустить',
-      backupBefore ? 'бэкап БД: сделать' : 'бэкап БД: не делать',
-      applyMigrations ? 'миграции: применить' : 'миграции: не применять',
+      runTests ? t('mon.optRunTests') : t('mon.optSkipTests'),
+      backupBefore ? t('mon.optBackup') : t('mon.optNoBackup'),
+      applyMigrations ? t('mon.optMigrate') : t('mon.optNoMigrate'),
     ].join(' · ');
-    const confirmText = `Пересобрать проект${ahead ? ` (свежих коммитов: ${ahead})` : ''} и перезапустить сервисы?${migrationNote}\nОпции: ${options}.\nСайт на время сборки может быть недоступен.`;
+    const confirmText = t('mon.rebuildConfirm', {
+      commits: ahead ? t('mon.freshCommitsNote', { count: ahead }) : '',
+      migrations: migrationNote,
+      options,
+    });
     if (!window.confirm(confirmText)) return;
     setUpdateBusy(true);
     setUpdateMessage('');
@@ -577,9 +588,9 @@ export default function ServerMonitorTab() {
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
       if ('update' in data && data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
-      setUpdateMessage('Обновление запущено — прогресс ниже.');
+      setUpdateMessage(t('mon.updateStarted'));
     } catch (cause) {
-      setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось запустить обновление');
+      setUpdateMessage(cause instanceof Error ? cause.message : t('mon.updateStartFailed'));
     } finally {
       setUpdateBusy(false);
     }
@@ -589,10 +600,12 @@ export default function ServerMonitorTab() {
   // (с бэкапом, если отмечен флажок), без сборки и переключения контейнеров.
   const startMigrationsOnly = useCallback(async () => {
     const pending = snapshot?.project.pendingMigrations.length ?? 0;
-    const options = backupBefore ? 'бэкап БД: сделать' : 'бэкап БД: не делать';
-    const confirmText = `Применить только миграции${pending ? ` (${pending})` : ''} без пересборки?\n`
-      + `Исходники сначала синхронизируются с веткой ${snapshot?.project.upstreamBranch ?? 'main'}, потом миграции применяются к базе.\n`
-      + `Опции: ${options}. Контейнеры не перезапускаются — код сайта не меняется.`;
+    const options = backupBefore ? t('mon.optBackup') : t('mon.optNoBackup');
+    const confirmText = [
+      t('mon.migrateConfirm', { migrations: pending ? ` (${pending})` : '' }),
+      t('mon.migrateSync', { branch: snapshot?.project.upstreamBranch ?? 'main' }),
+      t('mon.migrateOptions', { options }),
+    ].join('\n');
     if (!window.confirm(confirmText)) return;
     setUpdateBusy(true);
     setUpdateMessage('');
@@ -605,16 +618,16 @@ export default function ServerMonitorTab() {
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
       if ('update' in data && data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
-      setUpdateMessage('Миграции запущены — прогресс ниже.');
+      setUpdateMessage(t('mon.migrationsStarted'));
     } catch (cause) {
-      setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось запустить миграции');
+      setUpdateMessage(cause instanceof Error ? cause.message : t('mon.migrationsStartFailed'));
     } finally {
       setUpdateBusy(false);
     }
   }, [backupBefore, snapshot]);
 
   const abortUpdate = useCallback(async () => {
-    if (!window.confirm('Остановить обновление? Сборка будет прервана, развёрнутая версия останется прежней.')) return;
+    if (!window.confirm(t('mon.stopConfirm'))) return;
     setUpdateBusy(true);
     try {
       const response = await authFetch('/api/admin/monitor/update', { method: 'DELETE' });
@@ -622,7 +635,7 @@ export default function ServerMonitorTab() {
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
       if ('update' in data && data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
     } catch (cause) {
-      setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось остановить обновление');
+      setUpdateMessage(cause instanceof Error ? cause.message : t('mon.stopFailed'));
     } finally {
       setUpdateBusy(false);
     }
@@ -636,7 +649,7 @@ export default function ServerMonitorTab() {
    * замену detached helper-ом после health-check.
    */
   const restartAgent = useCallback(async () => {
-    if (!window.confirm('Перезапустить update-agent?\nСайт это не затронет: агент поднимется заново за несколько секунд уже с новым кодом.')) return;
+    if (!window.confirm(t('mon.agentRestartConfirm'))) return;
     const previousStartedAt = agentInfo?.startedAt ?? null;
     setAgentRestarting(true);
     setUpdateMessage('');
@@ -648,7 +661,7 @@ export default function ServerMonitorTab() {
       });
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
-      setUpdateMessage('Агент перезапускается — жду его повторного запуска.');
+      setUpdateMessage(t('mon.agentRestartMsg'));
 
       // Агент отвечает до выхода с задержкой, затем Docker/systemd ещё нужно
       // несколько секунд на запуск. Один прежний таймер на 6 с срабатывал
@@ -663,10 +676,10 @@ export default function ServerMonitorTab() {
         }
       }
       setUpdateMessage(restarted
-        ? 'Update-агент перезапущен и работает на актуальном коде.'
-        : 'Команда отправлена, но новый процесс пока не ответил. Проверьте Docker/systemd и обновите статус.');
+        ? t('mon.agentRestarted')
+        : t('mon.agentRestartNoAnswer'));
     } catch (cause) {
-      setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось перезапустить агент');
+      setUpdateMessage(cause instanceof Error ? cause.message : t('mon.agentRestartFailed'));
     } finally {
       setAgentRestarting(false);
     }
@@ -683,13 +696,22 @@ export default function ServerMonitorTab() {
         throw new Error(String(data.error || errors[0] || `HTTP ${response.status}`));
       }
       if (action === 'sync') {
-        setContentMessage(`Лента: ${data.inserted ?? 0} новых, ${data.updated ?? 0} обновлено, ${data.translated ?? 0} переведено; в очереди ${data.pendingGalnetTranslations ?? 0}`);
+        setContentMessage(t('mon.contentSyncLine', {
+          new: Number(data.inserted ?? 0),
+          updated: Number(data.updated ?? 0),
+          translated: Number(data.translated ?? 0),
+          pending: Number(data.pendingGalnetTranslations ?? 0),
+        }));
       } else {
-        setContentMessage(`Обработано ${data.processed ?? 0}, переведено ${data.translated ?? 0}, ошибок ${data.failed ?? 0}`);
+        setContentMessage(t('mon.contentTranslateLine', {
+          processed: Number(data.processed ?? 0),
+          translated: Number(data.translated ?? 0),
+          failed: Number(data.failed ?? 0),
+        }));
       }
       void load();
     } catch (cause) {
-      setContentMessage(cause instanceof Error ? cause.message : 'Пайплайн недоступен');
+      setContentMessage(cause instanceof Error ? cause.message : t('mon.pipelineUnavailable'));
     } finally {
       setContentBusy('');
     }
@@ -744,11 +766,11 @@ export default function ServerMonitorTab() {
       });
       const data = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setEnvMessage(`Ключ ${editingKey.name} сохранён. Не забудьте «Применить».`);
+      setEnvMessage(t('mon.envKeySaved', { name: editingKey.name }));
       setEditingKey(null);
       void loadEnvKeys();
     } catch (cause) {
-      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось сохранить ключ');
+      setEnvMessage(cause instanceof Error ? cause.message : t('mon.envSaveFailed'));
     } finally {
       setEnvBusy('');
     }
@@ -757,11 +779,11 @@ export default function ServerMonitorTab() {
   const addEnvKey = useCallback(async () => {
     const key = newKeyName.trim();
     if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key)) {
-      setEnvMessage('Имя ключа: заглавные A–Z, цифры и _ (1–128 символов)');
+      setEnvMessage(t('mon.envNameRule'));
       return;
     }
     if (!newKeyValue) {
-      setEnvMessage('Введите значение ключа');
+      setEnvMessage(t('mon.envValueRequired'));
       return;
     }
     setEnvBusy('add');
@@ -774,37 +796,37 @@ export default function ServerMonitorTab() {
       });
       const data = await response.json().catch(() => ({})) as { error?: string; created?: boolean };
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setEnvMessage(`Ключ ${key} ${data.created ? 'добавлен' : 'обновлён'}. Не забудьте «Применить».`);
+      setEnvMessage(t('mon.envKeyStored', { name: key, action: data.created ? t('mon.envAdded') : t('mon.envUpdated') }));
       setNewKeyName('');
       setNewKeyValue('');
       void loadEnvKeys();
     } catch (cause) {
-      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось добавить ключ');
+      setEnvMessage(cause instanceof Error ? cause.message : t('mon.envAddFailed'));
     } finally {
       setEnvBusy('');
     }
   }, [newKeyName, newKeyValue, loadEnvKeys]);
 
   const removeEnvKey = useCallback(async (name: string) => {
-    if (!window.confirm(`Удалить ключ ${name} из файла окружения? Действие вступит в силу после «Применить».`)) return;
+    if (!window.confirm(t('mon.envDeleteConfirm', { name }))) return;
     setEnvBusy('delete');
     setEnvMessage('');
     try {
       const response = await authFetch(`/api/admin/env?key=${encodeURIComponent(name)}`, { method: 'DELETE' });
       const data = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setEnvMessage(`Ключ ${name} удалён. Не забудьте «Применить».`);
+      setEnvMessage(t('mon.envKeyDeleted', { name }));
       void loadEnvKeys();
     } catch (cause) {
-      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось удалить ключ');
+      setEnvMessage(cause instanceof Error ? cause.message : t('mon.envDeleteFailed'));
     } finally {
       setEnvBusy('');
     }
   }, [loadEnvKeys]);
 
   const applyEnvKeys = useCallback(async () => {
-    const target = applyAll ? 'web, jobs и monitor-agent' : 'web';
-    if (!window.confirm(`Пересоздать ${target}, чтобы новые ключи вступили в силу?\nСайт будет недоступен несколько секунд.`)) return;
+    const target = applyAll ? t('mon.scopeAll') : 'web';
+    if (!window.confirm(t('mon.envApplyConfirm', { target }))) return;
     setEnvBusy('apply');
     setEnvMessage('');
     try {
@@ -816,9 +838,9 @@ export default function ServerMonitorTab() {
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
-      setEnvMessage('Применение запущено — прогресс в блоке «Обновление проекта».');
+      setEnvMessage(t('mon.envApplyStarted'));
     } catch (cause) {
-      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось применить изменения');
+      setEnvMessage(cause instanceof Error ? cause.message : t('mon.envApplyFailed'));
     } finally {
       setEnvBusy('');
     }
@@ -826,44 +848,44 @@ export default function ServerMonitorTab() {
 
   const dashboard = snapshot && (
     <>
-      <section className="ops-summary-grid" aria-label="Сводка состояния">
+      <section className="ops-summary-grid" aria-label={t('mon.ariaSummary')}>
         <article className="ops-summary-card">
-          <div className="ops-summary-heading"><IconActivity size={16} /> Приложение</div>
-          <StatusPill level="healthy" label="Отвечает" />
-          <div className="ops-summary-value">{formatDuration(snapshot.application.uptimeSeconds)}</div>
-          <div className="ops-summary-note">аптайм · Node {snapshot.application.nodeVersion}</div>
+          <div className="ops-summary-heading"><IconActivity size={16} /> {t('mon.app')}</div>
+          <StatusPill level="healthy" label={t('mon.responding')} />
+          <div className="ops-summary-value">{formatDuration(snapshot.application.uptimeSeconds, t)}</div>
+          <div className="ops-summary-note">{t('mon.uptimeNode', { version: snapshot.application.nodeVersion })}</div>
         </article>
         <article className="ops-summary-card">
-          <div className="ops-summary-heading"><IconPackage size={16} /> База данных</div>
-          <StatusPill level={snapshot.database.status} label={snapshot.database.status === 'healthy' ? 'Доступна' : undefined} />
-          <div className="ops-summary-value">{snapshot.database.latencyMs == null ? '—' : `${snapshot.database.latencyMs} мс`}</div>
+          <div className="ops-summary-heading"><IconPackage size={16} /> {t('mon.database')}</div>
+          <StatusPill level={snapshot.database.status} label={snapshot.database.status === 'healthy' ? t('mon.available') : undefined} />
+          <div className="ops-summary-value">{snapshot.database.latencyMs == null ? '—' : t('mon.msValue', { value: snapshot.database.latencyMs })}</div>
           <div className="ops-summary-note">
-            {snapshot.database.configured ? 'проверка через Supabase REST' : 'не настроен service role key'}
+            {snapshot.database.configured ? t('mon.viaRest') : t('mon.noServiceKey')}
           </div>
         </article>
         <article className="ops-summary-card">
-          <div className="ops-summary-heading"><IconDatabase size={16} /> Место на диске</div>
-          <StatusPill level={sizeLevel(snapshot.database.size)} label={snapshot.database.size.available ? formatBytes(snapshot.database.size.databaseBytes) : 'нет данных'} />
-          <div className="ops-summary-value">{formatBytes(snapshot.database.size.schemaBytes)}</div>
+          <div className="ops-summary-heading"><IconDatabase size={16} /> {t('mon.diskSpace')}</div>
+          <StatusPill level={sizeLevel(snapshot.database.size)} label={snapshot.database.size.available ? formatBytes(snapshot.database.size.databaseBytes, t) : t('mon.noDataShort')} />
+          <div className="ops-summary-value">{formatBytes(snapshot.database.size.schemaBytes, t)}</div>
           <div className="ops-summary-note">
-            схема public · {snapshot.disk.available ? `свободно ${formatBytes(snapshot.disk.availableBytes)}` : 'свободное место недоступно'}
+            {t('mon.schemaFreePublic', { free: snapshot.disk.available ? t('mon.freeSpaceShort', { free: formatBytes(snapshot.disk.availableBytes, t) }) : t('mon.diskFreeUnavailable') })}
           </div>
         </article>
         <article className="ops-summary-card">
           <div className="ops-summary-heading"><IconActivity size={16} /> Docker</div>
           <StatusPill
             level={!snapshot.agent.connected ? 'unknown' : !snapshot.docker.available ? 'critical' : snapshot.docker.containers.some((item) => containerLevel(item) === 'critical') ? 'critical' : snapshot.docker.containers.some((item) => containerLevel(item) === 'warning') ? 'warning' : 'healthy'}
-            label={!snapshot.agent.connected ? 'Агент недоступен' : !snapshot.docker.available ? 'Нет доступа' : undefined}
+            label={!snapshot.agent.connected ? t('mon.agentUnavailable') : !snapshot.docker.available ? t('mon.noAccess') : undefined}
           />
           <div className="ops-summary-value">{snapshot.docker.containers.length || '—'}</div>
-          <div className="ops-summary-note">контейнеров проекта</div>
+          <div className="ops-summary-note">{t("mon.projectContainers")}</div>
         </article>
         <article className="ops-summary-card">
-          <div className="ops-summary-heading"><IconClock size={16} /> Обновления</div>
+          <div className="ops-summary-heading"><IconClock size={16} /> {t('mon.updates')}</div>
           <StatusPill level={projectLevel(snapshot)} />
-          <div className="ops-summary-value ops-summary-sha">{shortSha(snapshot.project.currentSha)}</div>
+          <div className="ops-summary-value ops-summary-sha">{shortSha(snapshot.project.currentSha, t)}</div>
           <div className="ops-summary-note">
-            {snapshot.project.aheadBy ? `свежих коммитов: ${snapshot.project.aheadBy}` : 'текущая сборка'}
+            {snapshot.project.aheadBy ? t('mon.freshCommitsShort', { count: snapshot.project.aheadBy }) : t('mon.currentBuild')}
           </div>
         </article>
       </section>
@@ -872,24 +894,24 @@ export default function ServerMonitorTab() {
         <section className="ops-panel">
           <div className="ops-panel-head">
             <div>
-              <h3>Контейнеры Docker</h3>
-              <p>Только сервисы этого Compose-проекта. Логи, переменные и конфигурация не выводятся.</p>
+              <h3>{t('mon.dockerTitle')}</h3>
+              <p>{t('mon.dockerNote')}</p>
             </div>
-            {snapshot.agent.connected && snapshot.docker.available && <StatusPill level="healthy" label="Агент подключён" />}
+            {snapshot.agent.connected && snapshot.docker.available && <StatusPill level="healthy" label={t('mon.agentConnected')} />}
           </div>
           {!snapshot.agent.configured && (
             <div className="ops-notice ops-notice-warning">
-              <IconAlert size={16} /> Монитор Docker выключен: задайте <code>MONITOR_AGENT_TOKEN</code> в <code>.env.production</code> и пересоберите сервисы.
+              <IconAlert size={16} /> {t('mon.dockerMonitorOff')}
             </div>
           )}
           {snapshot.agent.configured && !snapshot.agent.connected && (
             <div className="ops-notice ops-notice-critical">
-              <IconXCircle size={16} /> Приватный monitor-agent не отвечает. Проверьте статус сервиса и совпадение <code>MONITOR_AGENT_TOKEN</code>.
+              <IconXCircle size={16} /> {t('mon.agentNoResponse')}
             </div>
           )}
           {snapshot.agent.connected && !snapshot.docker.available && (
             <div className="ops-notice ops-notice-critical">
-              <IconXCircle size={16} /> Agent запущен, но Docker daemon недоступен. Внутренние данные Docker не раскрываются в интерфейсе.
+              <IconXCircle size={16} /> {t('mon.dockerDaemonDown')}
             </div>
           )}
           {snapshot.agent.connected && snapshot.docker.available && (
@@ -901,14 +923,14 @@ export default function ServerMonitorTab() {
                     <div className="ops-container-topline">
                       <div>
                         <div className="ops-container-service">{container.service}</div>
-                        <div className="ops-container-detail">{containerLabel(container)}</div>
+                        <div className="ops-container-detail">{containerLabel(container, t)}</div>
                       </div>
                       <StatusPill level={level} />
                     </div>
                     <dl className="ops-facts">
-                      <div><dt>Запущен</dt><dd>{formatDate(container.startedAt)}</dd></div>
-                      <div><dt>Перезапуски</dt><dd>{container.restartCount}</dd></div>
-                      <div><dt>Память</dt><dd>{container.metrics ? `${formatBytes(container.metrics.memoryBytes)}${container.metrics.memoryLimitBytes ? ` / ${formatBytes(container.metrics.memoryLimitBytes)}` : ''}` : '—'}</dd></div>
+                      <div><dt>{t('mon.startedLabel')}</dt><dd>{formatDate(container.startedAt, locale)}</dd></div>
+                      <div><dt>{t('mon.restarts')}</dt><dd>{container.restartCount}</dd></div>
+                      <div><dt>{t('mon.memory')}</dt><dd>{container.metrics ? `${formatBytes(container.metrics.memoryBytes, t)}${container.metrics.memoryLimitBytes ? ` / ${formatBytes(container.metrics.memoryLimitBytes, t)}` : ''}` : '—'}</dd></div>
                       <div><dt>CPU</dt><dd>{container.metrics?.cpuPercent == null ? '—' : `${container.metrics.cpuPercent}%`}</dd></div>
                     </dl>
                   </article>
@@ -921,20 +943,20 @@ export default function ServerMonitorTab() {
         <section className="ops-panel">
           <div className="ops-panel-head">
             <div>
-              <h3>Фоновые задачи</h3>
-              <p>Последний запуск из защищённого state-файла планировщика: успехи и последняя ошибка, если задача падает.</p>
+              <h3>{t('mon.jobsTitle')}</h3>
+              <p>{t('mon.jobsNote')}</p>
             </div>
             <StatusPill
               level={!snapshot.scheduler.available ? 'unknown' : snapshot.scheduler.jobs.some((job) => job.status === 'warning') ? 'warning' : snapshot.scheduler.jobs.every((job) => job.status === 'healthy') && snapshot.scheduler.jobs.length ? 'healthy' : 'unknown'}
-              label={snapshot.scheduler.available ? undefined : 'Нет state-файла'}
+              label={snapshot.scheduler.available ? undefined : t('mon.noStateFile')}
             />
           </div>
           {!snapshot.agent.connected ? (
-            <div className="ops-empty">Подключите monitor-agent, чтобы видеть выполнение задач.</div>
+            <div className="ops-empty">{t("mon.connectAgent")}</div>
           ) : !snapshot.scheduler.available ? (
-            <div className="ops-empty">Планировщик ещё не записал состояние или state-файл недоступен.</div>
+            <div className="ops-empty">{t("mon.schedulerNoState")}</div>
           ) : snapshot.scheduler.jobs.length === 0 ? (
-            <div className="ops-empty">В <code>JOBS_ENABLED</code> нет включённых задач.</div>
+            <div className="ops-empty">{t("mon.noJobsEnabled")}</div>
           ) : (
             <div className="ops-jobs-list">
               {snapshot.scheduler.jobs.map((job) => {
@@ -944,19 +966,19 @@ export default function ServerMonitorTab() {
                     <div className="ops-job-name"><StatusPill level={jobLevel(job)} /> <code>{job.name}</code></div>
                     {failing && (
                       <div className="ops-job-fact ops-job-error" title={job.lastError ?? undefined}>
-                        <span>Последняя ошибка</span>
+                        <span>{t('mon.lastError')}</span>
                         <strong>{job.lastError}</strong>
                       </div>
                     )}
                     {failing && (
                       <div className="ops-job-fact">
-                        <span>Сбой</span>
-                        <strong>{formatDate(job.lastFailureAt ?? null)}{job.failures ? ` · подряд: ${job.failures}` : ''}</strong>
+                        <span>{t('mon.failure')}</span>
+                        <strong>{formatDate(job.lastFailureAt ?? null, locale)}{job.failures ? t('mon.consecutive', { count: job.failures }) : ''}</strong>
                       </div>
                     )}
-                    <div className="ops-job-fact"><span>Последний успех</span><strong>{formatDate(job.lastSuccessAt)}</strong></div>
-                    <div className="ops-job-fact"><span>Давность</span><strong>{formatDuration(job.ageSeconds)}</strong></div>
-                    <div className="ops-job-fact"><span>Следующий слот</span><strong>{formatDate(job.nextRunAt)}</strong></div>
+                    <div className="ops-job-fact"><span>{t('mon.lastSuccess')}</span><strong>{formatDate(job.lastSuccessAt, locale)}</strong></div>
+                    <div className="ops-job-fact"><span>{t('mon.age')}</span><strong>{formatDuration(job.ageSeconds, t)}</strong></div>
+                    <div className="ops-job-fact"><span>{t('mon.nextSlot')}</span><strong>{formatDate(job.nextRunAt, locale)}</strong></div>
                   </article>
                 );
               })}
@@ -986,17 +1008,17 @@ export default function ServerMonitorTab() {
             <div className="ops-disk-grid">
               <div className="ops-disk-fact">
                 <span>Последняя синхронизация</span>
-                <strong>{formatDate(snapshot.content.lastSync?.at)}</strong>
+                <strong>{formatDate(snapshot.content.lastSync?.at, locale)}</strong>
                 <small>{snapshot.content.lastSync ? `${snapshot.content.lastSync.status ?? '—'} · статей ${snapshot.content.lastSync.articlesCount ?? 0}, новых ${snapshot.content.lastSync.newCount ?? 0}` : 'записей нет'}</small>
               </div>
               <div className="ops-disk-fact">
                 <span>Galnet ждёт перевода</span>
-                <strong>{formatCount(snapshot.content.queue.find((item) => item.table === 'galnet_news')?.pending)}</strong>
+                <strong>{formatCount(snapshot.content.queue.find((item) => item.table === 'galnet_news')?.pending, locale)}</strong>
                 <small>pending / failed / partial</small>
               </div>
               <div className="ops-disk-fact">
                 <span>Новости ждут перевода</span>
-                <strong>{formatCount(snapshot.content.queue.find((item) => item.table === 'news')?.pending)}</strong>
+                <strong>{formatCount(snapshot.content.queue.find((item) => item.table === 'news')?.pending, locale)}</strong>
                 <small>таблица news</small>
               </div>
               <div className="ops-disk-fact">
@@ -1039,14 +1061,14 @@ export default function ServerMonitorTab() {
             <StatusPill level={projectLevel(snapshot)} />
           </div>
           <div className="ops-project-grid">
-            <div className="ops-project-item"><span>Текущий commit</span><strong><code>{shortSha(snapshot.project.currentSha)}</code></strong></div>
+            <div className="ops-project-item"><span>Текущий commit</span><strong><code>{shortSha(snapshot.project.currentSha, t)}</code></strong></div>
             <div className="ops-project-item"><span>Ветка сборки</span><strong>{snapshot.project.currentRef ?? '—'}</strong></div>
-            <div className="ops-project-item"><span>Собрано</span><strong>{formatDate(snapshot.project.builtAt)}</strong></div>
-            <div className="ops-project-item"><span>GitHub {snapshot.project.upstreamBranch}</span><strong><code>{shortSha(snapshot.project.upstreamSha)}</code></strong></div>
+            <div className="ops-project-item"><span>Собрано</span><strong>{formatDate(snapshot.project.builtAt, locale)}</strong></div>
+            <div className="ops-project-item"><span>GitHub {snapshot.project.upstreamBranch}</span><strong><code>{shortSha(snapshot.project.upstreamSha, t)}</code></strong></div>
             <div className="ops-project-item"><span>Свежих коммитов</span><strong>{snapshot.project.aheadBy == null ? '—' : snapshot.project.aheadBy}</strong></div>
           </div>
           {snapshot.project.updateStatus === 'current' && (
-            <div className="ops-notice ops-notice-healthy"><IconCheckCircle size={16} /> Сборка совпадает с последней ревизией main, проверенной {formatDate(snapshot.project.upstreamCheckedAt)}.</div>
+            <div className="ops-notice ops-notice-healthy"><IconCheckCircle size={16} /> Сборка совпадает с последней ревизией main, проверенной {formatDate(snapshot.project.upstreamCheckedAt, locale)}.</div>
           )}
           {snapshot.project.updateStatus === 'different' && (
             <div className="ops-notice ops-notice-warning"><IconAlert size={16} /> Ревизия main отличается от развёрнутой. Обновите проект кнопкой справа — планировщик пересборки ждать не нужно.</div>
@@ -1064,7 +1086,7 @@ export default function ServerMonitorTab() {
             </div>
             <StatusPill
               level={updateConnected ? (update ? stateMetaFor(update).level : 'unknown') : updateConfigured ? 'critical' : 'unknown'}
-              label={updateConnected ? stateMetaFor(update).label : updateConfigured ? 'Update-агент не отвечает' : 'Агент не настроен'}
+              label={updateConnected ? t(stateMetaFor(update).label) : updateConfigured ? t('mon.agentNoAnswerShort') : t('mon.agentNotConfigured')}
             />
           </div>
 
@@ -1125,8 +1147,8 @@ export default function ServerMonitorTab() {
               </ul>
               <dl className="ops-facts">
                 <div><dt>Стадия</dt><dd>{update.stageLabel || update.stage || '—'}</dd></div>
-                <div><dt>Начало</dt><dd>{formatDate(update.startedAt)}</dd></div>
-                <div><dt>Обновлено</dt><dd>{formatDate(update.updatedAt)}</dd></div>
+                <div><dt>Начало</dt><dd>{formatDate(update.startedAt, locale)}</dd></div>
+                <div><dt>Обновлено</dt><dd>{formatDate(update.updatedAt, locale)}</dd></div>
                 {update.kind === 'env' ? (
                   <div><dt>Область</dt><dd>{update.mode === 'all' ? 'web + jobs + monitor-agent' : 'web'}</dd></div>
                 ) : update.kind === 'smtp' ? (
@@ -1378,12 +1400,12 @@ export default function ServerMonitorTab() {
       <section className="ops-panel ops-technical-panel">
         <h3>Технические сведения</h3>
         <dl className="ops-facts ops-technical-facts">
-          <div><dt>Старт приложения</dt><dd>{formatDate(snapshot.application.startedAt)}</dd></div>
-          <div><dt>Память процесса</dt><dd>{formatBytes(snapshot.application.memory.rssBytes)} RSS · {formatBytes(snapshot.application.memory.heapUsedBytes)} heap</dd></div>
+          <div><dt>Старт приложения</dt><dd>{formatDate(snapshot.application.startedAt, locale)}</dd></div>
+          <div><dt>Память процесса</dt><dd>{formatBytes(snapshot.application.memory.rssBytes, t)} RSS · {formatBytes(snapshot.application.memory.heapUsedBytes, t)} heap</dd></div>
           <div><dt>Проверка БД</dt><dd>{snapshot.database.latencyMs == null ? 'нет ответа' : `${snapshot.database.latencyMs} мс`}</dd></div>
-          <div><dt>Размер БД</dt><dd>{snapshot.database.size.available ? `${formatBytes(snapshot.database.size.databaseBytes)} · замер ${formatDate(snapshot.database.size.measuredAt)}` : 'нет прямого подключения'}</dd></div>
-          <div><dt>Диск</dt><dd>{snapshot.disk.available ? `${formatBytes(snapshot.disk.usedBytes)} из ${formatBytes(snapshot.disk.totalBytes)} · свободно ${formatBytes(snapshot.disk.availableBytes)}` : 'monitor-agent не отдаёт statfs'}</dd></div>
-          <div><dt>Обновлено</dt><dd>{formatDate(snapshot.checkedAt)}</dd></div>
+          <div><dt>Размер БД</dt><dd>{snapshot.database.size.available ? `${formatBytes(snapshot.database.size.databaseBytes, t)} · замер ${formatDate(snapshot.database.size.measuredAt, locale)}` : 'нет прямого подключения'}</dd></div>
+          <div><dt>Диск</dt><dd>{snapshot.disk.available ? `${formatBytes(snapshot.disk.usedBytes, t)} из ${formatBytes(snapshot.disk.totalBytes, t)} · свободно ${formatBytes(snapshot.disk.availableBytes, t)}` : t('mon.noStatfs')}</dd></div>
+          <div><dt>Обновлено</dt><dd>{formatDate(snapshot.checkedAt, locale)}</dd></div>
         </dl>
       </section>
     </>
@@ -1398,7 +1420,7 @@ export default function ServerMonitorTab() {
           <p>Состояние сайта, базы данных и диска, Docker, фоновых задач и развёрнутой версии проекта.</p>
         </div>
         <div className="ops-header-actions">
-          {snapshot && <StatusPill level={snapshot.overall} label={LEVEL_META[snapshot.overall].label} />}
+          {snapshot && <StatusPill level={snapshot.overall} label={t(LEVEL_META[snapshot.overall].label)} />}
           <label className="ops-auto-refresh">
             <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
             автообновление 20 с
