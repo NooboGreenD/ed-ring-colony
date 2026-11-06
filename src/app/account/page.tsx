@@ -1315,12 +1315,12 @@ export default function AccountPage() {
                   <div>
                     <div style={{ fontSize: 13, color: "#eeeeee" }}>{token.name}</div>
                     <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4, fontFamily: "ui-monospace, monospace" }}>
-                      {t('accountoken.created')} {new Date(token.created_at).toLocaleDateString('ru')}
-                      {token.last_used_at && ` • {t('accountoken.used')} ${new Date(token.last_used_at).toLocaleDateString('ru')}`}
-                      {token.is_revoked && <span style={{ color: '#e74c3c' }}> • {t('accountoken.revoked')}</span>}
+                      {t('account.created')} {new Date(token.created_at).toLocaleDateString()}
+                      {token.last_used_at && ` • ${t('account.used')} ${new Date(token.last_used_at).toLocaleDateString()}`}
+                      {token.is_revoked && <span style={{ color: '#e74c3c' }}> • {t('account.revoked')}</span>}
                     </div>
                   </div>
-                  {!token.is_revoked && (<button onClick={() => revokeToken(token.id)} className="btn danger-btn" style={{ fontSize: 11, padding: '6px 12px' }}>{t('accountoken.revoke')}</button>)}
+                  {!token.is_revoked && (<button onClick={() => revokeToken(token.id)} className="btn danger-btn" style={{ fontSize: 11, padding: '6px 12px' }}>{t('account.revoke')}</button>)}
                 </div>
               ))}
             </div>

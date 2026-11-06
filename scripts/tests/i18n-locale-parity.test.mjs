@@ -127,3 +127,47 @@ for (const file of DICTIONARIES) {
     }
   });
 }
+
+/**
+ * Обратная проверка: ключ, который код запрашивает, но которого нет в словаре.
+ *
+ * `t()` при отсутствии ключа возвращает сам ключ — то есть в интерфейсе
+ * появляется `accountoken.created`. Именно так и случилось: в блоке токенов
+ * личного кабинета стояло `t('accountoken.created')` вместо
+ * `t('account.created')`, и вместо даты создания командир видел имя ключа.
+ * Проверка ловит опечатку до того, как её увидит человек.
+ *
+ * Динамические ключи (шаблонные строки и склейки) здесь не проверяются: у них
+ * нет литерала, который можно сверить.
+ */
+function sourceFiles(dir, result = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) sourceFiles(full, result);
+    else if (/\.(ts|tsx)$/.test(entry.name)) result.push(full);
+  }
+  return result;
+}
+
+function declaredKeys() {
+  const keys = new Set();
+  for (const file of DICTIONARIES) {
+    for (const [key] of dictionaries(file).ru ?? new Map()) keys.add(key);
+  }
+  return keys;
+}
+
+test('все ключи, которые запрашивает код, есть в словаре', () => {
+  const declared = declaredKeys();
+  const missing = [];
+  for (const file of sourceFiles(path.join(ROOT, 'src'))) {
+    const source = fs.readFileSync(file, 'utf8');
+    for (const match of source.matchAll(/\bt\(\s*['"]([A-Za-z0-9_.]+)['"]/g)) {
+      if (!declared.has(match[1])) {
+        missing.push(`${path.relative(ROOT, file)}: ${match[1]}`);
+      }
+    }
+  }
+  assert.deepEqual([...new Set(missing)], [],
+    'ключ запрошен, но не объявлен — в интерфейсе будет имя ключа: ' + describe(missing));
+});

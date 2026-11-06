@@ -90,7 +90,7 @@ export default function CategoryPageClient({ category, threads, totalCount, tota
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
             <h1 style={{ margin: 0 }}>{category.name}</h1>
             <div style={{ fontSize: 12, color: "var(--muted)" }}>
-              {t("forum.threads")}: {totalCount} · {t("admin.order")} {currentPage} {t("admin.of")} {totalPages || 1}
+              {t("forum.threads")}: {totalCount} · {t("admin.page")} {currentPage} {t("admin.of")} {totalPages || 1}
             </div>
           </div>
 

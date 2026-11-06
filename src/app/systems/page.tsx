@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { toast } from '@/components/ui/Toaster';
 import { IconRocket, IconRingPlanet, IconGlobe, IconChevronUp, IconChevronDown, IconSearch, IconCheck, IconMapPin, IconSun, IconLock, IconExternalLink } from '@/components/Icons';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 type Resource = {
   name: string;
@@ -186,6 +187,7 @@ function bodyStats(planets: EdsmPlanet[]) {
 
 function PlanetCard({ planet }: { planet: EdsmPlanet }) {
   const [expanded, setExpanded] = useState(false);
+  const { t } = useI18n();
   const color = planetTypeColor(planet.subType);
 
   return (
@@ -216,7 +218,7 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
               background: 'rgba(34,197,94,0.12)',
               padding: '1px 6px', borderRadius: 4,
             }}>
-              <IconRocket size={12} /> Пригодна
+              <IconRocket size={12} /> {t('sys.landableBadge')}
             </span>
           )}
           {planet.rings && planet.rings.length > 0 && (
@@ -225,7 +227,7 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
               background: 'rgba(251,191,36,0.12)',
               padding: '1px 6px', borderRadius: 4,
             }}>
-              <IconRingPlanet size={12} /> Кольца
+              <IconRingPlanet size={12} /> {t('sys.ringsBadge')}
             </span>
           )}
           {planet.terraformingState && planet.terraformingState !== 'Not terraformable' && (
@@ -240,7 +242,7 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
-            {planet.distanceToArrival != null ? `${planet.distanceToArrival.toFixed(1)} св.с.` : '—'}
+            {planet.distanceToArrival != null ? `${planet.distanceToArrival.toFixed(1)} ${t('sys.ls')}` : '—'}
           </span>
           <span style={{ fontSize: 11, color: '#6b7280' }}>{expanded ? <IconChevronUp size={10} /> : <IconChevronDown size={10} />}</span>
         </div>
@@ -259,16 +261,16 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
           <span>g: <strong style={{ color: '#eeeeee' }}>{planet.gravity.toFixed(2)}</strong></span>
         )}
         {planet.surfaceTemperature != null && (
-          <span>Т: <strong style={{ color: '#eeeeee' }}>{planet.surfaceTemperature.toFixed(0)} K</strong></span>
+          <span>{t('sys.shortT')} <strong style={{ color: '#eeeeee' }}>{planet.surfaceTemperature.toFixed(0)} K</strong></span>
         )}
         {planet.earthMasses != null && (
-          <span>М: <strong style={{ color: '#eeeeee' }}>{planet.earthMasses.toFixed(3)} M⊕</strong></span>
+          <span>{t('sys.shortM')} <strong style={{ color: '#eeeeee' }}>{planet.earthMasses.toFixed(3)} M⊕</strong></span>
         )}
         {planet.radius != null && (
-          <span>R: <strong style={{ color: '#eeeeee' }}>{planet.radius.toFixed(0)} км</strong></span>
+          <span>{t('sys.shortR')} <strong style={{ color: '#eeeeee' }}>{planet.radius.toFixed(0)} {t('sys.km')}</strong></span>
         )}
         {planet.atmosphereType && planet.atmosphereType !== 'No atmosphere' && (
-          <span>Атм: <strong style={{ color: '#eeeeee' }}>{planet.atmosphereType}</strong></span>
+          <span>{t('sys.shortAtm')} <strong style={{ color: '#eeeeee' }}>{planet.atmosphereType}</strong></span>
         )}
       </div>
 
@@ -282,46 +284,46 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
             fontSize: 12,
           }}>
             {planet.earthMasses != null && (
-              <><span style={{ color: '#6b7280' }}>Масса:</span><span style={{ color: '#eeeeee' }}>{planet.earthMasses.toFixed(4)} M⊕</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.mass')}</span><span style={{ color: '#eeeeee' }}>{planet.earthMasses.toFixed(4)} M⊕</span></>
             )}
             {planet.radius != null && (
-              <><span style={{ color: '#6b7280' }}>Радиус:</span><span style={{ color: '#eeeeee' }}>{planet.radius.toFixed(1)} км</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.radius')}</span><span style={{ color: '#eeeeee' }}>{planet.radius.toFixed(1)} {t('sys.km')}</span></>
             )}
             {planet.gravity != null && (
-              <><span style={{ color: '#6b7280' }}>Гравитация:</span><span style={{ color: '#eeeeee' }}>{planet.gravity.toFixed(2)} g</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.gravity')}</span><span style={{ color: '#eeeeee' }}>{planet.gravity.toFixed(2)} g</span></>
             )}
             {planet.surfaceTemperature != null && (
-              <><span style={{ color: '#6b7280' }}>Температура:</span><span style={{ color: '#eeeeee' }}>{planet.surfaceTemperature.toFixed(1)} K</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.temperature')}</span><span style={{ color: '#eeeeee' }}>{planet.surfaceTemperature.toFixed(1)} K</span></>
             )}
             {planet.surfacePressure != null && (
-              <><span style={{ color: '#6b7280' }}>Давление:</span><span style={{ color: '#eeeeee' }}>{planet.surfacePressure.toFixed(2)} атм.</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.pressure')}</span><span style={{ color: '#eeeeee' }}>{planet.surfacePressure.toFixed(2)} {t('sys.atm')}</span></>
             )}
             {planet.distanceToArrival != null && (
-              <><span style={{ color: '#6b7280' }}>До входа:</span><span style={{ color: '#eeeeee' }}>{planet.distanceToArrival.toFixed(1)} св.с.</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.distToArrival')}</span><span style={{ color: '#eeeeee' }}>{planet.distanceToArrival.toFixed(1)} {t('sys.ls')}</span></>
             )}
             {planet.orbitalPeriod != null && (
-              <><span style={{ color: '#6b7280' }}>Орбитальный период:</span><span style={{ color: '#eeeeee' }}>{planet.orbitalPeriod.toFixed(2)} д</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.orbitalPeriod')}</span><span style={{ color: '#eeeeee' }}>{planet.orbitalPeriod.toFixed(2)} {t('sys.days')}</span></>
             )}
             {planet.semiMajorAxis != null && (
-              <><span style={{ color: '#6b7280' }}>Большая полуось:</span><span style={{ color: '#eeeeee' }}>{(planet.semiMajorAxis / 149597870.7).toFixed(3)} а.е.</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.semiMajorAxis')}</span><span style={{ color: '#eeeeee' }}>{(planet.semiMajorAxis / 149597870.7).toFixed(3)} {t('sys.au')}</span></>
             )}
             {planet.orbitalEccentricity != null && (
-              <><span style={{ color: '#6b7280' }}>Эксцентриситет:</span><span style={{ color: '#eeeeee' }}>{planet.orbitalEccentricity.toFixed(4)}</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.eccentricity')}</span><span style={{ color: '#eeeeee' }}>{planet.orbitalEccentricity.toFixed(4)}</span></>
             )}
             {planet.orbitalInclination != null && (
-              <><span style={{ color: '#6b7280' }}>Наклонение:</span><span style={{ color: '#eeeeee' }}>{planet.orbitalInclination.toFixed(2)}°</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.inclination')}</span><span style={{ color: '#eeeeee' }}>{planet.orbitalInclination.toFixed(2)}°</span></>
             )}
             {planet.rotationalPeriod != null && (
-              <><span style={{ color: '#6b7280' }}>Период вращения:</span><span style={{ color: '#eeeeee' }}>{planet.rotationalPeriod.toFixed(2)} д {planet.rotationalPeriodTidallyLocked ? '(захвачена)' : ''}</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.rotationPeriod')}</span><span style={{ color: '#eeeeee' }}>{planet.rotationalPeriod.toFixed(2)} {t('sys.days')} {planet.rotationalPeriodTidallyLocked ? t('sys.tidallyLocked') : ''}</span></>
             )}
             {planet.axialTilt != null && (
-              <><span style={{ color: '#6b7280' }}>Наклон оси:</span><span style={{ color: '#eeeeee' }}>{planet.axialTilt.toFixed(2)}°</span></>
+              <><span style={{ color: '#6b7280' }}>{t('sys.axialTilt')}</span><span style={{ color: '#eeeeee' }}>{planet.axialTilt.toFixed(2)}°</span></>
             )}
           </div>
 
           {planet.atmosphereType && planet.atmosphereType !== 'No atmosphere' && (
             <div style={{ marginTop: 8 }}>
-              <span style={{ fontSize: 11, color: '#6b7280' }}>Атмосфера: </span>
+              <span style={{ fontSize: 11, color: '#6b7280' }}>{t('sys.atmosphere')} </span>
               <span style={{ fontSize: 12, color: '#eeeeee' }}>{planet.atmosphereType}</span>
               {planet.atmosphereComposition && (
                 <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
@@ -336,14 +338,14 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
 
           {planet.volcanismType && planet.volcanismType !== 'No volcanism' && (
             <div style={{ marginTop: 6 }}>
-              <span style={{ fontSize: 11, color: '#6b7280' }}>Вулканизм: </span>
+              <span style={{ fontSize: 11, color: '#6b7280' }}>{t('sys.volcanism')} </span>
               <span style={{ fontSize: 12, color: '#e74c3c' }}>{planet.volcanismType}</span>
             </div>
           )}
 
           {planet.materials && Object.keys(planet.materials).length > 0 && (
             <div style={{ marginTop: 8 }}>
-              <span style={{ fontSize: 11, color: '#6b7280' }}>Материалы: </span>
+              <span style={{ fontSize: 11, color: '#6b7280' }}>{t('sys.materials')} </span>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 10px', marginTop: 2 }}>
                 {Object.entries(planet.materials)
                   .sort((a, b) => b[1] - a[1])
@@ -358,7 +360,7 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
 
           {planet.rings && planet.rings.length > 0 && (
             <div style={{ marginTop: 8 }}>
-              <span style={{ fontSize: 11, color: '#6b7280' }}>Кольца: </span>
+              <span style={{ fontSize: 11, color: '#6b7280' }}>{t('sys.ringsLabel')} </span>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
                 {planet.rings.map((ring: any, i: number) => (
                   <span key={i} style={{
@@ -377,7 +379,7 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
 
           {planet.solidComposition && Object.keys(planet.solidComposition).length > 0 && (
             <div style={{ marginTop: 8 }}>
-              <span style={{ fontSize: 11, color: '#6b7280' }}>Состав: </span>
+              <span style={{ fontSize: 11, color: '#6b7280' }}>{t('sys.composition')} </span>
               <span style={{ fontSize: 11, color: '#9ca3af' }}>
                 {Object.entries(planet.solidComposition)
                   .sort((a, b) => b[1] - a[1])
@@ -393,6 +395,7 @@ function PlanetCard({ planet }: { planet: EdsmPlanet }) {
 }
 
 export default function SystemsPage() {
+  const { t, locale } = useI18n();
   const [tab, setTab] = useState<Tab>('search');
   const [hubs, setHubs] = useState<{ system_name: string; name: string; status: string }[]>([]);
   const [current, setCurrent] = useState('');
@@ -540,7 +543,7 @@ export default function SystemsPage() {
   const doSearch = useCallback(async () => {
     const q = searchQuery.trim();
     if (!q || q.length < 2) {
-      toast?.('Введите минимум 2 символа', 'error');
+      toast?.(t('sys.errMinChars'), 'error');
       return;
     }
     setSearchLoading(true);
@@ -567,7 +570,7 @@ export default function SystemsPage() {
       const res = await fetch(`/api/edsm/search?q=${encodeURIComponent(q)}`);
       const data = await res.json();
       if (!res.ok) {
-        toast?.(data.error || 'Ошибка поиска', 'error');
+        toast?.(data.error || t('sys.errSearch'), 'error');
         setSearchResults([]);
         return;
       }
@@ -577,7 +580,7 @@ export default function SystemsPage() {
         return next;
       });
     } catch (err: any) {
-      toast?.(err.message || 'Ошибка поиска', 'error');
+      toast?.(err.message || t('sys.errSearch'), 'error');
     } finally {
       setSearchLoading(false);
     }
@@ -591,7 +594,7 @@ export default function SystemsPage() {
       const res = await fetch(url);
       const data = await res.json();
       if (!res.ok) {
-        const msg = data.error || `Ошибка загрузки системы (HTTP ${res.status})`;
+        const msg = data.error || t('sys.errLoadSystem', { status: res.status });
         toast(msg, 'error');
         // Fallback: show basic info from search results
         const basic = searchResults.find((s) => s.name === name);
@@ -616,7 +619,7 @@ export default function SystemsPage() {
       }
       setSelectedSystem(data);
     } catch (err: any) {
-      toast(err.message || 'Ошибка загрузки', 'error');
+      toast(err.message || t('sys.errLoad'), 'error');
       // Fallback: show basic info from search results
       const basic = searchResults.find((s) => s.name === name);
       if (basic) {
@@ -647,31 +650,31 @@ export default function SystemsPage() {
 
   return (
     <main className="card" style={{ width: "100%" }}>
-      <h1>Прогресс систем</h1>
+      <h1>{t('sys.title')}</h1>
       <p style={{ color: '#9ca3af', fontSize: 14 }}>
-        Данные строительства подтягиваются с{' '}
+        {t('sys.introBefore')}{' '}
         <a href="https://ravencolonial.com" target="_blank" rel="noreferrer" style={{ color: '#e67e22' }}>
           Raven Colonial
         </a>
-        . Поиск систем сначала идёт по локальному каталогу Spansh, затем через{' '}
+        {t('sys.introBetween')}{' '}
         <a href="https://www.edsm.net" target="_blank" rel="noreferrer" style={{ color: '#e67e22' }}>
           EDSM
         </a>
-        . Нужно, чтобы стройка системы была заведена на их сайте (SrvSurvey / EDMC).
+        {t('sys.introAfter')}
       </p>
 
       <div className="tabs">
         <button className={tab === 'search' ? 'tab tab-active' : 'tab'} onClick={() => switchTab('search')}>
-          <IconSearch size={14} /> Поиск систем
+          <IconSearch size={14} /> {t('sys.tabSearch')}
         </button>
         <button className={tab === 'hubs' ? 'tab tab-active' : 'tab'} onClick={() => switchTab('hubs')}>
-          Хабы
+          {t('sys.tabHubs')}
         </button>
         <button className={tab === 'route' ? 'tab tab-active' : 'tab'} onClick={() => switchTab('route')}>
-          Маршрут ({routeRows.length})
+          {t('sys.tabRoute')} ({routeRows.length})
         </button>
         <button className={tab === 'deliveries' ? 'tab tab-active' : 'tab'} onClick={() => switchTab('deliveries')}>
-          Доставки
+          {t('sys.tabDeliveries')}
         </button>
       </div>
 
@@ -683,7 +686,7 @@ export default function SystemsPage() {
           <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
             <input
               style={{ flex: 1, minWidth: 200 }}
-              placeholder="Введите название системы (например, Sol, Colonia, Sagittarius A*)"
+              placeholder={t('sys.searchPlaceholder')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={handleSearchKeyDown}
@@ -693,13 +696,13 @@ export default function SystemsPage() {
               disabled={searchLoading || searchQuery.trim().length < 2}
               className="btn btn-cyan"
             >
-              {searchLoading ? 'Поиск...' : 'Найти'}
+              {searchLoading ? t('sys.searching') : t('sys.find')}
             </button>
           </div>
 
           {searchHistory.length > 0 && (
             <div style={{ marginBottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: '#6b7280' }}>История:</span>
+              <span style={{ fontSize: 12, color: '#6b7280' }}>{t('sys.history')}</span>
               {searchHistory.map((h) => (
                 <button
                   key={h}
@@ -726,11 +729,11 @@ export default function SystemsPage() {
               <table>
                 <thead>
                   <tr>
-                    <th>Система</th>
-                    <th>Координаты</th>
-                    <th>До Sol</th>
-                    <th>Тел</th>
-                    <th>Пермит</th>
+                    <th>{t('sys.colSystem')}</th>
+                    <th>{t('sys.colCoords')}</th>
+                    <th>{t('sys.colToSol')}</th>
+                    <th>{t('sys.colBodies')}</th>
+                    <th>{t('sys.colPermit')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -749,16 +752,16 @@ export default function SystemsPage() {
                           : '—'}
                       </td>
                       <td style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>
-                        {s.distance != null ? `${s.distance.toFixed(2)} св.г.` : '—'}
+                        {s.distance != null ? `${s.distance.toFixed(2)} ${t('sys.ly')}` : '—'}
                       </td>
                       <td style={{ textAlign: 'center' }}>
                         {s.bodyCount ?? s.starLabel ?? '—'}
                       </td>
                       <td>
                         {s.requirePermit ? (
-                          <span style={{ color: '#e74c3c', fontSize: 12 }}>⚠ {s.permitName || 'Требуется'}</span>
+                          <span style={{ color: '#e74c3c', fontSize: 12 }}>⚠ {s.permitName || t('sys.permitRequired')}</span>
                         ) : (
-                          <span style={{ color: '#22c55e', fontSize: 12 }}><IconCheck size={12} color='#22c55e' /> Нет</span>
+                          <span style={{ color: '#22c55e', fontSize: 12 }}><IconCheck size={12} color='#22c55e' /> {t('sys.no')}</span>
                         )}
                       </td>
                     </tr>
@@ -766,15 +769,15 @@ export default function SystemsPage() {
                 </tbody>
               </table>
               <p style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
-                Найдено {searchResults.length} систем
-                {searchSource === 'catalog' ? ' в каталоге Spansh' : searchSource === 'edsm' ? ' в EDSM' : ''}.
-                Кликните по строке для детальной информации.
+                {t('sys.found', { count: searchResults.length })}
+                {searchSource === 'catalog' ? t('sys.foundInCatalog') : searchSource === 'edsm' ? t('sys.foundInEdsm') : ''}.
+                {t('sys.clickRow')}
               </p>
             </div>
           )}
 
           {searchResults.length === 0 && !searchLoading && searchQuery.trim().length >= 2 && (
-            <p style={{ color: '#9ca3af' }}>Системы не найдены. Попробуйте изменить запрос.</p>
+            <p style={{ color: '#9ca3af' }}>{t('sys.nothingFound')}</p>
           )}
 
           {/* Детальная карточка системы */}
@@ -788,7 +791,7 @@ export default function SystemsPage() {
                 animation: 'spin 1s linear infinite',
                 margin: '0 auto 12px',
               }} />
-              Загрузка данных системы из EDSM...
+              {t('sys.loadingSystem')}
             </div>
           )}
 
@@ -799,7 +802,7 @@ export default function SystemsPage() {
                 onClick={() => setSelectedSystem(null)}
                 style={{ fontSize: 12, marginBottom: 12, color: '#9ca3af', background: 'none', border: 'none', cursor: 'pointer' }}
               >
-                ← Назад к результатам
+                {t('sys.backToResults')}
               </button>
 
               {/* Заголовок системы */}
@@ -821,17 +824,17 @@ export default function SystemsPage() {
                       )}
                       {selectedSystem.distanceToSol != null && (
                         <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                          <IconSun size={12} /> До Sol: <strong style={{ color: '#e67e22' }}>{selectedSystem.distanceToSol.toLocaleString('ru')} св.г.</strong>
+                          <IconSun size={12} /> {t('sys.toSol')} <strong style={{ color: '#e67e22' }}>{selectedSystem.distanceToSol.toLocaleString(locale)} {t('sys.ly')}</strong>
                         </span>
                       )}
                       {selectedSystem.bodyCount != null && (
                         <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                          🪐 Тел: <strong style={{ color: '#eeeeee' }}>{selectedSystem.bodyCount}</strong>
+                          🪐 {t('sys.bodies')} <strong style={{ color: '#eeeeee' }}>{selectedSystem.bodyCount}</strong>
                         </span>
                       )}
                       {selectedSystem.requirePermit && (
                         <span style={{ fontSize: 12, color: '#e74c3c' }}>
-                          <IconLock size={12} /> Пермит: {selectedSystem.permitName || 'Требуется'}
+                          <IconLock size={12} /> {t('sys.permitLabel')} {selectedSystem.permitName || t('sys.permitRequired')}
                         </span>
                       )}
                     </div>
@@ -842,7 +845,7 @@ export default function SystemsPage() {
                       className="btn btn-orange"
                       style={{ fontSize: 11, padding: '6px 14px' }}
                     >
-                      Карточка
+                      {t('sys.card')}
                     </a>
                     <a
                       href={selectedSystem.edsmUrl}
@@ -880,11 +883,11 @@ export default function SystemsPage() {
                 }}>
                   <div style={{ textAlign: 'center', minWidth: 80 }}>
                     <div style={{ fontSize: 20, fontWeight: 700, color: '#f39c12' }}>{selectedSystem.stars.length}</div>
-                    <div style={{ fontSize: 11, color: '#9ca3af' }}>Звёзд</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>{t('sys.starsCount')}</div>
                   </div>
                   <div style={{ textAlign: 'center', minWidth: 80 }}>
                     <div style={{ fontSize: 20, fontWeight: 700, color: '#60a5fa' }}>{selectedSystem.planets.length}</div>
-                    <div style={{ fontSize: 11, color: '#9ca3af' }}>Планет/тел</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>{t('sys.planetsBodies')}</div>
                   </div>
                   {(() => {
                     const stats = bodyStats(selectedSystem.planets);
@@ -893,25 +896,25 @@ export default function SystemsPage() {
                         {stats.landable > 0 && (
                           <div style={{ textAlign: 'center', minWidth: 80 }}>
                             <div style={{ fontSize: 20, fontWeight: 700, color: '#22c55e' }}>{stats.landable}</div>
-                            <div style={{ fontSize: 11, color: '#9ca3af' }}>Пригодных</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>{t('sys.landableCount')}</div>
                           </div>
                         )}
                         {stats.withAtmo > 0 && (
                           <div style={{ textAlign: 'center', minWidth: 80 }}>
                             <div style={{ fontSize: 20, fontWeight: 700, color: '#a855f7' }}>{stats.withAtmo}</div>
-                            <div style={{ fontSize: 11, color: '#9ca3af' }}>С атмосферой</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>{t('sys.withAtmosphere')}</div>
                           </div>
                         )}
                         {stats.withRings > 0 && (
                           <div style={{ textAlign: 'center', minWidth: 80 }}>
                             <div style={{ fontSize: 20, fontWeight: 700, color: '#fbbf24' }}>{stats.withRings}</div>
-                            <div style={{ fontSize: 11, color: '#9ca3af' }}>С кольцами</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>{t('sys.withRings')}</div>
                           </div>
                         )}
                         {stats.terraformable > 0 && (
                           <div style={{ textAlign: 'center', minWidth: 80 }}>
                             <div style={{ fontSize: 20, fontWeight: 700, color: '#3b82f6' }}>{stats.terraformable}</div>
-                            <div style={{ fontSize: 11, color: '#9ca3af' }}>Терраформ.</div>
+                            <div style={{ fontSize: 11, color: '#9ca3af' }}>{t('sys.terraformable')}</div>
                           </div>
                         )}
                       </>
@@ -924,19 +927,19 @@ export default function SystemsPage() {
               {selectedSystem.stars.length > 0 && (
                 <div style={{ marginBottom: 16 }}>
                   <h3 style={{ fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', color: '#f39c12', margin: '0 0 10px 0' }}>
-                    ★ Звёзды ({selectedSystem.stars.length})
+                    {t('sys.starsSection', { count: selectedSystem.stars.length })}
                   </h3>
                   <div className="table-scroll">
                     <table style={{ fontSize: 12 }}>
                       <thead>
                         <tr>
-                          <th>Название</th>
-                          <th>Класс</th>
-                          <th>Масса M<IconSun size={12} /></th>
-                          <th>Радиус R<IconSun size={12} /></th>
-                          <th>Темп. K</th>
-                          <th>Возраст</th>
-                          <th>До входа</th>
+                          <th>{t('sys.colName')}</th>
+                          <th>{t('sys.colClass')}</th>
+                          <th>{t('sys.colMassSun')}<IconSun size={12} /></th>
+                          <th>{t('sys.colRadiusSun')}<IconSun size={12} /></th>
+                          <th>{t('sys.colTempK')}</th>
+                          <th>{t('sys.colAge')}</th>
+                          <th>{t('sys.colDistToArrival')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -956,8 +959,8 @@ export default function SystemsPage() {
                             </td>
                             <td style={{ fontFamily: 'ui-monospace, monospace' }}>{star.solarMasses?.toFixed(3) ?? '—'}</td>
                             <td style={{ fontFamily: 'ui-monospace, monospace' }}>{star.solarRadius?.toFixed(3) ?? '—'}</td>
-                            <td style={{ fontFamily: 'ui-monospace, monospace' }}>{star.surfaceTemperature?.toLocaleString('ru') ?? '—'}</td>
-                            <td>{star.age != null ? `${star.age.toFixed(1)} млрд` : '—'}</td>
+                            <td style={{ fontFamily: 'ui-monospace, monospace' }}>{star.surfaceTemperature?.toLocaleString(locale) ?? '—'}</td>
+                            <td>{star.age != null ? `${star.age.toFixed(1)} ${t('sys.bn')}` : '—'}</td>
                             <td style={{ fontFamily: 'ui-monospace, monospace' }}>{star.distanceToArrival?.toFixed(1) ?? '—'}</td>
                           </tr>
                         ))}
@@ -971,7 +974,7 @@ export default function SystemsPage() {
               {selectedSystem.planets.length > 0 && (
                 <div style={{ marginBottom: 16 }}>
                   <h3 style={{ fontSize: 13, letterSpacing: 1, textTransform: 'uppercase', color: '#60a5fa', margin: '0 0 10px 0' }}>
-                    🪐 Планеты и тела ({selectedSystem.planets.length})
+                    {t('sys.planetsSection', { count: selectedSystem.planets.length })}
                   </h3>
                   {(() => {
                     const groups = groupPlanetsByType(selectedSystem.planets);
@@ -1015,7 +1018,7 @@ export default function SystemsPage() {
 
               {selectedSystem.stars.length === 0 && selectedSystem.planets.length === 0 && (
                 <p style={{ color: '#9ca3af', textAlign: 'center', padding: 20 }}>
-                  Данные о телах в системе отсутствуют в EDSM.
+                  {t('sys.noBodies')}
                 </p>
               )}
             </div>
@@ -1028,15 +1031,15 @@ export default function SystemsPage() {
          ═══════════════════════════════════════════════════════════ */}
       {tab === 'hubs' && (
         <>
-          {loadingHubs && <p>Загрузка списка хабов...</p>}
+          {loadingHubs && <p>{t('sys.loadingHubs')}</p>}
           {hubs.length > 0 && (
             <table>
               <thead>
                 <tr>
-                  <th>Хаб</th>
-                  <th>Система</th>
-                  <th>Статус</th>
-                  <th>Прогресс</th>
+                  <th>{t('sys.colHub')}</th>
+                  <th>{t('sys.colSystem')}</th>
+                  <th>{t('sys.colStatus')}</th>
+                  <th>{t('sys.colProgress')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1059,14 +1062,14 @@ export default function SystemsPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{ color: "#e67e22", textDecoration: "none" }}
-                          title="Открыть в RavenColonial"
+                          title={t('sys.openInRaven')}
                           onClick={(e) => e.stopPropagation()}
                         >
                           {h.system_name} <IconExternalLink size={10} />
                         </a>
                       </td>
                       <td>{h.status}</td>
-                      <td>{p == null ? (row && !row.found ? 'нет данных' : '…') : p + '%'}</td>
+                      <td>{p == null ? (row && !row.found ? t('sys.noData') : '…') : p + '%'}</td>
                     </tr>
                   );
                 })}
@@ -1074,7 +1077,7 @@ export default function SystemsPage() {
             </table>
           )}
           <select value={current} onChange={(e) => setCurrent(e.target.value)} style={{ marginTop: 16 }}>
-            <option value="">— выберите систему —</option>
+            <option value="">{t('sys.chooseSystem')}</option>
             {hubs.map((h) => (
               <option key={h.system_name} value={h.system_name}>
                 {h.name} ({h.system_name})
@@ -1090,32 +1093,31 @@ export default function SystemsPage() {
       {tab === 'route' && (
         <>
           <p style={{ color: '#9ca3af', fontSize: 14 }}>
-            Все системы маршрута без хабов. Процент в таблице — кэш (обновляется кроном каждые
-            30 мин). Клик по строке подтягивает свежие данные с Raven Colonial.
+            {t('sys.routeHint')}
           </p>
-          {loadingRoute && <p>Загрузка списка маршрута...</p>}
+          {loadingRoute && <p>{t('sys.loadingRoute')}</p>}
           <p style={{ color: '#9ca3af', fontSize: 13 }}>
-            Всего: {routeRows.length}
-            {routeStats.known > 0 ? ` · с данными: ${routeStats.known}` : ''}
-            {routeStats.done > 0 ? ` · готово: ${routeStats.done}` : ''}
-            {routeStats.avg != null ? ` · средний прогресс: ${routeStats.avg}%` : ''}
+            {t('sys.total', { count: routeRows.length })}
+            {routeStats.known > 0 ? t('sys.withData', { count: routeStats.known }) : ''}
+            {routeStats.done > 0 ? t('sys.doneCount', { count: routeStats.done }) : ''}
+            {routeStats.avg != null ? t('sys.avgProgress', { value: routeStats.avg }) : ''}
           </p>
           <input
             style={{ width: '100%', maxWidth: 420 }}
-            placeholder="Поиск по названию системы"
+            placeholder={t('sys.searchByName')}
             value={routeQuery}
             onChange={(e) => setRouteQuery(e.target.value)}
           />
           {filteredRoute.length === 0 && !loadingRoute ? (
-            <p>Список пуст. Добавьте системы во вкладке «Маршрут» в админке.</p>
+            <p>{t('sys.listEmpty')}</p>
           ) : (
             <div className="table-scroll">
               <table>
                 <thead>
                   <tr>
                     <th>#</th>
-                    <th>Система</th>
-                    <th>Прогресс</th>
+                    <th>{t('sys.colSystem')}</th>
+                    <th>{t('sys.colProgress')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1138,13 +1140,13 @@ export default function SystemsPage() {
                             target="_blank"
                             rel="noopener noreferrer"
                             style={{ color: "#e67e22", textDecoration: "none" }}
-                            title="Открыть в RavenColonial"
+                            title={t('sys.openInRaven')}
                             onClick={(e) => e.stopPropagation()}
                           >
                             {r.system_name} <IconExternalLink size={10} />
                           </a>
                         </td>
-                        <td>{p == null ? 'нет данных' : p + '%'}</td>
+                        <td>{p == null ? t('sys.noData') : p + '%'}</td>
                       </tr>
                     );
                   })}
@@ -1160,19 +1162,19 @@ export default function SystemsPage() {
          ═══════════════════════════════════════════════════════════ */}
       {tab === 'deliveries' && (
         <>
-          <h3>Статистика доставок по системам</h3>
-          {loadingDeliveries && <p>Загрузка статистики...</p>}
+          <h3>{t('sys.deliveriesTitle')}</h3>
+          {loadingDeliveries && <p>{t('sys.loadingStats')}</p>}
           {deliveryStats.length === 0 && !loadingDeliveries ? (
-            <p>Доставок пока нет. Загрузите журналы через Uploader.</p>
+            <p>{t('sys.noDeliveries')}</p>
           ) : (
             <div className="table-scroll">
               <table>
                 <thead>
                   <tr>
-                    <th>Система</th>
-                    <th>Всего тонн</th>
-                    <th>Пилотов</th>
-                    <th>Топ-товар</th>
+                    <th>{t('sys.colSystem')}</th>
+                    <th>{t('sys.colTons')}</th>
+                    <th>{t('sys.colPilots')}</th>
+                    <th>{t('sys.colTopCommodity')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1188,7 +1190,7 @@ export default function SystemsPage() {
                           {s.system_name} <IconExternalLink size={10} />
                         </a>
                       </td>
-                      <td>{Number(s.total_delivered).toLocaleString('ru-RU')}</td>
+                      <td>{Number(s.total_delivered).toLocaleString(locale)}</td>
                       <td>{s.unique_cmdrs}</td>
                       <td>{s.top_commodity}</td>
                     </tr>
@@ -1203,8 +1205,8 @@ export default function SystemsPage() {
       {/* ═══════════════════════════════════════════════════════════
           Detail panel for Hubs / Route tabs
          ═══════════════════════════════════════════════════════════ */}
-      {!current && tab !== 'deliveries' && tab !== 'search' && <p>Выберите систему, чтобы увидеть состав стройки.</p>}
-      {current && loading && !info && <p>Загрузка...</p>}
+      {!current && tab !== 'deliveries' && tab !== 'search' && <p>{t('sys.chooseForBuild')}</p>}
+      {current && loading && !info && <p>{t('sys.loading')}</p>}
       {info && tab !== 'deliveries' && tab !== 'search' && (
         <div>
           <h2>
@@ -1212,7 +1214,7 @@ export default function SystemsPage() {
             {siteName ? ' — ' + siteName : ''}
           </h2>
           {architectName && (
-            <p style={{ color: '#9ca3af' }}>Архитектор: {architectName}</p>
+            <p style={{ color: '#9ca3af' }}>{t('sys.architect', { name: architectName })}</p>
           )}
           {info.error && <p style={{ color: '#e74c3c' }}>{info.error}</p>}
           <div style={{ background: '#323538', borderRadius: 8, height: 22 }}>
@@ -1235,26 +1237,25 @@ export default function SystemsPage() {
           </div>
           {typeof totalRequired === 'number' && typeof totalProvided === 'number' && (
             <p style={{ color: '#d1d5db', fontSize: 13 }}>
-              Доставлено: <strong>{totalProvided.toLocaleString('ru-RU')} / {totalRequired.toLocaleString('ru-RU')} т</strong>
-              {' · '}Осталось: {Number(totalRemaining).toLocaleString('ru-RU')} т
+              {t('sys.delivered')} <strong>{totalProvided.toLocaleString(locale)} / {totalRequired.toLocaleString(locale)} {t('sys.tons')}</strong>
+              {' · '}{t('sys.remaining')} {Number(totalRemaining).toLocaleString(locale)} {t('sys.tons')}
             </p>
           )}
           {info.updated_at && (
             <p style={{ color: '#9ca3af', fontSize: 13 }}>
-              Обновлено: {new Date(info.updated_at).toLocaleString('ru-RU')} · источник: Raven
-              Colonial
+              {t('sys.updatedSource', { when: new Date(info.updated_at).toLocaleString(locale) })}
             </p>
           )}
 
           {projects.length > 1 && (
             <>
-              <h3>Площадки</h3>
+              <h3>{t('sys.sites')}</h3>
               <table>
                 <thead>
                   <tr>
-                    <th>Название</th>
-                    <th>Тип</th>
-                    <th>Тело</th>
+                    <th>{t('sys.colName')}</th>
+                    <th>{t('sys.colType')}</th>
+                    <th>{t('sys.colBody')}</th>
                     <th>%</th>
                   </tr>
                 </thead>
@@ -1264,7 +1265,7 @@ export default function SystemsPage() {
                       <td>{p.buildName}</td>
                       <td>{p.buildType ?? '—'}</td>
                       <td>{p.bodyName ?? '—'}</td>
-                      <td>{p.complete ? 'готово' : typeof p.progress === 'number' ? `${p.progress}%` : '—'}</td>
+                      <td>{p.complete ? t('sys.ready') : typeof p.progress === 'number' ? `${p.progress}%` : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1276,10 +1277,10 @@ export default function SystemsPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Ресурс</th>
-                  <th>Доставлено</th>
-                  <th>Нужно</th>
-                  <th>Осталось</th>
+                  <th>{t('sys.colResource')}</th>
+                  <th>{t('sys.colDelivered')}</th>
+                  <th>{t('sys.colNeeded')}</th>
+                  <th>{t('sys.colRemaining')}</th>
                   <th>%</th>
                 </tr>
               </thead>
@@ -1290,9 +1291,9 @@ export default function SystemsPage() {
                   return (
                     <tr key={resource.key || resource.name}>
                       <td>{resource.name}</td>
-                      <td>{exact ? resource.provided.toLocaleString('ru-RU') : '—'}</td>
-                      <td>{exact ? resource.required.toLocaleString('ru-RU') : '—'}</td>
-                      <td>{Number(resource.remaining ?? 0).toLocaleString('ru-RU')}</td>
+                      <td>{exact ? resource.provided.toLocaleString(locale) : '—'}</td>
+                      <td>{exact ? resource.required.toLocaleString(locale) : '—'}</td>
+                      <td>{Number(resource.remaining ?? 0).toLocaleString(locale)}</td>
                       <td>{progress == null ? '—' : `${progress}%`}</td>
                     </tr>
                   );
@@ -1303,8 +1304,7 @@ export default function SystemsPage() {
             current &&
             !loading && (
               <p>
-                Список ресурсов пуст — в Raven Colonial для этой системы нет активной стройки или
-                ещё нет списка товаров.
+                {t('sys.noResources')}
               </p>
             )
           )}
