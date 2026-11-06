@@ -10,13 +10,14 @@ import {
   powerplayUploadInfo,
   startPowerplayUpload,
 } from '@/lib/powerplayUpload';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const headers = { 'Cache-Control': 'no-store' };
 
-function failure(error: unknown) {
+function failure(error: unknown, t: (key: string, params?: Record<string, string | number>) => string) {
   if (error instanceof PowerplayUploadError) {
     return NextResponse.json(
       { success: false, error: error.message, ...(error.offset != null ? { offset: error.offset } : {}) },
@@ -25,7 +26,7 @@ function failure(error: unknown) {
   }
   const message = String((error as Error)?.message ?? error).slice(0, 300);
   console.error('[admin/powerplay/upload]', message);
-  return NextResponse.json({ success: false, error: `Не удалось принять файл: ${message}` }, { status: 500, headers });
+  return NextResponse.json({ success: false, error: t('adm.fileAcceptFailed', { message }) }, { status: 500, headers });
 }
 
 /**
@@ -44,12 +45,14 @@ function failure(error: unknown) {
  *   * POST `{ action: 'cancel' }`                 — удалить незаконченную загрузку.
  */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   return NextResponse.json({ success: true, upload: powerplayUploadInfo(), chunkBytes: POWERPLAY_UPLOAD_CHUNK_BYTES }, { headers });
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   let body: { action?: unknown; name?: unknown; size?: unknown; lastModified?: unknown } = {};
@@ -71,28 +74,29 @@ export async function POST(req: Request) {
       case 'cancel':
         return NextResponse.json({ success: true, ...cancelPowerplayUpload() }, { headers });
       default:
-        return NextResponse.json({ success: false, error: 'Неизвестное действие: нужен start, finish или cancel' }, { status: 400, headers });
+        return NextResponse.json({ success: false, error: t('adm.actionUpload') }, { status: 400, headers });
     }
   } catch (error) {
-    return failure(error);
+    return failure(error, await apiTranslate());
   }
 }
 
 export async function PUT(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   const offset = Number(new URL(req.url).searchParams.get('offset'));
   if (!Number.isFinite(offset) || offset < 0) {
-    return NextResponse.json({ success: false, error: 'Нужен ?offset= — с какого байта кусок' }, { status: 400, headers });
+    return NextResponse.json({ success: false, error: t('adm.offsetRequired') }, { status: 400, headers });
   }
   try {
     const bytes = new Uint8Array(await req.arrayBuffer());
     if (bytes.length > POWERPLAY_UPLOAD_CHUNK_BYTES * 2) {
-      return NextResponse.json({ success: false, error: `Кусок больше ${POWERPLAY_UPLOAD_CHUNK_BYTES * 2} байт` }, { status: 413, headers });
+      return NextResponse.json({ success: false, error: t('adm.chunkTooBig', { bytes: POWERPLAY_UPLOAD_CHUNK_BYTES * 2 }) }, { status: 413, headers });
     }
     const result = await appendPowerplayUpload(offset, bytes);
     return NextResponse.json({ success: true, ...result }, { headers });
   } catch (error) {
-    return failure(error);
+    return failure(error, await apiTranslate());
   }
 }

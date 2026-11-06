@@ -93,12 +93,25 @@ export const ROLE_TONES: Record<ProjectRole, string> = {
 };
 
 // ── Форматирование ─────────────────────────────────────────────────────────
+import { formatTranslate, getFormatLocale } from '@/lib/i18n/format';
 
-const tonsFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
+const tonsFormatters = new Map<string, Intl.NumberFormat>();
 
-export function formatTons(value: number | null | undefined, suffix = ' т'): string {
+function tonsFormat(): Intl.NumberFormat {
+  const locale = getFormatLocale();
+  let formatter = tonsFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
+    tonsFormatters.set(locale, formatter);
+  }
+  return formatter;
+}
+
+/** Тонны: суффикс по умолчанию — единица измерения текущей локали. */
+export function formatTons(value: number | null | undefined, suffix?: string): string {
   if (value == null || !Number.isFinite(value)) return '—';
-  return `${tonsFormat.format(Math.round(value))}${suffix}`;
+  const unit = suffix ?? ' ' + formatTranslate('pui.tonUnit');
+  return `${tonsFormat().format(Math.round(value))}${unit}`;
 }
 
 export function compactTons(value: number | null | undefined): string {
@@ -113,7 +126,7 @@ export function compactTons(value: number | null | undefined): string {
 export function formatPercent(value: number | null | undefined, digits = 1): string {
   if (value == null || !Number.isFinite(value)) return '—';
   const rounded = Number(value.toFixed(digits));
-  return `${rounded.toLocaleString('ru-RU')} %`;
+  return `${rounded.toLocaleString(getFormatLocale())} %`;
 }
 
 export function formatDate(value: string | null | undefined, withTime = false): string {
@@ -121,20 +134,20 @@ export function formatDate(value: string | null | undefined, withTime = false): 
   const date = new Date(value.length === 10 ? `${value}T00:00:00Z` : value);
   if (Number.isNaN(date.getTime())) return '—';
   return withTime
-    ? date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })
-    : date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', ...(value.length === 10 ? { timeZone: 'UTC' } : {}) });
+    ? date.toLocaleString(getFormatLocale(), { dateStyle: 'short', timeStyle: 'short' })
+    : date.toLocaleDateString(getFormatLocale(), { day: '2-digit', month: '2-digit', year: 'numeric', ...(value.length === 10 ? { timeZone: 'UTC' } : {}) });
 }
 
 export function formatAgo(value: string | null | undefined, now: number = Date.now()): string {
-  if (!value) return 'нет данных';
+  if (!value) return formatTranslate('pui.noData');
   const ms = Date.parse(value);
-  if (!Number.isFinite(ms)) return 'нет данных';
+  if (!Number.isFinite(ms)) return formatTranslate('pui.noData');
   const minutes = Math.max(0, Math.round((now - ms) / 60_000));
-  if (minutes < 1) return 'только что';
-  if (minutes < 60) return `${minutes} мин назад`;
+  if (minutes < 1) return formatTranslate('pui.justNow');
+  if (minutes < 60) return formatTranslate('pui.minutesAgo', { minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} ч назад`;
-  return `${Math.round(hours / 24)} дн назад`;
+  if (hours < 48) return formatTranslate('pui.hoursAgo', { hours });
+  return formatTranslate('pui.daysAgo', { days: Math.round(hours / 24) });
 }
 
 /** Дней до срока: отрицательное — просрочено. */
@@ -163,10 +176,10 @@ export async function apiJson<T>(url: string, init?: RequestInit & { json?: unkn
       body: json !== undefined ? JSON.stringify(json) : rest.body,
     });
     const data = await response.json().catch(() => null);
-    const error = response.ok ? '' : String((data as { error?: unknown } | null)?.error ?? `Ошибка ${response.status}`);
+    const error = response.ok ? '' : String((data as { error?: unknown } | null)?.error ?? formatTranslate('pui.httpError', { status: response.status }));
     return { ok: response.ok, status: response.status, data: response.ok ? data as T : null, error };
   } catch (error) {
-    return { ok: false, status: 0, data: null, error: error instanceof Error ? error.message : 'Сеть недоступна' };
+    return { ok: false, status: 0, data: null, error: error instanceof Error ? error.message : formatTranslate('pui.networkError') };
   }
 }
 

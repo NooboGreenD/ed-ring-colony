@@ -20,7 +20,7 @@ import SourcingPanel from '@/components/Architect/SourcingPanel';
 import SyncPanel from '@/components/Architect/SyncPanel';
 import SystemProjectsPanel from '@/components/Architect/SystemProjectsPanel';
 import RavenCreatePanel from '@/components/Architect/RavenCreatePanel';
-import { CATALOGUE_VERSION, ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
+import { CATALOGUE_VERSION, ECONOMY_LABELS_RU, installationName } from '@/lib/architect/catalogue';
 import { bodyBoostedEconomies, economyBodyFit } from '@/lib/architect/economy';
 import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
 import { buildBodyIndex, resolveBodyName } from '@/lib/architect/bodyNames';
@@ -65,6 +65,8 @@ import {
   updateSite,
 } from '@/lib/architect/planner';
 import type { ArchitectBody, ArchitectPlan, PlannedSite, PlannedSiteStatus } from '@/lib/architect/types';
+import { architectLabel } from '@/lib/i18n/architectLabels';
+import { economyFitText, placementCheckTexts } from '@/lib/i18n/planText';
 
 const SystemOrrery3D = dynamic(() => import('@/components/SystemMap/SystemOrrery3D'), { ssr: false });
 
@@ -125,7 +127,7 @@ function writeRecent(system: string) {
 }
 
 export default function ArchitectWorkspace() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [systemInput, setSystemInput] = useState('');
   const [systemName, setSystemName] = useState('');
   const [rawRows, setRawRows] = useState<Record<string, unknown>[]>([]);
@@ -492,7 +494,7 @@ export default function ArchitectWorkspace() {
     const body = bodiesByName.get(pickerBody);
     const check = placementCheck(body, installationId, plan);
     if (!check.ok) {
-      setNotice(check.errors.join('; '));
+      setNotice(placementCheckTexts(check, t).errors.join('; '));
       return;
     }
     setPlan(addSite(plan, pickerBody, installationId));
@@ -598,8 +600,8 @@ export default function ArchitectWorkspace() {
   const primarySite = useMemo(() => plan?.sites.find((site) => site.primary) ?? null, [plan]);
   const primaryName = useMemo(() => {
     if (!primarySite) return null;
-    return getInstallation(primarySite.installationId)?.nameRu.split(' (')[0] ?? null;
-  }, [primarySite]);
+    return installationName(getInstallation(primarySite.installationId), locale).split(' (')[0] || null;
+  }, [primarySite, locale]);
 
   return (
     <main style={{ maxWidth: 1440, margin: '24px auto', padding: '0 16px' }}>
@@ -1325,7 +1327,7 @@ function BodyCard({
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
               {t('arch.boostsEconomies')}{' '}
               <span style={{ color: 'var(--green)' }}>
-                {boostedEconomies.map((economy) => ECONOMY_LABELS_RU[economy]).join(', ')}
+                {boostedEconomies.map((economy) => architectLabel('economy', economy, ECONOMY_LABELS_RU[economy], t)).join(', ')}
               </span>
             </div>
           )}
@@ -1459,7 +1461,7 @@ function SiteRow({
   onEdit: (siteId: string) => void;
   onTogglePrimary: (siteId: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const installation = getInstallation(site.installationId);
   if (!installation) {
     return (
@@ -1492,7 +1494,7 @@ function SiteRow({
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 13, color: 'var(--text)' }}>
           {isPrimary && <span style={{ color: 'var(--orange)' }} title={t('arch.primaryPortTitle')}>★ </span>}
-          {installation.nameRu}
+          {installationName(installation, locale)}
           <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {installation.id}</span>
         </div>
         {!body && (
@@ -1516,12 +1518,12 @@ function SiteRow({
             title={t('arch.economyAddsTitle')}
             style={{ ...chipStyle, padding: '1px 5px', color: installation.influence === 'none' ? 'var(--muted)' : 'var(--cyan)' }}
           >
-            {ECONOMY_LABELS_RU[installation.influence]}
+            {architectLabel('economy', installation.influence, ECONOMY_LABELS_RU[installation.influence], t)}
           </span>
           {economyFit && economyFit.level !== 'neutral' && (
             <span
               style={{ marginLeft: 6, color: economyFit.level === 'boost' ? 'var(--green)' : 'var(--orange)' }}
-              title={economyFit.reason}
+              title={economyFitText(economyFit, t)}
             >
               {economyFit.level === 'boost' ? t('arch.boostedByBody') : t('arch.weakOnBody')}
             </span>

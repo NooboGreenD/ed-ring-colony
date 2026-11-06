@@ -1,14 +1,18 @@
 import type { Metadata } from 'next';
 import EngineersHeader from '@/components/Engineers/EngineersHeader';
 import EngineerTree from '@/components/Engineers/EngineerTree';
+import { getServerI18n } from '@/lib/i18n/server';
 
 // Язык интерфейса на этапе метаданных ещё неизвестен, поэтому заголовок
 // двуязычный — страницу находят и русским, и английским запросом.
-export const metadata: Metadata = {
-  title: 'Инженеры — схема разблокировки | Engineers | ED Ring Colony',
-  description:
-    'Логическое дерево инженеров Elite Dangerous: кто о ком рассказывает, что нужно для знакомства и приглашения, какие чертежи и до какого уровня доступны у каждого. Elite Dangerous engineer unlock chart with full interface translation.',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await getServerI18n();
+
+  return {
+    title: t('meta.engineersTitle'),
+    description: t('meta.engineersDescription'),
+  };
+}
 
 export default function EngineersPage() {
   return (

@@ -8,6 +8,7 @@ import {
   type RingPlan,
   type RingStepResult,
 } from '@/lib/atlasRingSearch';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Поиск Галактического кольца — пошагово.
@@ -56,7 +57,7 @@ function sessionEnvelope(plan: RingPlan) {
   };
 }
 
-function stepEnvelope(step: RingStepResult) {
+function stepEnvelope(step: RingStepResult, t: (key: string, params?: Record<string, string | number>) => string) {
   const percent = step.sectors > 0 ? Math.min(99, Math.round((step.sectorsDone / step.sectors) * 98)) : 0;
   return {
     session_id: step.sessionId,
@@ -68,8 +69,8 @@ function stepEnvelope(step: RingStepResult) {
       percent,
       stage: step.done ? 'route' : 'scan',
       message: step.done
-        ? 'Сегменты пройдены — собираем замкнутый маршрут'
-        : `Перебор сегмента ${step.sectorsDone} из ${step.sectors}`,
+        ? t('atlas.ringSegmentsDone')
+        : t('atlas.ringSegmentProgress', { done: step.sectorsDone, total: step.sectors }),
     },
     anchors: step.anchors,
     found: step.found,
@@ -79,6 +80,7 @@ function stepEnvelope(step: RingStepResult) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = (await req.json().catch(() => ({}))) as RequestBody;
     const stepSectors = Math.max(1, Math.min(60, Number(body.step_sectors) || DEFAULT_STEP_SECTORS));
@@ -86,10 +88,10 @@ export async function POST(req: Request) {
     let plan: RingPlan | null = null;
     if (body.session_id) {
       plan = await loadRingSession(String(body.session_id));
-      if (!plan) return NextResponse.json({ error: 'Сессия поиска кольца не найдена' }, { status: 404 });
+      if (!plan) return NextResponse.json({ error: t('api.ringSessionNotFound') }, { status: 404 });
     } else {
       if (!body.start_system || !String(body.start_system).trim()) {
-        return NextResponse.json({ error: 'Укажите начальную систему кольца' }, { status: 400 });
+        return NextResponse.json({ error: t('api.ringStartRequired') }, { status: 400 });
       }
       const supabase = await createClient();
       const { data: { user } } = await supabase.auth.getUser();
@@ -121,7 +123,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       completed: false,
       session: { ...sessionEnvelope(plan), sectors_done: step.sectorsDone },
-      step: stepEnvelope(step),
+      step: stepEnvelope(step, t),
       totals: {
         real_anchors: step.stats.realAnchors,
         triangulated_anchors: step.stats.triangulatedAnchors,
@@ -131,18 +133,19 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-route] шаг не удался:', error);
-    return NextResponse.json({ error: error?.message || 'Ошибка поиска кольца' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringSearchFailed') }, { status: 500 });
   }
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const { searchParams } = new URL(req.url);
   const sessionId = searchParams.get('session_id');
   if (!sessionId) {
-    return NextResponse.json({ error: 'session_id обязателен' }, { status: 400 });
+    return NextResponse.json({ error: t('api.ringSessionRequired') }, { status: 400 });
   }
   const plan = await loadRingSession(sessionId);
-  if (!plan) return NextResponse.json({ error: 'Сессия не найдена' }, { status: 404 });
+  if (!plan) return NextResponse.json({ error: t('api.sessionNotFound') }, { status: 404 });
   return NextResponse.json({
     session: sessionEnvelope(plan),
     anchors: plan.anchors,

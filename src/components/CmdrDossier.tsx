@@ -33,6 +33,14 @@ import {
 } from '@/components/Icons';
 import { useFriends } from '@/hooks/useFriends';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import {
+  achievementRankDesc,
+  achievementRankName,
+  achievementTrackSubtitle,
+  achievementTrackTitle,
+  heroBadgeDesc,
+  heroBadgeName,
+} from '@/lib/i18n/achievementLabels';
 
 /**
  * Название ранга по его номеру. `null`/`undefined` — «нет данных» и показывается
@@ -447,7 +455,7 @@ function AchievementTrackCard({
   const intoPct = span > 0 ? Math.min(100, ((p.total - prevThreshold) / span) * 100) : 100;
 
   const allTiersTooltip = track.ranks
-    .map((r) => `T${r.rank}: ${r.name} — ${r.desc}`)
+    .map((r) => `T${r.rank}: ${achievementRankName(track.id, r.rank, r.name, t)} — ${achievementRankDesc(track.id, r.threshold, r.desc, t, locale)}`)
     .join('\n');
 
   return (
@@ -467,7 +475,7 @@ function AchievementTrackCard({
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: isLocked ? '#9ca3af' : '#eeeeee' }}>
-              {track.title}
+              {achievementTrackTitle(track.id, track.title, t)}
             </span>
             <span
               title={allTiersTooltip}
@@ -497,7 +505,7 @@ function AchievementTrackCard({
               </span>
             )}
           </div>
-          <p style={{ margin: '2px 0 0', fontSize: 11, color: '#9ca3af' }}>{track.subtitle}</p>
+          <p style={{ margin: '2px 0 0', fontSize: 11, color: '#9ca3af' }}>{achievementTrackSubtitle(track.id, track.subtitle, t)}</p>
         </div>
         <div style={{ textAlign: 'right', minWidth: 80 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: isLocked ? '#475569' : currentColor, fontFamily: 'ui-monospace, monospace' }}>
@@ -536,8 +544,8 @@ function AchievementTrackCard({
             <TierSquare
               key={r.rank}
               rank={r.rank}
-              name={r.name}
-              desc={r.desc}
+              name={achievementRankName(track.id, r.rank, r.name, t)}
+              desc={achievementRankDesc(track.id, r.threshold, r.desc, t, locale)}
               achieved={achieved}
               isCurrent={isCurrent}
             />
@@ -1788,8 +1796,8 @@ export default function CmdrDossier(props: Props) {
                   >
                     <span style={{ fontSize: 28, display: 'flex', alignItems: 'center' }}><AchievementIcon icon={h.icon} size={28} /></span>
                     <div>
-                      <h4 style={{ margin: '0 0 2px', color: '#f39c12', fontSize: 14 }}>{h.name}</h4>
-                      <p style={{ margin: 0, fontSize: 11, color: '#9ca3af' }}>{h.desc}</p>
+                      <h4 style={{ margin: '0 0 2px', color: '#f39c12', fontSize: 14 }}>{heroBadgeName(h.trackId, h.name, t)}</h4>
+                      <p style={{ margin: 0, fontSize: 11, color: '#9ca3af' }}>{heroBadgeDesc(h.trackId, h.desc, t)}</p>
                     </div>
                   </div>
                 ))}

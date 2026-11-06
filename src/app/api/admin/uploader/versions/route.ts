@@ -12,6 +12,7 @@ import {
   readManifest,
   storeStatus,
 } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,6 +28,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  *          её обычным механизмом обновления (пакет уже лежит на сервере).
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 
@@ -58,6 +60,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 
@@ -65,7 +68,7 @@ export async function POST(request: Request) {
   const channel = String(body?.channel ?? '');
   const version = String(body?.version ?? '');
   if (!(CHANNELS as readonly string[]).includes(channel)) {
-    return NextResponse.json({ ok: false, error: 'Неизвестный канал' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('adm.unknownChannel') }, { status: 400, ...NO_STORE });
   }
 
   if (body?.async === true) {
@@ -73,7 +76,7 @@ export async function POST(request: Request) {
       const job = await startHelperReleaseJob({ channel: channel as Channel, version, kind: 'promote' });
       return NextResponse.json({ ok: true, job }, { status: 202, ...NO_STORE });
     } catch (error) {
-      return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : 'Не удалось поставить задачу в очередь' }, { status: 409, ...NO_STORE });
+      return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : t('adm.queueFailed') }, { status: 409, ...NO_STORE });
     }
   }
 
@@ -82,6 +85,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 

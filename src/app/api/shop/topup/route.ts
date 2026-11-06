@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -8,9 +9,10 @@ export const revalidate = 0;
  * payment provider. Use POST /api/billing/checkout with purpose=credit_topup.
  */
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const url = new URL(req.url);
   return NextResponse.json(
-    { error: 'Пополнение выполняется через платёжную систему: POST /api/billing/checkout { purpose: "credit_topup", packId, providerId }', redirect: `${url.origin}/api/billing/checkout` },
+    { error: t('shop.topupViaCheckout'), redirect: `${url.origin}/api/billing/checkout` },
     { status: 410 },
   );
 }

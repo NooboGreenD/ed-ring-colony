@@ -1,4 +1,5 @@
 "use client";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 import { useRef, useMemo, useState, useCallback, useEffect } from "react";
 import { useFrame } from "@react-three/fiber";
@@ -78,6 +79,7 @@ interface AtlasMarkersProps {
 }
 
 export function AtlasMarkers({ candidates, onSelect, selectedId: controlledSelectedId }: AtlasMarkersProps) {
+  const { t, locale } = useI18n();
   const [uncontrolledSelectedId, setUncontrolledSelectedId] = useState<string | null>(null);
   const selectedId = controlledSelectedId === undefined ? uncontrolledSelectedId : controlledSelectedId;
 
@@ -209,6 +211,7 @@ function SelectionRing({ position, color }: { position: THREE.Vector3; color: st
 }
 
 function AtlasTooltip({ candidate, onClose }: { candidate: AtlasCandidate; onClose: () => void }) {
+  const { t, locale } = useI18n();
   const pos = useMemo(() => eliteToThreeCentered(candidate), [candidate]);
   const color = TYPE_COLORS[candidate.world_type] || TYPE_COLORS.default;
   const label = TYPE_LABELS[candidate.world_type] || candidate.world_type;
@@ -234,9 +237,9 @@ function AtlasTooltip({ candidate, onClose }: { candidate: AtlasCandidate; onClo
           X: {candidate.x.toFixed(2)} · Y: {candidate.y.toFixed(2)} · Z: {candidate.z.toFixed(2)}
         </div>
         <div style={{ marginTop: 8, fontSize: 12, color: "#9ca3af", fontFamily: "ui-monospace, monospace", lineHeight: 1.6 }}>
-          <div>От референса: {candidate.distance_from_ref?.toFixed(1)} ly</div>
-          {candidate.distance_to_arrival && <div>До прибытия: {candidate.distance_to_arrival.toFixed(0)} LS</div>}
-          {candidate.estimated_value && <div>Стоимость скана: {candidate.estimated_value.toLocaleString("ru")} CR</div>}
+          <div>{t('amk.fromRef')} {candidate.distance_from_ref?.toFixed(1)} ly</div>
+          {candidate.distance_to_arrival && <div>{t('amk.toArrival')} {candidate.distance_to_arrival.toFixed(0)} LS</div>}
+          {candidate.estimated_value && <div>{t('amk.scanValue')} {candidate.estimated_value.toLocaleString(locale)} CR</div>}
         </div>
       </div>
     </Html>

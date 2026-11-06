@@ -12,6 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 import { buildProjectProgress } from '../../src/lib/architect/projectProgress.ts';
 import { buildProjectLeaders } from '../../src/lib/architect/projectLeaders.ts';
 import { projectPermissions, PROJECT_LIMITS } from '../../src/lib/architect/projects.ts';
@@ -119,7 +120,7 @@ async function render(createElement, options = {}) {
   const { JSDOM } = await import('jsdom');
   const bundle = await bundleFile({
     entrySource: ENTRY,
-    stubs: { 'next/link': NEXT_LINK_STUB, 'next/navigation': NEXT_NAVIGATION_STUB },
+    stubs: { 'next/link': NEXT_LINK_STUB, 'next/navigation': NEXT_NAVIGATION_STUB, '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB },
     external: ['react', 'react-dom', 'react-dom/client'],
   });
 

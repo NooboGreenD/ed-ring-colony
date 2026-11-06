@@ -21,6 +21,7 @@ import { referenceSystemCoords } from '@/lib/referenceSystem';
 import { STATION_ITEM_LIMIT, stationItemKey, type StationSearchItem, type StationSearchStation } from '@/lib/stationSearch';
 import { marketPickByName, stationQueryAliases } from '@/lib/stationSearchCatalog';
 import { cleanSystemName } from '@/lib/systemIdentity';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -88,19 +89,20 @@ function stationFields(station: StationSearchStation) {
 }
 
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const params = new URL(request.url).searchParams;
   const mode = params.get('mode') === 'build' ? 'build' : 'single';
   const commodity = (params.get('commodity') || '').trim().slice(0, 120);
   const reference = cleanSystemName(params.get('reference_system') || params.get('system') || 'Sol').slice(0, 120) || 'Sol';
   const radius = radiusParam(params.get('radius'));
   if (mode === 'single' && !commodity) {
-    return NextResponse.json({ error: 'Укажите товар: commodity=<название>.' }, { status: 400 });
+    return NextResponse.json({ error: t('api.marketCommodityRequired') }, { status: 400 });
   }
   try {
     const svc = createServiceClient();
     const center = await referenceSystemCoords(svc, reference);
     if (!center) {
-      return NextResponse.json({ error: `Координаты системы ${reference} не найдены в БД.` }, { status: 404 });
+      return NextResponse.json({ error: t('api.marketReferenceMissing', { ref: reference }) }, { status: 404 });
     }
     const names = mode === 'build' ? BUILD_COMMODITIES : [commodity];
     const goods = goodsQuery(names);
@@ -144,7 +146,7 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error('[Market Find]', error);
     return NextResponse.json({
-      error: 'Поиск рынков временно недоступен. Проверьте подключение БД и миграцию 20261022120000_station_search_by_station.sql.',
+      error: t('api.marketDown'),
     }, { status: 503 });
   }
 }

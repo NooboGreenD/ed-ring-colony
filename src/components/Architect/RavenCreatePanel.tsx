@@ -10,6 +10,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { installationName } from '@/lib/architect/catalogue';
 import type { ArchitectBody, ArchitectPlan, PlannedSite } from '@/lib/architect/types';
 import { getInstallation } from '@/lib/architect/planner';
 import { cardStyle, errorText, inputStyle, mutedText, primaryButton, rowStyle, sectionTitle, ghostButton } from '@/components/Architect/panelStyles';
@@ -32,7 +33,7 @@ interface RavenCreatePanelProps {
 const NO_KEY: KeyState = { connected: false, mask: null, cmdrName: null };
 
 export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked }: RavenCreatePanelProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [keyState, setKeyState] = useState<KeyState>(NO_KEY);
   const [keyInput, setKeyInput] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
@@ -61,7 +62,7 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
   useEffect(() => {
     if (site && !buildName) {
       const installation = getInstallation(site.installationId);
-      setBuildName(installation ? `${installation.nameRu} — ${site.bodyName}` : site.bodyName);
+      setBuildName(installation ? `${installationName(installation, locale)} — ${site.bodyName}` : site.bodyName);
     }
   }, [site, buildName]);
 
@@ -173,7 +174,7 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
                 >
                   {unlinked.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {getInstallation(item.installationId)?.nameRu ?? item.installationId} · {item.bodyName}
+                      {installationName(getInstallation(item.installationId), locale) || item.installationId} · {item.bodyName}
                     </option>
                   ))}
                 </select>

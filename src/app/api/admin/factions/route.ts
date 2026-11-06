@@ -33,6 +33,7 @@ import {
   startBgsSync,
 } from '@/lib/bgsSync';
 import { BGS_UPLOAD_CHUNK_BYTES, bgsUploadInfo } from '@/lib/bgsUpload';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -87,12 +88,12 @@ const RUN_ACTIONS: Record<string, BgsSyncMode> = {
   import: 'import',
 };
 
-const RUN_STARTED: Record<BgsSyncMode, string> = {
-  full: 'Загрузка запущена',
-  download: 'Скачивание архива запущено',
-  split: 'Разбивка архива на куски запущена',
-  import: 'Загрузка кусков в базу запущена',
-};
+function runStarted(mode: BgsSyncMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (mode === 'download') return t('sync.startedDownload');
+  if (mode === 'split') return t('sync.startedSplit');
+  if (mode === 'import') return t('sync.startedImport');
+  return t('sync.startedFull');
+}
 
 /**
  * Админка → Игровые данные → Фракции: управление данными о минорных фракциях.
@@ -122,6 +123,7 @@ const RUN_STARTED: Record<BgsSyncMode, string> = {
  * Загрузка архива с компьютера — `/api/admin/factions/upload`.
  */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   const nowMs = Date.now();
@@ -133,7 +135,7 @@ export async function GET(req: Request) {
     try {
       summary = await readBgsSummary(svc);
     } catch (error) {
-      summaryError = `Сводка недоступна: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
+      summaryError = t('adm.bgsSummaryFailed', { message: String((error as Error)?.message ?? error).slice(0, 200) });
     }
     const updates = await readRecentUpdates(svc).catch(() => []);
     const live = getBgsLiveRun();
@@ -209,8 +211,8 @@ export async function GET(req: Request) {
       {
         success: false,
         error: missing
-          ? 'Таблиц фракций нет в базе: примените миграцию 20261019120000_minor_factions.sql (deploy/update-project.sh делает это сам)'
-          : `Не удалось прочитать состояние фракций: ${message.slice(0, 300)}`,
+          ? t('adm.bgsTablesMissing')
+          : t('api.factionsStateReadFailed', { message: message.slice(0, 300) }),
       },
       { status: 503, headers },
     );
@@ -218,6 +220,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   let body: { action?: unknown; force?: unknown; segments?: unknown } = {};
@@ -230,13 +233,13 @@ export async function POST(req: Request) {
   const mode = Object.prototype.hasOwnProperty.call(RUN_ACTIONS, action) ? RUN_ACTIONS[action] : null;
   if (mode) {
     if (body.segments !== undefined && body.segments !== null && !(Number(body.segments) >= 1 && Number(body.segments) <= BGS_MAX_SEGMENTS)) {
-      return NextResponse.json({ success: false, error: `Соединений к EDSM: от 1 до ${BGS_MAX_SEGMENTS}` }, { status: 400, headers });
+      return NextResponse.json({ success: false, error: t('adm.edsmConnections', { max: BGS_MAX_SEGMENTS }) }, { status: 400, headers });
     }
     let svc;
     try {
       svc = createServiceClient();
     } catch (error) {
-      return NextResponse.json({ success: false, error: `Нет подключения к базе: ${String((error as Error)?.message ?? error).slice(0, 200)}` }, { status: 503, headers });
+      return NextResponse.json({ success: false, error: t('adm.dbUnavailable', { message: String((error as Error)?.message ?? error).slice(0, 200) }) }, { status: 503, headers });
     }
     const force = body.force === true;
     const segments = body.segments == null ? undefined : clampBgsSegments(body.segments);
@@ -245,7 +248,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, started: false, reason: result.reason }, { status: 409, headers });
     }
     return NextResponse.json(
-      { success: true, started: true, force, mode, ...(segments ? { segments } : {}), message: RUN_STARTED[mode] },
+      { success: true, started: true, force, mode, ...(segments ? { segments } : {}), message: runStarted(mode, t) },
       { headers },
     );
   }
@@ -261,7 +264,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, ...result }, { headers });
   }
   return NextResponse.json(
-    { success: false, error: 'Неизвестное действие: нужен start, download, split, import, cancel или cleanup' },
+    { success: false, error: t('adm.actionBgs') },
     { status: 400, headers },
   );
 }

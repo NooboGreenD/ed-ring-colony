@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import { readStorageHealth, restartStorage } from '@/lib/updateAgent';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,6 +23,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  *        поэтому не пересекается с обновлением и бэкапом.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -34,8 +36,8 @@ export async function GET(request: Request) {
       return NextResponse.json(
         {
           error: stale
-            ? 'Update-агент старее сайта и не умеет проверять Storage — перезапустите агент в блоке «Обновление проекта»'
-            : result.error || 'Не удалось проверить Storage',
+            ? t('adm.updateAgentOld')
+            : result.error || t('adm.storageCheckFailed'),
         },
         { status: stale ? 503 : result.status, ...NO_STORE },
       );
@@ -50,11 +52,12 @@ export async function GET(request: Request) {
     }, NO_STORE);
   } catch (error) {
     console.error('[admin/storage] не удалось отдать состояние:', (error as Error)?.message || error);
-    return NextResponse.json({ error: 'Не удалось проверить Storage' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.storageCheckFailed') }, { status: 500, ...NO_STORE });
   }
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -63,7 +66,7 @@ export async function POST(request: Request) {
     // Кнопка перезапускает сервис, к которому в этот момент идут загрузки:
     // случайный POST из чужой вкладки не должен этого делать.
     if (body?.confirm !== true) {
-      return NextResponse.json({ error: 'Нужно подтверждение: confirm=true' }, { status: 400, ...NO_STORE });
+      return NextResponse.json({ error: t('adm.confirmRequired') }, { status: 400, ...NO_STORE });
     }
 
     const result = await restartStorage();
@@ -75,6 +78,6 @@ export async function POST(request: Request) {
     }
     return NextResponse.json({ success: true, update: result.update }, { status: 202, ...NO_STORE });
   } catch {
-    return NextResponse.json({ error: 'Не удалось запустить перезапуск Storage' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.storageRestartFailed') }, { status: 500, ...NO_STORE });
   }
 }

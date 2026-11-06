@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
+
+type Translate = ReturnType<typeof useI18n>['t'];
 
 /**
  * Заглушка «Ведутся технические работы».
@@ -66,14 +69,14 @@ function makeStars(count: number, seed = 20260927): Star[] {
   }));
 }
 
-function elapsedLabel(startedAt: string | null): string | null {
+function elapsedLabel(startedAt: string | null, t: Translate): string | null {
   if (!startedAt) return null;
   const started = Date.parse(startedAt);
   if (!Number.isFinite(started)) return null;
   const minutes = Math.max(0, Math.floor((Date.now() - started) / 60000));
-  if (minutes < 1) return 'начали только что';
-  if (minutes < 60) return `идёт ${minutes} мин`;
-  return `идёт ${Math.floor(minutes / 60)} ч ${minutes % 60} мин`;
+  if (minutes < 1) return t('maint.justStarted');
+  if (minutes < 60) return t('maint.minutes', { minutes });
+  return t('maint.hoursMinutes', { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
 }
 
 const CSS = `
@@ -187,6 +190,7 @@ const CSS = `
 `;
 
 export default function MaintenanceScreen() {
+  const { t } = useI18n();
   const stars = useMemo(() => makeStars(140), []);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [info, setInfo] = useState<MaintenanceInfo | null>(null);
@@ -206,7 +210,7 @@ export default function MaintenanceScreen() {
         if (maintenance && typeof maintenance === 'object') {
           const flag = maintenance as MaintenanceInfo;
           setInfo(flag);
-          setElapsed(elapsedLabel(flag.startedAt ?? null));
+          setElapsed(elapsedLabel(flag.startedAt ?? null, t));
           // Копия готова (или признак снят досрочно) — возвращаем посетителя
           // на сайт без ручного обновления страницы.
           if (flag.active === false) {
@@ -234,12 +238,12 @@ export default function MaintenanceScreen() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [t]);
 
   const percent = progress?.active ? progress.percent : 0;
   const stage = progress?.active
-    ? progress.stageLabel || (progress.kind === 'backup' ? 'Резервное копирование базы данных' : 'Технические работы')
-    : info?.reason || 'Резервное копирование базы данных';
+    ? progress.stageLabel || (progress.kind === 'backup' ? t('maint.stageBackup') : t('maint.stageWork'))
+    : info?.reason || t('maint.stageBackup');
 
   return (
     <div className="edrc-maint" role="status" aria-live="polite">
@@ -279,11 +283,10 @@ export default function MaintenanceScreen() {
       </div>
 
       <div className="edrc-maint-text">
-        <p className="edrc-maint-kicker">Служба колонии · The Galaxy Ring Project</p>
-        <h1 className="edrc-maint-title">Ведутся технические работы</h1>
+        <p className="edrc-maint-kicker">{t('maint.kicker')}</p>
+        <h1 className="edrc-maint-title">{t('maint.title')}</h1>
         <p className="edrc-maint-note">
-          Кольцевая станция переведена в режим обслуживания: выполняется резервное копирование базы данных.
-          Данные командиров, эскадрилий и проектов в безопасности — вернёмся в строй через несколько минут.
+          {t('maint.note')}
         </p>
 
         <div className="edrc-maint-status">
@@ -295,7 +298,7 @@ export default function MaintenanceScreen() {
             {progress?.active ? ` · ${percent}%` : ''}
             {elapsed ? ` · ${elapsed}` : ''}
           </span>
-          <p className="edrc-maint-hint">Страница обновится автоматически, когда работы завершатся.</p>
+          <p className="edrc-maint-hint">{t('maint.hint')}</p>
         </div>
       </div>
 

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { requireAdmin, errorResponse } from '@/lib/billing/auth';
 import { applySmtpSettings } from '@/lib/updateAgent';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,6 +16,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  * (job `kind: 'smtp'`), поэтому не может пересечься с пересборкой.
  */
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -33,7 +35,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, update: result.update }, { status: 202, ...NO_STORE });
   } catch {
     return NextResponse.json(
-      { error: 'Не удалось применить настройки почты' },
+      { error: t('adm.mailApplyFailed') },
       { status: 500, ...NO_STORE },
     );
   }

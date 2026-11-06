@@ -2,6 +2,7 @@
 import { IconMap, IconBolt } from "@/components/Icons";
 
 import { useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { ProjectSystem, ProjectRoutePoint } from '@/types/project';
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export default function ProjectRoutePlanner({ projectId, systems, route, onUpdate }: Props) {
+  const { t } = useI18n();
   const [optimizing, setOptimizing] = useState(false);
   const [startSystem, setStartSystem] = useState('');
 
@@ -39,7 +41,7 @@ export default function ProjectRoutePlanner({ projectId, systems, route, onUpdat
   return (
     <div style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 10, padding: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h3 style={{ margin: 0, color: '#eeeeee', fontSize: 16 }}><IconMap size={16} /> Маршрут строительства</h3>
+        <h3 style={{ margin: 0, color: '#eeeeee', fontSize: 16 }}><IconMap size={16} /> {t('prp.title')}</h3>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <select
             value={startSystem}
@@ -53,7 +55,7 @@ export default function ProjectRoutePlanner({ projectId, systems, route, onUpdat
               fontSize: 12,
             }}
           >
-            <option value="">Авто (ближайший)</option>
+            <option value="">{t('prp.auto')}</option>
             {systems.map(s => (
               <option key={s.id} value={s.system_name}>{s.system_name}</option>
             ))}
@@ -72,15 +74,15 @@ export default function ProjectRoutePlanner({ projectId, systems, route, onUpdat
               cursor: optimizing ? 'not-allowed' : 'pointer',
             }}
           >
-            {optimizing ? '<IconBolt size={14} /> Оптимизация...' : '<IconBolt size={14} /> Оптимизировать маршрут'}
+            {optimizing ? <><IconBolt size={14} /> {t('prp.optimizing')}</> : <><IconBolt size={14} /> {t('prp.optimize')}</>}
           </button>
         </div>
       </div>
 
       {route.length > 0 && (
         <div style={{ marginBottom: 12, fontSize: 12, color: '#9ca3af' }}>
-          Общая дистанция: <strong style={{ color: '#eeeeee' }}>{totalDistance.toFixed(1)} св. лет</strong> · 
-          Переходов: <strong style={{ color: '#eeeeee' }}>{route.length}</strong>
+          {t('prp.totalDistance')} <strong style={{ color: '#eeeeee' }}>{totalDistance.toFixed(1)} {t('sys.ly')}</strong> ·{' '}
+          {t('prp.jumps')} <strong style={{ color: '#eeeeee' }}>{route.length}</strong>
         </div>
       )}
 
@@ -113,8 +115,8 @@ export default function ProjectRoutePlanner({ projectId, systems, route, onUpdat
             <div style={{ flex: 1 }}>
               <div style={{ color: '#eeeeee', fontWeight: 600 }}>{point.system_name}</div>
               <div style={{ color: '#9ca3af', fontSize: 11 }}>
-                {point.distance_from_prev > 0 && `+${point.distance_from_prev.toFixed(1)} св. лет · `}
-                Всего: {point.cumulative_distance.toFixed(1)} св. лет
+                {point.distance_from_prev > 0 && `+${point.distance_from_prev.toFixed(1)} ${t('sys.ly')} · `}
+                {t('prp.total')} {point.cumulative_distance.toFixed(1)} {t('sys.ly')}
               </div>
             </div>
             <div style={{ color: '#9ca3af', fontSize: 11, textAlign: 'right' }}>

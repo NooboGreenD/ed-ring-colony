@@ -1,8 +1,10 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function EmailRequestForm({ type }: { type: 'recovery' | 'signup' }) {
+  const { t } = useI18n();
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [cooldown, setCooldown] = useState(false);
@@ -21,21 +23,21 @@ export default function EmailRequestForm({ type }: { type: 'recovery' | 'signup'
         body: JSON.stringify({ type, email }),
       });
       const result = await response.json();
-      if (!response.ok) { setError(result.error || 'Не удалось отправить письмо.'); return; }
+      if (!response.ok) { setError(result.error || t('ef.sendFailed')); return; }
       setMessage(result.message); setCooldown(true);
-    } catch { setError('Ошибка соединения. Повторите попытку.'); }
+    } catch { setError(t('ef.connectionRetry')); }
     finally { setBusy(false); }
   };
   return <main className="card auth-card">
-    <div className="kicker">Доступ к аккаунту</div>
-    <h1>{type === 'recovery' ? 'Восстановить пароль' : 'Подтвердить почту'}</h1>
-    <p>{type === 'recovery' ? 'Отправим ссылку для установки нового пароля.' : 'Повторно отправим ссылку подтверждения регистрации.'}</p>
+    <div className="kicker">{t('ef.kicker')}</div>
+    <h1>{type === 'recovery' ? t('ef.recoverTitle') : t('ef.confirmTitle')}</h1>
+    <p>{type === 'recovery' ? t('ef.recoverNote') : t('ef.confirmNote')}</p>
     <form className="auth-form" onSubmit={submit}>
       <label>Email<input type="email" required maxLength={254} autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} /></label>
       {error && <p role="alert" className="auth-error">{error}</p>}
       {message && <p role="status">{message}</p>}
-      <button disabled={busy || cooldown}>{busy ? 'Отправка…' : cooldown ? 'Повторить можно через минуту' : 'Отправить письмо'}</button>
+      <button disabled={busy || cooldown}>{busy ? t('ef.sending') : cooldown ? t('ef.cooldown') : t('ef.submit')}</button>
     </form>
-    <p className="auth-switch"><Link href="/login">Вернуться ко входу</Link></p>
+    <p className="auth-switch"><Link href="/login">{t('ef.backToLogin')}</Link></p>
   </main>;
 }

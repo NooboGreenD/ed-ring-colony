@@ -1,15 +1,11 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import {
-  BUILD_CLASS_LABELS_RU,
-  ECONOMY_LABELS_RU,
-  installationLinks,
-  PAD_LABELS_RU,
-  PRE_REQS,
-} from '@/lib/architect/catalogue';
+import { BUILD_CLASS_LABELS_RU, ECONOMY_LABELS_RU, PAD_LABELS_RU, PRE_REQS, installationLinks, installationName } from '@/lib/architect/catalogue';
 import { ECONOMY_MARKET } from '@/lib/architect/economy';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { architectLabel } from '@/lib/i18n/architectLabels';
+import { placementCheckTexts } from '@/lib/i18n/planText';
 import {
   commodityLabel,
   formatTons,
@@ -40,7 +36,7 @@ type TierFilter = 0 | 1 | 2 | 3;
 const TIER_LABELS: Record<TierFilter, string> = { 0: 'ipk.tierAny', 1: 'T1', 2: 'T2', 3: 'T3' };
 
 export default function InstallationPicker({ body, plan, onPick, onClose, initialLocation = 'any' }: InstallationPickerProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [query, setQuery] = useState('');
   const [location, setLocation] = useState<LocationFilter>(initialLocation);
   const [tier, setTier] = useState<TierFilter>(0);
@@ -68,7 +64,8 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
     }));
     return checked.sort((left, right) => {
       if (left.check.ok !== right.check.ok) return left.check.ok ? -1 : 1;
-      return right.installation.score - left.installation.score || left.installation.nameRu.localeCompare(right.installation.nameRu);
+      return right.installation.score - left.installation.score
+        || installationName(left.installation, locale).localeCompare(installationName(right.installation, locale));
     });
   }, [body, plan, query, location, tier]);
 
@@ -156,8 +153,8 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
             <PickerRow
               key={installation.id}
               installation={installation}
-              errors={check.errors}
-              warnings={check.warnings}
+              errors={placementCheckTexts(check, t).errors}
+              warnings={placementCheckTexts(check, t).warnings}
               expanded={expanded === installation.id}
               onToggle={() => setExpanded(expanded === installation.id ? '' : installation.id)}
               onPick={() => onPick(installation.id)}
@@ -184,7 +181,7 @@ function PickerRow({
   onToggle: () => void;
   onPick: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const preReq = installation.preReq ? PRE_REQS[installation.preReq] : null;
   const links = installationLinks(installation.id);
   const market = ECONOMY_MARKET[installation.influence];
@@ -208,7 +205,7 @@ function PickerRow({
         </button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ color: 'var(--text)', fontSize: 14 }}>
-            {installation.nameRu}
+            {installationName(installation, locale)}
             <span style={{ color: 'var(--muted)', fontSize: 12 }}> · {installation.id}</span>
             {primary ? (
               <span
@@ -220,12 +217,12 @@ function PickerRow({
             ) : null}
           </div>
           <div style={{ color: 'var(--muted)', fontSize: 11 }}>
-            {BUILD_CLASS_LABELS_RU[installation.buildClass]} · T{installation.tier}
-            {installation.pad !== 'none' ? t('ipk.pad', { pad: PAD_LABELS_RU[installation.pad] }) : ''}
+            {architectLabel('buildClass', installation.buildClass, BUILD_CLASS_LABELS_RU[installation.buildClass], t)} · T{installation.tier}
+            {installation.pad !== 'none' ? t('ipk.pad', { pad: architectLabel('pad', installation.pad, PAD_LABELS_RU[installation.pad], t) }) : ''}
             {installation.needs.count > 0 ? t('ipk.needs', { count: installation.needs.count, tier: installation.needs.tier }) : ''}
             {installation.gives.count > 0 ? t('ipk.gives', { count: installation.gives.count, tier: installation.gives.tier }) : ''}
-            {preReq ? t('ipk.preReq', { label: preReq.label }) : ''}
-            {installation.influence !== 'none' ? t('ipk.economy', { label: ECONOMY_LABELS_RU[installation.influence] }) : ''}
+            {preReq ? t('ipk.preReq', { label: architectLabel('preReq', installation.preReq!, preReq.label, t) }) : ''}
+            {installation.influence !== 'none' ? t('ipk.economy', { label: architectLabel('economy', installation.influence, ECONOMY_LABELS_RU[installation.influence], t) }) : ''}
           </div>
         </div>
         <div style={{ textAlign: 'right', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -267,15 +264,15 @@ function PickerRow({
             <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
               {links.requires.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  {t('ipk.requiresPredecessor')} <span style={{ color: 'var(--text)' }}>{links.requires.map((req) => req.label).join(' / ')}</span>
+                  {t('ipk.requiresPredecessor')} <span style={{ color: 'var(--text)' }}>{links.requires.map((req) => architectLabel('preReq', req.preReq, req.label, t)).join(' / ')}</span>
                 </div>
               )}
               {links.enables.length > 0 && (
-                <div style={{ color: 'var(--cyan)' }}>{t('ipk.enables')} {links.enables.map((enable) => enable.label).join('; ')}</div>
+                <div style={{ color: 'var(--cyan)' }}>{t('ipk.enables')} {links.enables.map((enable) => architectLabel('unlock', enable.id, enable.label, t)).join('; ')}</div>
               )}
               {links.requiredBy.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  {t('ipk.requiredFor')} <span style={{ color: 'var(--text)' }}>{links.requiredBy.map((ref) => ref.nameRu).join(', ')}</span>
+                  {t('ipk.requiredFor')} <span style={{ color: 'var(--text)' }}>{links.requiredBy.map((ref) => installationName(ref, locale)).join(', ')}</span>
                 </div>
               )}
               {market.produces.length > 0 && (

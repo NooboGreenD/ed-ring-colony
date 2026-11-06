@@ -10,6 +10,7 @@ import {
   statusFromProgress,
   systemNameKey,
 } from '@/lib/systemProgress';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -50,6 +51,7 @@ function mergeCached(
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const url = new URL(req.url);
   const name = url.searchParams.get('name')?.trim();
   const supabase = await createClient();
@@ -136,7 +138,7 @@ export async function GET(req: Request) {
         totalRemaining: cachedData.totalRemaining ?? 0,
         telemetry,
         updated_at: cachedProgress?.updated_at ?? cached.updated_at,
-        error: ravenData.error ? ravenData.error + ' Показаны сохранённые данные.' : undefined,
+        error: ravenData.error ? t('api.ravenShownCached', { error: ravenData.error }) : undefined,
       });
     }
 
@@ -176,7 +178,7 @@ export async function GET(req: Request) {
         totalProvided: null,
         totalRemaining: 0,
         telemetry,
-        error: ravenData.error || 'Данные о постройках не найдены.',
+        error: ravenData.error || t('api.buildingsNotFound'),
       });
     }
 

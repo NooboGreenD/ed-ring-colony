@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { listDevices, readSettings, revokeDevice } from '@/lib/helperDevices';
 import { authFromRequest } from '@/lib/supabaseServer';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,9 +17,10 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store, no-cache, must-revalid
  * выглядит как «требуется привязка».
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const { user } = await authFromRequest(request);
   if (!user) {
-    return NextResponse.json({ ok: false, error: 'Нужно войти в учётную запись.' }, { status: 401, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('api.accountRequired') }, { status: 401, ...NO_STORE });
   }
   const [devices, settings] = await Promise.all([
     listDevices(user.id),
@@ -34,17 +36,18 @@ export async function GET(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const t = await apiTranslate();
   const { user } = await authFromRequest(request);
   if (!user) {
-    return NextResponse.json({ ok: false, error: 'Нужно войти в учётную запись.' }, { status: 401, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('api.accountRequired') }, { status: 401, ...NO_STORE });
   }
   const deviceId = new URL(request.url).searchParams.get('device') ?? '';
   if (!deviceId) {
-    return NextResponse.json({ ok: false, error: 'Не указано устройство.' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('api.deviceMissing') }, { status: 400, ...NO_STORE });
   }
   const revoked = await revokeDevice(user.id, deviceId);
   if (!revoked) {
-    return NextResponse.json({ ok: false, error: 'Устройство не найдено.' }, { status: 404, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('api.deviceNotFound') }, { status: 404, ...NO_STORE });
   }
   return NextResponse.json({ ok: true }, NO_STORE);
 }

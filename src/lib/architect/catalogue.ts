@@ -2438,10 +2438,25 @@ export const INSTALLATIONS: ArchitectInstallation[] = CATALOGUE_ENTRIES.map((ins
 
 const INSTALLATIONS_BY_ID = new Map(INSTALLATIONS.map((installation) => [installation.id, installation]));
 
+/**
+ * Название постройки для интерфейса: русское только в русской локали, иначе
+ * каноническое английское (как в игре). Поиск и справочники по-прежнему
+ * работают с `nameRu`/`nameEn` — это слой отображения, не данные.
+ */
+export function installationName(
+  installation: { nameRu: string; nameEn?: string } | null | undefined,
+  locale: string,
+): string {
+  if (!installation) return '';
+  if (locale === 'ru') return installation.nameRu;
+  return installation.nameEn || installation.nameRu;
+}
+
 /** Короткая ссылка на постройку — для графа зависимостей. */
 export interface BuildingRef {
   id: string;
   nameRu: string;
+  nameEn: string;
 }
 
 /**
@@ -2461,7 +2476,7 @@ export interface BuildingLinks {
 
 function buildingRef(id: string): BuildingRef {
   const installation = INSTALLATIONS_BY_ID.get(id);
-  return { id, nameRu: installation?.nameRu ?? id };
+  return { id, nameRu: installation?.nameRu ?? id, nameEn: installation?.nameEn ?? id };
 }
 
 export function installationLinks(id: string): BuildingLinks {

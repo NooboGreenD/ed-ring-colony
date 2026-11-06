@@ -1,4 +1,5 @@
 "use client";
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { IconMessage, IconThumbsUp, IconClock } from "@/components/Icons";
 
 import Link from "next/link";
@@ -12,7 +13,8 @@ interface Thread {
 }
 
 export function RecentPosts({ threads }: { threads: Thread[] }) {
-  if (!threads.length) return <p style={{ color: "var(--muted)" }}>Пока нет тем.</p>;
+  const { t } = useI18n();
+  if (!threads.length) return <p style={{ color: "var(--muted)" }}>{t('forum.noTopicsYet')}</p>;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

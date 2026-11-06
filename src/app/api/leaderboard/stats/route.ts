@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { GOVERNANCE_TABLE } from '@/lib/architect/governance';
 import { PLAN_TABLE } from '@/lib/architect/store';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +46,7 @@ function num(value: unknown): number {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const period = searchParams.get('period') || 'all';
@@ -127,6 +129,7 @@ export async function GET(req: Request) {
     }
 
     // ── Архитекторы: опубликованные планы + закреплённые системы ───────
+    const fallbackName = t('cmdr.default');
     const architects = new Map<string, ArchitectAggregate>();
     offset = 0;
     while (true) {
@@ -147,7 +150,7 @@ export async function GET(req: Request) {
         if (!entry) {
           entry = {
             userId,
-            cmdrName: String(row.author_name ?? '') || 'Командир',
+            cmdrName: String(row.author_name ?? '') || fallbackName,
             plans: 0,
             sites: 0,
             haulTons: 0,
@@ -184,7 +187,7 @@ export async function GET(req: Request) {
         if (!entry) {
           entry = {
             userId,
-            cmdrName: String(row.architect_name ?? '') || 'Командир',
+            cmdrName: String(row.architect_name ?? '') || fallbackName,
             plans: 0,
             sites: 0,
             haulTons: 0,
@@ -197,7 +200,7 @@ export async function GET(req: Request) {
         entry.assignedSystems += 1;
         const name = String(row.system_name ?? '').trim();
         if (name && entry.assignedNames.length < 3) entry.assignedNames.push(name);
-        if (!entry.cmdrName || entry.cmdrName === 'Командир') {
+        if (!entry.cmdrName || entry.cmdrName === fallbackName) {
           const architectName = String(row.architect_name ?? '').trim();
           if (architectName) entry.cmdrName = architectName;
         }

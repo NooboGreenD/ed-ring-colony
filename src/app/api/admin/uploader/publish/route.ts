@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { isPublishAuthorized, publishBundle, saveLauncher } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,6 +19,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  * другой workflow и заметно реже.
  */
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   if (!isPublishAuthorized(request)) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401, ...NO_STORE });
   }
@@ -32,7 +34,7 @@ export async function POST(request: Request) {
 
   const body = (await request.json().catch(() => null)) as PublishBody | null;
   if (!body || typeof body !== 'object') {
-    return NextResponse.json({ ok: false, error: 'Тело запроса не JSON' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('adm.bodyNotJson') }, { status: 400, ...NO_STORE });
   }
 
   // Публикация базовой сборки: метаданные exe, сам файл лежит в релизах.

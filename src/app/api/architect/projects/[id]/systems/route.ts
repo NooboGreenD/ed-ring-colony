@@ -9,6 +9,7 @@ import {
 } from '@/lib/architect/projects';
 import { SYSTEM_COLUMNS, loadPlanRefs, loadProfiles, systemView } from '@/lib/architect/projectStore';
 import { errorResponse, jsonError, openProject, readJson } from '@/lib/architect/projectRouteKit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,11 +28,12 @@ export const dynamic = 'force-dynamic';
 type Params = { params: Promise<{ id: string }> };
 
 export async function POST(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, userId, access } = opened;
-    if (!access.permissions.manageSystems) return jsonError('Добавлять системы могут создатель и модераторы', 403);
+    if (!access.permissions.manageSystems) return jsonError(t('prj.addSystemsCreatorsOnly'), 403);
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
 
@@ -47,8 +49,8 @@ export async function POST(req: Request, { params }: Params) {
     });
     if (!list.names.length) {
       const reason = list.overflow.length
-        ? `В проекте не больше ${PROJECT_LIMITS.systems} систем`
-        : list.duplicates.length ? 'Эти системы уже в проекте' : 'Укажите хотя бы одну систему';
+        ? t('prj.systemsLimit', { max: PROJECT_LIMITS.systems })
+        : list.duplicates.length ? t('prj.systemsAlreadyInProject') : t('prj.systemAtLeastOne');
       return NextResponse.json({ error: reason, ...list, added: [] }, { status: 400 });
     }
 
@@ -66,7 +68,7 @@ export async function POST(req: Request, { params }: Params) {
       })))
       .select(SYSTEM_COLUMNS);
     if (error) {
-      if (/duplicate key/i.test(error.message ?? '')) return jsonError('Система уже в проекте', 409);
+      if (/duplicate key/i.test(error.message ?? '')) return jsonError(t('prj.systemAlreadyInProject'), 409);
       throw new Error(error.message);
     }
     await svc.from('architect_projects').update({ updated_at: now }).eq('id', access.project.id);
@@ -84,6 +86,7 @@ export async function POST(req: Request, { params }: Params) {
 }
 
 export async function PATCH(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -91,7 +94,7 @@ export async function PATCH(req: Request, { params }: Params) {
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
     const body = parsed.body;
-    if (!isUuid(body.systemId)) return jsonError('Укажите систему', 400);
+    if (!isUuid(body.systemId)) return jsonError(t('prj.systemRequired'), 400);
 
     const { data: row, error: rowError } = await svc
       .from('architect_project_systems')
@@ -100,24 +103,24 @@ export async function PATCH(req: Request, { params }: Params) {
       .eq('id', String(body.systemId).toLowerCase())
       .maybeSingle();
     if (rowError) throw new Error(rowError.message);
-    if (!row) return jsonError('Система не найдена в проекте', 404);
+    if (!row) return jsonError(t('prj.systemNotInProject'), 404);
 
     const allowed = editableSystemFields(access.actor, row.responsible_id);
-    if (!allowed.length) return jsonError('Менять систему могут ведущие проекта и ответственный пилот', 403);
+    if (!allowed.length) return jsonError(t('prj.systemEditDenied'), 403);
     const { patch, errors, forbidden } = sanitizeSystemPatch(body, allowed);
     if (forbidden.length) {
-      return jsonError(`Ответственный пилот меняет только этап и заметки (запрещено: ${forbidden.join(', ')})`, 403);
+      return jsonError(t('prj.systemPilotFieldsLimited', { fields: forbidden.join(', ') }), 403);
     }
     if (errors.length) return jsonError(errors.join('; '), 400);
-    if (!Object.keys(patch).length) return jsonError('Нечего менять', 400);
+    if (!Object.keys(patch).length) return jsonError(t('prj.nothingToChange'), 400);
 
     const nextKey = typeof patch.system_name === 'string' ? systemKey(patch.system_name) : String(row.system_name_lc);
     if (typeof patch.plan_id === 'string') {
       const plans = await loadPlanRefs(svc, [patch.plan_id]);
       const plan = plans.get(patch.plan_id);
       const visible = plan && (plan.visibility !== 'private' || plan.authorId === userId || access.isAdmin);
-      if (!plan || !visible) return jsonError('План не найден или закрыт автором', 404);
-      if (plan.systemKey !== nextKey) return jsonError('План составлен для другой системы', 400);
+      if (!plan || !visible) return jsonError(t('prj.planNotFoundOrClosed'), 404);
+      if (plan.systemKey !== nextKey) return jsonError(t('prj.planOtherSystem'), 400);
     } else if (typeof patch.system_name === 'string' && row.plan_id && nextKey !== row.system_name_lc) {
       // Переименование отвязывает план чужой системы.
       patch.plan_id = null;
@@ -130,7 +133,7 @@ export async function PATCH(req: Request, { params }: Params) {
         .eq('user_id', patch.responsible_id)
         .maybeSingle();
       if (error) throw new Error(error.message);
-      if (!member) return jsonError('Ответственным может быть только участник проекта', 400);
+      if (!member) return jsonError(t('prj.responsibleMustBeMember'), 400);
     }
 
     const now = new Date().toISOString();
@@ -142,7 +145,7 @@ export async function PATCH(req: Request, { params }: Params) {
       .select(SYSTEM_COLUMNS)
       .maybeSingle();
     if (error) {
-      if (/duplicate key/i.test(error.message ?? '')) return jsonError('Такая система уже есть в проекте', 409);
+      if (/duplicate key/i.test(error.message ?? '')) return jsonError(t('prj.systemDuplicate'), 409);
       return jsonError(error.message, 400);
     }
     await svc.from('architect_projects').update({ updated_at: now }).eq('id', access.project.id);
@@ -158,11 +161,12 @@ export async function PATCH(req: Request, { params }: Params) {
 }
 
 export async function DELETE(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, access } = opened;
-    if (!access.permissions.manageSystems) return jsonError('Убирать системы могут создатель и модераторы', 403);
+    if (!access.permissions.manageSystems) return jsonError(t('prj.removeSystemsCreatorsOnly'), 403);
     const url = new URL(req.url);
     let systemId = url.searchParams.get('systemId') ?? '';
     if (!systemId) {
@@ -170,7 +174,7 @@ export async function DELETE(req: Request, { params }: Params) {
       if (!parsed.ok) return parsed.response;
       systemId = String(parsed.body.systemId ?? '');
     }
-    if (!isUuid(systemId)) return jsonError('Укажите систему', 400);
+    if (!isUuid(systemId)) return jsonError(t('prj.systemRequired'), 400);
     const { data, error } = await svc
       .from('architect_project_systems')
       .delete()
@@ -178,7 +182,7 @@ export async function DELETE(req: Request, { params }: Params) {
       .eq('id', systemId.toLowerCase())
       .select('id');
     if (error) throw new Error(error.message);
-    if (!(data ?? []).length) return jsonError('Система не найдена в проекте', 404);
+    if (!(data ?? []).length) return jsonError(t('prj.systemNotInProject'), 404);
     await svc.from('architect_projects').update({ updated_at: new Date().toISOString() }).eq('id', access.project.id);
     return NextResponse.json({ ok: true });
   } catch (error) {

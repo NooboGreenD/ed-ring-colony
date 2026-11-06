@@ -212,6 +212,9 @@ export interface EconomyBodyFit {
   matched: BodyTrait[];
   /** Человеко-читаемое пояснение. */
   reason: string;
+  /** Ключ перевода пояснения и его параметры: интерфейс показывает их. */
+  key: string;
+  params?: Record<string, string>;
 }
 
 /**
@@ -224,19 +227,25 @@ export interface EconomyBodyFit {
 export function economyBodyFit(economy: SystemEconomy, body: ArchitectBody | null | undefined): EconomyBodyFit {
   const affinity = ECONOMY_AFFINITY[economy] ?? ECONOMY_AFFINITY.none;
   if (economy === 'none' || (!affinity.bodyDependent && affinity.boost.length === 0)) {
-    return { level: 'neutral', matched: [], reason: affinity.note };
+    return { level: 'neutral', matched: [], reason: affinity.note, key: `ebf.note.${economy}` };
   }
   const traits = bodyTraits(body);
   const matched = affinity.boost.filter((trait) => traits.has(trait));
   if (matched.length > 0) {
     const names = matched.map((trait) => BODY_TRAIT_LABELS_RU[trait]).join(', ');
-    return { level: 'boost', matched, reason: `Тело усиливает экономику: ${names}` };
+    return { level: 'boost', matched, reason: `Тело усиливает экономику: ${names}`, key: 'ebf.boost', params: { names } };
   }
   if (affinity.bodyDependent && body) {
     const wanted = affinity.boost.map((trait) => BODY_TRAIT_LABELS_RU[trait]).join(', ');
-    return { level: 'weak', matched: [], reason: `Экономика слабо развивается на этом теле — ей подошли бы: ${wanted}` };
+    return {
+      level: 'weak',
+      matched: [],
+      reason: `Экономика слабо развивается на этом теле — ей подошли бы: ${wanted}`,
+      key: 'ebf.weak',
+      params: { wanted },
+    };
   }
-  return { level: 'neutral', matched: [], reason: affinity.note };
+  return { level: 'neutral', matched: [], reason: affinity.note, key: `ebf.note.${economy}` };
 }
 
 /** Какие экономики усиливает конкретное тело (для карточки тела). */

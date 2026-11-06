@@ -12,6 +12,7 @@ import {
   storeStatus,
   upsertSignKey,
 } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -29,6 +30,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
  * переменными окружения — значения из окружения из UI не удалить.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
   const store = await storeStatus();
@@ -44,6 +46,7 @@ interface ConfigBody {
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 
@@ -107,13 +110,13 @@ export async function POST(request: Request) {
     }
 
     default:
-      return NextResponse.json({ ok: false, error: `Неизвестное действие: ${action}` }, { status: 400, ...NO_STORE });
+      return NextResponse.json({ ok: false, error: t('adm.configUnknownAction', { action }) }, { status: 400, ...NO_STORE });
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     const hint = /EACCES|permission denied/i.test(detail)
-      ? 'Хранилище недоступно для записи. Пересоздайте web-контейнер после обновления или исправьте владельца тома uploader-store.'
-      : `Не удалось сохранить настройки: ${detail}`;
+      ? t('adm.storageNotWritableSetup')
+      : t('adm.configSaveFailed', { detail });
     return NextResponse.json({ ok: false, error: hint }, { status: 500, ...NO_STORE });
   }
 }

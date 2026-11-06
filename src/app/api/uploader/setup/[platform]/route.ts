@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { NextResponse } from 'next/server';
 
 import { readSetup, setupBinaryFile } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,6 +26,7 @@ export const runtime = 'nodejs';
  * совпадал с тем, что лежит на диске.
  */
 export async function GET(_request: Request, context: { params: Promise<{ platform: string }> }) {
+  const t = await apiTranslate();
   const { platform } = await context.params;
   const normalized = String(platform ?? '').trim().toLowerCase();
   const info = await readSetup(normalized);
@@ -41,7 +43,7 @@ export async function GET(_request: Request, context: { params: Promise<{ platfo
     return NextResponse.json(
       {
         ok: false,
-        error: 'Установщик Colonial Helper ещё не опубликован на сервере',
+        error: t('up.setupNotPublishedServer'),
         platform: normalized,
       },
       { status: 404, headers: { 'Cache-Control': 'no-store' } },

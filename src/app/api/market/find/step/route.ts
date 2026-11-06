@@ -5,12 +5,14 @@ import { commodityKey, resolveCommodity } from '@/lib/commodities';
 import { marketUpstream, marketError } from '@/lib/marketUpstream';
 import { edsmInventoryItems, edsmStationReport, saveStationReport, validTime, INVENTORY_TTL_MS, COMMERCE_SOURCE_RANK } from '@/lib/stationCommerce';
 import { discoverMarketSystems } from '@/lib/marketDiscovery';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 const STEP_SIZE = 5;
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const { job_id, known_systems_count } = await request.json();
     const knownCount = Number.isInteger(known_systems_count) && known_systems_count >= 0 ? Math.min(known_systems_count, 10000) : 0;
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
         : [resolveCommodity(job.commodity || '')].filter(Boolean);
     if (!commoditiesList.length)
       return NextResponse.json(
-        { error: 'Неизвестный тип стройплощадки или пустой товар' },
+        { error: t('api.marketSiteUnknown') },
         { status: 400 }
       );
     const needed = new Set(commoditiesList.map(commodityKey));
@@ -114,7 +116,7 @@ export async function POST(request: Request) {
         if (!market) {
           market = {
             name: row.station_name,
-            type: 'По отчёту рынка',
+            type: t('market.stationByReport'),
             marketId: row.market_id,
             commodities: [],
           };
@@ -147,7 +149,7 @@ export async function POST(request: Request) {
         canonicalSources.set(station.station_name, snapshot.source);
         snapshotAges.push(observed);
         markets.set(station.station_name, {
-          name: station.station_name, type: station.station_type || 'По отчёту рынка',
+          name: station.station_name, type: station.station_type || t('market.stationByReport'),
           marketId: station.market_id, metadata: station.metadata,
           commodities: snapshot.items.map((item: any) => ({ ...item, reported_at: snapshot.observed_at, source: snapshot.source })),
         });
@@ -166,7 +168,7 @@ export async function POST(request: Request) {
           );
           if (!Array.isArray(stationData?.stations))
             throw new Error(
-              'EDSM не передал список станций; сохранённые отчёты могут быть неполными.'
+              t('market.edsmNoStations')
             );
           // Keep metadata for all stations, not only commodity markets.
           for (const station of stationData.stations) {
@@ -182,7 +184,7 @@ export async function POST(request: Request) {
                 deadline
               );
               if (!Array.isArray(data?.commodities))
-                throw new Error('EDSM не передал данные рынка станции.');
+                throw new Error(t('api.edsmNoMarketData'));
               const report = edsmStationReport(sys, station);
               const observed_at = validTime(data.updateTime || data.timestamp || station.updateTime?.market) || '1970-01-01T00:00:00.000Z';
               report.inventories.market = { observed_at, items: data.commodities };
@@ -273,7 +275,7 @@ export async function POST(request: Request) {
         }
       }
       if (cache.error && eddn.error && markets.size === 0)
-        warning = 'Недоступны отчёты рынков в базе данных. ' + (warning || '');
+        warning = t('market.cacheUnavailable') + ' ' + (warning || '');
       if (
         !warning &&
         rows.some(
@@ -282,7 +284,7 @@ export async function POST(request: Request) {
             !Number.isFinite(Date.parse(row.time))
         )
       )
-        warning = 'В части сохранённых отчётов неизвестно время обновления.';
+        warning = t('market.reportTimeUnknown');
       scanLog.push({
         system: sys.name,
         status: warning
@@ -292,7 +294,7 @@ export async function POST(request: Request) {
             : 'no_market',
         stations: markets.size,
         warning: warning
-          ? `${warning} Использованы сохранённые отчёты, если они есть; данные могут быть неполными или устаревшими.`
+          ? `${warning} ${t('market.cachedUsed')}`
           : undefined,
         timestamp: new Date().toISOString(),
       });
@@ -375,7 +377,7 @@ export async function POST(request: Request) {
         } catch (error) {
           isDone = false;
           scanLog.push({ system: job.ref_system, status: 'unavailable', timestamp: new Date().toISOString(),
-            warning: `Расширенный поиск временно недоступен: ${marketError(error)}. Результаты первого этапа сохранены.` });
+            warning: t('api.findAdvancedUnavailable', { message: marketError(error) }) });
         }
       }
     }
@@ -462,7 +464,7 @@ export async function POST(request: Request) {
   } catch (e: any) {
     console.error('[Market Step] Error:', e);
     return NextResponse.json(
-      { error: marketError(e) || 'Ошибка шага поиска' },
+      { error: marketError(e) || t('api.findStepFailed') },
       { status: 500 }
     );
   }

@@ -7,6 +7,7 @@ import {
   type StationSearchResult, type StationSearchStation, type StationSearchStationsResponse,
 } from '@/lib/stationSearch';
 import { resolveStationPick, stationItemDisplay, stationQueryAliases, type StationPick } from '@/lib/stationSearchCatalog';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 // Radius-filtered inventory matching can scan many station snapshots.
@@ -29,9 +30,10 @@ function isMissingListFunction(error: { code?: string; message?: string }): bool
 }
 
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const startedAt = Date.now();
   const parsed = stationSearchSchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
-  if (!parsed.success) return NextResponse.json({ error: 'Укажите запрос от 2 до 120 символов и корректные фильтры.' }, { status: 400 });
+  if (!parsed.success) return NextResponse.json({ error: t('api.stationQueryInvalid') }, { status: 400 });
   const query = parsed.data;
   let stage = 'create-service-client';
   try {
@@ -40,7 +42,7 @@ export async function GET(request: Request) {
     if (query.reference) {
       stage = 'resolve-reference-coordinates';
       center = await referenceSystemCoords(svc, query.reference);
-      if (!center) return NextResponse.json({ error: 'Координаты опорной системы не найдены в БД. Выберите известную систему или ищите без ограничения расстояния.' }, { status: 404 });
+      if (!center) return NextResponse.json({ error: t('api.stationCenterMissing') }, { status: 404 });
     }
     // Подсказка из быстрого выбора ищется точно; свободный ввод — по вхождению
     // русских и английских названий и символов Frontier.
@@ -89,7 +91,7 @@ export async function GET(request: Request) {
       has_reference: !!query.reference,
       error,
     });
-    return NextResponse.json({ error: 'Поиск станций временно недоступен. Проверьте подключение БД и применение миграций справочника станций.' }, { status: 503 });
+    return NextResponse.json({ error: t('api.stationSearchDown') }, { status: 503 });
   }
 }
 

@@ -2,6 +2,7 @@
 import { IconAlert } from "@/components/Icons";
 
 import { useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface Props {
   postId?: number;
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function ForumReportButton({ postId, threadId }: Props) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [sent, setSent] = useState(false);
@@ -38,7 +40,7 @@ export function ForumReportButton({ postId, threadId }: Props) {
           cursor: 'pointer',
         }}
       >
-        🚩 Пожаловаться
+        🚩 {t('rep.report')}
       </button>
     );
   }
@@ -46,13 +48,13 @@ export function ForumReportButton({ postId, threadId }: Props) {
   return (
     <div style={{ marginTop: 8, padding: 8, background: '#323538', borderRadius: 6 }}>
       {sent ? (
-        <p style={{ color: '#4ade80', fontSize: 12 }}>Жалоба отправлена</p>
+        <p style={{ color: '#4ade80', fontSize: 12 }}>{t('rep.sent')}</p>
       ) : (
         <>
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Причина жалобы..."
+            placeholder={t('rep.reason')}
             style={{
               width: '100%',
               padding: 6,
@@ -78,7 +80,7 @@ export function ForumReportButton({ postId, threadId }: Props) {
                 cursor: 'pointer',
               }}
             >
-              Отправить
+              {t('forum.send')}
             </button>
             <button
               onClick={() => setOpen(false)}
@@ -92,7 +94,7 @@ export function ForumReportButton({ postId, threadId }: Props) {
                 cursor: 'pointer',
               }}
             >
-              Отмена
+              {t('forum.cancel')}
             </button>
           </div>
         </>

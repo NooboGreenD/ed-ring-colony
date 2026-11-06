@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient, authFromRequest } from '@/lib/supabaseServer'
 import { getSquadronMembership, loadSquadronMembers } from '@/lib/squadronData'
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -21,6 +22,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -43,11 +45,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       .maybeSingle()
 
     if (existing && existing.squadron_id !== squadronId) {
-      return NextResponse.json({ error: 'Пилот уже состоит в другой эскадрилье' }, { status: 409 })
+      return NextResponse.json({ error: t('api.pilotInOtherSquadron') }, { status: 409 })
     }
 
     if (existing && existing.squadron_id === squadronId) {
-      return NextResponse.json({ error: 'Пилот уже в этой эскадрилье' }, { status: 409 })
+      return NextResponse.json({ error: t('api.pilotInThisSquadron') }, { status: 409 })
     }
 
     // Проверка: указанное звание принадлежит этой эскадрилье
@@ -59,7 +61,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         .eq('squadron_id', squadronId)
         .single()
       if (!rankCheck) {
-        return NextResponse.json({ error: 'Неверное звание' }, { status: 400 })
+        return NextResponse.json({ error: t('api.rankInvalid') }, { status: 400 })
       }
     }
 
@@ -77,6 +79,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -93,7 +96,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
     // Нельзя снять звание с самого себя (только через покидание эскадрильи)
     if (user_id === user.id && rank_id === null) {
-      return NextResponse.json({ error: 'Нельзя снять звание с себя' }, { status: 400 })
+      return NextResponse.json({ error: t('api.cannotClearOwnRank') }, { status: 400 })
     }
 
     // Проверка звания
@@ -105,7 +108,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         .eq('squadron_id', squadronId)
         .single()
       if (!rankCheck) {
-        return NextResponse.json({ error: 'Неверное звание' }, { status: 400 })
+        return NextResponse.json({ error: t('api.rankInvalid') }, { status: 400 })
       }
     }
 
@@ -129,6 +132,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -154,7 +158,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       .single()
 
     if (target && target.created_by === user_id && !isSelf) {
-      return NextResponse.json({ error: 'Нельзя выгнать командира эскадрильи' }, { status: 403 })
+      return NextResponse.json({ error: t('api.cannotKickLeader') }, { status: 403 })
     }
 
     await supabase

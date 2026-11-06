@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useCallback, useState, useEffect } from 'react';
 import { translations, SUPPORTED_LOCALES, LOCALE_NAMES, LOCALE_FLAGS } from './translations';
+import { setFormatLocale } from './format';
 
 const STORAGE_KEY = 'ed-ring-locale';
 const COOKIE_KEY = 'ed-ring-locale';
@@ -47,6 +48,8 @@ const I18nContext = createContext<I18nContextType>({
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState('ru');
+  // Чистые форматтеры (даты, тонны, «N мин назад») берут локаль отсюда.
+  setFormatLocale(locale);
 
   useEffect(() => {
     // Match the prerendered Russian tree, then restore the browser preference.

@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { Text } from '@react-three/drei';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Hub } from '@/types/hub';
@@ -102,21 +103,24 @@ export function HubMarkers({ hubs, onSelectHub, selectedHubId }: HubMarkersProps
 }
 
 export function HubTooltip({ hub }: { hub: Hub }) {
+
+  const { t } = useI18n();
+
   return (
     <div style={{ background: '#25282b', border: '1px solid #3a3d40', borderRadius: 8, padding: 12, minWidth: 220, pointerEvents: 'auto' }}>
       <div style={{ fontWeight: 700, fontSize: 16, color: '#eeeeee' }}>{hub.name}</div>
       <div style={{ fontSize: 13, color: '#9ca3af' }}>{hub.system_name}</div>
       <div style={{ marginTop: 6, fontSize: 13, color: '#eeeeee' }}>
-        Статус: <span style={{ color: hub.status === 'done' ? '#22c55e' : hub.status === 'building' ? '#e67e22' : '#3b82f6' }}>
-          {hub.status === 'done' ? 'Завершён' : hub.status === 'building' ? 'Строительство' : 'Запланирован'}
+        {t('gmap.statusLabel')} <span style={{ color: hub.status === 'done' ? '#22c55e' : hub.status === 'building' ? '#e67e22' : '#3b82f6' }}>
+          {hub.status === 'done' ? t('gmap.statusDone') : hub.status === 'building' ? t('gmap.statusBuilding') : t('gmap.statusPlanned')}
         </span>
       </div>
       {hub.progress != null && (
-        <div style={{ marginTop: 6, fontSize: 13, color: '#eeeeee' }}>Прогресс: {hub.progress}%</div>
+        <div style={{ marginTop: 6, fontSize: 13, color: '#eeeeee' }}>{t('gmap.progressLabel')} {hub.progress}%</div>
       )}
       {hub.goals && hub.goals.length > 0 && (
         <div style={{ marginTop: 8, borderTop: '1px solid #3a3d40', paddingTop: 6 }}>
-          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>Цели:</div>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>{t('gmap.goalsLabel')}</div>
           {hub.goals.map((goal: any) => (
             <div key={goal.id} style={{ fontSize: 12, color: '#eeeeee', marginBottom: 2 }}>
               {goal.commodity}: {goal.current_amount}/{goal.target_amount} {goal.unit}

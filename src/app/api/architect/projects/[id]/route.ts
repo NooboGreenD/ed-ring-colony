@@ -17,6 +17,7 @@ import {
   type ProjectRow,
 } from '@/lib/architect/projectStore';
 import { errorResponse, jsonError, openProject, readJson } from '@/lib/architect/projectRouteKit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +33,7 @@ export const dynamic = 'force-dynamic';
 type Params = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -99,16 +101,17 @@ export async function GET(req: Request, { params }: Params) {
 }
 
 export async function PATCH(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, access } = opened;
-    if (!access.permissions.editProject) return jsonError('Менять проект могут создатель и модераторы', 403);
+    if (!access.permissions.editProject) return jsonError(t('prj.editCreatorsOnly'), 403);
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
     const { patch, errors } = sanitizeProjectPatch(parsed.body);
     if (errors.length) return jsonError(errors.join('; '), 400);
-    if (!Object.keys(patch).length) return jsonError('Нечего менять', 400);
+    if (!Object.keys(patch).length) return jsonError(t('prj.nothingToChange'), 400);
 
     const { data, error } = await svc
       .from('architect_projects')
@@ -124,11 +127,12 @@ export async function PATCH(req: Request, { params }: Params) {
 }
 
 export async function DELETE(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, access } = opened;
-    if (!access.permissions.deleteProject) return jsonError('Удалить проект может только его создатель', 403);
+    if (!access.permissions.deleteProject) return jsonError(t('prj.deleteCreatorOnly'), 403);
     const { error } = await svc.from('architect_projects').delete().eq('id', access.project.id);
     if (error) throw new Error(error.message);
     return NextResponse.json({ ok: true });

@@ -22,6 +22,7 @@ import {
 import { requireAdmin } from '@/lib/billing/auth';
 import { readAllRows } from '@/lib/readAllRows';
 import { createServiceClient } from '@/lib/supabaseServer';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -45,18 +46,18 @@ function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400, headers });
 }
 
-function normalizeEditableFields(value: Record<string, unknown>): { fields?: Record<string, unknown>; error?: string } {
+function normalizeEditableFields(value: Record<string, unknown>, t: (key: string, params?: Record<string, string | number>) => string): { fields?: Record<string, unknown>; error?: string } {
   const fields: Record<string, unknown> = {};
   for (const field of COMMUNITY_GOAL_EDITABLE_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(value, field)) continue;
     const item = value[field];
     if (TEXT_FIELDS.has(field)) {
-      if (item !== null && typeof item !== 'string') return { error: `Поле ${field}: ожидается текст` };
+      if (item !== null && typeof item !== 'string') return { error: t('adm.fieldTextExpected', { field }) };
       const text = typeof item === 'string' ? item.trim() : '';
-      if (field === 'title' && !text) return { error: 'Название CG обязательно' };
-      if (text.length > MAX_TEXT_LENGTH[field]) return { error: `Поле ${field} превышает допустимую длину` };
+      if (field === 'title' && !text) return { error: t('adm.cgTitleRequired') };
+      if (text.length > MAX_TEXT_LENGTH[field]) return { error: t('adm.fieldTooLong', { field }) };
       if (field === 'inara_url' && text && !/^https:\/\/inara\.cz\//i.test(text)) {
-        return { error: 'Ссылка должна вести на https://inara.cz/' };
+        return { error: t('adm.cgLinkInara') };
       }
       fields[field] = text || null;
       continue;
@@ -67,12 +68,12 @@ function normalizeEditableFields(value: Record<string, unknown>): { fields?: Rec
         continue;
       }
       const parsed = typeof item === 'number' ? item : Number(item);
-      if (!Number.isSafeInteger(parsed) || parsed < 0) return { error: `Поле ${field}: требуется целое число не меньше нуля` };
+      if (!Number.isSafeInteger(parsed) || parsed < 0) return { error: t('adm.fieldNonNegativeInt', { field }) };
       fields[field] = parsed;
       continue;
     }
     if (BOOLEAN_FIELDS.has(field)) {
-      if (typeof item !== 'boolean') return { error: `Поле ${field}: ожидается true/false` };
+      if (typeof item !== 'boolean') return { error: t('adm.fieldBoolean', { field }) };
       fields[field] = item;
       continue;
     }
@@ -81,7 +82,7 @@ function normalizeEditableFields(value: Record<string, unknown>): { fields?: Rec
         fields[field] = null;
         continue;
       }
-      if (typeof item !== 'string' || !Number.isFinite(Date.parse(item))) return { error: 'Некорректная дата завершения' };
+      if (typeof item !== 'string' || !Number.isFinite(Date.parse(item))) return { error: t('adm.cgBadEndDate') };
       fields[field] = new Date(item).toISOString();
     }
   }
@@ -93,6 +94,7 @@ function accountId(actor: { userId: string }): string | null {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   const svc = createServiceClient();
@@ -161,15 +163,16 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   let body: Record<string, unknown>;
   try {
     const value = await req.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest('Ожидается JSON-объект');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest(t('cg.jsonObjectExpected'));
     body = value as Record<string, unknown>;
   } catch {
-    return badRequest('Некорректный JSON');
+    return badRequest(t('api.jsonInvalid'));
   }
 
   const svc = createServiceClient();
@@ -251,7 +254,7 @@ export async function POST(req: Request) {
 
     if (!anySucceeded) {
       return NextResponse.json({
-        error: errors.join('; ') || 'Не удалось обновить каталог',
+        error: errors.join('; ') || t('adm.catalogRefreshFailed'),
         sources: results,
         fallbackSources: ['Frontier CAPI', 'commander journal uploads'],
       }, { status: 502, headers });
@@ -288,7 +291,7 @@ export async function POST(req: Request) {
       .maybeSingle();
     if (tokenError) return NextResponse.json({ error: tokenError.message }, { status: 500, headers });
     if (!token) return NextResponse.json({
-      error: 'Нет активной Frontier OAuth-привязки сайта для чтения CAPI. Helper не создаёт отдельную Frontier-привязку.',
+      error: t('adm.capiLinkAbsent'),
       source: 'capi',
     }, { status: 409, headers });
 
@@ -316,13 +319,13 @@ export async function POST(req: Request) {
     }
   }
 
-  if (body.action !== 'create') return badRequest('Неизвестное действие');
-  const parsed = normalizeEditableFields(body);
-  if (!parsed.fields) return badRequest(parsed.error || 'Некорректные поля CG');
+  if (body.action !== 'create') return badRequest(t('adm.unknownAction'));
+  const parsed = normalizeEditableFields(body, t);
+  if (!parsed.fields) return badRequest(parsed.error || t('adm.cgFieldsInvalid'));
   const fields = parsed.fields;
-  if (typeof fields.title !== 'string' || !fields.title) return badRequest('Название CG обязательно');
+  if (typeof fields.title !== 'string' || !fields.title) return badRequest(t('adm.cgTitleRequired'));
   if (typeof body.moderation_status === 'string' && body.moderation_status !== 'approved') {
-    return badRequest('Создаваемая CG должна быть опубликована администратором');
+    return badRequest(t('cg.mustBeApproved'));
   }
 
   let cgId = 0;
@@ -333,7 +336,7 @@ export async function POST(req: Request) {
     if (!data) break;
     cgId = 0;
   }
-  if (cgId === 0) return NextResponse.json({ error: 'Не удалось выделить ID для пользовательской CG; повторите попытку' }, { status: 503, headers });
+  if (cgId === 0) return NextResponse.json({ error: t('adm.cgIdAllocationFailed') }, { status: 503, headers });
 
   const now = new Date().toISOString();
   const row = {
@@ -356,23 +359,24 @@ export async function POST(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   let body: Record<string, unknown>;
   try {
     const value = await req.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest('Ожидается JSON-объект');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest(t('cg.jsonObjectExpected'));
     body = value as Record<string, unknown>;
   } catch {
-    return badRequest('Некорректный JSON');
+    return badRequest(t('api.jsonInvalid'));
   }
 
   const id = Number(body.id);
-  if (!Number.isSafeInteger(id) || id < 1) return badRequest('Некорректный ID CG');
+  if (!Number.isSafeInteger(id) || id < 1) return badRequest(t('cg.idInvalid'));
   const svc = createServiceClient();
   const { data: existing, error: readError } = await svc.from('community_goals').select('*').eq('id', id).maybeSingle();
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500, headers });
-  if (!existing) return NextResponse.json({ error: 'CG не найдена' }, { status: 404, headers });
+  if (!existing) return NextResponse.json({ error: t('adm.cgNotFound') }, { status: 404, headers });
 
   const update: Record<string, unknown> = {
     updated_at: new Date().toISOString(),
@@ -380,11 +384,11 @@ export async function PATCH(req: Request) {
   };
   const hasEditableValues = COMMUNITY_GOAL_EDITABLE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(body, field));
   if (body.resetOverrides === true) {
-    if (existing.source === 'manual') return badRequest('Для локальной CG нечего сбрасывать');
+    if (existing.source === 'manual') return badRequest(t('cg.localNothingToReset'));
     update.manual_overrides = {};
   } else if (hasEditableValues) {
-    const parsed = normalizeEditableFields(body);
-    if (!parsed.fields) return badRequest(parsed.error || 'Некорректные поля CG');
+    const parsed = normalizeEditableFields(body, t);
+    if (!parsed.fields) return badRequest(parsed.error || t('adm.cgFieldsInvalid'));
     if (existing.source !== 'manual') {
       const previous = existing.manual_overrides && typeof existing.manual_overrides === 'object' && !Array.isArray(existing.manual_overrides)
         ? existing.manual_overrides
@@ -396,14 +400,14 @@ export async function PATCH(req: Request) {
   }
 
   if (body.moderation_status !== undefined) {
-    if (!isCommunityGoalModerationStatus(body.moderation_status)) return badRequest('Некорректный статус модерации');
+    if (!isCommunityGoalModerationStatus(body.moderation_status)) return badRequest(t('cg.moderationStatusInvalid'));
     update.moderation_status = body.moderation_status;
   }
   if (body.admin_note !== undefined) {
-    if (body.admin_note !== null && typeof body.admin_note !== 'string') return badRequest('Комментарий модератора должен быть текстом');
+    if (body.admin_note !== null && typeof body.admin_note !== 'string') return badRequest(t('cg.adminNoteText'));
     update.admin_note = typeof body.admin_note === 'string' ? body.admin_note.trim().slice(0, 2_000) || null : null;
   }
-  if (Object.keys(update).length <= 2) return badRequest('Нет изменений для сохранения');
+  if (Object.keys(update).length <= 2) return badRequest(t('cg.noChanges'));
 
   const { data, error } = await svc.from('community_goals').update(update).eq('id', id).select('*').single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500, headers });
@@ -411,23 +415,24 @@ export async function PATCH(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
   let body: Record<string, unknown>;
   try {
     const value = await req.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest('Ожидается JSON-объект');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest(t('cg.jsonObjectExpected'));
     body = value as Record<string, unknown>;
   } catch {
-    return badRequest('Некорректный JSON');
+    return badRequest(t('api.jsonInvalid'));
   }
   const id = Number(body.id);
-  if (!Number.isSafeInteger(id) || id < 1) return badRequest('Некорректный ID CG');
+  if (!Number.isSafeInteger(id) || id < 1) return badRequest(t('cg.idInvalid'));
   const svc = createServiceClient();
   const { data: existing, error: readError } = await svc.from('community_goals').select('id,source').eq('id', id).maybeSingle();
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500, headers });
-  if (!existing) return NextResponse.json({ error: 'CG не найдена' }, { status: 404, headers });
-  if (existing.source !== 'manual') return NextResponse.json({ error: 'Записи внешних источников нельзя физически удалить: используйте статус «Отклонена» или «Скрыта»' }, { status: 409, headers });
+  if (!existing) return NextResponse.json({ error: t('adm.cgNotFound') }, { status: 404, headers });
+  if (existing.source !== 'manual') return NextResponse.json({ error: t('adm.cgExternalUndeletable') }, { status: 409, headers });
   const { error } = await svc.from('community_goals').delete().eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500, headers });
   return NextResponse.json({ ok: true }, { headers });

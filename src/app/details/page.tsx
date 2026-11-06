@@ -1,23 +1,28 @@
 import type { Metadata } from 'next';
 import { REQUISITES, requisitesAsPlainText } from './requisites';
 import CopyButton from './CopyButton';
+import { Tr } from '@/components/Translate';
+import { getServerI18n } from '@/lib/i18n/server';
 
-export const metadata: Metadata = {
-  title: 'Реквизиты — ED Ring Colony',
-  description: 'Реквизиты организации',
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await getServerI18n();
+
+  return {
+    title: t('meta.detailsTitle'),
+    description: t('meta.detailsDescription'),
   // Скрытая страница: не индексировать и не переходить по ссылкам
   robots: { index: false, follow: false },
-};
+  };
+}
 
 export default function DetailsPage() {
   return (
     <div className="details-page">
       <main className="card details-card">
         <p className="details-kicker">Internal document</p>
-        <h1>Реквизиты</h1>
+        <h1><Tr k="det.title" /></h1>
         <p className="details-note">
-          Страница доступна только по прямой ссылке и не индексируется поисковыми
-          системами.
+          <Tr k="det.note" />
         </p>
 
         {REQUISITES.map((group) => (
@@ -46,7 +51,7 @@ export default function DetailsPage() {
 
         <div className="details-actions">
           <CopyButton text={requisitesAsPlainText()}>
-            Скопировать всё
+            <Tr k="det.copyAll" />
           </CopyButton>
         </div>
       </main>

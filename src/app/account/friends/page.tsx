@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import FriendsPanel from "@/components/FriendsPanel";
+import { useI18n } from "@/lib/i18n/I18nContext";
 import { avatarFromUser, nickFromUser } from "@/lib/authProfile";
 
 export default function FriendsPage() {
+  const { t } = useI18n();
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<any>(null);
 
@@ -39,14 +41,14 @@ export default function FriendsPage() {
     return (
       <div>
         <p>
-          Сначала войдите на странице <a href="/login" style={{ color: "#e67e22" }}>/login</a>
+          {t('frnd.loginFirst')} <a href="/login" style={{ color: "#e67e22" }}>/login</a>
         </p>
       </div>
     );
 
   return (
     <div>
-      <h2>Сообщения и друзья</h2>
+      <h2>{t('account.messagesAndFriends')}</h2>
       <FriendsPanel
         userId={user.id}
         myName={nickFromUser(user, profile)}

@@ -49,15 +49,17 @@ import {
 } from '@/lib/galaxyNebulae';
 
 const CORE_OPACITY = 0.3;
+import { useI18n } from '@/lib/i18n/I18nContext';
+import { NEBULA_KIND_KEYS } from '@/lib/i18n/nebulaLabels';
 
-/** Короткие названия и цвета для фильтров в панели карты. */
-export const NEBULA_KIND_SHORT: Record<NebulaKind, string> = {
-  emission: 'эмиссионные',
-  reflection: 'отражательные',
-  cluster: 'скопления',
-  planetary: 'планетарные',
-  remnant: 'остатки',
-  dark: 'тёмные',
+/** Короткие подписи для фильтров в панели карты — ключи каталога. */
+export const NEBULA_SHORT_KEYS: Record<NebulaKind, string> = {
+  emission: 'nebula.shortEmission',
+  reflection: 'nebula.shortReflection',
+  cluster: 'nebula.shortCluster',
+  planetary: 'nebula.shortPlanetary',
+  remnant: 'nebula.shortRemnant',
+  dark: 'nebula.shortDark',
 };
 
 export const NEBULA_KIND_UI_COLOR: Record<NebulaKind, string> = {
@@ -379,7 +381,8 @@ function NebulaLabels({
   onSelect?: (nebula: GalaxyNebula | null) => void;
   selectedName: string | null;
 }) {
-  return (
+
+  const { t, locale } = useI18n();  return (
     <group>
       {MAJOR_NEBULAE.map((nebula) => {
         const position = eliteToThreeCentered(nebula);
@@ -399,7 +402,7 @@ function NebulaLabels({
                 event.stopPropagation();
                 onSelect?.(active ? null : nebula);
               }}
-              title={`${NEBULA_KIND_LABELS[nebula.kind]} · ${nebula.distance.toFixed(0)} св. лет от Sol${nebula.refSystem ? ` · ${nebula.refSystem}` : ''}`}
+              title={`${t(NEBULA_KIND_KEYS[nebula.kind])} · ${t('nbf.distanceFromSol', { distance: nebula.distance.toFixed(0) })}${nebula.refSystem ? ` · ${nebula.refSystem}` : ''}`}
               style={{
                 display: 'block',
                 pointerEvents: 'auto',
@@ -417,7 +420,7 @@ function NebulaLabels({
                 opacity: active ? 1 : 0.8,
               }}
             >
-              {nebula.ru}
+              {locale === 'ru' ? nebula.ru : nebula.name}
             </button>
           </Html>
         );

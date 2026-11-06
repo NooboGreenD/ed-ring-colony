@@ -8,6 +8,8 @@
 
 import type { CSSProperties } from 'react';
 import { POWERPLAY_STATE_LABEL, type PowerplayState } from '@/lib/powerplay';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import { gameLabel, POWER_STATE_KEYS } from '@/lib/i18n/gameLabels';
 
 export interface PowerplayGlyphProps {
   state: PowerplayState;
@@ -18,7 +20,8 @@ export interface PowerplayGlyphProps {
 }
 
 export function PowerplayGlyph({ state, color, size = 12, title, style }: PowerplayGlyphProps) {
-  const label = title ?? POWERPLAY_STATE_LABEL[state];
+  const { t } = useI18n();
+  const label = title ?? gameLabel(t, POWER_STATE_KEYS, state, POWERPLAY_STATE_LABEL[state]);
   return (
     <svg
       width={size}

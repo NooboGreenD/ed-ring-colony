@@ -124,12 +124,15 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
     if (listed.length === 0) return;
     const date = new Date().toISOString().slice(0, 10);
     if (selectionMode) {
-      const rows: Array<Array<string | number>> = [['Система', 'Фракция', 'Влияние, %', 'Состояние', 'У власти', 'X', 'Y', 'Z', 'id64', 'Наблюдение']];
+      const rows: Array<Array<string | number>> = [[
+        t('csv.system'), t('csv.faction'), t('csv.influence'), t('csv.state'), t('csv.controls'),
+        'X', 'Y', 'Z', 'id64', t('csv.observed'),
+      ]];
       for (const point of listed) {
         for (const entry of point.entries) {
           rows.push([
             point.name, entry.name, entry.influence == null ? '' : Math.round(entry.influence * 1000) / 10, stateLabel(entry.state),
-            entry.controls ? 'да' : '', point.x, point.y, point.z, point.id64, formatBgsDate(point.observedAt),
+            entry.controls ? t('csv.yes') : '', point.x, point.y, point.z, point.id64, formatBgsDate(point.observedAt),
           ]);
         }
       }
@@ -137,7 +140,10 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
       return;
     }
     downloadCsv(`populated-systems-${date}`, [
-      ['Система', 'Принадлежность', 'Правительство', 'Контролирующая фракция', 'Население', 'Фракций', 'X', 'Y', 'Z', 'id64', 'Наблюдение', 'Источник'],
+      [
+        t('csv.system'), t('csv.allegiance'), t('csv.government'), t('csv.controlling'), t('csv.population'),
+        t('csv.factionsCount'), 'X', 'Y', 'Z', 'id64', t('csv.observed'), t('csv.source'),
+      ],
       ...listed.map((point) => [
         point.name,
         allegianceLabel(point.system?.allegiance),

@@ -40,6 +40,7 @@ import adminStyles from "@/components/Admin/AdminShell.module.css";
 
 import { supabase, authFetch } from "@/lib/supabaseClient";
 import { useI18n } from "@/lib/i18n/I18nContext";
+import { Tr } from "@/components/Translate";
 import { DEFAULT_FOOTER, buildSiteContentPayload } from "@/lib/siteFooter";
 import ForumAdmin from "@/components/Forum/ForumAdmin";
 import { MarkdownToolbar } from "@/components/Forum/MarkdownToolbar";
@@ -65,7 +66,7 @@ import SupportAdmin from "@/components/Support/SupportAdmin";
 import BillingDashboard from "@/components/Admin/BillingDashboard";
 import ServerMonitorTab from "@/components/Admin/ServerMonitorTab";
 import HelperUpdatesTab from "@/components/Admin/HelperUpdatesTab";
-const OutfittingAdmin = dynamic(() => import("@/components/Admin/OutfittingAdmin"), { loading: () => <p role="status">Загрузка управления верфью…</p> });
+const OutfittingAdmin = dynamic(() => import("@/components/Admin/OutfittingAdmin"), { loading: () => <p role="status"><Tr k="admin.outfittingLoading" /></p> });
 
 const LANGS = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
 const LOCALE_FLAGS: Record<string, string> = { ru: '🇷🇺', en: '🇬🇧', de: '🇩🇪', it: '🇮🇹', ko: '🇰🇷', zh: '🇨🇳', ja: '🇯🇵' };
@@ -376,8 +377,7 @@ export default function AdminPage() {
     for (const [name, rec] of Object.entries(fields)) base[name] = (rec.ru ?? '').trim();
     const fallback = await supabase.from('site_content').upsert({ ...base, id: 1, updated_at: new Date().toISOString() });
     if (!fallback.error) {
-      return 'saved-without-translations: примените supabase/migrations/20260926000000_site_content_footer_translations.sql, '
-        + 'чтобы переводы тоже сохранялись (' + error.message + ')';
+      return t('admin.savedWithoutTranslations', { error: error.message });
     }
     return error.message;
   };
@@ -635,12 +635,12 @@ export default function AdminPage() {
   };
 
   return (
-    <section className={`card ${adminStyles.shell}`} aria-label="Админ-панель">
+    <section className={`card ${adminStyles.shell}`} aria-label={t('admin.title')}>
       <header className={adminStyles.header}>
         <div className={adminStyles.heading}><span>ED Ring Colony / Control center</span><h1>{t('admin.title')}</h1></div>
         <div className={adminStyles.headerActions}>
-          <div className={adminStyles.actor}><strong>{me?.cmdr_name || 'CMDR'}</strong><small>{role === 'admin' ? 'Администратор' : role === 'moderator' ? 'Модератор' : 'Поддержка'}</small></div>
-          <a href="/m-admin" className={adminStyles.mobileLink}><IconExternalLink size={14} /> Мобильная панель / Android</a>
+          <div className={adminStyles.actor}><strong>{me?.cmdr_name || 'CMDR'}</strong><small>{role === 'admin' ? t('bsub.admin') : role === 'moderator' ? t('um.roleModerator') : t('nav.support')}</small></div>
+          <a href="/m-admin" className={adminStyles.mobileLink}><IconExternalLink size={14} /> {t('admin.mobilePanel')}</a>
         </div>
       </header>
       {accessWarning && (
@@ -855,7 +855,7 @@ export default function AdminPage() {
               <div style={{ background: '#323538', borderRadius: 4, height: 8, overflow: 'hidden' }}>
                 <div style={{ width: routeProgress + '%', background: '#22c55e', height: '100%', borderRadius: 4, transition: 'width 0.3s' }} />
               </div>
-              <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{routeProgress}% {t('admin.systemsThisWillTake').replace('систем… Это займёт ~', 'систем опрошено')}</div>
+              <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>{t('admin.routePolled', { percent: routeProgress })}</div>
             </div>
           )}
           {routeMsg && (
@@ -910,7 +910,7 @@ export default function AdminPage() {
       )}
       {tab === 'support' && (
         <div>
-          <h2>{t('admin.support') || 'Техподдержка'}</h2>
+          <h2>{t('admin.support')}</h2>
           <SupportAdmin />
         </div>
       )}

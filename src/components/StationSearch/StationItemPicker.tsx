@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { IconCheck, IconClock, IconSearch, IconX } from '@/components/Icons';
 import type { StationSearchKind } from '@/lib/stationSearch';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   filterStationOptions, optionWords, type StationPickRef, type StationSearchOption,
 } from '@/lib/stationSearchOptions';
@@ -31,7 +32,7 @@ export function loadStationSearchOptions(kind: StationSearchKind): Promise<Stati
   if (!promise) {
     promise = fetch(`/api/stations/search/options?kind=${kind}`).then(async (response) => {
       const body = await response.json().catch(() => ({}));
-      if (!response.ok || !Array.isArray(body?.options)) throw new Error(body?.error || 'Список быстрого выбора недоступен');
+      if (!response.ok || !Array.isArray(body?.options)) throw new Error(body?.error || 'quick_pick_unavailable');
       return body.options as StationSearchOption[];
     });
     // Сбой не запоминаем: следующая попытка снова сходит на сервер.
@@ -44,6 +45,7 @@ export function loadStationSearchOptions(kind: StationSearchKind): Promise<Stati
 interface OptionsState { kind: StationSearchKind; options: StationSearchOption[]; loading: boolean; error: string }
 
 export function useStationSearchOptions(kind: StationSearchKind): OptionsState {
+  const { t } = useI18n();
   const [state, setState] = useState<OptionsState>({ kind, options: [], loading: true, error: '' });
   useEffect(() => {
     let alive = true;
@@ -51,11 +53,11 @@ export function useStationSearchOptions(kind: StationSearchKind): OptionsState {
     loadStationSearchOptions(kind).then(
       (options) => { if (alive) setState({ kind, options, loading: false, error: '' }); },
       (error: unknown) => {
-        if (alive) setState({ kind, options: [], loading: false, error: error instanceof Error ? error.message : 'Список недоступен' });
+        if (alive) setState({ kind, options: [], loading: false, error: error instanceof Error && error.message !== 'quick_pick_unavailable' ? error.message : t('spk.listUnavailableError') });
       },
     );
     return () => { alive = false; };
-  }, [kind]);
+  }, [kind, t]);
   return state.kind === kind ? state : { kind, options: [], loading: true, error: '' };
 }
 
@@ -114,6 +116,7 @@ interface Entry { option: StationSearchOption; recent: boolean }
 export function StationItemPicker({
   kind, id, label, value, pick, placeholder, disabled, options, loading, error, onChange, onPick,
 }: Props) {
+  const { t } = useI18n();
   const generated = useId();
   const listId = `${id}-list-${generated.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -224,7 +227,7 @@ export function StationItemPicker({
           />
           {loading && showList && <span className="atlas-system-spinner" aria-hidden="true" />}
           {!!value && !disabled && (
-            <button type="button" className="station-pick-clear" aria-label="Очистить запрос"
+            <button type="button" className="station-pick-clear" aria-label={t('spk.clearAria')}
               onClick={() => { onChange(''); setOpen(true); document.getElementById(id)?.focus(); }}>
               <IconX size={12} />
             </button>
@@ -232,9 +235,9 @@ export function StationItemPicker({
         </div>
 
         {showList && (
-          <ul className="station-pick-list" id={listId} role="listbox" aria-label={`Быстрый выбор: ${label}`}>
+          <ul className="station-pick-list" id={listId} role="listbox" aria-label={t('spk.listAria', { label })}>
             {entries.map((entry, index) => {
-              const heading = typed ? '' : entry.recent ? 'Недавний выбор' : entry.option.group;
+              const heading = typed ? '' : entry.recent ? t('spk.recent') : entry.option.group;
               const header = heading && heading !== previousGroup
                 ? <li className="station-pick-group" role="presentation">{heading}</li> : null;
               if (heading) previousGroup = heading;
@@ -261,10 +264,10 @@ export function StationItemPicker({
                 </Fragment>
               );
             })}
-            {loading && !entries.length && <li className="station-pick-empty" role="presentation">Загружаем список…</li>}
-            {!loading && error && <li className="station-pick-empty" role="presentation">Список недоступен — ищем по введённому тексту</li>}
+            {loading && !entries.length && <li className="station-pick-empty" role="presentation">{t('spk.loading')}</li>}
+            {!loading && error && <li className="station-pick-empty" role="presentation">{t('spk.unavailableSearch')}</li>}
             {!loading && !error && typed && !entries.length && (
-              <li className="station-pick-empty" role="presentation">В справочнике такого нет — Enter ищет по введённому тексту</li>
+              <li className="station-pick-empty" role="presentation">{t('spk.notInDirectory')}</li>
             )}
           </ul>
         )}
@@ -272,10 +275,10 @@ export function StationItemPicker({
 
       <p className="station-pick-note" id={`${id}-note`}>
         {pick
-          ? <>Точный выбор из справочника — ищем ровно «{pick.label}».</>
+          ? <>{t('spk.exactPick', { label: pick.label })}</>
           : typed
-            ? <>Свободный поиск по вхождению. Для точного совпадения выберите строку из списка.</>
-            : <>Начните вводить название — список подскажет варианты на русском и английском.</>}
+            ? <>{t('spk.freeSearch')}</>
+            : <>{t('spk.typeHint')}</>}
       </p>
     </div>
   );

@@ -3,6 +3,9 @@ import { IconStar, IconTarget, IconMapPin, IconUserWorker, IconPackage, IconChec
 
 import { useState } from 'react';
 import type { ProjectSystem } from '@/types/project';
+import { useI18n } from '@/lib/i18n/I18nContext';
+
+type Translate = ReturnType<typeof useI18n>['t'];
 
 interface Props {
   system: ProjectSystem;
@@ -21,13 +24,14 @@ function resourceProgress(resource: any): number {
   return Math.min(100, (resource.provided / resource.required) * 100);
 }
 
-function resourceAmountLabel(resource: any): string {
+function resourceAmountLabel(resource: any, t: Translate): string {
   return hasExactResourceAmounts(resource)
-    ? `${resource.provided.toLocaleString()}/${resource.required.toLocaleString()} т`
-    : `Осталось: ${Number(resource?.remaining || 0).toLocaleString()} т`;
+    ? t('psp.tonsPair', { provided: resource.provided.toLocaleString(), required: resource.required.toLocaleString() })
+    : t('psp.remainingTons', { tons: Number(resource?.remaining || 0).toLocaleString() });
 }
 
 export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props) {
+  const { t, locale } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
@@ -99,7 +103,7 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
             </div>
             {system.assignee && (
               <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
-                Назначен: {system.assignee.cmdr_name}
+                {t('psp.assigned', { name: system.assignee.cmdr_name ?? '' })}
               </div>
             )}
           </div>
@@ -114,7 +118,7 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
           )}
           {system.target_date && (
             <span style={{ fontSize: 11, color: '#9ca3af' }}>
-              <IconTarget size={11} /> {new Date(system.target_date).toLocaleDateString('ru-RU')}
+              <IconTarget size={11} /> {new Date(system.target_date).toLocaleDateString(locale)}
             </span>
           )}
           <span style={{ color: '#9ca3af', fontSize: 12 }}>
@@ -131,7 +135,7 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
                   {ravenData.siteName && <span><IconMapPin size={11} /> {ravenData.siteName} · </span>}
                   {ravenData.architectName && <span><IconUserWorker size={11} /> {ravenData.architectName} · </span>}
-                  <span><IconPackage size={11} /> {ravenData.projects?.length || 0} проектов</span>
+                  <span><IconPackage size={11} /> {t('psp.projectsCount', { count: ravenData.projects?.length || 0 })}</span>
                 </div>
                 {ravenData.progress != null && (
                   <div style={{ fontSize: 18, fontWeight: 700, color: ravenData.progress === 100 ? '#22c55e' : '#e67e22' }}>
@@ -141,8 +145,8 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
               </div>
               {typeof ravenData.totalRequired === 'number' && typeof ravenData.totalProvided === 'number' && (
                 <div style={{ color: '#d1d5db', fontSize: 12, marginBottom: 10 }}>
-                  Доставлено: <strong>{ravenData.totalProvided.toLocaleString()} / {ravenData.totalRequired.toLocaleString()} т</strong>
-                  {' · '}Осталось: {Number(ravenData.totalRemaining ?? 0).toLocaleString()} т
+                  {t('psp.delivered')} <strong>{t('psp.tonsPair', { provided: ravenData.totalProvided.toLocaleString(), required: ravenData.totalRequired.toLocaleString() })}</strong>
+                  {' · '}{t('psp.remainingTons', { tons: Number(ravenData.totalRemaining ?? 0).toLocaleString() })}
                 </div>
               )}
 
@@ -163,8 +167,8 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                       </div>
                       {typeof proj.totalRequired === 'number' && typeof proj.totalProvided === 'number' && (
                         <div style={{ color: '#d1d5db', fontSize: 11, marginTop: 5 }}>
-                          Доставлено: <strong>{proj.totalProvided.toLocaleString()} / {proj.totalRequired.toLocaleString()} т</strong>
-                          {' · '}Осталось: {Number(proj.totalRemaining ?? 0).toLocaleString()} т
+                          {t('psp.delivered')} <strong>{t('psp.tonsPair', { provided: proj.totalProvided.toLocaleString(), required: proj.totalRequired.toLocaleString() })}</strong>
+                          {' · '}{t('psp.remainingTons', { tons: Number(proj.totalRemaining ?? 0).toLocaleString() })}
                         </div>
                       )}
                       {proj.resources?.length > 0 && (
@@ -183,11 +187,11 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                                 </div>
                               ) : (
                                 <span style={{ flex: 1, color: '#7a7d80', fontSize: 10 }}>
-                                  Нет точных данных о доставке
+                                  {t('psp.noExactData')}
                                 </span>
                               )}
                               <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 118, textAlign: 'right' }}>
-                                {resourceAmountLabel(r)}
+                                {resourceAmountLabel(r, t)}
                               </span>
                             </div>
                           ))}
@@ -211,7 +215,7 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                     }}>
                       <span style={{ color: '#eeeeee' }}>{r.name}</span>
                       <span style={{ color: r.remaining === 0 ? '#22c55e' : '#e67e22', fontWeight: 600 }}>
-                        {resourceAmountLabel(r)}
+                        {resourceAmountLabel(r, t)}
                       </span>
                     </div>
                   ))}
@@ -219,14 +223,14 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
               )}
 
               <div style={{ marginTop: 10, fontSize: 11, color: '#9ca3af' }}>
-                Синхронизировано: {ravenData.synced_at ? new Date(ravenData.synced_at).toLocaleString('ru-RU') : '—'}
+                {t('psp.syncedAt', { at: ravenData.synced_at ? new Date(ravenData.synced_at).toLocaleString(locale) : '—' })}
               </div>
             </div>
           )}
 
           {!ravenData && (
             <div style={{ padding: '20px 0', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
-              Нет данных RavenColonial. Выполните синхронизацию.
+              {t('psp.noRavenData')}
             </div>
           )}
 
@@ -245,7 +249,7 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                   cursor: syncing ? 'not-allowed' : 'pointer',
                 }}
               >
-                {syncing ? '<IconRefresh size={12} /> Синхронизация...' : '<IconRefresh size={12} /> Синхронизировать RC'}
+                {syncing ? '<IconRefresh size={12} /> ' + t('psp.syncing') : '<IconRefresh size={12} /> ' + t('psp.syncRc')}
               </button>
             </div>
           )}

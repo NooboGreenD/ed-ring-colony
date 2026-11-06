@@ -7,13 +7,14 @@
  */
 
 import Link from 'next/link';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { CSSProperties } from 'react';
 
 export type ArchitectSection = 'planner' | 'projects';
 
-const TABS: Array<{ id: ArchitectSection; href: string; label: string; hint: string }> = [
-  { id: 'planner', href: '/architect', label: 'Планировщик системы', hint: 'План застройки одной системы' },
-  { id: 'projects', href: '/architect/projects', label: 'Проекты систем', hint: 'Группы систем, участники, авианосцы и лидеры' },
+const TABS: Array<{ id: ArchitectSection; href: string; labelKey: string; hintKey: string }> = [
+  { id: 'planner', href: '/architect', labelKey: 'anav.planner', hintKey: 'anav.plannerHint' },
+  { id: 'projects', href: '/architect/projects', labelKey: 'anav.projects', hintKey: 'anav.projectsHint' },
 ];
 
 const navStyle: CSSProperties = {
@@ -45,19 +46,21 @@ const activeTabStyle: CSSProperties = {
 };
 
 export default function ArchitectNav({ active }: { active: ArchitectSection }) {
+  const { t } = useI18n();
+
   return (
-    <nav aria-label="Разделы архитектора" style={navStyle}>
+    <nav aria-label={t('anav.aria')} style={navStyle}>
       {TABS.map((tab) => {
         const isActive = tab.id === active;
         return (
           <Link
             key={tab.id}
             href={tab.href}
-            title={tab.hint}
+            title={t(tab.hintKey)}
             aria-current={isActive ? 'page' : undefined}
             style={isActive ? { ...tabStyle, ...activeTabStyle } : tabStyle}
           >
-            {tab.label}
+            {t(tab.labelKey)}
           </Link>
         );
       })}

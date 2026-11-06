@@ -500,7 +500,7 @@ export default function OutfittingWorkspace() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, ship: entry.ship, code: entry.code }),
     });
-    if (!response.ok && response.status !== 401) setNotice('Не удалось сохранить сборку в профиль.');
+    if (!response.ok && response.status !== 401) setNotice(t('outfitting.buildSaveFailed'));
     setBuild({ ...build, name });
     setNotice(t('outfitting.notice.saved'));
   };
@@ -534,7 +534,7 @@ export default function OutfittingWorkspace() {
               style={{ fontSize: 13, fontFamily: MONO, minWidth: 220, margin: 0, fontWeight: 700 }}
             >
               {!shipList.some((entry) => entry.id === build.ship) && <option value={build.ship} disabled={!!ship.archived}>
-                {ship.properties.name} · {ship.properties.manufacturer}{ship.archived ? ' (архив)' : ''}
+                {ship.properties.name} · {ship.properties.manufacturer}{ship.archived ? ' ' + t('outfitting.archivedTag') : ''}
               </option>}
               {shipList.map((entry) => (
                 <option key={entry.id} value={entry.id}>

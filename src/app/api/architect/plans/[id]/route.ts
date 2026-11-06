@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { parsePlan } from '@/lib/architect/planner';
 import { checkPlanEditRights, lockReasonRu } from '@/lib/architect/governance';
+import { apiTranslate } from '@/lib/i18n/apiT';
 import {
   PLAN_TABLE,
   buildPlanUpdate,
@@ -24,6 +25,7 @@ const MAX_SITES = 200;
  * плана не должно быть видно.
  */
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const { id } = await params;
   try {
     const supabase = await createClient();
@@ -52,6 +54,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
  * PUT /api/architect/plans/:id { plan?, visibility?, title? }
  */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const { id } = await params;
   try {
     const body = await req.json().catch(() => null);
@@ -83,7 +86,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         return NextResponse.json({ error: lockReasonRu(gate.architect) }, { status: 403 });
       }
     } else if (previous.author_id !== user.id) {
-      return NextResponse.json({ error: 'План может менять только его автор' }, { status: 403 });
+      return NextResponse.json({ error: t('api.planAuthorOnly') }, { status: 403 });
     }
 
     let plan = parsePlan(previous.plan).plan;
@@ -91,16 +94,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (record.plan !== undefined) {
       const parsed = parsePlan(record.plan);
       if (!parsed.plan) {
-        return NextResponse.json({ error: parsed.error || 'Не удалось прочитать план' }, { status: 400 });
+        return NextResponse.json({ error: parsed.error || t('api.planReadFailed') }, { status: 400 });
       }
       if (parsed.plan.sites.length > MAX_SITES) {
-        return NextResponse.json({ error: `Слишком большой план: максимум ${MAX_SITES} построек` }, { status: 400 });
+        return NextResponse.json({ error: t('api.planTooLarge', { max: MAX_SITES }) }, { status: 400 });
       }
       plan = parsed.plan;
       warning = parsed.warning;
     }
     if (!plan) {
-      return NextResponse.json({ error: 'В сохранённом плане нечего обновлять' }, { status: 400 });
+      return NextResponse.json({ error: t('api.planNothingToUpdate') }, { status: 400 });
     }
 
     const visibility = isPlanVisibility(record.visibility)
@@ -133,6 +136,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
 /** Удалить план. DELETE /api/architect/plans/:id */
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const { id } = await params;
   try {
     const supabase = await createClient();

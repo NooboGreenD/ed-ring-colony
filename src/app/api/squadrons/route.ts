@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { authFromRequest, createClient, createServiceClient } from '@/lib/supabaseServer';
 import { loadSquadronSummaries } from '@/lib/squadronData';
 import { parseSquadronInput, squadronWriteError, tagFromName } from '@/lib/squadronForm';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,7 @@ function boundedInteger(value: string | null, fallback: number, min: number, max
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status')?.trim() || null;
@@ -47,11 +49,12 @@ export async function GET(req: Request) {
  * собирается из названия, а ошибки записи переводятся в понятный текст.
  */
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Некорректный JSON' }, { status: 400 });
+    return NextResponse.json({ error: t('api.invalidJson') }, { status: 400 });
   }
 
   const parsed = parseSquadronInput(body);
@@ -64,7 +67,7 @@ export async function POST(req: Request) {
 
   try {
     const { user } = await authFromRequest(req);
-    if (!user) return NextResponse.json({ error: 'Войдите в аккаунт' }, { status: 401 });
+    if (!user) return NextResponse.json({ error: t('api.signInRequired') }, { status: 401 });
 
     // A member relation is authoritative, while created_by covers legacy
     // squadrons made before the automatic membership trigger was available.
@@ -88,7 +91,7 @@ export async function POST(req: Request) {
     if (membershipResponse.error) throw membershipResponse.error;
     if (createdResponse.error) throw createdResponse.error;
     if (membershipResponse.data || createdResponse.data) {
-      return NextResponse.json({ error: 'Вы уже состоите в эскадрилье. Сначала покиньте текущую.' }, { status: 409 });
+      return NextResponse.json({ error: t('api.alreadyInSquadron') }, { status: 409 });
     }
 
     // `squadrons.created_by` ссылается на `profiles`. У аккаунтов, созданных
@@ -172,7 +175,7 @@ export async function POST(req: Request) {
       if (memberError) {
         console.error('[squadrons POST] membership', memberError.message);
         return NextResponse.json(
-          { squadron, warning: `Эскадрилья создана, но вас не удалось записать в состав: ${squadronWriteError(memberError)}` },
+          { squadron, warning: t('sq.createdButMemberFailed', { error: squadronWriteError(memberError) }) },
         );
       }
     }

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import type { ProjectBillingStats } from "@/types/billing";
+import { useI18n } from '@/lib/i18n/I18nContext';
 import BillingInfographics from "./Billing/BillingInfographics";
 import SubscriptionManager from "./Billing/SubscriptionManager";
 import TransactionLedger from "./Billing/TransactionLedger";
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export default function BillingDashboard({ currentUser }: Props) {
+  const { t } = useI18n();
   const [subTab, setSubTab] = useState<"infographics" | "products" | "subscriptions" | "payments" | "providers" | "transactions" | "store">("infographics");
   const [period, setPeriod] = useState<"7d" | "30d" | "90d" | "1y" | "all">("30d");
   const [stats, setStats] = useState<ProjectBillingStats | null>(null);
@@ -34,7 +36,7 @@ export default function BillingDashboard({ currentUser }: Props) {
       const res = await authFetch(`/api/admin/billing/stats?period=${period}`, { cache: "no-store" });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data.error || "Не удалось загрузить статистику");
+        throw new Error(data.error || t('bd.loadError'));
       }
       setStats(data.stats);
     } catch (err: any) {
@@ -73,7 +75,7 @@ export default function BillingDashboard({ currentUser }: Props) {
           style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
         >
           <IconChart size={13} />
-          ИНФОГРАФИКА И МЕТРИКИ
+          {t('bd.tabInfographics')}
         </button>
 
         <button
@@ -83,22 +85,22 @@ export default function BillingDashboard({ currentUser }: Props) {
           style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
         >
           <IconCoins size={13} />
-          УПРАВЛЕНИЕ ПОДПИСКАМИ
+          {t('bd.tabSubscriptions')}
         </button>
 
         <button type="button" className={subTab === "products" ? "tab tab-active" : "tab"} onClick={() => setSubTab("products")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <IconStore size={13} />
-          ТОВАРЫ МАГАЗИНА
+          {t('bd.tabProducts')}
         </button>
 
         <button type="button" className={subTab === "payments" ? "tab tab-active" : "tab"} onClick={() => setSubTab("payments")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <IconCreditCard size={13} />
-          ПЛАТЕЖИ И НАСТРОЙКИ
+          {t('bd.tabPayments')}
         </button>
 
         <button type="button" className={subTab === "providers" ? "tab tab-active" : "tab"} onClick={() => setSubTab("providers")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           <IconSettings size={13} />
-          ПЛАТЁЖНЫЕ СИСТЕМЫ
+          {t('bd.tabProviders')}
         </button>
 
         <button
@@ -108,7 +110,7 @@ export default function BillingDashboard({ currentUser }: Props) {
           style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
         >
           <IconActivity size={13} />
-          РЕЕСТР ТРАНЗАКЦИЙ
+          {t('bd.tabTransactions')}
         </button>
 
         <button
@@ -118,7 +120,7 @@ export default function BillingDashboard({ currentUser }: Props) {
           style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
         >
           <IconStore size={13} />
-          АНАЛИТИКА МАГАЗИНА
+          {t('bd.tabStore')}
         </button>
       </div>
 
@@ -133,7 +135,7 @@ export default function BillingDashboard({ currentUser }: Props) {
             fontSize: 13,
           }}
         >
-          Ошибка загрузки данных: {error}
+          {t('bd.errorLoad', { error })}
         </div>
       )}
 
@@ -142,7 +144,7 @@ export default function BillingDashboard({ currentUser }: Props) {
         <>
           {loading && !stats ? (
             <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--muted, #9ca3af)" }}>
-              Инициализация системы сбора статистики и аналитики...
+              {t('bd.initializing')}
             </div>
           ) : stats ? (
             <BillingInfographics
@@ -159,7 +161,7 @@ export default function BillingDashboard({ currentUser }: Props) {
 
       {subTab === "subscriptions" && (
         <SubscriptionManager
-          currentAdminCmdr={currentUser?.cmdr_name || "Администратор"}
+          currentAdminCmdr={currentUser?.cmdr_name || t('bd.adminFallback')}
           onRefreshStats={fetchStats}
         />
       )}

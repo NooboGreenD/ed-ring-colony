@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { authFromRequest } from '@/lib/requestUser';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { checkRateLimit } from '@/lib/rateLimit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -22,15 +23,16 @@ function clientIp(req: Request): string {
  * Принимает Bearer токен Supabase, возвращает профиль и роль.
  */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { user, supabase } = await authFromRequest(req);
     if (!user) {
-      return NextResponse.json({ success: false, error: 'Не авторизован' }, { status: 401, headers: NO_STORE_HEADERS });
+      return NextResponse.json({ success: false, error: t('api.unauthorized') }, { status: 401, headers: NO_STORE_HEADERS });
     }
     const { data: profile } = await supabase.from('profiles').select('id, cmdr_name, role, email, avatar_url, created_at').eq('id', user.id).maybeSingle();
     const role = profile?.role ?? 'user';
     if (!['admin', 'moderator', 'support_manager'].includes(role)) {
-      return NextResponse.json({ success: false, error: 'Доступ запрещён: требуется роль администратора', role }, { status: 403, headers: NO_STORE_HEADERS });
+      return NextResponse.json({ success: false, error: t('api.adminRoleRequired'), role }, { status: 403, headers: NO_STORE_HEADERS });
     }
     return NextResponse.json({
       success: true,
@@ -48,32 +50,33 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   // Прокси для логина через Supabase (email/password)
   // Тело: { email, password }
   try {
     const ip = clientIp(req);
     if (!checkRateLimit(`mobile-auth:${ip}`, 8)) {
       return NextResponse.json(
-        { success: false, error: 'Слишком много попыток входа. Подождите минуту.' },
+        { success: false, error: t('api.tooManySignIns') },
         { status: 429, headers: NO_STORE_HEADERS },
       );
     }
     const body = await req.json();
     const { email, password } = body;
     if (!email || !password) {
-      return NextResponse.json({ success: false, error: 'Email и пароль обязательны' }, { status: 400, headers: NO_STORE_HEADERS });
+      return NextResponse.json({ success: false, error: t('api.emailPasswordMandatory') }, { status: 400, headers: NO_STORE_HEADERS });
     }
     // Создаём клиент без сессии и пытаемся логин
     const { createClient } = await import('@supabase/supabase-js');
     const supabase = createClient(getServerSupabaseUrl(), process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error || !data.session || !data.user) {
-      return NextResponse.json({ success: false, error: error?.message || 'Неверные данные' }, { status: 401, headers: NO_STORE_HEADERS });
+      return NextResponse.json({ success: false, error: error?.message || t('mobile.badCredentials') }, { status: 401, headers: NO_STORE_HEADERS });
     }
     // Проверяем роль
     const { data: profile } = await supabase.from('profiles').select('role, cmdr_name').eq('id', data.user.id).maybeSingle();
     if (!profile || !['admin', 'moderator', 'support_manager', 'admin'].includes(profile.role)) {
-      return NextResponse.json({ success: false, error: 'Доступ только для администраторов' }, { status: 403, headers: NO_STORE_HEADERS });
+      return NextResponse.json({ success: false, error: t('api.adminOnly') }, { status: 403, headers: NO_STORE_HEADERS });
     }
     return NextResponse.json({
       success: true,

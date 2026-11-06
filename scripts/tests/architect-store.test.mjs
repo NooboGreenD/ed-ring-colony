@@ -5,8 +5,8 @@ import { PLAN_FORMAT_VERSION, addSite, createPlan } from '../../src/lib/architec
 import {
   PLAN_TABLE,
   PLAN_VISIBILITIES,
-  VISIBILITY_HINTS_RU,
-  VISIBILITY_LABELS_RU,
+  VISIBILITY_HINT_KEYS,
+  VISIBILITY_LABEL_KEYS,
   buildPlanInsert,
   buildPlanUpdate,
   isPlanVisibility,
@@ -84,8 +84,8 @@ test('вставка на сервер: приватный план без да�
   assert.equal(isPlanVisibility('secret'), false);
   assert.equal(isPlanVisibility(null), false);
   assert.deepEqual(PLAN_VISIBILITIES, ['private', 'unlisted', 'public']);
-  assert.equal(VISIBILITY_LABELS_RU.unlisted, 'по ссылке');
-  assert.ok(VISIBILITY_HINTS_RU.public.length > 10);
+  assert.equal(VISIBILITY_LABEL_KEYS.unlisted, 'shr.visUnlisted');
+  assert.ok(VISIBILITY_HINT_KEYS.public.length > 10);
 });
 
 test('обновление сохраняет прежнюю дату публикации и снимает её у приватного', () => {

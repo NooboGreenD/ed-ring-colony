@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient, createServiceClient, authFromRequest } from '@/lib/supabaseServer'
 import { NAME_CHANGE_COOLDOWN_DAYS } from '@/lib/squadronConstants'
 import { getSquadronMembership, loadSquadronMembers, loadSquadronProjects } from '@/lib/squadronData'
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -61,6 +62,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -97,7 +99,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         if (diffDays < NAME_CHANGE_COOLDOWN_DAYS) {
           const daysLeft = Math.ceil(NAME_CHANGE_COOLDOWN_DAYS - diffDays)
           return NextResponse.json(
-            { error: `Название можно менять не чаще раз в ${NAME_CHANGE_COOLDOWN_DAYS} дней. Подождите ещё ${daysLeft} дн.` },
+            { error: t('api.squadronRenameCooldown', { days: NAME_CHANGE_COOLDOWN_DAYS, left: daysLeft }) },
             { status: 429 }
           )
         }
@@ -145,6 +147,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)

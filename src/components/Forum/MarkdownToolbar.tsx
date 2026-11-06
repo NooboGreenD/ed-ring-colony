@@ -2,6 +2,7 @@
 import { IconLink, IconQuote } from "@/components/Icons";
 
 import { useRef } from "react";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 interface MarkdownToolbarProps {
   textareaRef?: React.RefObject<HTMLTextAreaElement | null> | null;
@@ -10,6 +11,7 @@ interface MarkdownToolbarProps {
 }
 
 export function MarkdownToolbar({ textareaRef, onChange, getValue }: MarkdownToolbarProps) {
+  const { t } = useI18n();
   const insert = (before: string, after: string = "") => {
     const el = textareaRef?.current;
     if (!el) return;
@@ -30,14 +32,14 @@ export function MarkdownToolbar({ textareaRef, onChange, getValue }: MarkdownToo
   const wrap = (marker: string) => insert(marker, marker);
 
   const buttons = [
-    { label: "B", title: "Жирный (Ctrl+B)", action: () => wrap("**"), style: { fontWeight: 700 } },
-    { label: "I", title: "Курсив (Ctrl+I)", action: () => wrap("*"), style: { fontStyle: "italic" } },
-    { label: "</>", title: "Код inline", action: () => wrap("`"), style: { fontFamily: "monospace" } },
-    { label: "{}" , title: "Блок кода", action: () => insert("```\n", "\n```") },
-    { label: "link", icon: <IconLink size={13} />, title: "Ссылка", action: () => insert("[", "](url)") },
-    { label: "quote", icon: <IconQuote size={13} />, title: "Цитата", action: () => insert("> ", "") },
-    { label: "•", title: "Список", action: () => insert("- ", "") },
-    { label: "—", title: "Разделитель", action: () => insert("\n---\n", "") },
+    { label: "B", title: t("mtb.bold"), action: () => wrap("**"), style: { fontWeight: 700 } },
+    { label: "I", title: t("mtb.italic"), action: () => wrap("*"), style: { fontStyle: "italic" } },
+    { label: "</>", title: t("mtb.inlineCode"), action: () => wrap("`"), style: { fontFamily: "monospace" } },
+    { label: "{}" , title: t("mtb.codeBlock"), action: () => insert("```\n", "\n```") },
+    { label: "link", icon: <IconLink size={13} />, title: t("mtb.link"), action: () => insert("[", "](url)") },
+    { label: "quote", icon: <IconQuote size={13} />, title: t("mtb.quote"), action: () => insert("> ", "") },
+    { label: "•", title: t("mtb.list"), action: () => insert("- ", "") },
+    { label: "—", title: t("mtb.hr"), action: () => insert("\n---\n", "") },
   ];
 
   return (

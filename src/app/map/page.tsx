@@ -1,12 +1,14 @@
 'use client';
 
 import { GalaxyMapClient } from "@/components/GalaxyMap/GalaxyMapClient";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 function MapLoadingFallback() {
+  const { t } = useI18n();
   return (
     <div className="map-page-loading">
       <div className="map-page-spinner" />
-      <div className="map-page-text">Инициализация 3D-движка...</div>
+      <div className="map-page-text">{t('map.engineInit')}</div>
     </div>
   );
 }

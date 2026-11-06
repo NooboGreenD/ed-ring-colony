@@ -1,5 +1,6 @@
 "use client";
 import { IconAlert } from "@/components/Icons";
+import { formatTranslate } from "@/lib/i18n/format";
 
 import { Component, ReactNode } from 'react';
 
@@ -41,9 +42,9 @@ export class ErrorBoundary extends Component<Props, State> {
               border: '1px solid #e74c3c',
             }}
           >
-            <h3 style={{ marginBottom: 8 }}><IconAlert size={20} color='#e74c3c' /> Что-то пошло не так</h3>
+            <h3 style={{ marginBottom: 8 }}><IconAlert size={20} color='#e74c3c' /> {formatTranslate('ec.boundaryTitle')}</h3>
             <p style={{ color: '#9ca3af', fontSize: 13 }}>
-              {this.state.error?.message || 'Неизвестная ошибка'}
+              {this.state.error?.message || formatTranslate('ec.boundaryUnknown')}
             </p>
             <button
               onClick={() => this.setState({ hasError: false })}
@@ -57,7 +58,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 cursor: 'pointer',
               }}
             >
-              Попробовать снова
+              {formatTranslate('ec.boundaryRetry')}
             </button>
           </div>
         )

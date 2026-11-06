@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
 import { requireStaff, requireAdmin, errorResponse } from '@/lib/billing/auth';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 /** Product (shop item) management. */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireStaff(req);
     if ('response' in auth) return auth.response;
@@ -25,18 +27,19 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
     const body = await req.json();
     if (body.action === 'grant') {
       const { userId, cmdrName, itemId } = body;
-      if (!userId || !itemId) return NextResponse.json({ error: 'userId и itemId обязательны' }, { status: 400 });
+      if (!userId || !itemId) return NextResponse.json({ error: t('adm.creditsItemParams') }, { status: 400 });
       const r = await billingRepo.grantItem({ userId, cmdrName: cmdrName || '', itemId, adminName: auth.actor.cmdrName });
       if (!r.success) return NextResponse.json({ error: r.error }, { status: 400 });
       return NextResponse.json({ success: true, item: r.item, transaction: r.transaction });
     }
-    if (!body?.title || !body?.category) return NextResponse.json({ error: 'Название и категория обязательны' }, { status: 400 });
+    if (!body?.title || !body?.category) return NextResponse.json({ error: t('adm.titleCategoryRequired') }, { status: 400 });
     const item = await billingRepo.createShopItem(body);
     return NextResponse.json({ success: true, item });
   } catch (err: any) {
@@ -45,6 +48,7 @@ export async function POST(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
@@ -59,13 +63,14 @@ export async function PATCH(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
     const id = new URL(req.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'Item ID required' }, { status: 400 });
     const r = await billingRepo.deleteShopItem(id);
-    return NextResponse.json({ success: true, ...r, message: r.deleted ? 'Товар удалён' : `Товар архивирован: им владеют ${r.owners} пилот(ов)` });
+    return NextResponse.json({ success: true, ...r, message: r.deleted ? t('api.itemDeleted') : t('api.itemArchived', { owners: r.owners }) });
   } catch (err) {
     return errorResponse(err);
   }

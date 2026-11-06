@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
+import { apiTranslate } from '@/lib/i18n/apiT';
 import {
   GOVERNANCE_TABLE,
   loadAssignment,
@@ -32,6 +33,7 @@ function sanitizeSearch(value: string): string {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const supabase = await createClient();
@@ -42,7 +44,7 @@ export async function GET(req: Request) {
       if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       const caller = await loadCallerProfile(supabase, user.id);
       if (caller.role !== 'admin') {
-        return NextResponse.json({ error: 'Подбирать архитектора может только администратор' }, { status: 403 });
+        return NextResponse.json({ error: t('api.adminPicksArchitect') }, { status: 403 });
       }
       const { data, error } = await supabase
         .from('profiles')
@@ -82,6 +84,7 @@ export async function GET(req: Request) {
 
 /** Назначить или сменить архитектора системы — только админ. */
 export async function PUT(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -95,18 +98,18 @@ export async function PUT(req: Request) {
 
     const caller = await loadCallerProfile(supabase, user.id);
     if (caller.role !== 'admin') {
-      return NextResponse.json({ error: 'Назначить архитектора системы может только администратор' }, { status: 403 });
+      return NextResponse.json({ error: t('api.adminAssignsArchitect') }, { status: 403 });
     }
 
     const system = validSystemName(record.system);
     if (!system) {
-      return NextResponse.json({ error: 'Не указано название системы' }, { status: 400 });
+      return NextResponse.json({ error: t('api.systemNameRequired') }, { status: 400 });
     }
     const assignSelf = record.self === true;
     const architectName = validSystemName(record.architect);
     const needle = sanitizeSearch(architectName);
     if (!assignSelf && (!architectName || !needle)) {
-      return NextResponse.json({ error: 'Не указан позывной архитектора' }, { status: 400 });
+      return NextResponse.json({ error: t('api.architectCallsignRequired') }, { status: 400 });
     }
 
     let candidate: { id?: unknown; cmdr_name?: unknown };
@@ -116,7 +119,7 @@ export async function PUT(req: Request) {
       // уже авторизован и его роль только что была успешно проверена.
       const metadataName = validSystemName(user.user_metadata?.cmdr_name)
         || validSystemName(user.user_metadata?.full_name);
-      candidate = { id: user.id, cmdr_name: caller.cmdrName || metadataName || architectName || 'Администратор' };
+      candidate = { id: user.id, cmdr_name: caller.cmdrName || metadataName || architectName || t('cmdr.administrator') };
     } else {
       // Позывной ищем без учёта регистра: командир введёт его как помнит.
       const { data: matches, error: findError } = await supabase
@@ -128,22 +131,22 @@ export async function PUT(req: Request) {
       const candidates = (matches ?? []) as { id?: unknown; cmdr_name?: unknown }[];
       if (candidates.length === 0) {
         return NextResponse.json(
-          { error: `Командир «${architectName}» не найден — пусть он хотя бы раз войдёт на сайт` },
+          { error: t('api.commanderNotFound', { name: architectName }) },
           { status: 404 },
         );
       }
       if (candidates.length > 1) {
         return NextResponse.json(
-          { error: 'Найдено несколько командиров с таким позывным — укажите точное имя' },
+          { error: t('api.commanderAmbiguous') },
           { status: 409 },
         );
       }
       candidate = candidates[0];
     }
     const candidateId = String(candidate.id ?? '');
-    const candidateName = String(candidate.cmdr_name ?? '').trim() || 'Командир';
+    const candidateName = String(candidate.cmdr_name ?? '').trim() || t('cmdr.default');
     if (!candidateId) {
-      return NextResponse.json({ error: 'У найденного профиля нет id' }, { status: 500 });
+      return NextResponse.json({ error: t('api.profileWithoutId') }, { status: 500 });
     }
 
     const { error } = await supabase
@@ -154,7 +157,7 @@ export async function PUT(req: Request) {
         user_id: candidateId,
         architect_name: candidateName,
         assigned_by: user.id,
-        assigned_by_name: caller.cmdrName || 'Командир',
+        assigned_by_name: caller.cmdrName || t('cmdr.default'),
       }, { onConflict: 'system_name_lc' });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
@@ -169,6 +172,7 @@ export async function PUT(req: Request) {
 
 /** Снять архитектора: админ всегда, сам архитектор — отказом от системы. */
 export async function DELETE(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => null);
     const system = validSystemName(
@@ -177,7 +181,7 @@ export async function DELETE(req: Request) {
         : new URL(req.url).searchParams.get('system'),
     );
     if (!system) {
-      return NextResponse.json({ error: 'Не указано название системы' }, { status: 400 });
+      return NextResponse.json({ error: t('api.systemNameRequired') }, { status: 400 });
     }
 
     const supabase = await createClient();
@@ -192,13 +196,13 @@ export async function DELETE(req: Request) {
     if (readError) return NextResponse.json({ error: readError.message }, { status: 500 });
     const assignment = rowToAssignment(existing as SystemArchitectRow | null);
     if (!assignment || !existing?.id) {
-      return NextResponse.json({ error: 'Архитектор этой системе не назначен' }, { status: 404 });
+      return NextResponse.json({ error: t('api.architectNotAssigned') }, { status: 404 });
     }
 
     const caller = await loadCallerProfile(supabase, user.id);
     if (assignment.userId !== user.id && caller.role !== 'admin') {
       return NextResponse.json(
-        { error: 'Снять архитектора может админ или сам архитектор (отказ от системы)' },
+        { error: t('api.architectRevokeDenied') },
         { status: 403 },
       );
     }

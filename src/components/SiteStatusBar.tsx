@@ -38,6 +38,8 @@ const IDLE: UpdateView = {
 
 const POLL_IDLE_MS = 5_000;
 const POLL_ACTIVE_MS = 1_500;
+import { useI18n } from '@/lib/i18n/I18nContext';
+import { formatTranslate } from '@/lib/i18n/format';
 const DONE_NOTE_MS = 12_000;
 
 interface StatusPayload {
@@ -50,7 +52,9 @@ function elapsed(startedAt: string | null): string | null {
   const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000));
   if (!Number.isFinite(seconds)) return null;
   const minutes = Math.floor(seconds / 60);
-  return minutes > 0 ? `${minutes} мин ${String(seconds % 60).padStart(2, '0')} с` : `${seconds} с`;
+  return minutes > 0
+    ? formatTranslate('ssb.minutesSeconds', { minutes, seconds: String(seconds % 60).padStart(2, '0') })
+    : formatTranslate('ssb.seconds', { seconds });
 }
 
 /**
@@ -65,7 +69,7 @@ function restartHint(percent: number, startedAt: string | null): string | null {
   if (!Number.isFinite(passedMs) || passedMs <= 0) return null;
   const remaining = Math.round((passedMs / Math.max(percent, 1)) * (100 - percent) / 1000);
   if (remaining < 3 || remaining > 600) return null;
-  return `до перезапуска ≈ ${remaining} с`;
+  return formatTranslate('ssb.restartHint', { seconds: remaining });
 }
 
 /** Часики в стиле проекта: ободок HUD, бегущая секундная стрелка и орбитальная точка. */
@@ -91,6 +95,7 @@ function UpdateClock() {
 }
 
 export default function SiteStatusBar() {
+  const { t } = useI18n();
   const [update, setUpdate] = useState<UpdateView>(IDLE);
   const [reconnecting, setReconnecting] = useState(false);
   const [finished, setFinished] = useState(false);
@@ -166,14 +171,14 @@ export default function SiteStatusBar() {
 
   if (update.active) {
     const percent = Math.max(0, Math.min(100, Math.round(update.percent || 0)));
-    const label = reconnecting ? 'Сервис перегружается' : (update.stageLabel || 'Обновление проекта');
+    const label = reconnecting ? t('ssb.serviceReloading') : (update.stageLabel || t('ssb.updateProject'));
     return (
       <>
         <span className="status status-update" role="status" aria-live="polite" title={`${label} · ${percent}%`}>
           <UpdateClock />
           System Update
           <span className="status-update-percent">{percent}%</span>
-          {clock && <span className="status-update-elapsed">с {clock}</span>}
+          {clock && <span className="status-update-elapsed">{t('ssb.elapsedSince', { clock })}</span>}
           {hint && <span className="status-update-hint">{hint}</span>}
         </span>
         <span className="update-strip" aria-hidden="true">
@@ -188,7 +193,7 @@ export default function SiteStatusBar() {
       <span className="status" role="status">
         <span className="dot" />
         System Online
-        {finished && <span className="status-update-done">обновление завершено</span>}
+        {finished && <span className="status-update-done">{t('ssb.updateDone')}</span>}
         {!finished && <UtcClock />}
       </span>
     </>

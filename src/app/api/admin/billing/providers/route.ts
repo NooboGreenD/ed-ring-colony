@@ -3,6 +3,7 @@ import { billingRepo } from '@/lib/billingData';
 import { requireStaff, requireAdmin, errorResponse } from '@/lib/billing/auth';
 import { PROVIDER_DRIVERS, getDriver, maskConfig, mergeConfig, webhookUrlFor } from '@/lib/billing/providers';
 import type { PaymentProviderView } from '@/types/billing';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -28,6 +29,7 @@ async function views(): Promise<PaymentProviderView[]> {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireStaff(req);
     if ('response' in auth) return auth.response;
@@ -39,13 +41,14 @@ export async function GET(req: Request) {
 
 /** PATCH { id, is_enabled?, test_mode?, config? } */
 export async function PATCH(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
     const { id, config, ...rest } = await req.json();
     const driver = getDriver(id);
     const stored = await billingRepo.getProvider(id);
-    if (!driver || !stored) return NextResponse.json({ error: 'Провайдер не найден' }, { status: 404 });
+    if (!driver || !stored) return NextResponse.json({ error: t('adm.providerNotFound') }, { status: 404 });
     const patch: any = {};
     if (typeof rest.is_enabled === 'boolean') patch.is_enabled = rest.is_enabled;
     if (typeof rest.test_mode === 'boolean') patch.test_mode = rest.test_mode;
@@ -53,13 +56,13 @@ export async function PATCH(req: Request) {
     if (config && typeof config === 'object') patch.config = mergeConfig(driver, stored.config, config);
     const merged = { ...stored, ...patch };
     if (patch.is_enabled && !driver.isConfigured(merged.config)) {
-      return NextResponse.json({ error: 'Нельзя включить провайдера: заполните обязательные поля' }, { status: 400 });
+      return NextResponse.json({ error: t('adm.providerEnableFields') }, { status: 400 });
     }
     if (id === 'tbank' && merged.is_enabled) {
       const checked = await driver.check(merged);
       if (!checked.ok) return NextResponse.json({ error: checked.message }, { status: 400 });
       if (!merged.test_mode && await billingRepo.backendKind !== 'supabase') {
-        return NextResponse.json({ error: 'Для боевых платежей Т-Банка требуется хранилище Supabase' }, { status: 400 });
+        return NextResponse.json({ error: t('adm.livePaymentsNeedStorage') }, { status: 400 });
       }
     }
     await billingRepo.updateProvider(id, patch);
@@ -71,19 +74,20 @@ export async function PATCH(req: Request) {
 
 /** POST { id, action: 'check' } — test credentials. */
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
     const { id, action } = await req.json();
     const driver = getDriver(id);
     const stored = await billingRepo.getProvider(id);
-    if (!driver || !stored) return NextResponse.json({ error: 'Провайдер не найден' }, { status: 404 });
-    if (action !== 'check') return NextResponse.json({ error: 'Неизвестное действие' }, { status: 400 });
+    if (!driver || !stored) return NextResponse.json({ error: t('adm.providerNotFound') }, { status: 404 });
+    if (action !== 'check') return NextResponse.json({ error: t('adm.unknownAction') }, { status: 400 });
     let result: { ok: boolean; message: string };
     try {
-      result = driver.isConfigured(stored.config) ? await driver.check(stored) : { ok: false, message: 'Не заполнены обязательные поля' };
+      result = driver.isConfigured(stored.config) ? await driver.check(stored) : { ok: false, message: t('api.requiredFieldsEmpty') };
     } catch (e: any) {
-      result = { ok: false, message: e?.message || 'Ошибка проверки' };
+      result = { ok: false, message: e?.message || t('api.checkFailed') };
     }
     await billingRepo.updateProvider(id, { last_check_at: new Date().toISOString(), last_check_ok: result.ok, last_check_msg: result.message });
     return NextResponse.json({ success: true, result, providers: await views() });

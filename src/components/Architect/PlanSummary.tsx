@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ECONOMY_LABELS_RU, installationLinks } from '@/lib/architect/catalogue';
+import { ECONOMY_LABELS_RU, installationLinks, installationName } from '@/lib/architect/catalogue';
 import {
   BODY_TRAIT_LABELS_RU,
   ECONOMY_AFFINITY,
@@ -11,6 +11,8 @@ import {
 import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } from '@/lib/architect/planner';
 import type { ArchitectPlan, PlanEvaluation, SystemEconomy, SystemEffectKey } from '@/lib/architect/types';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { architectLabel } from '@/lib/i18n/architectLabels';
+import { bodyTraitLabel, issueText } from '@/lib/i18n/planText';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
   pop: 'psm.effPop',
@@ -32,7 +34,7 @@ interface PlanSummaryProps {
 }
 
 export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSummaryProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [showAllCargo, setShowAllCargo] = useState(false);
   const [showAllUnlocks, setShowAllUnlocks] = useState(false);
   const [showPrimaryCargo, setShowPrimaryCargo] = useState(false);
@@ -57,12 +59,12 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         const links = installationLinks(id);
         const hasPreReq = links.requires.length === 0
           || links.requires.every((req) => req.options.some((option) => installedIds.has(option.id)));
-        return { id, nameRu: installation?.nameRu ?? id, count, links, hasPreReq };
+        return { id, name: installationName(installation, locale) || id, count, links, hasPreReq };
       })
       // В граф попадают только постройки, у которых есть хоть какая-то связь.
       .filter((entry) => entry.links.requires.length > 0 || entry.links.enables.length > 0)
-      .sort((left, right) => left.nameRu.localeCompare(right.nameRu));
-  }, [plan.sites]);
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [plan.sites, locale]);
 
   const cargo = useMemo(() => cargoList(evaluation), [evaluation]);
   const errors = evaluation.issues.filter((issue) => issue.level === 'error');
@@ -130,7 +132,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
               return (
                 <div key={port.siteId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)' }}>
                   <span>
-                    {index + 1}. {installation?.nameRu ?? port.installationId}
+                    {index + 1}. {installationName(installation, locale) || port.installationId}
                     {port.siteId === primaryPort?.siteId ? t('psm.primaryFree') : ''}
                   </span>
                   <span style={{ color: port.taxed ? 'var(--orange)' : 'var(--text)' }}>
@@ -148,11 +150,11 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         {primaryPort && primaryInstallation ? (
           <>
             <div style={{ fontSize: 14, color: 'var(--text)' }}>
-              {primaryInstallation.nameRu}
+              {installationName(primaryInstallation, locale)}
               <span style={{ color: 'var(--muted)', fontSize: 12 }}> — {primaryPort.bodyName}</span>
             </div>
             <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-              {t('psm.economyOf')} {ECONOMY_LABELS_RU[primaryPort.economy] ?? primaryPort.economy}
+              {t('psm.economyOf')} {architectLabel('economy', primaryPort.economy, ECONOMY_LABELS_RU[primaryPort.economy] ?? primaryPort.economy, t)}
               {' · '}
               {t('psm.materials')} {primaryPort.approximate ? '≈ ' : ''}{formatTons(primaryPort.tons)}
               {' · '}{t('psm.noSystemPoints')}
@@ -192,7 +194,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                       onClick={() => onMarkPrimary(site.id)}
                       style={{ ...chipStyle, borderColor: 'var(--orange)', color: 'var(--orange)' }}
                     >
-                      ★ {installation?.nameRu ?? site.installationId}
+                      ★ {installationName(installation, locale) || site.installationId}
                     </button>
                   );
                 })}
@@ -207,12 +209,12 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
           <h3 style={sectionTitle}>{t('psm.issues')}</h3>
           {errors.map((issue, index) => (
             <div key={`e${index}`} style={{ color: 'var(--red)', fontSize: 12, marginBottom: 4 }}>
-              ✕ {issue.message}
+              ✕ {issueText(issue, t)}
             </div>
           ))}
           {warnings.map((issue, index) => (
             <div key={`w${index}`} style={{ color: 'var(--orange)', fontSize: 12, marginBottom: 4 }}>
-              ! {issue.message}
+              ! {issueText(issue, t)}
             </div>
           ))}
         </section>
@@ -232,7 +234,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
             return (
               <li key={siteId} style={{ marginBottom: 4 }}>
                 {site.primary ? <span style={{ color: 'var(--orange)' }}>★ </span> : null}
-                {installation.nameRu}
+                {installationName(installation, locale)}
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                   {' · '}
                   {site.bodyName || <span style={{ color: 'var(--orange)' }}>{t('psm.bodyMissing')}</span>}
@@ -278,7 +280,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)' }}>
             {t('psm.economies')}{' '}
             {Object.entries(evaluation.economies)
-              .map(([economy, count]) => `${ECONOMY_LABELS_RU[economy as keyof typeof ECONOMY_LABELS_RU] ?? economy} ×${count}`)
+              .map(([economy, count]) => `${architectLabel('economy', economy, ECONOMY_LABELS_RU[economy as keyof typeof ECONOMY_LABELS_RU] ?? economy, t)} ×${count}`)
               .join(', ')}
           </div>
         )}
@@ -297,7 +299,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
               return (
                 <div key={economy} style={{ borderLeft: '2px solid var(--line)', paddingLeft: 10 }}>
                   <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600 }}>
-                    {ECONOMY_LABELS_RU[economy]} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>×{count}</span>
+                    {architectLabel('economy', economy, ECONOMY_LABELS_RU[economy], t)} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>×{count}</span>
                   </div>
                   {market.produces.length > 0 && (
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
@@ -311,7 +313,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                   )}
                   {affinity.bodyDependent && affinity.boost.length > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, fontStyle: 'italic' }}>
-                      {t('psm.boostedBy')} {affinity.boost.map((trait: BodyTrait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')}
+                      {t('psm.boostedBy')} {affinity.boost.map((trait: BodyTrait) => bodyTraitLabel(trait, t)).join(', ')}
                     </div>
                   )}
                 </div>
@@ -328,7 +330,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
             {t('psm.linksNote')}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {buildingLinks.map(({ id, nameRu, count, links, hasPreReq }) => (
+            {buildingLinks.map(({ id, name, count, links, hasPreReq }) => (
               <div
                 key={id}
                 style={{
@@ -353,19 +355,19 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                       title={hasPreReq ? t('psm.prereqInPlan') : t('psm.prereqMissing')}
                     >
                       {hasPreReq ? '✓ ' : '✗ '}
-                      {links.requires.map((req) => req.label).join(' / ')}
+                      {links.requires.map((req) => architectLabel('preReq', req.preReq, req.label, t)).join(' / ')}
                     </span>
                     <span style={{ color: 'var(--muted)' }}>→</span>
                   </>
                 )}
                 <span style={{ color: 'var(--text)', fontWeight: 600 }}>
-                  {nameRu}{count > 1 ? ` ×${count}` : ''}
+                  {name}{count > 1 ? ` ×${count}` : ''}
                 </span>
                 {links.enables.length > 0 && (
                   <>
                     <span style={{ color: 'var(--muted)' }}>→</span>
                     <span style={{ color: 'var(--cyan)' }}>
-                      {t('psm.enables')} {links.enables.map((enable) => shortEnableLabel(enable.label)).join(', ')}
+                      {t('psm.enables')} {links.enables.map((enable) => shortEnableLabel(architectLabel('unlock', enable.id, enable.label, t))).join(', ')}
                     </span>
                   </>
                 )}
@@ -403,10 +405,10 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                     const affinity = ECONOMY_AFFINITY[economy];
                     return (
                       <tr key={economy} style={{ borderTop: '1px solid var(--line)' }}>
-                        <td style={{ ...refCell, color: 'var(--text)' }}>{ECONOMY_LABELS_RU[economy]}</td>
+                        <td style={{ ...refCell, color: 'var(--text)' }}>{architectLabel('economy', economy, ECONOMY_LABELS_RU[economy], t)}</td>
                         <td style={{ ...refCell, color: 'var(--muted)' }}>
                           {affinity.boost.length > 0
-                            ? affinity.boost.map((trait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')
+                            ? affinity.boost.map((trait) => bodyTraitLabel(trait, t)).join(', ')
                             : '—'}
                         </td>
                         <td style={{ ...refCell, color: affinity.bodyDependent ? 'var(--orange)' : 'var(--muted)' }}>
@@ -456,7 +458,7 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: s
 }
 
 function TierBadge({ tier, free, spent, given }: { tier: string; free: number; spent: number; given: number }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   return (
     <div
       style={{

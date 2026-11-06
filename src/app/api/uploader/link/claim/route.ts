@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { claimLinkCode } from '@/lib/helperDevices';
 import { checkRateLimit } from '@/lib/rateLimit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,10 +23,11 @@ function clientIp(request: Request): string {
  * нельзя было перебрать.
  */
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   const ip = clientIp(request);
   if (!checkRateLimit(`helper-link-claim:${ip}`, 12)) {
     return NextResponse.json(
-      { ok: false, error: 'Слишком много попыток. Подождите минуту.' },
+      { ok: false, error: t('api.tooManyAttempts') },
       { status: 429, ...NO_STORE },
     );
   }
@@ -34,7 +36,7 @@ export async function POST(request: Request) {
   try {
     body = await request.json() as { code?: unknown; device?: unknown };
   } catch {
-    return NextResponse.json({ ok: false, error: 'Некорректный запрос.' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('api.invalidRequest') }, { status: 400, ...NO_STORE });
   }
 
   const result = await claimLinkCode(body.code, String(body.device ?? '').trim());

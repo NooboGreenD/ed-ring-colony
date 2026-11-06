@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import { createZip, embedTrustedKeys, trustedPublicKeys } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,17 +26,18 @@ function suffix(name: string) {
  * текущего канала — собранный EXE сможет принимать последующие обновления.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 
   const version = new URL(request.url).searchParams.get('version')?.trim().replace(/^v/i, '') || '';
   if (!VERSION.test(version)) {
-    return NextResponse.json({ ok: false, error: 'Укажите корректную версию базовой сборки' }, { status: 400 });
+    return NextResponse.json({ ok: false, error: t('adm.buildKitVersionInvalid') }, { status: 400 });
   }
 
   const keys = trustedPublicKeys();
   if (Object.keys(keys).length === 0) {
-    return NextResponse.json({ ok: false, error: 'Сначала настройте ключ подписи обновлений' }, { status: 400 });
+    return NextResponse.json({ ok: false, error: t('adm.signingKeyMissing') }, { status: 400 });
   }
 
   try {
@@ -95,7 +97,7 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : 'Не удалось подготовить комплект сборки' },
+      { ok: false, error: error instanceof Error ? error.message : t('adm.buildKitFailed') },
       { status: 500 },
     );
   }

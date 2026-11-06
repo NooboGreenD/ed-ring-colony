@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { loadPowerplayLayer } from '@/lib/powerplayStore';
 import { ensureEddnListenerSoon } from '@/lib/eddn/listener';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,6 +24,7 @@ export const runtime = 'nodejs';
  * поднимется, даже если задача `eddn-listener` не включена в JOBS_ENABLED.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const svc = createServiceClient();
     ensureEddnListenerSoon(svc);
@@ -48,6 +50,6 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     console.error('[powerplay/systems]', error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: 'Не удалось загрузить системы PowerPlay' }, { status: 503 });
+    return NextResponse.json({ error: t('api.ppSystemsLoadFailed') }, { status: 503 });
   }
 }

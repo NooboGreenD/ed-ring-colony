@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabaseServer';
 import { notFound, redirect } from 'next/navigation';
 import WikiArticleContent from '@/components/Wiki/WikiArticleContent';
+import { Tr } from '@/components/Translate';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +22,7 @@ export default async function WikiArticlePage({ params }: { params: Promise<{ sl
     console.error('[WikiArticlePage] createServiceClient FAILED:', e.message);
     return (
       <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-        <h1>Ошибка подключения к базе данных</h1>
+        <h1><Tr k="wa.dbError" /></h1>
         <p>{e.message}</p>
       </main>
     );
@@ -53,7 +54,7 @@ export default async function WikiArticlePage({ params }: { params: Promise<{ sl
     if (error) {
       return (
         <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-          <h1>Ошибка загрузки статьи</h1>
+          <h1><Tr k="wa.loadError" /></h1>
           <p>{error.message}</p>
         </main>
       );
@@ -104,7 +105,7 @@ export default async function WikiArticlePage({ params }: { params: Promise<{ sl
     console.error('[WikiArticlePage] UNEXPECTED ERROR:', e.message);
     return (
       <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-        <h1>Неожиданная ошибка</h1>
+        <h1><Tr k="wa.unexpected" /></h1>
         <p>{e.message}</p>
       </main>
     );

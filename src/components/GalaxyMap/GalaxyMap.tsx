@@ -9,13 +9,15 @@ import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
+import { NEBULA_KIND_KEYS } from '@/lib/i18n/nebulaLabels';
+import { gameLabel, POWER_STATE_KEYS } from '@/lib/i18n/gameLabels';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
 import { useAtlasSearchProgress, useAtlasSearchResult } from '@/hooks/useAtlasSearchProgress';
 import { clearAtlasSearchResult } from '@/lib/atlasSearchProgress';
 import { loadAllSystemsData } from './AllSystemsPoints';
 import { NebulaCard } from './NebulaCard';
-import { NEBULA_KIND_ORDER, NEBULA_KIND_SHORT, NEBULA_KIND_UI_COLOR } from './NebulaField';
+import { NEBULA_KIND_ORDER, NEBULA_SHORT_KEYS, NEBULA_KIND_UI_COLOR } from './NebulaField';
 import { GALAXY_NEBULAE, NEBULA_KIND_LABELS, type GalaxyNebula, type NebulaKind } from '@/lib/galaxyNebulae';
 import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
 import { useSystemAutocomplete, type SystemSuggestion } from '@/hooks/useSystemAutocomplete';
@@ -1217,7 +1219,7 @@ export default function GalaxyMap({
                       key={kind}
                       type="button"
                       onClick={() => toggleNebulaKind(kind)}
-                      title={NEBULA_KIND_LABELS[kind]}
+                      title={t(NEBULA_KIND_KEYS[kind])}
                       style={{
                         fontSize: 9,
                         color: on ? NEBULA_KIND_UI_COLOR[kind] : '#6b7280',
@@ -1229,7 +1231,7 @@ export default function GalaxyMap({
                         fontFamily: 'inherit',
                       }}
                     >
-                      {NEBULA_KIND_SHORT[kind]}
+                      {t(NEBULA_SHORT_KEYS[kind])}
                     </button>
                   );
                 })}
@@ -1371,7 +1373,7 @@ export default function GalaxyMap({
           style={{ left: powerplayHoverAt.current.x + 14, top: powerplayHoverAt.current.y + 14 }}
         >
           <strong style={{ color: powerInfo(hoveredPowerplay.power).color }}>{hoveredPowerplay.name}</strong>
-          <span>{powerInfo(hoveredPowerplay.power).label} · {POWERPLAY_STATE_LABEL[hoveredPowerplay.state].toLowerCase()}</span>
+          <span>{powerInfo(hoveredPowerplay.power).label} · {gameLabel(t, POWER_STATE_KEYS, hoveredPowerplay.state, POWERPLAY_STATE_LABEL[hoveredPowerplay.state]).toLowerCase()}</span>
           <em>{t('gmap.clickSystemCard')}</em>
         </div>
       )}

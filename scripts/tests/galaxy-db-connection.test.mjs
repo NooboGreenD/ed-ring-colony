@@ -502,7 +502,9 @@ test('админка предупреждает о PostgREST постоянны�
   assert.match(source, /backends\.backend === 'supabase'/, 'предупреждение завязано на режим записи');
   assert.match(source, /SUPABASE_DB_URL=postgresql:\/\/postgres:ПАРОЛЬ@db:5432\/postgres/, 'в панели есть готовая строка для .env.production');
   assert.match(source, /compose\.supabase-net\.yml/, 'в панели назван файл подключения к сети Supabase');
-  assert.match(source, /deploy\/start-monitoring\.sh/, 'в панели назван скрипт, который делает это сам');
+  assert.match(source, /gc\.afterRestart/, 'панель показывает подсказку после перезапуска');
+  const catalog = readFileSync(new URL('../../src/lib/i18n/translations.ts', import.meta.url), 'utf8');
+  assert.match(catalog, /deploy\/start-monitoring\.sh/, 'в подсказке назван скрипт, который делает это сам');
   // Счётчик каталога пишется только успешным проходом: незавершённый не должен
   // выглядеть как пустая таблица.
   assert.match(source, /partialRows/, 'рядом с нулём показано, сколько строк уже записано');

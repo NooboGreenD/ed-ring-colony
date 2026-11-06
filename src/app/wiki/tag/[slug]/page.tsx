@@ -1,6 +1,8 @@
 import { createServiceClient } from '@/lib/supabaseServer';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { Tr } from '@/components/Translate';
+import WikiArticleMeta from '@/components/Wiki/WikiArticleMeta';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +19,7 @@ export default async function WikiTagPage({ params }: { params: Promise<{ slug: 
   if (tagError) {
     return (
       <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-        <h1>Ошибка загрузки тега</h1>
+        <h1><Tr k="wt.loadError" /></h1>
         <p>{tagError.message}</p>
       </main>
     );
@@ -61,14 +63,14 @@ export default async function WikiTagPage({ params }: { params: Promise<{ slug: 
   return (
     <main style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ marginBottom: 8, fontSize: 11, fontFamily: 'ui-monospace', color: 'var(--muted)', textTransform: 'uppercase' }}>
-        <Link href="/wiki" style={{ color: 'var(--muted)' }}>Вики</Link> / Тег: {tag.name}
+        <Link href="/wiki" style={{ color: 'var(--muted)' }}><Tr k="wa.wiki" /></Link> / <Tr k="wt.tag" params={{ name: tag.name }} />
       </div>
       <h1 style={{ fontSize: 22, letterSpacing: 4, textTransform: 'uppercase', color: 'var(--orange)', marginBottom: 24 }}>
         #{tag.name}
       </h1>
 
       {articlesWithAuthors.length === 0 ? (
-        <div style={{ color: 'var(--muted)', padding: '40px 0', fontSize: 14 }}>По этому тегу пока нет статей.</div>
+        <div style={{ color: 'var(--muted)', padding: '40px 0', fontSize: 14 }}><Tr k="wt.empty" /></div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {articlesWithAuthors.map((a: any) => (
@@ -77,7 +79,7 @@ export default async function WikiTagPage({ params }: { params: Promise<{ slug: 
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>{a.title}</div>
                   <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4, fontFamily: 'ui-monospace' }}>
-                    {a.profiles?.cmdr_name || 'Unknown'} · {a.view_count} просмотров · {new Date(a.updated_at).toLocaleDateString('ru-RU')}
+                    <WikiArticleMeta author={a.profiles?.cmdr_name} views={a.view_count} date={a.updated_at} />
                   </div>
                 </div>
                 <span style={{ color: 'var(--orange)', fontSize: 20 }}>→</span>

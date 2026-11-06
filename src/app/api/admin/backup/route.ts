@@ -11,6 +11,7 @@ import {
 } from '@/lib/maintenance';
 import { backupDue } from '@/lib/maintenanceFlag';
 import { callUpdateAgent, getUpdateAgentStatus } from '@/lib/updateAgent';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -47,17 +48,19 @@ async function snapshot() {
  * работы» — признак ставит этот маршрут, а снимает фоновый опрос агента.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
     return NextResponse.json({ success: true, ...(await snapshot()) }, NO_STORE);
   } catch (error) {
     console.error('[admin/backup] не удалось отдать статус:', (error as Error)?.message || error);
-    return NextResponse.json({ error: 'Не удалось получить статус резервного копирования' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.backupStatusFailed') }, { status: 500, ...NO_STORE });
   }
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -65,7 +68,7 @@ export async function POST(request: Request) {
     const body = (await request.json().catch(() => null)) as { confirm?: unknown; full?: unknown } | null;
     // Копия закрывает сайт заглушкой — случайный POST не должен этого делать.
     if (body?.confirm !== true) {
-      return NextResponse.json({ error: 'Нужно подтверждение: confirm=true' }, { status: 400, ...NO_STORE });
+      return NextResponse.json({ error: t('adm.confirmRequired') }, { status: 400, ...NO_STORE });
     }
     // Полный дамп включает каталог систем (десятки гигабайт и часы работы),
     // поэтому он возможен только явным флагом.
@@ -74,7 +77,7 @@ export async function POST(request: Request) {
     const running = await getUpdateAgentStatus({ cacheMs: 0 });
     if (!running.configured) {
       return NextResponse.json(
-        { success: false, error: running.reason || 'Update-агент не настроен (UPDATE_AGENT_URL, UPDATE_AGENT_TOKEN)' },
+        { success: false, error: running.reason || t('api.updateAgentMissing') },
         { status: 503, ...NO_STORE },
       );
     }
@@ -83,8 +86,8 @@ export async function POST(request: Request) {
         {
           success: false,
           error: running.update.kind === 'backup'
-            ? 'Резервное копирование уже выполняется'
-            : 'Сейчас идёт обновление проекта — дождитесь его окончания',
+            ? t('backup.alreadyRunning')
+            : t('backup.updateInProgress'),
           update: running.update,
         },
         { status: 409, ...NO_STORE },
@@ -94,8 +97,8 @@ export async function POST(request: Request) {
     // Сначала заглушка, потом дамп: посетитель не должен увидеть сайт
     // в момент, когда база уже копируется.
     await beginMaintenance(full
-      ? 'Резервное копирование базы данных (полный дамп, включая каталог систем)'
-      : 'Резервное копирование базы данных');
+      ? t('backup.maintenanceFull')
+      : t('backup.maintenance'));
 
     const result = await callUpdateAgent('backup', { full });
     if (!result.ok) {
@@ -114,7 +117,7 @@ export async function POST(request: Request) {
     // Сайт не должен остаться под заглушкой из-за ошибки запуска.
     await endMaintenance();
     return NextResponse.json(
-      { error: 'Не удалось запустить резервное копирование. Подробности — в закрытых журналах приложения.' },
+      { error: t('adm.backupStartFailed') },
       { status: 500, ...NO_STORE },
     );
   }
@@ -122,6 +125,7 @@ export async function POST(request: Request) {
 
 /** Прерывает дамп (SIGTERM группе процессов агента) и снимает заглушку. */
 export async function DELETE(request: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
@@ -134,6 +138,6 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ success: true, ...(await snapshot()) }, NO_STORE);
   } catch (error) {
     console.error('[admin/backup] не удалось остановить копирование:', (error as Error)?.message || error);
-    return NextResponse.json({ error: 'Не удалось остановить резервное копирование' }, { status: 500, ...NO_STORE });
+    return NextResponse.json({ error: t('adm.backupStopFailed') }, { status: 500, ...NO_STORE });
   }
 }

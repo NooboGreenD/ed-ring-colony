@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 /**
  * Вкладки личного кабинета.
@@ -13,8 +14,8 @@ import { usePathname } from "next/navigation";
  * `/account/messages` перенаправляет сюда же.
  */
 const TABS = [
-  { href: "/account", label: "Профиль" },
-  { href: "/account/friends", label: "Сообщения и друзья", alias: ["/account/messages"] },
+  { href: "/account", labelKey: "account.profile" },
+  { href: "/account/friends", labelKey: "account.messagesAndFriends", alias: ["/account/messages"] },
 ];
 
 export default function AccountLayout({
@@ -23,10 +24,11 @@ export default function AccountLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const { t } = useI18n();
 
   return (
     <main className="card">
-      <h1>Личный кабинет</h1>
+      <h1>{t('account.title')}</h1>
 
       {/* Вкладки */}
       <div
@@ -53,7 +55,7 @@ export default function AccountLayout({
                 transition: "color 0.2s, border-color 0.2s",
               }}
             >
-              {tab.label}
+              {t(tab.labelKey)}
             </Link>
           );
         })}

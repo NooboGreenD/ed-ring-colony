@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { uploadImageToStorage } from '@/lib/imageStorage';
 import { AVATAR_MAX_BYTES } from '@/lib/imageLimits';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,36 +40,37 @@ function json(body: unknown, status = 200) {
 }
 
 export async function POST(req: NextRequest) {
+  const t = await apiTranslate();
   let user;
   try {
     ({ user } = await authFromRequest(req));
   } catch {
     user = null;
   }
-  if (!user) return json({ error: 'Войдите в аккаунт' }, 401);
+  if (!user) return json({ error: t('api.signInRequired') }, 401);
 
   let form: FormData;
   try {
     form = await req.formData();
   } catch {
-    return json({ error: 'Ожидается форма с файлом' }, 400);
+    return json({ error: t('api.formWithFileExpected') }, 400);
   }
 
   const file = form.get('file');
-  if (!(file instanceof File)) return json({ error: 'Файл не передан' }, 400);
-  if (file.size <= 0) return json({ error: 'Файл пустой' }, 400);
+  if (!(file instanceof File)) return json({ error: t('api.fileMissing') }, 400);
+  if (file.size <= 0) return json({ error: t('api.fileEmpty') }, 400);
   if (file.size > MAX_BYTES) {
-    return json({ error: `Файл больше ${MAX_BYTES / 1024 / 1024} МБ — уменьшите картинку` }, 413);
+    return json({ error: t('api.fileTooLarge', { size: Math.round(MAX_BYTES / 1024 / 1024) }) }, 413);
   }
 
   const mime = (file.type || '').toLowerCase();
   const ext = ALLOWED[mime];
-  if (!ext) return json({ error: 'Поддерживаются JPG, PNG, WebP и GIF' }, 415);
+  if (!ext) return json({ error: t('api.avatarFormats') }, 415);
 
   const buffer = Buffer.from(await file.arrayBuffer());
   // Размер из заголовка мультипарта мог соврать — проверяем фактический.
   if (buffer.byteLength <= 0 || buffer.byteLength > MAX_BYTES) {
-    return json({ error: `Файл больше ${MAX_BYTES / 1024 / 1024} МБ — уменьшите картинку` }, 413);
+    return json({ error: t('api.fileTooLarge', { size: Math.round(MAX_BYTES / 1024 / 1024) }) }, 413);
   }
 
   const svc = createServiceClient();
@@ -98,16 +100,16 @@ export async function POST(req: NextRequest) {
     if (dbError) {
       console.error('[account/avatar] storage:', stored.error, '| database:', dbError.message);
       const detail = stored.unavailable
-        ? 'хранилище картинок недоступно, и резервное сохранение в БД не удалось — администратору нужно проверить БД и миграции'
+        ? t('api.storageDownFallbackFailed')
         : stored.error;
-      return json({ error: `Не удалось сохранить аватар: ${detail}` }, 502);
+      return json({ error: t('api.avatarSaveFailed', { detail: detail ?? '' }) }, 502);
     }
 
     backend = 'database';
     avatarUrl = `/api/avatars/${user.id}?v=${checksum.slice(0, 12)}`;
     warning = stored.unavailable
-      ? 'Supabase Storage сейчас недоступен — аватар сохранён в базе сайта. Картинка работает, но администратору стоит проверить контейнер storage.'
-      : `Storage отклонил загрузку (${stored.error}) — аватар сохранён в базе сайта.`;
+      ? t('api.storageDownAvatarInDb')
+      : t('api.storageRejectedAvatarInDb', { reason: stored.error ?? '' });
     console.warn('[account/avatar] fallback to database:', stored.error);
   }
 
@@ -117,7 +119,7 @@ export async function POST(req: NextRequest) {
     .eq('id', user.id);
   if (profileError) {
     console.error('[account/avatar] profile update:', profileError.message);
-    return json({ error: `Аватар загружен, но профиль не обновлён: ${profileError.message}` }, 500);
+    return json({ error: t('api.avatarProfileFailed', { detail: profileError.message }) }, 500);
   }
 
   return json({ avatarUrl, storage: backend, warning });
@@ -125,13 +127,14 @@ export async function POST(req: NextRequest) {
 
 /** Убрать аватар: и ссылку в профиле, и запасную копию в базе. */
 export async function DELETE(req: NextRequest) {
+  const t = await apiTranslate();
   let user;
   try {
     ({ user } = await authFromRequest(req));
   } catch {
     user = null;
   }
-  if (!user) return json({ error: 'Войдите в аккаунт' }, 401);
+  if (!user) return json({ error: t('api.signInRequired') }, 401);
 
   const svc = createServiceClient();
   const { error } = await svc.from('profiles').update({ avatar_url: null }).eq('id', user.id);

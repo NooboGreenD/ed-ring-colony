@@ -37,9 +37,11 @@ test('Atlas ship route calculates from journal Loadout and exposes explicit Help
   assert.match(finder, /fromSlef/);
   assert.match(finder, /computeStats/);
   assert.match(finder, /profileAt/);
-  assert.match(routeFinder, /Передать в Helper/);
+  assert.match(routeFinder, /atlas\.ui\.sendToHelper/);
   assert.match(helper, /_maybe_sync_ship_state/);
-  assert.match(helper, /Забрать из Atlas/);
+  const pages = read('uploader/helper_pages.py');
+  assert.match(pages, /atlas_btn/);
+  assert.match(read('uploader/i18n_catalogs.py'), /Забрать из Atlas/);
   assert.match(client, /upload_ship_state/);
   assert.match(client, /pull_atlas_route/);
 });

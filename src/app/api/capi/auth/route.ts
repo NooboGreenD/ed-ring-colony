@@ -12,6 +12,7 @@ import {
   createOauthState,
   signLinkState,
 } from '@/lib/capi/linkState';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +37,7 @@ export const dynamic = 'force-dynamic';
  *     пилоту со Steam не предложат нужный способ входа.
  */
 export async function GET(req: NextRequest) {
+  const t = await apiTranslate();
   const site = getSiteUrl();
 
   let user: Awaited<ReturnType<typeof authFromRequest>>['user'] = null;
@@ -59,7 +61,7 @@ export async function GET(req: NextRequest) {
       buildCapiRedirect(site, {
         status: 'error',
         reason: 'redirect_uri_missing',
-        detail: 'Задайте FRONTIER_REDIRECT_URI или корректный NEXT_PUBLIC_SITE_URL',
+        detail: t('capi.redirectHint'),
       }),
     );
   }

@@ -1,16 +1,18 @@
 import { NextResponse } from 'next/server';
 
 import { readLauncher, readLauncherBinary } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /** Базовый exe хранится и раздаётся нашим сервером, без GitHub Releases. */
 export async function GET(_request: Request, context: { params: Promise<{ platform: string }> }) {
+  const t = await apiTranslate();
   const { platform } = await context.params;
   const [data, info] = await Promise.all([readLauncherBinary(platform), readLauncher(platform)]);
   if (!data || !info) {
-    return new NextResponse('Базовая сборка не опубликована', {
+    return new NextResponse(t('up.buildNotPublished'), {
       status: 404,
       headers: { 'Cache-Control': 'no-store' },
     });

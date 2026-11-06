@@ -20,6 +20,7 @@ import {
   verifyLinkState,
   type CapiRedirectOptions,
 } from '@/lib/capi/linkState';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,6 +43,7 @@ export const dynamic = 'force-dynamic';
  *      опрос задания и показывает результат/диагностику этапов.
  */
 export async function GET(req: NextRequest) {
+  const t = await apiTranslate();
   const site = getSiteUrl();
   const url = new URL(req.url);
   const cookies = parseCookies(req.headers.get('cookie'));
@@ -109,7 +111,7 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     console.error('[CAPI Callback] token exchange', err);
     const detail = err instanceof FrontierAuthError
-      ? `HTTP ${err.status}: ${err.body || 'ответ без тела'}`
+      ? `HTTP ${err.status}: ${err.body || t('capi.bodyMissing')}`
       : err instanceof Error ? err.message : String(err);
     return finish({ status: 'error', reason: 'token_exchange_failed', detail });
   }
@@ -175,7 +177,7 @@ export async function GET(req: NextRequest) {
     return finish({
       status: 'partial',
       reason: 'sync_queue_failed',
-      detail: 'Привязка Frontier сохранена, но задание синхронизации не поставлено. Нажмите «Синхронизировать» на странице.',
+      detail: t('capi.partialSyncQueue'),
       actualPlatform: identity?.platform ?? null,
     });
   }

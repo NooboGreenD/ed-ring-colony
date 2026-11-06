@@ -12,6 +12,7 @@ import {
 } from '@/lib/atlasWorldSearch';
 import { saveCachedSystems } from '@/lib/atlasSystemCache';
 import type { AtlasSearchParams } from '@/types/atlas';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Поиск миров Atlas.
@@ -24,6 +25,7 @@ import type { AtlasSearchParams } from '@/types/atlas';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const ip = req.headers.get('x-forwarded-for') || 'unknown';
   if (!checkRateLimit(ip, 5)) {
     return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
@@ -73,7 +75,7 @@ export async function POST(req: Request) {
       progress: {
         stage: 'coords',
         percent: 2,
-        message: `Опорная система найдена (${reference.source === 'catalog' ? 'каталог Spansh' : reference.source === 'cache' ? 'кэш Atlas' : reference.source})`,
+        message: t('api.anchorFound', { source: reference.source === 'catalog' ? t('api.anchorSourceCatalog') : reference.source === 'cache' ? t('api.anchorSourceCache') : reference.source }),
         found: 0,
         batch: [],
       } satisfies WorldSearchProgress,
@@ -97,11 +99,12 @@ export async function POST(req: Request) {
     status: 'pending',
     catalog_ready: catalogReady,
     reference: { ...refCoords, source: reference.source },
-    message: `Поиск запущен. Опрос: GET /api/atlas/search?session_id=${session.id}`,
+    message: t('api.searchStarted', { id: session.id }),
   });
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const { searchParams } = new URL(req.url);
   const sessionId = searchParams.get('session_id');
   if (!sessionId) {
@@ -144,6 +147,7 @@ async function processSearchAsync(
   refName: string,
   catalogReady: boolean,
 ) {
+  const t = await apiTranslate();
   try {
     const result = await runWorldSearch({ sessionId, params, refCoords, refName, catalogReady });
     await supabaseAdmin
@@ -158,12 +162,12 @@ async function processSearchAsync(
     console.error('[Atlas Search] ошибка поиска:', error);
     await supabaseAdmin
       .from('atlas_searches')
-      .update({ status: 'failed', error_message: error?.message || 'Ошибка поиска' })
+      .update({ status: 'failed', error_message: error?.message || t('api.searchError') })
       .eq('id', sessionId);
     await writeSearchProgress(sessionId, {
       stage: 'failed',
       percent: 0,
-      message: error?.message || 'Ошибка поиска',
+      message: error?.message || t('api.searchError'),
       found: 0,
       batch: [],
     });

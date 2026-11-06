@@ -10,38 +10,55 @@ import Sidebar from '@/components/Sidebar';
 import MobileNav from '@/components/MobileNav';
 import HudSkinProvider from '@/components/Cosmetics/HudSkinProvider';
 import { I18nProvider } from '@/lib/i18n/I18nContext';
+import { getServerI18n } from '@/lib/i18n/server';
+import type { Metadata } from 'next';
 import { Toaster } from '@/components/ui/Toaster';
 
 export const viewport = { width: 'device-width', initialScale: 1, viewportFit: 'cover' };
 
-export const metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://edringcolony.ru'),
-  title: 'ED Ring Colony — The Galaxy Ring Project',
-  description: 'Платформа для координации колонизации в Elite Dangerous. Эскадрильи, проекты, атлас систем, лидерборд.',
-  keywords: ['Elite Dangerous', 'колонизация', 'эскадрильи', 'ED', 'Ring Colony', 'Galaxy Ring'],
-  authors: [{ name: 'ED Ring Colony' }],
-  icons: {
-    icon: '/favicon.ico',
-    shortcut: '/favicon.ico',
-    apple: '/apple-touch-icon.png',
-  },
-  manifest: '/manifest.json',
-  openGraph: {
-    title: 'ED Ring Colony — The Galaxy Ring Project',
-    description: 'Платформа для координации колонизации в Elite Dangerous',
-    url: process.env.NEXT_PUBLIC_SITE_URL || 'https://edringcolony.ru',
-    siteName: 'ED Ring Colony',
-    images: [{ url: '/og-image.png', width: 1200, height: 630, alt: 'ED Ring Colony' }],
-    locale: 'ru_RU',
-    type: 'website',
-  },
-  twitter: {
-    card: 'summary_large_image',
-    title: 'ED Ring Colony — The Galaxy Ring Project',
-    description: 'Платформа для координации колонизации в Elite Dangerous',
-    images: ['/twitter-image.png'],
-  },
-};
+/**
+ * Метаданные зависят от языка пилота: описание и ключевые слова берутся из
+ * словаря по cookie локали, иначе поисковик видел бы только русский текст.
+ */
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await getServerI18n();
+  const title = 'ED Ring Colony — The Galaxy Ring Project';
+  const description = t('meta.siteDescription');
+  const shortDescription = t('meta.siteDescriptionShort');
+  const keywords = [
+    'Elite Dangerous',
+    ...t('meta.siteKeywords').split(',').map((word) => word.trim()).filter(Boolean),
+    'ED', 'Ring Colony', 'Galaxy Ring',
+  ];
+  return {
+    metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://edringcolony.ru'),
+    title,
+    description,
+    keywords,
+    authors: [{ name: 'ED Ring Colony' }],
+    icons: {
+      icon: '/favicon.ico',
+      shortcut: '/favicon.ico',
+      apple: '/apple-touch-icon.png',
+    },
+    manifest: '/manifest.json',
+    openGraph: {
+      title,
+      description: shortDescription,
+      url: process.env.NEXT_PUBLIC_SITE_URL || 'https://edringcolony.ru',
+      siteName: 'ED Ring Colony',
+      images: [{ url: '/og-image.png', width: 1200, height: 630, alt: 'ED Ring Colony' }],
+      locale: t('meta.ogLocale'),
+      type: 'website',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description: shortDescription,
+      images: ['/twitter-image.png'],
+    },
+  };
+}
 
 function HexLogo() {
   return (

@@ -5,8 +5,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { authFetch, supabase } from '@/lib/supabaseClient';
 import AuthMethods from '@/components/AuthMethods';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function LoginPage() {
+  const { t } = useI18n();
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -27,10 +29,10 @@ export default function LoginPage() {
       if (signInError || !data.session || !data.user) {
         setError(
           signInError?.message === 'Invalid login credentials'
-            ? 'Неверный логин или пароль.'
+            ? t('lg.badCredentials')
             : signInError?.code === 'email_not_confirmed'
-              ? 'Сначала подтвердите почту. Можно отправить письмо повторно по ссылке ниже.'
-              : signInError?.message || 'Не удалось создать сессию. Попробуйте ещё раз.',
+              ? t('lg.confirmEmail')
+              : signInError?.message || t('lg.sessionFailed'),
         );
         return;
       }
@@ -63,7 +65,7 @@ export default function LoginPage() {
       router.replace('/account');
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Ошибка входа');
+      setError(err instanceof Error ? err.message : t('lg.loginError'));
     } finally {
       setBusy(false);
     }
@@ -71,8 +73,8 @@ export default function LoginPage() {
 
   return (
     <main className="card auth-card">
-      <div className="kicker">Авторизация</div>
-      <h1>Вход</h1>
+      <div className="kicker">{t('lg.kicker')}</div>
+      <h1>{t('lg.title')}</h1>
       <form className="auth-form" onSubmit={onSubmit}>
         <label>
           Email
@@ -85,7 +87,7 @@ export default function LoginPage() {
           />
         </label>
         <label>
-          Пароль
+          {t('register.password')}
           <input
             type="password"
             autoComplete="current-password"
@@ -96,14 +98,14 @@ export default function LoginPage() {
         </label>
         {error && <p className="auth-error">{error}</p>}
         <button type="submit" disabled={busy}>
-          {busy ? 'Вход...' : 'Войти'}
+          {busy ? t('lg.busy') : t('login.submit')}
         </button>
       </form>
-      <p className="auth-switch"><Link href="/forgot-password">Забыли пароль?</Link> · <Link href="/resend-confirmation">Подтвердить почту</Link></p>
+      <p className="auth-switch"><Link href="/forgot-password">{t('login.forgot')}</Link> · <Link href="/resend-confirmation">{t('lg.confirmEmailLink')}</Link></p>
       <p className="auth-switch">
-        Нет аккаунта? <Link href="/register">Регистрация</Link>
+        {t('lg.noAccount')} <Link href="/register">{t('login.register')}</Link>
       </p>
-      <div className="auth-or">или</div>
+      <div className="auth-or">{t('lg.or')}</div>
       <AuthMethods disabled={busy} />
     </main>
   );

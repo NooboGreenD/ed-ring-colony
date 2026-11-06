@@ -1,10 +1,12 @@
 'use client';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { useRealtimeUserId } from '@/hooks/useRealtimeUserId';
 
 export default function UnreadBadge() {
+  const { t } = useI18n();
   const userId = useRealtimeUserId();
   const [count, setCount] = useState(0);
   useEffect(() => {
@@ -36,7 +38,7 @@ export default function UnreadBadge() {
   if (!count) return null;
   return (
     <Link href="/account/friends" className="badge">
-      Сообщения: {count}
+      {t('ub.messages', { count })}
     </Link>
   );
 }

@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { enqueueCapiSyncJob, findActiveCapiSyncJob } from '@/lib/capi/syncJobs';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
 /** Return the caller's active durable job, allowing a page reload to resume polling. */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const { user } = await authFromRequest(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -13,7 +15,7 @@ export async function GET(req: Request) {
   const active = await findActiveCapiSyncJob(svc, user.id);
   if (active.error) {
     console.error('[CAPI Sync] active job lookup failed', active.error.message);
-    return NextResponse.json({ error: 'Не удалось проверить очередь синхронизации' }, { status: 500 });
+    return NextResponse.json({ error: t('api.syncQueueFailed') }, { status: 500 });
   }
   if (active.data) return NextResponse.json({ job: active.data });
 
@@ -29,7 +31,7 @@ export async function GET(req: Request) {
     .maybeSingle();
   if (recent.error) {
     console.error('[CAPI Sync] recent job lookup failed', recent.error.message);
-    return NextResponse.json({ error: 'Не удалось проверить результат синхронизации' }, { status: 500 });
+    return NextResponse.json({ error: t('api.syncResultFailed') }, { status: 500 });
   }
   return NextResponse.json({ job: recent.data ?? null });
 }
@@ -40,6 +42,7 @@ export async function GET(req: Request) {
  * network retries join the existing queued/running job.
  */
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const startedAt = Date.now();
   const { user } = await authFromRequest(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -53,11 +56,11 @@ export async function POST(req: Request) {
 
   if (tokenError) {
     console.error('[CAPI Sync] token lookup failed', tokenError.message);
-    return NextResponse.json({ error: 'Не удалось проверить привязку Frontier' }, { status: 500 });
+    return NextResponse.json({ error: t('api.frontierLinkFailed') }, { status: 500 });
   }
   if (!tokenRow) {
     return NextResponse.json(
-      { error: 'Аккаунт Frontier не привязан', needsAuth: true },
+      { error: t('api.frontierNotLinked'), needsAuth: true },
       { status: 404 },
     );
   }
@@ -65,7 +68,7 @@ export async function POST(req: Request) {
   const queued = await enqueueCapiSyncJob(svc, user.id);
   if (queued.error || !queued.data) {
     console.error('[CAPI Sync] enqueue failed', queued.error?.code ?? 'unknown', queued.error?.message ?? 'no job returned');
-    return NextResponse.json({ error: 'Не удалось поставить синхронизацию в очередь' }, { status: 500 });
+    return NextResponse.json({ error: t('api.syncEnqueueFailed') }, { status: 500 });
   }
 
   console.info('[CAPI Sync] job accepted', {

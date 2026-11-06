@@ -10,6 +10,7 @@ import {
   type ProjectRole,
 } from '@/lib/architect/projects';
 import { errorResponse, jsonError, openProject, readJson } from '@/lib/architect/projectRouteKit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,11 +46,12 @@ async function memberRole(svc: any, projectId: string, userId: string): Promise<
 }
 
 export async function GET(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, access } = opened;
-    if (!access.permissions.manageMembers) return jsonError('Приглашать могут создатель и модераторы', 403);
+    if (!access.permissions.manageMembers) return jsonError(t('prj.inviteCreatorsOnly'), 403);
     const search = sanitizeSearch(new URL(req.url).searchParams.get('search') || '');
     if (search.length < 2) return NextResponse.json({ search, candidates: [] });
 
@@ -77,21 +79,22 @@ export async function GET(req: Request, { params }: Params) {
 }
 
 export async function POST(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, userId, access } = opened;
-    if (!access.permissions.manageMembers) return jsonError('Добавлять участников могут создатель и модераторы', 403);
+    if (!access.permissions.manageMembers) return jsonError(t('prj.addMembersCreatorsOnly'), 403);
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
     const body = parsed.body;
 
     const role: ProjectRole = body.role === 'moderator' ? 'moderator' : 'member';
     if (body.role !== undefined && body.role !== 'moderator' && body.role !== 'member') {
-      return jsonError('Новый участник может быть только участником или модератором', 400);
+      return jsonError(t('prj.newMemberRole'), 400);
     }
     if (role === 'moderator' && !access.permissions.manageModerators) {
-      return jsonError('Модераторов назначает только создатель проекта', 403);
+      return jsonError(t('prj.moderatorsCreatorOnly'), 403);
     }
 
     let target: { id: string; name: string } | null = null;
@@ -106,12 +109,12 @@ export async function POST(req: Request, { params }: Params) {
         .ilike('cmdr_name', sanitizeSearch(body.cmdr))
         .limit(2);
       if (error) throw new Error(error.message);
-      if ((data ?? []).length > 1) return jsonError('Несколько пилотов с таким позывным — выберите из подсказки', 409);
+      if ((data ?? []).length > 1) return jsonError(t('prj.pilotAmbiguous'), 409);
       if (data?.[0]) target = { id: String(data[0].id), name: String(data[0].cmdr_name ?? '') };
     } else {
-      return jsonError('Укажите пилота', 400);
+      return jsonError(t('prj.pilotRequired'), 400);
     }
-    if (!target) return jsonError('Пилот не найден на сайте — он должен зарегистрироваться', 404);
+    if (!target) return jsonError(t('prj.pilotNotRegistered'), 404);
 
     const { data: members, error: membersError } = await svc
       .from('architect_project_members')
@@ -119,10 +122,10 @@ export async function POST(req: Request, { params }: Params) {
       .eq('project_id', access.project.id);
     if (membersError) throw new Error(membersError.message);
     if ((members ?? []).some((row: { user_id: string }) => String(row.user_id) === target!.id)) {
-      return jsonError('Пилот уже в проекте', 409);
+      return jsonError(t('prj.pilotAlreadyMember'), 409);
     }
     if ((members ?? []).length >= PROJECT_LIMITS.members) {
-      return jsonError(`В проекте не больше ${PROJECT_LIMITS.members} участников`, 400);
+      return jsonError(t('prj.membersLimit', { max: PROJECT_LIMITS.members }), 400);
     }
 
     const now = new Date().toISOString();
@@ -136,7 +139,7 @@ export async function POST(req: Request, { params }: Params) {
       updated_at: now,
     });
     if (error) {
-      if (/duplicate key/i.test(error.message ?? '')) return jsonError('Пилот уже в проекте', 409);
+      if (/duplicate key/i.test(error.message ?? '')) return jsonError(t('prj.pilotAlreadyMember'), 409);
       throw new Error(error.message);
     }
     return NextResponse.json({ ok: true, member: { userId: target.id, name: target.name, role } }, { status: 201 });
@@ -146,6 +149,7 @@ export async function POST(req: Request, { params }: Params) {
 }
 
 export async function PATCH(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -153,16 +157,16 @@ export async function PATCH(req: Request, { params }: Params) {
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
     const body = parsed.body;
-    if (!isUuid(body.userId)) return jsonError('Укажите участника', 400);
+    if (!isUuid(body.userId)) return jsonError(t('prj.memberRequired'), 400);
     const targetId = String(body.userId).toLowerCase();
     const targetRole = await memberRole(svc, access.project.id, targetId);
-    if (!targetRole) return jsonError('Пилот не участвует в проекте', 404);
+    if (!targetRole) return jsonError(t('prj.pilotNotInProject'), 404);
     const target = { userId: targetId, role: targetRole };
 
     if (body.role !== undefined) {
-      if (!isProjectRole(body.role)) return jsonError('Неизвестная роль', 400);
+      if (!isProjectRole(body.role)) return jsonError(t('prj.roleUnknown'), 400);
       const decision = canChangeRole(access.actor, target, body.role);
-      if (!decision.ok) return jsonError(decision.reason ?? 'Нет прав', decision.reason === 'Роль не изменилась' ? 400 : 403);
+      if (!decision.ok) return jsonError(decision.reason ?? t('prj.noRights'), decision.reason === 'Роль не изменилась' ? 400 : 403);
       if (body.role === 'owner') {
         const { error } = await svc.rpc('architect_project_transfer', { p_project: access.project.id, p_to: targetId });
         if (error) throw new Error(error.message);
@@ -177,7 +181,7 @@ export async function PATCH(req: Request, { params }: Params) {
     }
 
     if (body.duty !== undefined) {
-      if (!canEditDuty(access.actor, target)) return jsonError('Обязанности назначают создатель и модераторы', 403);
+      if (!canEditDuty(access.actor, target)) return jsonError(t('prj.dutyCreatorsOnly'), 403);
       const { error } = await svc
         .from('architect_project_members')
         .update({ duty: cleanLine(body.duty, PROJECT_LIMITS.duty), updated_at: new Date().toISOString() })
@@ -186,7 +190,7 @@ export async function PATCH(req: Request, { params }: Params) {
       if (error) throw new Error(error.message);
     }
 
-    if (body.role === undefined && body.duty === undefined) return jsonError('Нечего менять', 400);
+    if (body.role === undefined && body.duty === undefined) return jsonError(t('prj.nothingToChange'), 400);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return errorResponse(error);
@@ -194,6 +198,7 @@ export async function PATCH(req: Request, { params }: Params) {
 }
 
 export async function DELETE(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -205,12 +210,12 @@ export async function DELETE(req: Request, { params }: Params) {
       if (!parsed.ok) return parsed.response;
       targetId = String(parsed.body.userId ?? '');
     }
-    if (!isUuid(targetId)) return jsonError('Укажите участника', 400);
+    if (!isUuid(targetId)) return jsonError(t('prj.memberRequired'), 400);
     targetId = targetId.toLowerCase();
     const targetRole = await memberRole(svc, access.project.id, targetId);
-    if (!targetRole) return jsonError('Пилот не участвует в проекте', 404);
+    if (!targetRole) return jsonError(t('prj.pilotNotInProject'), 404);
     const decision = canRemoveMember(access.actor, { userId: targetId, role: targetRole });
-    if (!decision.ok) return jsonError(decision.reason ?? 'Нет прав', 403);
+    if (!decision.ok) return jsonError(decision.reason ?? t('prj.noRights'), 403);
 
     const { error } = await svc
       .from('architect_project_members')

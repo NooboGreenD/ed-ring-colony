@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { readSetup } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,11 +26,12 @@ export const runtime = 'nodejs';
  * которого он пришёл, — и на localhost, и на боевом сервере.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const platform = (new URL(request.url).searchParams.get('platform') ?? 'win64').trim().toLowerCase();
   const info = await readSetup(platform);
   if (!info) {
     return NextResponse.json(
-      { ok: false, error: 'Установщик Colonial Helper пока не опубликован на этом сервере' },
+      { ok: false, error: t('up.setupNotPublished') },
       { status: 404, headers: { 'Cache-Control': 'no-store' } },
     );
   }

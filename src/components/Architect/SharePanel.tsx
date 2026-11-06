@@ -19,8 +19,8 @@ import { useI18n } from '@/lib/i18n/I18nContext';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   PLAN_VISIBILITIES,
-  VISIBILITY_HINTS_RU,
-  VISIBILITY_LABELS_RU,
+  VISIBILITY_HINT_KEYS,
+  VISIBILITY_LABEL_KEYS,
   isPlanVisibility,
   sharePath,
   type PlanView,
@@ -261,11 +261,11 @@ export default function SharePanel({
             onClick={() => setVisibility(item)}
             style={{ ...chipStyle, ...(item === visibility ? chipActive : {}) }}
           >
-            {t(VISIBILITY_LABELS_RU[item])}
+            {t(VISIBILITY_LABEL_KEYS[item])}
           </button>
         ))}
       </div>
-      <div style={{ ...mutedText, marginTop: 6 }}>{t(VISIBILITY_HINTS_RU[visibility])}</div>
+      <div style={{ ...mutedText, marginTop: 6 }}>{t(VISIBILITY_HINT_KEYS[visibility])}</div>
 
       {lockReason && (
         <div style={{ ...mutedText, marginTop: 8, color: 'var(--cyan)' }}>
@@ -330,7 +330,7 @@ export default function SharePanel({
                     {item.stale ? <span style={{ color: 'var(--orange)', fontSize: 11 }}>{t('shr.staleCatalog')}</span> : null}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    {t(VISIBILITY_LABELS_RU[item.visibility])} · {t('shr.sitesCount', { count: item.siteCount })} · {formatTons(item.haulTons)}
+                    {t(VISIBILITY_LABEL_KEYS[item.visibility])} · {t('shr.sitesCount', { count: item.siteCount })} · {formatTons(item.haulTons)}
                     {' · '}{t('shr.updated', { date: formatDate(item.updatedAt, locale) })}
                   </div>
                 </div>

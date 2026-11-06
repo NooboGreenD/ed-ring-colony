@@ -2,16 +2,18 @@ import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
 import { billingActor, errorResponse } from '@/lib/billing/auth';
 import { PROVIDER_DRIVERS } from '@/lib/billing/providers';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const actor = await billingActor(req);
     if (!actor) {
       const [plans, settings] = await Promise.all([billingRepo.getPlans(), billingRepo.getSettings()]);
-      return NextResponse.json({ success: true, authenticated: false, userId: null, cmdrName: 'Гость', role: 'guest', balance: null, subscription: null, inventory: [], equipped: null, plans, settings: publicSettings(settings), providers: [] });
+      return NextResponse.json({ success: true, authenticated: false, userId: null, cmdrName: t('shop.guest'), role: 'guest', balance: null, subscription: null, inventory: [], equipped: null, plans, settings: publicSettings(settings), providers: [] });
     }
     const [balance, subscription, inventory, equipped, plans, settings, providers, pending] = await Promise.all([
       billingRepo.getUserBalance(actor.userId),

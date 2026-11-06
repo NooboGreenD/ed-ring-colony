@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { searchBgsFactions } from '@/lib/bgsStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,6 +16,7 @@ export const runtime = 'nodejs';
  * is_player, systems, controlled }] }`.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const params = new URL(request.url).searchParams;
   const query = (params.get('q') ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
   const limit = Math.max(1, Math.min(50, Number(params.get('limit')) || 20));
@@ -27,6 +29,6 @@ export async function GET(request: Request) {
     );
   } catch (error) {
     console.error('[factions/search]', error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: 'Поиск фракций недоступен' }, { status: 503 });
+    return NextResponse.json({ error: t('api.factionSearchDown') }, { status: 503 });
   }
 }

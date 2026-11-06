@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { replanRingSession } from '@/lib/atlasRingSearch';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Сброс сессии кольца для повторного прогона с новыми параметрами
@@ -12,11 +13,12 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => ({}));
     const sessionId = String(body?.session_id || '').trim();
     if (!sessionId) {
-      return NextResponse.json({ error: 'session_id обязателен' }, { status: 400 });
+      return NextResponse.json({ error: t('api.ringSessionRequired') }, { status: 400 });
     }
 
     const deviationLimit = body?.deviation_limit === null || body?.deviation_limit === undefined
@@ -24,7 +26,7 @@ export async function POST(req: Request) {
       : Number(body.deviation_limit);
     if (deviationLimit !== undefined && (!Number.isFinite(deviationLimit) || deviationLimit < 10 || deviationLimit > 400)) {
       return NextResponse.json(
-        { error: 'Допуск отклонения должен быть в диапазоне 10–400 св.л.' },
+        { error: t('api.ringDeviationRange') },
         { status: 400 },
       );
     }
@@ -34,7 +36,7 @@ export async function POST(req: Request) {
       : Number(body.search_radius);
     if (searchRadius !== undefined && (!Number.isFinite(searchRadius) || searchRadius < 50 || searchRadius > 3000)) {
       return NextResponse.json(
-        { error: 'Радиус поиска должен быть в диапазоне 50–3000 св.л.' },
+        { error: t('api.ringRadiusRange') },
         { status: 400 },
       );
     }
@@ -71,6 +73,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-replan] ошибка:', error);
-    return NextResponse.json({ error: error?.message || 'Не удалось сбросить сессию для повтора' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringReplanFailed') }, { status: 500 });
   }
 }

@@ -4,6 +4,7 @@ import { resolveRequestUser } from '@/lib/helperAuth';
 import { parseCarrierReference } from '@/lib/fleetCarriers';
 import { buildViews, findCarrier, findOrCreateCarrier, viewerContext } from '@/lib/fleetCarrierStore';
 import { carrierSquadronTag, gameSquadronTag } from '@/lib/carrierTags';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +52,7 @@ function rejectedSquadrons(row: Record<string, any>): number[] | undefined {
 }
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const body = await readBody(request);
     const user = await resolveRequestUser(request, body.token);
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
     const kind = body.kind === 'squadron' ? 'squadron' : body.kind === 'personal' ? 'personal' : null;
     if (!kind) return fail('kind: personal | squadron', 400);
     const reference = parseCarrierReference(body.carrier ?? body.carrier_id);
-    if (!reference) return fail('Укажите Carrier ID (MarketID, например 3700005632) или позывной вида ABC-123', 400);
+    if (!reference) return fail(t('cr.carrierRefRequired'), 400);
 
     const svc = createServiceClient();
     const viewer = await viewerContext(svc, user.userId);
@@ -67,13 +69,13 @@ export async function POST(request: Request) {
     if (kind === 'personal') {
       const row = await findOrCreateCarrier(svc, reference);
       if (!row) {
-        return fail('Носитель с таким позывным ещё не встречался в журналах. Укажите Carrier ID — его видно в журнале (CarrierID / MarketID).', 404);
+        return fail(t('cr.carrierCallsignUnknown'), 404);
       }
       if (row.carrier_type === 'SquadronCarrier') {
-        return fail('Это эскадренный носитель — привяжите его на странице эскадрильи', 400);
+        return fail(t('cr.squadronCarrierElsewhere'), 400);
       }
       if (row.owner_id && row.owner_id !== user.userId && ['journal', 'capi'].includes(row.owner_source)) {
-        return fail('Этот носитель подтверждён журналом другого пилота', 409);
+        return fail(t('cr.confirmedByOtherJournal'), 409);
       }
       if (row.owner_id !== user.userId) {
         // Один личный носитель на профиль: прежняя привязка снимается.
@@ -93,15 +95,15 @@ export async function POST(request: Request) {
 
     const squadronId = Number(body.squadron_id ?? viewer.squadronIds[0]);
     if (!Number.isSafeInteger(squadronId) || !viewer.squadronIds.includes(squadronId)) {
-      return fail('Вы не состоите в этой эскадрилье', 403);
+      return fail(t('cr.notInThisSquadron'), 403);
     }
     if (!viewer.officerSquadronIds.includes(squadronId)) {
-      return fail('Привязывать носитель могут создатель эскадрильи и звания с правом редактирования', 403);
+      return fail(t('cr.bindOfficersOnly'), 403);
     }
     const row = await findOrCreateCarrier(svc, reference, { allowAnyId: true });
-    if (!row) return fail('Носитель с таким позывным ещё не встречался. Укажите Carrier ID.', 404);
+    if (!row) return fail(t('cr.carrierCallsignUnknownShort'), 404);
     if (row.squadron_id != null && Number(row.squadron_id) !== squadronId) {
-      return fail('Носитель уже привязан к другой эскадрилье', 409);
+      return fail(t('cr.linkedToOtherSquadron'), 409);
     }
     const carrierTag = carrierSquadronTag({ type: row.carrier_type, callsign: row.callsign });
     if (carrierTag) {
@@ -110,7 +112,7 @@ export async function POST(request: Request) {
       if (squadronError) throw new Error(squadronError.message);
       const squadronTag = gameSquadronTag(squadron?.tag);
       if (squadronTag && squadronTag !== carrierTag) {
-        return fail(`Это носитель эскадрильи [${carrierTag}]: позывной Javelin — тег его эскадрильи в игре, а у вашей эскадрильи тег [${squadronTag}]. Если тег на сайте указан неверно, исправьте его в настройках эскадрильи.`, 409);
+        return fail(t('cr.tagMismatch', { carrierTag, squadronTag }), 409);
       }
     }
     const update: Record<string, unknown> = { squadron_id: squadronId, squadron_source: 'manual', squadron_at: now, updated_at: now };
@@ -131,6 +133,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const t = await apiTranslate();
   try {
     const body = await readBody(request);
     const user = await resolveRequestUser(request, body.token);
@@ -144,7 +147,7 @@ export async function DELETE(request: Request) {
     if (body.kind === 'squadron') {
       const viewer = await viewerContext(svc, user.userId);
       if (row.squadron_id == null || !viewer.officerSquadronIds.includes(Number(row.squadron_id))) {
-        return fail('Отвязать носитель могут создатель эскадрильи и звания с правом редактирования', 403);
+        return fail(t('cr.unbindOfficersOnly'), 403);
       }
       const update: Record<string, unknown> = {
         squadron_id: null, squadron_source: null, squadron_at: null, updated_at: new Date().toISOString(),
@@ -161,7 +164,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    if (row.owner_id !== user.userId) return fail('Это не ваш носитель', 403);
+    if (row.owner_id !== user.userId) return fail(t('cr.notYourCarrier'), 403);
     const { error } = await svc.from('fleet_carriers')
       .update({ owner_id: null, owner_source: null, owner_at: null, updated_at: new Date().toISOString() })
       .eq('carrier_id', row.carrier_id);

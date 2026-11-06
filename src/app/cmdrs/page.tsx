@@ -6,8 +6,10 @@ import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 import { supabase } from "@/lib/supabaseClient";
 import { useFriends } from "@/hooks/useFriends";
 import { IconSearch, IconCheck, IconError } from "@/components/Icons";
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function CmdrsPage() {
+  const { t, locale } = useI18n();
   const [user, setUser] = useState<any>(null);
   const [search, setSearch] = useState("");
   const [allCmdrs, setAllCmdrs] = useState<any[]>([]);
@@ -49,12 +51,12 @@ export default function CmdrsPage() {
     setSendingId(null);
     if (ok) {
       setOptimisticIds((prev) => new Set(prev).add(cmdrId));
-      setToast({ msg: `Запрос в друзья отправлен ${cmdrName}`, type: "ok" });
+      setToast({ msg: t('cmdr.requestSent', { name: cmdrName }), type: "ok" });
     } else if (status === 409) {
-      setToast({ msg: "Вы уже друзья с этим пилотом", type: "ok" });
+      setToast({ msg: t('cmdr.alreadyFriends'), type: "ok" });
       refresh();
     } else {
-      setToast({ msg: "Не удалось отправить запрос", type: "err" });
+      setToast({ msg: t('cmdr.requestFailed'), type: "err" });
     }
     setTimeout(() => setToast(null), 3000);
   };
@@ -64,10 +66,10 @@ export default function CmdrsPage() {
 
   return (
     <main className="card" style={{ width: "100%" }}>
-      <div className="kicker">Реестр пилотов</div>
-      <h1 style={{ marginTop: 8 }}>Командиры</h1>
+      <div className="kicker">{t('cmdr.kicker')}</div>
+      <h1 style={{ marginTop: 8 }}>{t('cmdr.title')}</h1>
       <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>
-        Всего в реестре: {allCmdrs.length} пилотов
+        {t('cmdr.total', { count: allCmdrs.length })}
       </p>
 
       {/* Toast */}
@@ -89,7 +91,7 @@ export default function CmdrsPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Фильтр по имени CMDR..."
+          placeholder={t('cmdr.filterPlaceholder')}
           style={{ flex: 1 }}
         />
         <button className="btn btn-cyan" style={{ opacity: 0.6, cursor: "default" }}>
@@ -98,11 +100,11 @@ export default function CmdrsPage() {
       </div>
 
       {loading && (
-        <p style={{ color: "var(--muted)", textAlign: "center", padding: 40 }}>Загрузка реестра...</p>
+        <p style={{ color: "var(--muted)", textAlign: "center", padding: 40 }}>{t('cmdr.loading')}</p>
       )}
 
       {!loading && filtered.length === 0 && (
-        <p style={{ color: "var(--muted)" }}>Пилотов не найдено.</p>
+        <p style={{ color: "var(--muted)" }}>{t('cmdr.noneFound')}</p>
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -121,17 +123,17 @@ export default function CmdrsPage() {
                   size={40}
                   fontSize={14}
                   showTitle
-                  subtitle={`С нами с ${new Date(cmdr.created_at).toLocaleDateString("ru-RU")}`}
+                  subtitle={t('cmdr.withUsSince', { date: new Date(cmdr.created_at).toLocaleDateString(locale) })}
                 />
               </div>
               {isSelf ? (
-                <span style={{ color: "#e67e22", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>Вы</span>
+                <span style={{ color: "#e67e22", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>{t('cmdr.you')}</span>
               ) : friend ? (
                 <span style={{ color: "#22c55e", fontSize: 12, fontFamily: "ui-monospace, monospace", display: "flex", alignItems: "center", gap: 4 }}>
-                  <IconCheck size={12} /> Друг
+                  <IconCheck size={12} /> {t('cmdr.friend')}
                 </span>
               ) : pending ? (
-                <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>Запрос отправлен</span>
+                <span style={{ color: "#9ca3af", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>{t('cmdr.requestPending')}</span>
               ) : user ? (
                 <button
                   onClick={() => handleSend(cmdr.id, cmdr.cmdr_name || "")}
@@ -139,7 +141,7 @@ export default function CmdrsPage() {
                   className="btn btn-cyan"
                   style={{ fontSize: 12, padding: "6px 14px", opacity: isSending ? 0.6 : 1 }}
                 >
-                  {isSending ? "Отправка..." : "Добавить в друзья"}
+                  {isSending ? t('cmdr.sending') : t('cmdr.addFriend')}
                 </button>
               ) : null}
             </div>

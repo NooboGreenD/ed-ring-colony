@@ -4,8 +4,11 @@ import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { getWikiAuthHeaders } from '@/lib/wikiAuth';
 import WikiSearchBox from '@/components/Wiki/WikiSearchBox';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import { Tr } from '@/components/Translate';
 
 function SearchResults() {
+  const { t } = useI18n();
   const searchParams = useSearchParams();
   const q = searchParams.get('q') || '';
   const [results, setResults] = useState<any[]>([]);
@@ -29,11 +32,11 @@ function SearchResults() {
   return (
     <div>
       <h1 style={{ fontSize: 22, letterSpacing: 4, textTransform: 'uppercase', color: 'var(--orange)', marginBottom: 24 }}>
-        Поиск: {q}
+        {t('wsearch.title', { query: q })}
       </h1>
-      {loading && <div style={{ color: 'var(--muted)', fontSize: 14 }}>Поиск...</div>}
+      {loading && <div style={{ color: 'var(--muted)', fontSize: 14 }}>{t('fsearch.searching')}</div>}
       {!loading && results.length === 0 && q.length >= 2 && (
-        <div style={{ color: 'var(--muted)', fontSize: 14 }}>Ничего не найдено.</div>
+        <div style={{ color: 'var(--muted)', fontSize: 14 }}>{t('fsearch.nothing')}</div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {results.map((r: any) => (
@@ -59,7 +62,7 @@ export default function WikiSearchPage() {
       <div style={{ marginBottom: 24 }}>
         <WikiSearchBox />
       </div>
-      <Suspense fallback={<div style={{ color: 'var(--muted)' }}>Загрузка...</div>}>
+      <Suspense fallback={<div style={{ color: 'var(--muted)' }}><Tr k="common.loading" /></div>}>
         <SearchResults />
       </Suspense>
     </main>

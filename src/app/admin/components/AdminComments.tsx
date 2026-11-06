@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface Comment {
   id: number;
@@ -13,6 +14,7 @@ interface Comment {
 }
 
 export default function AdminComments() {
+  const { t, locale } = useI18n();
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
@@ -50,7 +52,7 @@ export default function AdminComments() {
 
     const enriched: Comment[] = (commentsData || []).map((c: any) => ({
       ...c,
-      author: { cmdr_name: profileMap.get(c.author_id) || 'Пилот' },
+      author: { cmdr_name: profileMap.get(c.author_id) || t('acm.defaultPilot') },
     }));
 
     setComments(enriched);
@@ -62,16 +64,16 @@ export default function AdminComments() {
   }, [filter]);
 
   async function deleteComment(id: number) {
-    if (!confirm('Удалить комментарий #' + id + '?')) return;
+    if (!confirm(t('acm.confirmDelete', { id }))) return;
     const { error } = await supabase.from('comments').delete().eq('id', id);
     if (!error) {
       setComments((prev) => prev.filter((c) => c.id !== id));
     } else {
-      alert('Ошибка удаления: ' + error.message);
+      alert(t('acm.deleteFailed', { error: error.message }));
     }
   }
 
-  if (loading) return <p style={{ color: '#9ca3af' }}>Загрузка комментариев...</p>;
+  if (loading) return <p style={{ color: '#9ca3af' }}>{t('acm.loading')}</p>;
 
   return (
     <div>
@@ -80,7 +82,7 @@ export default function AdminComments() {
           className={filter === 'all' ? 'tab tab-active' : 'tab'}
           onClick={() => setFilter('all')}
         >
-          Все ({comments.length})
+          {t('acm.all', { count: comments.length })}
         </button>
         <button
           className={filter === 'galnet' ? 'tab tab-active' : 'tab'}
@@ -92,23 +94,23 @@ export default function AdminComments() {
           className={filter === 'news' ? 'tab tab-active' : 'tab'}
           onClick={() => setFilter('news')}
         >
-          Новости
+          {t('acm.news')}
         </button>
       </div>
 
       {comments.length === 0 ? (
-        <p style={{ color: '#9ca3af' }}>Комментариев нет.</p>
+        <p style={{ color: '#9ca3af' }}>{t('acm.none')}</p>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table className="admin-comments-table">
             <thead>
               <tr>
                 <th>ID</th>
-                <th>Тип</th>
-                <th>Цель</th>
-                <th>Автор</th>
-                <th>Комментарий</th>
-                <th>Дата</th>
+                <th>{t('acm.thType')}</th>
+                <th>{t('acm.thTarget')}</th>
+                <th>{t('acm.thAuthor')}</th>
+                <th>{t('acm.thComment')}</th>
+                <th>{t('acm.thDate')}</th>
                 <th></th>
               </tr>
             </thead>
@@ -126,7 +128,7 @@ export default function AdminComments() {
                         color: c.target_type === 'galnet' ? '#e67e22' : '#3498db',
                       }}
                     >
-                      {c.target_type === 'galnet' ? 'Galnet' : 'Новость'}
+                      {c.target_type === 'galnet' ? 'Galnet' : t('acm.newsItem')}
                     </span>
                   </td>
                   <td className="admin-comment-target">{c.target_id.slice(0, 24)}...</td>
@@ -135,7 +137,7 @@ export default function AdminComments() {
                     {c.content}
                   </td>
                   <td style={{ fontSize: 13, color: '#888', whiteSpace: 'nowrap' }}>
-                    {new Date(c.created_at).toLocaleString('ru-RU', {
+                    {new Date(c.created_at).toLocaleString(locale, {
                       day: 'numeric',
                       month: 'short',
                       hour: '2-digit',
@@ -148,7 +150,7 @@ export default function AdminComments() {
                       className="btn btn-danger"
                       style={{ padding: '4px 10px', fontSize: 12 }}
                     >
-                      Удалить
+                      {t('acm.delete')}
                     </button>
                   </td>
                 </tr>

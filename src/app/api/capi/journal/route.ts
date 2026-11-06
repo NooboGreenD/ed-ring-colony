@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { capiSession } from '@/lib/capi/session';
 import { describeCapiError, needsCapiRelink } from '@/lib/capi/client';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +16,7 @@ export const dynamic = 'force-dynamic';
  * Пустой день (HTTP 204) — не ошибка: отдаём пустой список и `empty: true`.
  */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const { user } = await authFromRequest(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -32,7 +34,7 @@ export async function GET(req: Request) {
     .maybeSingle();
 
   if (!tokenRow) {
-    return NextResponse.json({ error: 'Аккаунт Frontier не привязан', needsAuth: true }, { status: 404 });
+    return NextResponse.json({ error: t('api.frontierNotLinked'), needsAuth: true }, { status: 404 });
   }
 
   try {

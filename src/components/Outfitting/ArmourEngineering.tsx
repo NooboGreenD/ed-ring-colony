@@ -78,7 +78,7 @@ export default function ArmourEngineering({
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <IconWrench size={13} color="var(--orange)" />
         <span style={{ ...LABEL, color: 'var(--orange)', marginBottom: 0 }}>
-          {t('outfitting.eng.title')} брони
+          {t('outfitting.eng.armourTitle')}
         </span>
       </div>
 

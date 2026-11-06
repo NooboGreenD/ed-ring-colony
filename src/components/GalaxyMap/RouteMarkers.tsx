@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import { Text } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import * as THREE from 'three';
 import { RouteSystem } from '@/types/hub';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
@@ -135,22 +136,25 @@ export function RouteMarkers({ points, onSelectPoint, selectedPointId }: RouteMa
 }
 
 export function RouteTooltip({ point }: { point: RouteSystem }) {
+
+  const { t, locale } = useI18n();
+
   return (
     <div style={{ background: '#25282b', border: '1px solid #3a3d40', borderRadius: 8, padding: 12, minWidth: 200, pointerEvents: 'auto' }}>
       <div style={{ fontWeight: 700, fontSize: 15, color: '#eeeeee' }}>{point.system_name}</div>
       <div style={{ marginTop: 4, fontSize: 13, color: '#9ca3af' }}>
-        Статус: <span style={{ color: point.status === 'done' ? '#22c55e' : point.status === 'building' ? '#e67e22' : '#9ca3af' }}>
-          {point.status === 'done' ? 'Завершён' : point.status === 'building' ? 'Строительство' : 'Запланирован'}
+        {t('gmap.statusLabel')} <span style={{ color: point.status === 'done' ? '#22c55e' : point.status === 'building' ? '#e67e22' : '#9ca3af' }}>
+          {point.status === 'done' ? t('gmap.statusDone') : point.status === 'building' ? t('gmap.statusBuilding') : t('gmap.statusPlanned')}
         </span>
       </div>
       {point.progress != null && (
         <div style={{ marginTop: 4, fontSize: 13, color: '#eeeeee' }}>
-          Прогресс: {point.progress}%
+          {t('gmap.progressLabel')} {point.progress}%
         </div>
       )}
       {point.total_delivered != null && (
         <div style={{ marginTop: 6, fontSize: 12, color: '#9ca3af' }}>
-          Доставлено: {Number(point.total_delivered).toLocaleString('ru')} т
+          {t('syspage.delivered')} {Number(point.total_delivered).toLocaleString(locale)} {t('pui.tonUnit')}
         </div>
       )}
     </div>

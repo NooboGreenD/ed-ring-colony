@@ -4,6 +4,7 @@ import { parseCarrierReference } from '@/lib/fleetCarriers';
 import { PROJECT_LIMITS, cleanLine, isUuid } from '@/lib/architect/projects';
 import { canShareCarrier } from '@/lib/architect/projectStore';
 import { errorResponse, jsonError, openProject, readJson } from '@/lib/architect/projectRouteKit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,33 +56,34 @@ function carrierIdOf(value: unknown): string | null {
 }
 
 export async function POST(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, userId, access } = opened;
-    if (!access.role && !access.isAdmin) return jsonError('Нет доступа', 403);
+    if (!access.role && !access.isAdmin) return jsonError(t('prj.noAccess'), 403);
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
     const body = parsed.body;
 
     const reference = parseCarrierReference(body.carrier);
-    if (!reference) return jsonError('Укажите Carrier ID (число) или позывной вида ABC-123', 400);
+    if (!reference) return jsonError(t('prj.carrierIdFormat'), 400);
     const carrier = access.permissions.bindAnyCarrier
       ? await findOrCreateCarrier(svc, reference)
       : await findCarrier(svc, reference);
     if (!carrier) {
-      return jsonError('Авианосец не найден: владелец должен загрузить журнал или привязать носитель в профиле (вкладка «Авианосец»)', 404);
+      return jsonError(t('prj.carrierNotFound'), 404);
     }
     const carrierId = String(carrier.carrier_id);
     const viewer = await viewerContext(svc, userId);
     const canShare = canShareCarrier(carrier, viewer);
     if (!access.permissions.bindAnyCarrier && !canShare) {
-      return jsonError('Участник привязывает только свой авианосец или носитель эскадрильи, где он офицер', 403);
+      return jsonError(t('prj.carrierLinkOwn'), 403);
     }
 
     const systemId = await systemInProject(svc, access.project.id, body.systemId);
     if (body.systemId !== undefined && body.systemId !== null && body.systemId !== '' && systemId === undefined) {
-      return jsonError('Система не найдена в проекте', 400);
+      return jsonError(t('prj.systemNotInProject'), 400);
     }
 
     const { data: links, error: linksError } = await svc
@@ -90,10 +92,10 @@ export async function POST(req: Request, { params }: Params) {
       .eq('project_id', access.project.id);
     if (linksError) throw new Error(linksError.message);
     if ((links ?? []).some((row: { carrier_id: unknown }) => String(row.carrier_id) === carrierId)) {
-      return jsonError('Авианосец уже привязан к проекту', 409);
+      return jsonError(t('prj.carrierAlreadyLinked'), 409);
     }
     if ((links ?? []).length >= PROJECT_LIMITS.carriers) {
-      return jsonError(`К проекту можно привязать не больше ${PROJECT_LIMITS.carriers} авианосцев`, 400);
+      return jsonError(t('prj.carriersLimit', { max: PROJECT_LIMITS.carriers }), 400);
     }
 
     const now = new Date().toISOString();
@@ -108,7 +110,7 @@ export async function POST(req: Request, { params }: Params) {
       updated_at: now,
     });
     if (error) {
-      if (/duplicate key/i.test(error.message ?? '')) return jsonError('Авианосец уже привязан к проекту', 409);
+      if (/duplicate key/i.test(error.message ?? '')) return jsonError(t('prj.carrierAlreadyLinked'), 409);
       throw new Error(error.message);
     }
     return NextResponse.json({
@@ -124,6 +126,7 @@ export async function POST(req: Request, { params }: Params) {
 }
 
 export async function PATCH(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -132,31 +135,31 @@ export async function PATCH(req: Request, { params }: Params) {
     if (!parsed.ok) return parsed.response;
     const body = parsed.body;
     const carrierId = carrierIdOf(body.carrierId);
-    if (!carrierId) return jsonError('Укажите авианосец', 400);
+    if (!carrierId) return jsonError(t('prj.carrierRequired'), 400);
     const link = await loadLink(svc, access.project.id, carrierId);
-    if (!link) return jsonError('Авианосец не привязан к проекту', 404);
+    if (!link) return jsonError(t('prj.carrierNotLinked'), 404);
 
     const viewer = await viewerContext(svc, userId);
     const carrier = await findCarrier(svc, { carrierId });
     const canShare = canShareCarrier(carrier, viewer);
     const manages = access.permissions.bindAnyCarrier || String(link.added_by ?? '') === userId || canShare;
-    if (!manages) return jsonError('Менять привязку могут ведущие проекта, привязавший и владелец носителя', 403);
+    if (!manages) return jsonError(t('prj.carrierEditDenied'), 403);
 
     const patch: Record<string, unknown> = {};
     if (body.systemId !== undefined) {
       const systemId = await systemInProject(svc, access.project.id, body.systemId);
-      if (systemId === undefined) return jsonError('Система не найдена в проекте', 400);
+      if (systemId === undefined) return jsonError(t('prj.systemNotInProject'), 400);
       patch.system_id = systemId;
     }
     if (body.purpose !== undefined) patch.purpose = cleanLine(body.purpose, PROJECT_LIMITS.purpose);
     if (body.shareCargo !== undefined) {
       const share = body.shareCargo === true;
       if (share && !canShare) {
-        return jsonError('Показать груз может только владелец носителя или офицер его эскадрильи', 403);
+        return jsonError(t('prj.carrierCargoDenied'), 403);
       }
       patch.share_cargo = share;
     }
-    if (!Object.keys(patch).length) return jsonError('Нечего менять', 400);
+    if (!Object.keys(patch).length) return jsonError(t('prj.nothingToChange'), 400);
 
     const { error } = await svc
       .from('architect_project_carriers')
@@ -171,6 +174,7 @@ export async function PATCH(req: Request, { params }: Params) {
 }
 
 export async function DELETE(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -183,16 +187,16 @@ export async function DELETE(req: Request, { params }: Params) {
       raw = String(parsed.body.carrierId ?? '');
     }
     const carrierId = carrierIdOf(raw);
-    if (!carrierId) return jsonError('Укажите авианосец', 400);
+    if (!carrierId) return jsonError(t('prj.carrierRequired'), 400);
     const link = await loadLink(svc, access.project.id, carrierId);
-    if (!link) return jsonError('Авианосец не привязан к проекту', 404);
+    if (!link) return jsonError(t('prj.carrierNotLinked'), 404);
 
     let allowed = access.permissions.bindAnyCarrier || String(link.added_by ?? '') === userId;
     if (!allowed) {
       const viewer = await viewerContext(svc, userId);
       allowed = canShareCarrier(await findCarrier(svc, { carrierId }), viewer);
     }
-    if (!allowed) return jsonError('Отвязать могут ведущие проекта, привязавший и владелец носителя', 403);
+    if (!allowed) return jsonError(t('prj.carrierUnlinkDenied'), 403);
 
     const { error } = await svc
       .from('architect_project_carriers')

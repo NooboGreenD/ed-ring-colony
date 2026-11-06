@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { createClient } from '@/lib/supabaseServer';
 import { createAdminClient } from '@/lib/supabaseAdmin';
 import { loadRingRoute } from '@/lib/atlasRingSearch';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 /**
  * Сохранение найденного кольца в проект эскадрильи.
@@ -42,10 +43,11 @@ const bodySchema = z.object({
 });
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const parsed = bodySchema.safeParse(await req.json().catch(() => null));
     if (!parsed.success) {
-      return NextResponse.json({ error: 'Некорректный запрос на сохранение кольца' }, { status: 400 });
+      return NextResponse.json({ error: t('api.ringSaveInvalid') }, { status: 400 });
     }
     const { project_id: projectId, include_synthetic: includeSynthetic = false } = parsed.data;
 
@@ -61,7 +63,7 @@ export async function POST(req: Request) {
       .eq('user_id', user.id)
       .single();
     if (!membership || !['leader', 'officer'].includes(String(membership.role))) {
-      return NextResponse.json({ error: 'Сохранять маршрут в проект могут лидер и офицеры' }, { status: 403 });
+      return NextResponse.json({ error: t('api.ringSaveDenied') }, { status: 403 });
     }
 
     // Маршрут берём из сессии, если она указана: так клиент не передаёт тело
@@ -71,7 +73,7 @@ export async function POST(req: Request) {
     let startSystem = '';
     if (parsed.data.session_id) {
       const session = await loadRingRoute(parsed.data.session_id);
-      if (!session) return NextResponse.json({ error: 'Сессия поиска кольца не найдена' }, { status: 404 });
+      if (!session) return NextResponse.json({ error: t('api.ringSessionNotFound') }, { status: 404 });
       if (session.route.length > 0) {
         points = session.route;
         ringRadius = ringRadius ?? session.ringRadius;
@@ -79,7 +81,7 @@ export async function POST(req: Request) {
       }
     }
     if (points.length === 0) {
-      return NextResponse.json({ error: 'Маршрут кольца пуст — сначала соберите кольцо' }, { status: 400 });
+      return NextResponse.json({ error: t('api.ringRouteEmpty') }, { status: 400 });
     }
 
     // Уже сохранённые в проекте системы не дублируем.
@@ -122,19 +124,19 @@ export async function POST(req: Request) {
         sort_order: rows.length + 1,
         planned_status: 'planned',
         priority: 1,
-        notes: `Atlas: галактическое кольцо${ringRadius ? `, радиус ${Math.round(ringRadius)} св.л.` : ''}`,
+        notes: ringRadius ? t('atlas.ringNotesRadius', { radius: Math.round(ringRadius) }) : t('atlas.ringNotes'),
         x: Number(point.x),
         y: Number(point.y),
         z: Number(point.z),
       });
       if (rows.length > MAX_POINTS) {
-        return NextResponse.json({ error: `За один запрос можно сохранить не более ${MAX_POINTS} точек. Маршрут не сохранён.` }, { status: 400 });
+        return NextResponse.json({ error: t('api.ringSaveTooMany', { max: MAX_POINTS }) }, { status: 400 });
       }
     }
 
     if (rows.length === 0) {
       return NextResponse.json({
-        error: `Нечего добавлять: дубликатов ${skippedDuplicate}, расчётных точек ${skippedSynthetic}.`,
+        error: t('api.ringNothingToAdd', { dups: skippedDuplicate, synthetic: skippedSynthetic }),
         added: 0,
         skipped_duplicate: skippedDuplicate,
         skipped_synthetic: skippedSynthetic,
@@ -172,6 +174,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-route/save] ошибка:', error);
-    return NextResponse.json({ error: error?.message || 'Не удалось сохранить кольцо в проект' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringSaveFailed') }, { status: 500 });
   }
 }

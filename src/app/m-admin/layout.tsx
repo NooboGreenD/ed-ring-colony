@@ -1,15 +1,20 @@
 import type { Metadata, Viewport } from 'next';
+import { getServerI18n } from '@/lib/i18n/server';
 
-export const metadata: Metadata = {
-  title: 'ED Ring Colony — Mobile Admin',
-  description: 'Мобильная админ-панель для мониторинга ED Ring Colony',
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await getServerI18n();
+
+  return {
+    title: 'ED Ring Colony — Mobile Admin',
+    description: t('meta.mAdminDescription'),
   manifest: '/manifest-mobile.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
     title: 'EDRC Admin',
-  },
-};
+    },
+  };
+}
 
 export const viewport: Viewport = {
   width: 'device-width',

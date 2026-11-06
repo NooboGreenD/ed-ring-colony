@@ -3,11 +3,13 @@ import { runCronTask } from '@/lib/cronAuth';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
 import { publicCapiSyncResult, safeCapiDiagnostic } from '@/lib/capi/syncJobs';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 async function handleOne() {
+  const t = await apiTranslate();
   const svc = createServiceClient();
   const claimStartedAt = Date.now();
   const { data: jobs, error: claimError } = await svc.rpc('claim_next_capi_sync_job');
@@ -71,7 +73,7 @@ async function handleOne() {
     const publicResult = publicCapiSyncResult(result);
 
     if (!result.ok && result.needsReauth) {
-      await markCapiTokenBroken(svc, job.user_id, result.error || 'Frontier отклонил токен');
+      await markCapiTokenBroken(svc, job.user_id, result.error || t('capi.tokenRejected'));
     }
 
     finishStage(Date.now());
@@ -137,6 +139,7 @@ async function handleOne() {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   return runCronTask(req, 'capi-sync-jobs', handleOne);
 }
 

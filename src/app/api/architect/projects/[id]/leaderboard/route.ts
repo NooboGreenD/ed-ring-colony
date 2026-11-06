@@ -20,6 +20,7 @@ import {
   loadSystemRows,
 } from '@/lib/architect/projectStore';
 import { errorResponse, openProject } from '@/lib/architect/projectRouteKit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,6 +38,7 @@ export const dynamic = 'force-dynamic';
 type Params = { params: Promise<{ id: string }> };
 
 export async function GET(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -94,7 +96,7 @@ export async function GET(req: Request, { params }: Params) {
     const carriers = new Map<string, string>();
     for (const [id, row] of carrierRows) {
       const label = [row.name, row.callsign].filter(Boolean).join(' · ');
-      carriers.set(id, label || `Авианосец ${id}`);
+      carriers.set(id, label || t('arch.carrierLabel', { id }));
     }
 
     const view = buildProjectLeaders({

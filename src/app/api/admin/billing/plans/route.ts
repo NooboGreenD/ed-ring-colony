@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
 import { requireStaff, requireAdmin, errorResponse } from '@/lib/billing/auth';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireStaff(req);
     if ('response' in auth) return auth.response;
@@ -17,11 +19,12 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
     const body = await req.json();
-    if (!body?.name) return NextResponse.json({ error: 'Название обязательно' }, { status: 400 });
+    if (!body?.name) return NextResponse.json({ error: t('adm.nameRequired') }, { status: 400 });
     const plan = await billingRepo.createPlan(body);
     return NextResponse.json({ success: true, plan });
   } catch (err: any) {
@@ -30,6 +33,7 @@ export async function POST(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
@@ -44,6 +48,7 @@ export async function PATCH(req: Request) {
 }
 
 export async function DELETE(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;

@@ -13,6 +13,7 @@ import { useState } from 'react';
 import type { BodyDataReport, DataIssue, PlanDataReport } from '@/lib/architect/dataQuality';
 import { cardStyle, ghostButton, mutedText, rowStyle, sectionTitle } from '@/components/Architect/panelStyles';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { issueText } from '@/lib/i18n/planText';
 
 const LEVEL_TONES: Record<DataIssue['level'], string> = {
   error: 'var(--red)',
@@ -145,7 +146,7 @@ export default function DataQualityPanel({ report, planReport, onShowUnknownBodi
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {(open ? issues : issues.slice(0, 3)).map((issue) => (
             <div key={issue.code} style={{ fontSize: 12, color: LEVEL_TONES[issue.level] }}>
-              {LEVEL_MARKS[issue.level]} {issue.message}
+              {LEVEL_MARKS[issue.level]} {issueText(issue, t)}
               {issue.bodies.length > 0 && (
                 <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 2 }}>
                   {issue.bodies.join(', ')}

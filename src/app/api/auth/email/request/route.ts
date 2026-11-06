@@ -1,15 +1,17 @@
 import { authError, authJson, EmailAuthError, normalizedEmail, publicAuthClient,
   readAuthBody, requireEmailDelivery, EMAIL_SENT_MESSAGE } from '@/lib/emailAuth';
 import { getSiteUrl } from '@/lib/siteUrl';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const body = await readAuthBody(request, 'send');
     const email = normalizedEmail(body.email);
-    if (!['recovery', 'signup'].includes(String(body.type))) throw new EmailAuthError('Неизвестный тип письма.');
+    if (!['recovery', 'signup'].includes(String(body.type))) throw new EmailAuthError(t('auth.unknownLetterType'));
     await requireEmailDelivery(body.type === 'signup');
     const client = publicAuthClient();
     const redirectTo = `${getSiteUrl()}/auth/email`;

@@ -78,6 +78,7 @@ import {
   POWER_STATE_HINT_KEYS,
   POWER_STATE_KEYS,
   POWER_STATE_PLURAL_KEYS,
+  gameLabel,
 } from '@/lib/i18n/gameLabels';
 
 const PAGE_SIZE = 150;
@@ -223,13 +224,16 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
   const exportList = () => {
     if (listed.length === 0) return;
     downloadCsv(`powerplay-${new Date().toISOString().slice(0, 10)}`, [
-      ['Система', 'Держава', 'Как определена', 'Державы в системе', 'Состояние', 'X', 'Y', 'Z', 'id64', 'Наблюдение'],
+      [
+        t('csv.system'), t('csv.power'), t('csv.basis'), t('csv.powersInSystem'), t('csv.state'),
+        'X', 'Y', 'Z', 'id64', t('csv.observed'),
+      ],
       ...listed.map((system) => [
         system.name,
         powerInfo(system.power).label,
         isUnknownPower(system.power) ? POWERPLAY_BASIS_SHORT.unknown : system.basis ? POWERPLAY_BASIS_SHORT[system.basis] : '',
         (system.candidates ?? []).map((candidate) => powerInfo(candidate).label).join('; '),
-        POWERPLAY_STATE_LABEL[system.state],
+        gameLabel(t, POWER_STATE_KEYS, system.state, POWERPLAY_STATE_LABEL[system.state]),
         system.x,
         system.y,
         system.z,

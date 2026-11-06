@@ -2,11 +2,13 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useI18n } from "@/lib/i18n/I18nContext";
 import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 
 type Props = { userId: string; myName: string; myAvatar: string | null };
 
 export default function DirectChat({ userId, myName, myAvatar }: Props) {
+  const { t } = useI18n();
   const [users, setUsers] = useState<any[]>([]);
   const [peer, setPeer] = useState("");
   const [messages, setMessages] = useState<any[]>([]);
@@ -170,7 +172,7 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
     <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
       <div style={{ flex: "0 0 230px", minWidth: 200 }}>
         {users.length === 0 && (
-          <p style={{ color: "#9ca3af" }}>Других пилотов пока нет.</p>
+          <p style={{ color: "#9ca3af" }}>{t('dchat.noPilots')}</p>
         )}
         {users.map((u) => {
           const unread = unreadCounts[u.id] || 0;
@@ -209,7 +211,7 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
       <div style={{ flex: 1, minWidth: 280 }}>
         {!peer && (
           <p style={{ color: "#9ca3af" }}>
-            Выберите пилота слева, чтобы открыть переписку.
+            {t('dchat.pickPilot')}
           </p>
         )}
         {peer && (
@@ -217,7 +219,7 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
             <div className="chat-box" ref={boxRef}>
               {messages.length === 0 && (
                 <p style={{ color: "#9ca3af" }}>
-                  Переписка пуста. Отправьте первое сообщение.
+                  {t('dchat.empty')}
                 </p>
               )}
               {messages.map((m) => (
@@ -246,11 +248,11 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
               <input
                 value={text}
                 maxLength={1000}
-                placeholder="Сообщение пилоту..."
+                placeholder={t('dchat.placeholder')}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && send()}
               />
-              <button onClick={send}>Отправить</button>
+              <button onClick={send}>{t('forum.send')}</button>
             </div>
           </div>
         )}

@@ -29,6 +29,7 @@ import {
   PRE_REQS,
   SYSTEM_UNLOCKS,
 } from './catalogue.ts';
+import { formatTranslate } from '../i18n/format.ts';
 import { economyBodyFit } from './economy.ts';
 import type {
   ArchitectBody,
@@ -41,6 +42,7 @@ import type {
   PlannedSite,
   PlannedSiteStatus,
   PlacementCheck,
+  PlacementNote,
   SystemEffectKey,
   SystemEffects,
   SystemEconomy,
@@ -125,6 +127,10 @@ export function listInstallations(filter: {
 
 /** Русское имя товара; если перевода нет — человекочитаемое из ключа. */
 export function commodityLabel(key: string): string {
+  // Подпись на языке интерфейса; русское имя — запасной вариант и основа для
+  // разбора ввода (см. projectLeaders).
+  const translated = formatTranslate(`commodity.${key}`);
+  if (translated !== `commodity.${key}`) return translated;
   const known = COMMODITY_LABELS_RU[key];
   if (known) return known;
   const spaced = key.replace(/([a-z])([A-Z])/g, '$1 $2').trim();
@@ -345,14 +351,31 @@ export function predictSurfaceSlots(body: ArchitectBody | null | undefined): num
   return Math.min(slots, SURFACE_SLOT_LIMIT);
 }
 
-/** Почему тело не даёт наземных слотов (для подсказки в интерфейсе). */
+/** Почему тело не даёт наземных слотов — ключ, параметры и русский текст. */
+export function surfaceSlotReasonNote(body: ArchitectBody | null | undefined): PlacementNote {
+  if (!body) return { key: 'pl.bodyUnknown', text: 'Тело неизвестно' };
+  if (body.kind === 'star') return { key: 'pl.starNoSurface', text: 'Звезда: наземных построек не бывает' };
+  if (!body.landable) return { key: 'pl.noLanding', text: 'Нет посадки' };
+  if (body.tempK > SURFACE_MAX_TEMP_K) {
+    return {
+      key: 'pl.tooHot',
+      params: { temp: body.tempK, max: SURFACE_MAX_TEMP_K },
+      text: `Слишком горячо (${body.tempK} K > ${SURFACE_MAX_TEMP_K} K)`,
+    };
+  }
+  if (body.gravity > SURFACE_MAX_GRAVITY_G) {
+    return {
+      key: 'pl.tooHeavy',
+      params: { gravity: body.gravity, max: SURFACE_MAX_GRAVITY_G },
+      text: `Гравитация ${body.gravity} g > ${SURFACE_MAX_GRAVITY_G} g`,
+    };
+  }
+  return { key: 'pl.surfaceImpossible', text: '' };
+}
+
+/** Почему тело не даёт наземных слотов (русский текст — для журналов и тестов). */
 export function surfaceSlotReason(body: ArchitectBody | null | undefined): string {
-  if (!body) return 'Тело неизвестно';
-  if (body.kind === 'star') return 'Звезда: наземных построек не бывает';
-  if (!body.landable) return 'Нет посадки';
-  if (body.tempK > SURFACE_MAX_TEMP_K) return `Слишком горячо (${body.tempK} K > ${SURFACE_MAX_TEMP_K} K)`;
-  if (body.gravity > SURFACE_MAX_GRAVITY_G) return `Гравитация ${body.gravity} g > ${SURFACE_MAX_GRAVITY_G} g`;
-  return '';
+  return surfaceSlotReasonNote(body).text;
 }
 
 /**
@@ -409,11 +432,26 @@ export function placementCheck(
   installationId: string,
   plan: ArchitectPlan,
 ): PlacementCheck {
-  const errors: string[] = [];
-  const warnings: string[] = [];
+  const errorNotes: PlacementNote[] = [];
+  const warningNotes: PlacementNote[] = [];
+  const note = (list: PlacementNote[], key: string, text: string, params?: PlacementNote['params']) => {
+    list.push(params ? { key, params, text } : { key, text });
+  };
+  const done = () => ({
+    ok: errorNotes.length === 0,
+    errors: errorNotes.map((entry) => entry.text),
+    warnings: warningNotes.map((entry) => entry.text),
+    notes: { errors: errorNotes, warnings: warningNotes },
+  });
   const installation = getInstallation(installationId);
-  if (!installation) return { ok: false, errors: ['Неизвестная постройка'], warnings };
-  if (!body) return { ok: false, errors: ['Тело не найдено в данных системы'], warnings };
+  if (!installation) {
+    note(errorNotes, 'pl.unknownInstallation', 'Неизвестная постройка');
+    return done();
+  }
+  if (!body) {
+    note(errorNotes, 'pl.bodyNotFound', 'Тело не найдено в данных системы');
+    return done();
+  }
 
   // Имена тел в плане могут прийти из стороннего источника («A 1» вместо
   // «Sol A 1»), поэтому слоты считаем по терпимому сравнению имён — иначе
@@ -422,30 +460,34 @@ export function placementCheck(
 
   if (installation.location === 'surface') {
     const limit = predictSurfaceSlots(body);
-    if (limit <= 0) errors.push(surfaceSlotReason(body) || 'Наземные постройки невозможны');
-    else if (others.filter((site) => getInstallation(site.installationId)?.location === 'surface').length >= limit) {
-      errors.push(`Свободных наземных слотов нет: занято ${limit} из ${limit}`);
+    if (limit <= 0) {
+      const reason = surfaceSlotReasonNote(body);
+      errorNotes.push(reason.text ? reason : { key: 'pl.surfaceImpossible', text: 'Наземные постройки невозможны' });
+    } else if (others.filter((site) => getInstallation(site.installationId)?.location === 'surface').length >= limit) {
+      note(errorNotes, 'pl.noSurfaceSlots', `Свободных наземных слотов нет: занято ${limit} из ${limit}`, { limit });
     }
   } else {
     const limit = orbitalLimit(body, plan);
     const used = others.filter((site) => getInstallation(site.installationId)?.location === 'orbital').length;
-    if (limit === 0) errors.push('У тела нет доступных орбитальных слотов');
+    if (limit === 0) note(errorNotes, 'pl.noOrbitalSlotsForBody', 'У тела нет доступных орбитальных слотов');
     else if (limit !== null && used >= limit) {
-      errors.push(`Свободных орбитальных слотов нет: занято ${limit} из ${limit}`);
+      note(errorNotes, 'pl.noOrbitalSlots', `Свободных орбитальных слотов нет: занято ${limit} из ${limit}`, { limit });
     }
     if (installation.id === 'asteroid' && !body.hasRings) {
-      errors.push('Астероидная база ставится только у пояса астероидов');
+      note(errorNotes, 'pl.asteroidNeedsRings', 'Астероидная база ставится только у пояса астероидов');
     }
   }
 
   const missingPreReq = needsPreReq(installation, plan.sites);
-  if (missingPreReq) errors.push(`Сначала нужен предшественник: ${missingPreReq}`);
+  if (missingPreReq) {
+    note(errorNotes, 'pl.preReqMissing', `Сначала нужен предшественник: ${missingPreReq}`, { label: missingPreReq });
+  }
 
   if (others.some((site) => site.installationId === installation.id)) {
-    warnings.push('Такая постройка на этом теле уже запланирована');
+    note(warningNotes, 'pl.duplicate', 'Такая постройка на этом теле уже запланирована');
   }
   if (installation.location === 'surface' && body.terraformable) {
-    warnings.push('Тело терраформируемое: часть площадки может уйти под терраформирование');
+    note(warningNotes, 'pl.terraformable', 'Тело терраформируемое: часть площадки может уйти под терраформирование');
   }
   // Экономика постройки зависит от тела: у профильных экономик (добыча, сельское
   // хозяйство, переработка, промышленность, туризм) на неподходящем теле выхлоп
@@ -453,17 +495,17 @@ export function placementCheck(
   if (body.kind !== 'star' && installation.influence !== 'none') {
     const fit = economyBodyFit(installation.influence, body);
     if (fit.level === 'weak') {
-      warnings.push(`${ECONOMY_LABELS_RU[installation.influence]}: ${fit.reason}`);
+      warningNotes.push({ key: fit.key, params: fit.params, text: `${ECONOMY_LABELS_RU[installation.influence]}: ${fit.reason}` });
     }
   }
   if (installation.tier === 3 && !plan.sites.some((site) => getInstallation(site.installationId)?.buildClass === 'starport')) {
-    warnings.push('Порт T3 стоит 6 очков T3 — без построек T1/T2 очков не хватит');
+    note(warningNotes, 'pl.t3NoTiers', 'Порт T3 стоит 6 очков T3 — без построек T1/T2 очков не хватит');
   }
   if (body.kind === 'star' && installation.location === 'orbital' && others.length >= 2) {
-    warnings.push('У звезды уже две орбитальные постройки — проверьте, нужна ли третья');
+    note(warningNotes, 'pl.starThirdOrbital', 'У звезды уже две орбитальные постройки — проверьте, нужна ли третья');
   }
 
-  return { ok: errors.length === 0, errors, warnings };
+  return done();
 }
 
 /** Пустой план. */
@@ -719,7 +761,13 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
     const installation = getInstallation(site.installationId);
     const body = bodyOf(site.bodyName);
     if (!installation) {
-      issues.push({ level: 'error', siteId: site.id, message: `Неизвестная постройка «${site.installationId}» — удалите запись или обновите каталог` });
+      issues.push({
+        level: 'error',
+        siteId: site.id,
+        message: `Неизвестная постройка «${site.installationId}» — удалите запись или обновите каталог`,
+        key: 'pl.planUnknownInstallation',
+        params: { id: site.installationId },
+      });
       continue;
     }
     if (bodies.length > 0 && !body) {
@@ -730,12 +778,18 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
         message: site.bodyName
           ? `Тело «${site.bodyName}» не найдено в данных системы`
           : `Не указано тело для «${installation.nameRu}»: задайте его в редакторе записи`,
+        key: site.bodyName ? 'pl.siteNoBody' : 'pl.siteBodyMissing',
+        params: site.bodyName ? { body: site.bodyName } : { name: installation.nameRu },
       });
     }
     // Слоты считаем «без этой записи»: так переполнение видно на самой записи.
     const check = placementCheck(body, site.installationId, { ...plan, sites: plan.sites.filter((other) => other.id !== site.id) });
-    for (const message of check.errors) issues.push({ level: 'error', siteId: site.id, bodyName: site.bodyName, message });
-    for (const message of check.warnings) issues.push({ level: 'warning', siteId: site.id, bodyName: site.bodyName, message });
+    for (const entry of check.notes?.errors ?? []) {
+      issues.push({ level: 'error', siteId: site.id, bodyName: site.bodyName, message: entry.text, key: entry.key, params: entry.params });
+    }
+    for (const entry of check.notes?.warnings ?? []) {
+      issues.push({ level: 'warning', siteId: site.id, bodyName: site.bodyName, message: entry.text, key: entry.key, params: entry.params });
+    }
   }
 
   // Симулируем стройку в правильном порядке: очки приходят по мере завершения.
@@ -774,6 +828,13 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
           siteId: site.id,
           bodyName: site.bodyName,
           message: `Не хватает ${missing} очк. T${installation.needs.tier} для «${installation.nameRu}»: сначала постройте что-то из T${installation.needs.tier - 1}`,
+          key: 'pl.tierShortage',
+          params: {
+            missing,
+            tier: installation.needs.tier,
+            name: installation.nameRu,
+            prev: installation.needs.tier - 1,
+          },
         });
       }
       tierPoints[bucket] -= cost;
@@ -855,12 +916,14 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
     issues.push({
       level: 'warning',
       message: 'В плане нет ни одного порта: система останется без статуса колонизированной',
+      key: 'pl.noPort',
     });
   }
   if (hasPort && !primarySite) {
     issues.push({
       level: 'warning',
       message: 'Не отмечен основной порт — все порты посчитаны платными. Для новой колонии отметьте порт, который строится с колониального корабля (он не тратит очки системы); если система уже колонизирована, снимите пометку с портов',
+      key: 'pl.noPrimary',
     });
   }
 

@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabaseServer";
 import { notFound } from "next/navigation";
 import { ThreadPageClient } from "./ThreadPageClient";
+import { getServerI18n } from '@/lib/i18n/server';
 
 export const revalidate = 10;
 
@@ -10,6 +11,7 @@ interface Props {
 
 export async function generateMetadata({ params }: Props) {
   const resolvedParams = await params;
+  const { t } = await getServerI18n();
   const supabase = await createClient();
   const { data: thread } = await supabase
     .from("forum_threads")
@@ -18,8 +20,8 @@ export async function generateMetadata({ params }: Props) {
     .single();
 
   return {
-    title: thread?.title ? `${thread.title} | Форум ED Ring Colony` : "Тема | Форум",
-    description: "Обсуждение на форуме колонии ED Ring",
+    title: thread?.title ? t('meta.forumThreadTitle', { title: thread.title }) : t('meta.forumThreadDefault'),
+    description: t('meta.forumThreadDescription'),
   };
 }
 

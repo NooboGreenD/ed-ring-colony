@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { parsePlan } from '@/lib/architect/planner';
 import { checkPlanEditRights, lockReasonRu } from '@/lib/architect/governance';
+import { apiTranslate } from '@/lib/i18n/apiT';
 import {
   PLAN_TABLE,
   buildPlanInsert,
@@ -25,6 +26,7 @@ const MAX_SITES = 200;
  * GET /api/architect/plans?system=HIP%2090297
  */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const system = (searchParams.get('system') || '').trim();
@@ -69,6 +71,7 @@ export async function GET(req: Request) {
  * POST /api/architect/plans { system, plan, title?, visibility? }
  */
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -83,15 +86,15 @@ export async function POST(req: Request) {
     const requestedSystem = typeof record.system === 'string' ? record.system.trim() : '';
     const parsed = parsePlan(record.plan);
     if (!parsed.plan) {
-      return NextResponse.json({ error: parsed.error || 'Не удалось прочитать план' }, { status: 400 });
+      return NextResponse.json({ error: parsed.error || t('api.planReadFailed') }, { status: 400 });
     }
     const plan = parsed.plan;
     const system = requestedSystem || plan.system;
     if (!system) {
-      return NextResponse.json({ error: 'Не указано название системы' }, { status: 400 });
+      return NextResponse.json({ error: t('api.systemNameRequired') }, { status: 400 });
     }
     if (plan.sites.length > MAX_SITES) {
-      return NextResponse.json({ error: `Слишком большой план: максимум ${MAX_SITES} построек` }, { status: 400 });
+      return NextResponse.json({ error: t('api.planTooLarge', { max: MAX_SITES }) }, { status: 400 });
     }
 
     // Назначенный архитектор системы: после назначения новые планы системы
@@ -103,7 +106,7 @@ export async function POST(req: Request) {
     }
 
     const visibility = isPlanVisibility(record.visibility) ? (record.visibility as PlanVisibility) : 'private';
-    const profile = await loadAuthorName(supabase, user.id);
+    const profile = await loadAuthorName(supabase, user.id, t);
 
     const { data: inserted, error } = await supabase
       .from(PLAN_TABLE)
@@ -131,6 +134,7 @@ export async function POST(req: Request) {
 async function loadAuthorName(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
 ): Promise<string> {
   const { data } = await supabase
     .from('profiles')
@@ -138,5 +142,5 @@ async function loadAuthorName(
     .eq('id', userId)
     .maybeSingle();
   const row = data as { cmdr_name?: string | null } | null;
-  return row?.cmdr_name || 'Командир';
+  return row?.cmdr_name || t('cmdr.default');
 }

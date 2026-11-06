@@ -1,4 +1,5 @@
 "use client";
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 import React from "react";
 import { IconCrown, IconDiamond, IconSword, IconAnchor, IconStar, IconShield, IconRocket, IconBolt, IconFlame, IconHeart, IconGlobe, IconTarget, IconSun, IconRingPlanet } from "@/components/Icons";
@@ -30,11 +31,12 @@ export const BADGE_ICONS: Record<string, React.ComponentType<{ size?: number; co
 };
 
 export default function CosmeticBadge({ badgeId, badgePreview, title, size = 22, showTitleTooltip = true }: CosmeticBadgeProps) {
+  const { t } = useI18n();
   const p = resolvePreview(badgeId, badgePreview);
   if (!p) return null;
   const color = p.color || "#fbbf24";
   const Icon = BADGE_ICONS[p.icon || "star"] || IconStar;
-  const label = title || p.subTitle || "Знак отличия";
+  const label = title || p.subTitle || t('pm.catBadge');
 
   return (
     <span

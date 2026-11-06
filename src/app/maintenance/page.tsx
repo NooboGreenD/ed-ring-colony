@@ -1,13 +1,18 @@
 import type { Metadata } from 'next';
 
 import MaintenanceScreen from '@/components/MaintenanceScreen';
+import { getServerI18n } from '@/lib/i18n/server';
 
-export const metadata: Metadata = {
-  title: 'Технические работы — ED Ring Colony',
-  description: 'Идёт резервное копирование базы данных. Сайт вернётся в строй через несколько минут.',
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await getServerI18n();
+
+  return {
+    title: t('meta.maintenanceTitle'),
+    description: t('meta.maintenanceDescription'),
   // Заглушка не должна попадать в индекс: это временное состояние сайта.
   robots: { index: false, follow: false },
-};
+  };
+}
 
 /**
  * Страница-заглушка. Прокси переписывает на неё все не-служебные маршруты,

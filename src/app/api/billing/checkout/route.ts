@@ -5,6 +5,7 @@ import { hasPremiumShopAccess, SHOP_SUBSCRIPTION_REQUIRED } from '@/lib/billing/
 import { getDriver } from '@/lib/billing/providers';
 import { getSiteUrl } from '@/lib/siteUrl';
 import type { PaymentPurpose } from '@/types/billing';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -24,16 +25,17 @@ function siteUrl(req: Request) {
  * body: { providerId, purpose: 'credit_topup'|'subscription'|'shop_purchase', packId?, planId?, itemId? }
  */
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireUser(req);
     if ('response' in auth) return auth.response;
     const { actor } = auth;
-    if (actor.isPreview) return NextResponse.json({ error: 'Войдите в аккаунт, чтобы оплатить' }, { status: 401 });
+    if (actor.isPreview) return NextResponse.json({ error: t('api.checkoutSignIn') }, { status: 401 });
 
     const body = await req.json().catch(() => ({}));
     const purpose = body.purpose as PaymentPurpose;
     const providerId = String(body.providerId || '');
-    if (!['credit_topup', 'subscription', 'shop_purchase'].includes(purpose)) return NextResponse.json({ error: 'Неверная цель платежа' }, { status: 400 });
+    if (!['credit_topup', 'subscription', 'shop_purchase'].includes(purpose)) return NextResponse.json({ error: t('api.checkoutBadPurpose') }, { status: 400 });
     // Credits are only spendable in the premium shop, so require an active
     // subscription for both catalogue purchases and credit top-ups. Subscription
     // checkout itself remains available to anyone who wants to unlock the shop.
@@ -44,12 +46,12 @@ export async function POST(req: Request) {
     const provider = await billingRepo.getProvider(providerId);
     const driver = getDriver(providerId);
     if (!provider || !driver || !provider.is_enabled || !driver.isConfigured(provider.config)) {
-      return NextResponse.json({ error: 'Платёжная система недоступна' }, { status: 400 });
+      return NextResponse.json({ error: t('api.paymentUnavailable') }, { status: 400 });
     }
 
     // Real T-Bank payments must never run on the development JSON fallback.
     if (providerId === 'tbank' && !provider.test_mode && await billingRepo.backendKind !== 'supabase') {
-      return NextResponse.json({ error: 'Для боевых платежей Т-Банка требуется хранилище Supabase' }, { status: 503 });
+      return NextResponse.json({ error: t('api.livePaymentsNeedStorage') }, { status: 503 });
     }
     if (providerId === 'tbank') {
       const configCheck = await driver.check(provider);
@@ -64,30 +66,30 @@ export async function POST(req: Request) {
     if (purpose === 'credit_topup') {
       const settings = await billingRepo.getSettings();
       const pack = settings.credit_packs.find((p) => p.id === body.packId);
-      if (!pack) return NextResponse.json({ error: 'Пакет кредитов не найден' }, { status: 400 });
+      if (!pack) return NextResponse.json({ error: t('api.creditPackMissing') }, { status: 400 });
       amountRub = pack.price_rub;
       amountCredits = Math.round(pack.credits * (1 + (pack.bonus_pct || 0) / 100));
       targetId = pack.id;
-      description = `ED Ring Colony: ${amountCredits} кредитов`;
+      description = t('billing.descCredits', { credits: amountCredits });
     } else if (purpose === 'subscription') {
       const plan = await billingRepo.getPlanById(String(body.planId || ''));
-      if (!plan || !plan.is_active || !plan.price_rub) return NextResponse.json({ error: 'План недоступен для оплаты' }, { status: 400 });
+      if (!plan || !plan.is_active || !plan.price_rub) return NextResponse.json({ error: t('api.planNotPayable') }, { status: 400 });
       amountRub = plan.price_rub;
       targetId = plan.id;
-      description = `ED Ring Colony: подписка «${plan.name}» ${plan.period_days} дн`;
+      description = t('billing.descSubscription', { plan: plan.name, days: plan.period_days });
     } else {
       const item = await billingRepo.getShopItemById(String(body.itemId || ''));
-      if (!item || !item.is_active) return NextResponse.json({ error: 'Товар не найден' }, { status: 400 });
-      if (await billingRepo.userOwnsItem(actor.userId, item.id)) return NextResponse.json({ error: 'Вы уже владеете этим предметом' }, { status: 400 });
+      if (!item || !item.is_active) return NextResponse.json({ error: t('api.shopItemMissing') }, { status: 400 });
+      if (await billingRepo.userOwnsItem(actor.userId, item.id)) return NextResponse.json({ error: t('api.alreadyOwned') }, { status: 400 });
       const price = await billingRepo.priceFor(item, actor.userId);
       if (price.locked) return NextResponse.json({ error: price.lockReason }, { status: 400 });
-      if (!price.rub) return NextResponse.json({ error: 'Этот товар продаётся только за кредиты' }, { status: 400 });
+      if (!price.rub) return NextResponse.json({ error: t('api.creditsOnly') }, { status: 400 });
       amountRub = price.rub;
       targetId = item.id;
       description = `ED Ring Colony: ${item.title}`;
     }
 
-    if (amountRub <= 0) return NextResponse.json({ error: 'Некорректная сумма' }, { status: 400 });
+    if (amountRub <= 0) return NextResponse.json({ error: t('api.badAmount') }, { status: 400 });
 
     const intent = await billingRepo.createIntent({
       userId: actor.userId,
@@ -107,7 +109,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, intent: updated, paymentUrl: created.paymentUrl });
     } catch (e: any) {
       await billingRepo.updatePendingIntent(intent.id, { status: 'failed', metadata: { ...intent.metadata, error: e?.message } });
-      return NextResponse.json({ error: e?.message || 'Не удалось создать платёж' }, { status: 502 });
+      return NextResponse.json({ error: e?.message || t('billing.paymentCreateFailed') }, { status: 502 });
     }
   } catch (err) {
     return errorResponse(err);

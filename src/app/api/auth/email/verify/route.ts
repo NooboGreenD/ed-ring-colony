@@ -6,19 +6,21 @@ import { ensureUserProfile } from '@/lib/ensureProfile';
 import { createRecoveryGrant, RECOVERY_COOKIE, RECOVERY_TTL, sessionId } from '@/lib/passwordRecovery';
 import { supabaseCookieOptions } from '@/lib/supabaseUrl';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 // POST only: mail scanners/GET prefetches cannot consume a confirmation link.
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const body = await readAuthBody(request, 'verify');
     if ((body.type !== 'signup' && body.type !== 'recovery') ||
         typeof body.token_hash !== 'string' || !/^[a-zA-Z0-9_-]{32,256}$/.test(body.token_hash)) {
-      throw new EmailAuthError('Неверная ссылка. Запросите новое письмо.');
+      throw new EmailAuthError(t('auth.emailBadLink'));
     }
-    if (body.type === 'recovery' && !process.env.SUPABASE_SERVICE_ROLE_KEY) throw new EmailAuthError('Восстановление не настроено.', 503);
+    if (body.type === 'recovery' && !process.env.SUPABASE_SERVICE_ROLE_KEY) throw new EmailAuthError(t('auth.recoveryNotConfigured'), 503);
     const cookieStore = await cookies();
     const jar = new Map(cookieStore.getAll().map(cookie => [cookie.name, cookie.value]));
     const staged: { name: string; value: string; options: CookieOptions }[] = [];
@@ -30,13 +32,13 @@ export async function POST(request: Request) {
       },
     });
     const { data, error } = await client.auth.verifyOtp({ type: body.type, token_hash: body.token_hash });
-    if (error || !data.session) throw new EmailAuthError('Ссылка недействительна или уже использована. Запросите новое письмо.');
+    if (error || !data.session) throw new EmailAuthError(t('auth.emailLinkUsed'));
     const { data: { user }, error: userError } = await client.auth.getUser();
-    if (userError || !user || user.id !== data.session.user.id) throw new EmailAuthError('Не удалось подтвердить пользователя.', 401);
+    if (userError || !user || user.id !== data.session.user.id) throw new EmailAuthError(t('auth.userConfirmFailed'), 401);
     let grant: string | null = null;
     if (body.type === 'recovery') {
       const sid = sessionId(data.session.access_token);
-      if (!sid) throw new EmailAuthError('Сессия восстановления не поддерживается этой версией GoTrue.', 503);
+      if (!sid) throw new EmailAuthError(t('auth.recoverySessionUnsupported'), 503);
       grant = createRecoveryGrant(user.id, sid);
     }
     try { await ensureUserProfile(client, user); }
