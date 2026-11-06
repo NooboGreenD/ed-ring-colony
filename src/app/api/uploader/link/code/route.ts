@@ -38,7 +38,7 @@ export async function POST(request: Request) {
     }, NO_STORE);
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : 'Не удалось создать код.' },
+      { ok: false, error: error instanceof Error ? error.message : t('up.codeCreateFailed') },
       { status: 500, ...NO_STORE },
     );
   }

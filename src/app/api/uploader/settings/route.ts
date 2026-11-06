@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { readSettings, resolveDeviceToken, writeSettings } from '@/lib/helperDevices';
 import { authFromRequest } from '@/lib/supabaseServer';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,6 +17,7 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store, no-cache, must-revalid
  * токену: снимок делает лаунчер, а не браузер.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const device = await resolveDeviceToken(request);
   if (device) {
     const snapshot = await readSettings(device.userId);
@@ -28,7 +30,7 @@ export async function GET(request: Request) {
   }
   const { user } = await authFromRequest(request);
   if (!user) {
-    return NextResponse.json({ ok: false, error: 'Нужно войти в учётную запись.' }, { status: 401, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('up.signInRequired') }, { status: 401, ...NO_STORE });
   }
   const snapshot = await readSettings(user.id);
   return NextResponse.json({
@@ -40,10 +42,11 @@ export async function GET(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const t = await apiTranslate();
   const device = await resolveDeviceToken(request);
   if (!device) {
     return NextResponse.json(
-      { ok: false, error: 'Устройство не привязано: сначала введите код из профиля.' },
+      { ok: false, error: t('up.deviceNotLinked') },
       { status: 401, ...NO_STORE },
     );
   }
@@ -51,7 +54,7 @@ export async function PUT(request: Request) {
   try {
     body = await request.json() as { settings?: unknown };
   } catch {
-    return NextResponse.json({ ok: false, error: 'Некорректный запрос.' }, { status: 400, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('up.requestInvalid') }, { status: 400, ...NO_STORE });
   }
   const result = await writeSettings(device.userId, body.settings, device.deviceName);
   if (!result.ok) {

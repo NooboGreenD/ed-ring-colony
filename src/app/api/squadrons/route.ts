@@ -12,6 +12,7 @@ function boundedInteger(value: string | null, fallback: number, min: number, max
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status')?.trim() || null;
@@ -174,7 +175,7 @@ export async function POST(req: Request) {
       if (memberError) {
         console.error('[squadrons POST] membership', memberError.message);
         return NextResponse.json(
-          { squadron, warning: `Эскадрилья создана, но вас не удалось записать в состав: ${squadronWriteError(memberError)}` },
+          { squadron, warning: t('sq.createdButMemberFailed', { error: squadronWriteError(memberError) }) },
         );
       }
     }

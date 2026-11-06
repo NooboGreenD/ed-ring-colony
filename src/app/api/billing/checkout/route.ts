@@ -109,7 +109,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, intent: updated, paymentUrl: created.paymentUrl });
     } catch (e: any) {
       await billingRepo.updatePendingIntent(intent.id, { status: 'failed', metadata: { ...intent.metadata, error: e?.message } });
-      return NextResponse.json({ error: e?.message || 'Не удалось создать платёж' }, { status: 502 });
+      return NextResponse.json({ error: e?.message || t('billing.paymentCreateFailed') }, { status: 502 });
     }
   } catch (err) {
     return errorResponse(err);

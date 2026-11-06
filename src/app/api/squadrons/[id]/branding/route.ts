@@ -51,7 +51,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!(file instanceof File) || file.size <= 0) return json({ error: t('api.chooseImage') }, 400);
   const ext = ALLOWED[file.type.toLowerCase()];
   if (!ext) return json({ error: t('api.avatarFormats') }, 415);
-  if (file.size > LIMITS[kind]) return json({ error: `${kind === 'logo' ? 'Логотип' : 'Фон'} слишком большой` }, 413);
+  if (file.size > LIMITS[kind]) return json({ error: `${kind === 'logo' ? t('sq.logoTooLarge') : t('sq.backgroundTooLarge')}` }, 413);
 
   const bytes = Buffer.from(await file.arrayBuffer());
   const hash = createHash('sha256').update(bytes).digest('hex');

@@ -2,18 +2,20 @@ import { authError, authJson, EmailAuthError, normalizedEmail, publicAuthClient,
   readAuthBody, requireEmailDelivery, EMAIL_SENT_MESSAGE } from '@/lib/emailAuth';
 import { passwordError } from '@/lib/passwordPolicy';
 import { getSiteUrl } from '@/lib/siteUrl';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   try {
     const body = await readAuthBody(request, 'register');
     const email = normalizedEmail(body.email);
     const problem = passwordError(body.password);
     if (problem) throw new EmailAuthError(problem);
     const nickname = typeof body.cmdr_name === 'string' ? body.cmdr_name.trim() : '';
-    if (!nickname || nickname.length > 250 || /[\x00-\x1f]/.test(nickname)) throw new EmailAuthError('Укажите никнейм / CMDR (до 250 символов).');
+    if (!nickname || nickname.length > 250 || /[\x00-\x1f]/.test(nickname)) throw new EmailAuthError(t('auth.nicknameRequired'));
     await requireEmailDelivery(true);
     const client = publicAuthClient();
     // Never admin.createUser(email_confirm:true); no service-role profile upsert.
@@ -25,7 +27,7 @@ export async function POST(request: Request) {
     if (data?.session) {
       await client.auth.signOut({ scope: 'global' });
       console.error('[auth/register] Unexpected auto-confirmed signup; check GoTrue configuration');
-      throw new EmailAuthError('Подтверждение почты не настроено.', 503);
+      throw new EmailAuthError(t('auth.emailConfirmNotConfigured'), 503);
     }
     // Do not turn per-address delivery/rate-limit/duplicate errors into an
     // account-existence oracle. The UI validates the common password policy;

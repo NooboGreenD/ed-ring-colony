@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { SUPPORTED_TRANSLATION_LANGS, hasTranslateCredentials, translateTexts } from '@/lib/translate';
 import { requireStaff } from '@/lib/billing/auth';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -26,6 +27,7 @@ function normalizeTexts(value: unknown): string[] {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   const auth = await requireStaff(req);
   if ('response' in auth) return auth.response;
 
@@ -44,7 +46,7 @@ export async function POST(req: Request) {
     const hasWork = texts.some((item) => item.trim().length > 0);
 
     if (!hasWork) {
-      return NextResponse.json({ success: false, error: 'Нечего переводить: исходные поля пусты', translations: {} }, { status: 400 });
+      return NextResponse.json({ success: false, error: t('translate.nothingToTranslate'), translations: {} }, { status: 400 });
     }
 
     if (!hasTranslateCredentials()) {

@@ -71,7 +71,7 @@ export async function POST(req: Request) {
     const supabase = createClient(getServerSupabaseUrl(), process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error || !data.session || !data.user) {
-      return NextResponse.json({ success: false, error: error?.message || 'Неверные данные' }, { status: 401, headers: NO_STORE_HEADERS });
+      return NextResponse.json({ success: false, error: error?.message || t('mobile.badCredentials') }, { status: 401, headers: NO_STORE_HEADERS });
     }
     // Проверяем роль
     const { data: profile } = await supabase.from('profiles').select('role, cmdr_name').eq('id', data.user.id).maybeSingle();

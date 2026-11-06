@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { readLauncher } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,6 +16,7 @@ export const runtime = 'nodejs';
  * на каждую правку кода.
  */
 export async function GET(request: NextRequest) {
+  const t = await apiTranslate();
   const platform = (new URL(request.url).searchParams.get('platform') ?? 'win64').trim().toLowerCase();
   const info = await readLauncher(platform);
 
@@ -23,7 +25,7 @@ export async function GET(request: NextRequest) {
       {
         ok: false,
         platform,
-        error: 'Базовая сборка для этой платформы не опубликована на сервере',
+        error: t('up.buildNotPublishedPlatform'),
       },
       { status: 404, headers: { 'Cache-Control': 'no-store' } },
     );

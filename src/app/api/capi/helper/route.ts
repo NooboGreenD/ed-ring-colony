@@ -76,6 +76,7 @@ async function readBinding(svc: ReturnType<typeof serviceClient>, userId: string
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const svc = serviceClient();
     const userId = await resolveHelperUser(req, svc);
@@ -128,10 +129,10 @@ export async function POST(req: Request) {
     for (const warning of result.warnings) console.warn('[CAPI Helper]', warning);
     if (!result.ok) {
       if (result.needsReauth) {
-        await markCapiTokenBroken(svc, userId, result.error || 'Frontier отклонил токен');
+        await markCapiTokenBroken(svc, userId, result.error || t('capi.tokenRejected'));
       }
       return NextResponse.json({
-        error: result.error || 'Синхронизация CAPI не удалась',
+        error: result.error || t('capi.syncFailedShort'),
         needsReauth: result.needsReauth,
         reason: result.reason,
         kind: result.errorKind,
