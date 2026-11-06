@@ -27,7 +27,7 @@ export async function GET(request: Request) {
     const result = await listSmtpKeys();
     if (!result.ok) {
       return NextResponse.json(
-        { error: result.error || 'Не удалось получить настройки почты' },
+        { error: result.error || t('adm.mailFetchFailed') },
         { status: result.status, ...NO_STORE },
       );
     }
@@ -72,7 +72,7 @@ export async function POST(request: Request) {
     const result = await saveSmtpKey(key as SmtpKeyName, value);
     if (!result.ok) {
       return NextResponse.json(
-        { error: result.error || 'Не удалось сохранить ключ' },
+        { error: result.error || t('adm.keySaveFailed') },
         { status: result.status, ...NO_STORE },
       );
     }
@@ -104,7 +104,7 @@ export async function DELETE(request: Request) {
     const result = await deleteSmtpKey(key as SmtpKeyName);
     if (!result.ok) {
       return NextResponse.json(
-        { error: result.error || 'Не удалось удалить ключ' },
+        { error: result.error || t('adm.keyDeleteFailed') },
         { status: result.status, ...NO_STORE },
       );
     }

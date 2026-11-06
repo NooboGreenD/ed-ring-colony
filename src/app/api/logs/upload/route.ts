@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { createHash } from 'crypto';
 import { ingestJournalBatch, JournalResetError, projectSyncSummary } from '@/lib/journalIngest';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 // Current browser/desktop clients send 100 rows. Keep a 500-row allowance for
 // older helpers, while preventing an unbounded legacy payload from turning one
@@ -29,6 +30,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const svc = getAdminClient();
 
@@ -105,7 +107,7 @@ export async function POST(req: Request) {
       ingest = await ingestJournalBatch(svc, { userId, source: 'helper', cmdr, body, logTag: '[logs/upload]' });
     } catch (error) {
       if (error instanceof JournalResetError) {
-        return NextResponse.json({ error: `Не удалось очистить старые логи: ${error.message}` }, { status: 500 });
+        return NextResponse.json({ error: t('api.logsCleanupFailed', { message: error.message }) }, { status: 500 });
       }
       throw error;
     }

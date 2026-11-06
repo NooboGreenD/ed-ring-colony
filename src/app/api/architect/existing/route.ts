@@ -56,7 +56,7 @@ export async function GET(req: Request) {
   const ravenPromise = getJson(`${ravenBase()}/api/v2/system/${encodeURIComponent(system)}`)
     .then((data) => asRecord(data))
     .catch((error: unknown) => {
-      warnings.push(`Raven Colonial: ${error instanceof Error ? error.message : 'нет ответа'}`);
+      warnings.push(`Raven Colonial: ${error instanceof Error ? error.message : t('api.edsmNoAnswer')}`);
       return null;
     });
 
@@ -65,7 +65,7 @@ export async function GET(req: Request) {
   )
     .then((data) => asRecord(data))
     .catch((error: unknown) => {
-      warnings.push(`EDSM: ${error instanceof Error ? error.message : 'нет ответа'}`);
+      warnings.push(`EDSM: ${error instanceof Error ? error.message : t('api.edsmNoAnswer')}`);
       return null;
     });
 

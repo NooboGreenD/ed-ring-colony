@@ -76,7 +76,7 @@ export async function POST(req: Request) {
       writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'done', results, found, missing, errors, elapsedMs: Date.now() - startedAt })}\n\n`));
       await writer.close();
     })().catch(async (error) => {
-      writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'error', message: error instanceof Error ? error.message : 'Ошибка поиска хабов' })}\n\n`));
+      writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'error', message: error instanceof Error ? error.message : t('api.ringHubsFailed') })}\n\n`));
       await writer.close();
     });
 
@@ -93,6 +93,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-hubs] ошибка:', error);
-    return NextResponse.json({ error: error?.message || 'Ошибка поиска хабов' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringHubsFailed') }, { status: 500 });
   }
 }

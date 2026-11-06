@@ -85,9 +85,9 @@ export async function POST(req: Request) {
     if (action !== 'check') return NextResponse.json({ error: t('adm.unknownAction') }, { status: 400 });
     let result: { ok: boolean; message: string };
     try {
-      result = driver.isConfigured(stored.config) ? await driver.check(stored) : { ok: false, message: 'Не заполнены обязательные поля' };
+      result = driver.isConfigured(stored.config) ? await driver.check(stored) : { ok: false, message: t('api.requiredFieldsEmpty') };
     } catch (e: any) {
-      result = { ok: false, message: e?.message || 'Ошибка проверки' };
+      result = { ok: false, message: e?.message || t('api.checkFailed') };
     }
     await billingRepo.updateProvider(id, { last_check_at: new Date().toISOString(), last_check_ok: result.ok, last_check_msg: result.message });
     return NextResponse.json({ success: true, result, providers: await views() });

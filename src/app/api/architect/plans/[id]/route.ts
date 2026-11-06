@@ -25,6 +25,7 @@ const MAX_SITES = 200;
  * плана не должно быть видно.
  */
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const { id } = await params;
   try {
     const supabase = await createClient();
@@ -93,7 +94,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (record.plan !== undefined) {
       const parsed = parsePlan(record.plan);
       if (!parsed.plan) {
-        return NextResponse.json({ error: parsed.error || 'Не удалось прочитать план' }, { status: 400 });
+        return NextResponse.json({ error: parsed.error || t('api.planReadFailed') }, { status: 400 });
       }
       if (parsed.plan.sites.length > MAX_SITES) {
         return NextResponse.json({ error: t('api.planTooLarge', { max: MAX_SITES }) }, { status: 400 });
@@ -135,6 +136,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 
 /** Удалить план. DELETE /api/architect/plans/:id */
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const { id } = await params;
   try {
     const supabase = await createClient();

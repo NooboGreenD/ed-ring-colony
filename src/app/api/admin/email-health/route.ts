@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireAdmin, errorResponse } from '@/lib/billing/auth';
 import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -80,6 +81,7 @@ async function probeGoTrue(url: string, key: string): Promise<{
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
@@ -129,7 +131,7 @@ export async function GET(req: Request) {
       detail: probe
         ? (probe.reachable
           ? 'GoTrue отвечает.'
-          : `Запрос не прошёл: ${probe.error}`)
+          : t('api.probeFailed', { error: probe.error }))
         : 'Проверка не выполнялась: нет ключа.',
       fix: probe && !probe.reachable
         ? (probe.tls === 'error'

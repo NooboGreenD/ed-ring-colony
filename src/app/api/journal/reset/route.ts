@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { resetJournalData, type JournalResetOutcome } from '@/lib/journalReset';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 // Удаление данных по нескольким таблицам может занять дюжину секунд
@@ -78,6 +79,7 @@ async function resolveUserId(req: Request, body: ResetBody): Promise<string | nu
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     let body: ResetBody = {};
     try {
@@ -91,7 +93,7 @@ export async function POST(req: Request) {
 
     if (body.confirm !== true) {
       return NextResponse.json(
-        { error: 'Требуется подтверждение: передайте confirm: true' },
+        { error: t('api.journalResetConfirm') },
         { status: 400 },
       );
     }
@@ -115,7 +117,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       reset: outcome,
-      message: 'Журнальные данные сброшены. Теперь можно загрузить логи заново.',
+      message: t('api.journalResetDone'),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not reset journal data';

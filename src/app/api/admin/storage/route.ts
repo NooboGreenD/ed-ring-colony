@@ -37,7 +37,7 @@ export async function GET(request: Request) {
         {
           error: stale
             ? 'Update-агент старее сайта и не умеет проверять Storage — перезапустите агент в блоке «Обновление проекта»'
-            : result.error || 'Не удалось проверить Storage',
+            : result.error || t('adm.storageCheckFailed'),
         },
         { status: stale ? 503 : result.status, ...NO_STORE },
       );

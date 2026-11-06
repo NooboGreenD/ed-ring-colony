@@ -184,7 +184,7 @@ export async function POST(request: Request) {
                 deadline
               );
               if (!Array.isArray(data?.commodities))
-                throw new Error('EDSM не передал данные рынка станции.');
+                throw new Error(t('api.edsmNoMarketData'));
               const report = edsmStationReport(sys, station);
               const observed_at = validTime(data.updateTime || data.timestamp || station.updateTime?.market) || '1970-01-01T00:00:00.000Z';
               report.inventories.market = { observed_at, items: data.commodities };
@@ -377,7 +377,7 @@ export async function POST(request: Request) {
         } catch (error) {
           isDone = false;
           scanLog.push({ system: job.ref_system, status: 'unavailable', timestamp: new Date().toISOString(),
-            warning: `Расширенный поиск временно недоступен: ${marketError(error)}. Результаты первого этапа сохранены.` });
+            warning: t('api.findAdvancedUnavailable', { message: marketError(error) }) });
         }
       }
     }
@@ -464,7 +464,7 @@ export async function POST(request: Request) {
   } catch (e: any) {
     console.error('[Market Step] Error:', e);
     return NextResponse.json(
-      { error: marketError(e) || 'Ошибка шага поиска' },
+      { error: marketError(e) || t('api.findStepFailed') },
       { status: 500 }
     );
   }

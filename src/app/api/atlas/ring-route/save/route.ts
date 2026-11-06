@@ -174,6 +174,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-route/save] ошибка:', error);
-    return NextResponse.json({ error: error?.message || 'Не удалось сохранить кольцо в проект' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringSaveFailed') }, { status: 500 });
   }
 }

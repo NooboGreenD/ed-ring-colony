@@ -212,7 +212,7 @@ export async function GET(req: Request) {
         success: false,
         error: missing
           ? t('adm.bgsTablesMissing')
-          : `Не удалось прочитать состояние фракций: ${message.slice(0, 300)}`,
+          : t('api.factionsStateReadFailed', { message: message.slice(0, 300) }),
       },
       { status: 503, headers },
     );

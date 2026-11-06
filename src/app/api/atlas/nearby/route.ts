@@ -42,7 +42,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error ? error.message : 'Не удалось выполнить поиск',
+          error instanceof Error ? error.message : t('api.searchFailed'),
       },
       { status: 503 }
     );

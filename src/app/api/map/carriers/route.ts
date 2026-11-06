@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { resolveRequestUser } from '@/lib/helperAuth';
 import { loadMapCarriers } from '@/lib/carrierMapStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +15,7 @@ export const dynamic = 'force-dynamic';
  * только если тот не скрыл местоположение. Груза и финансов здесь нет.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const svc = createServiceClient();
     let viewerId: string | null = null;
@@ -26,6 +28,6 @@ export async function GET(request: Request) {
     return NextResponse.json(payload, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     console.error('[map/carriers]', error instanceof Error ? error.message : error);
-    return NextResponse.json({ error: 'Не удалось загрузить авианосцы' }, { status: 503 });
+    return NextResponse.json({ error: t('api.carriersLoadFailed') }, { status: 503 });
   }
 }

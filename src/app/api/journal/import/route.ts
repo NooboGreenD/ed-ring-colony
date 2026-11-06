@@ -10,6 +10,7 @@ import {
 } from '@/lib/colonisationEvents';
 import { resetJournalData } from '@/lib/journalReset';
 import { syncProjectsFromSites } from '@/lib/projects/projectSync';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 const JOURNAL_DATABASE_BATCH_SIZE = 100;
 const MAX_EVENTS_PER_REQUEST = 500;
@@ -76,6 +77,7 @@ async function insertSnapshots(
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   let svc: ReturnType<typeof createServiceClient> | null = null;
   let importId: number | null = null;
 
@@ -117,7 +119,7 @@ export async function POST(req: Request) {
         if (svc && importId) {
           await svc.from('journal_imports').update({ status: 'failed', error_message: (resetError as Error).message.slice(0, 1000) }).eq('id', importId);
         }
-        return NextResponse.json({ error: `Не удалось очистить старые логи: ${(resetError as Error).message}` }, { status: 500 });
+        return NextResponse.json({ error: t('api.logsCleanupFailed', { message: (resetError as Error).message }) }, { status: 500 });
       }
     }
 

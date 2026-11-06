@@ -27,7 +27,7 @@ export async function GET(request: Request) {
 
     const result = await listEnvKeys();
     if (!result.ok) {
-      return NextResponse.json({ error: result.error || 'Не удалось получить список ключей' }, { status: result.status, ...NO_STORE });
+      return NextResponse.json({ error: result.error || t('adm.keysFetchFailed') }, { status: result.status, ...NO_STORE });
     }
     return NextResponse.json({
       success: true,
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
 
     const result = await saveEnvKey(key, value);
     if (!result.ok) {
-      return NextResponse.json({ error: result.error || 'Не удалось сохранить ключ' }, { status: result.status, ...NO_STORE });
+      return NextResponse.json({ error: result.error || t('adm.keySaveFailed') }, { status: result.status, ...NO_STORE });
     }
     return NextResponse.json({
       success: true,
@@ -83,7 +83,7 @@ export async function DELETE(request: Request) {
 
     const result = await deleteEnvKey(key);
     if (!result.ok) {
-      return NextResponse.json({ error: result.error || 'Не удалось удалить ключ' }, { status: result.status, ...NO_STORE });
+      return NextResponse.json({ error: result.error || t('adm.keyDeleteFailed') }, { status: result.status, ...NO_STORE });
     }
     return NextResponse.json({ success: true, key }, NO_STORE);
   } catch {

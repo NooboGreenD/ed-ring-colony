@@ -70,7 +70,7 @@ export async function DELETE(req: Request) {
     const id = new URL(req.url).searchParams.get('id');
     if (!id) return NextResponse.json({ error: 'Item ID required' }, { status: 400 });
     const r = await billingRepo.deleteShopItem(id);
-    return NextResponse.json({ success: true, ...r, message: r.deleted ? 'Товар удалён' : `Товар архивирован: им владеют ${r.owners} пилот(ов)` });
+    return NextResponse.json({ success: true, ...r, message: r.deleted ? t('api.itemDeleted') : t('api.itemArchived', { owners: r.owners }) });
   } catch (err) {
     return errorResponse(err);
   }

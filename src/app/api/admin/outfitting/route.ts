@@ -30,15 +30,15 @@ export async function POST(request: Request) {
   try {
     const auth = await requireCatalogAdmin(request);
     if ('response' in auth) return auth.response;
-    if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') throw new CatalogError('Ожидается application/json', 415);
-    if (Number(request.headers.get('content-length') || 0) > 1_000_000) throw new CatalogError('Запрос превышает 1 МБ', 413);
+    if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') throw new CatalogError(t('api.jsonExpected'), 415);
+    if (Number(request.headers.get('content-length') || 0) > 1_000_000) throw new CatalogError(t('api.requestTooLarge1mb'), 413);
     const raw = await request.text();
-    if (Buffer.byteLength(raw, 'utf8') > 1_000_000) throw new CatalogError('Запрос превышает 1 МБ', 413);
+    if (Buffer.byteLength(raw, 'utf8') > 1_000_000) throw new CatalogError(t('api.requestTooLarge1mb'), 413);
     let body;
-    try { body = JSON.parse(raw); } catch { throw new CatalogError('Некорректный JSON'); }
+    try { body = JSON.parse(raw); } catch { throw new CatalogError(t('api.jsonInvalid')); }
     const { revision, commands } = parseCatalogCommands(body);
     const [base, state] = await Promise.all([loadCatalogSource(), readCatalogState()]);
-    if (revision !== state.revision) throw new CatalogError('Каталог изменён другим администратором. Обновите список и повторите действие', 409);
+    if (revision !== state.revision) throw new CatalogError(t('api.catalogStaleRevision'), 409);
     const next = applyCatalogCommands(base, state, commands, auth.actor);
     await saveCatalogState(revision, next);
     return NextResponse.json(catalogSnapshot(base, next, catalogStorage()), NO_STORE);

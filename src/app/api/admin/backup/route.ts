@@ -77,7 +77,7 @@ export async function POST(request: Request) {
     const running = await getUpdateAgentStatus({ cacheMs: 0 });
     if (!running.configured) {
       return NextResponse.json(
-        { success: false, error: running.reason || 'Update-агент не настроен (UPDATE_AGENT_URL, UPDATE_AGENT_TOKEN)' },
+        { success: false, error: running.reason || t('api.updateAgentMissing') },
         { status: 503, ...NO_STORE },
       );
     }

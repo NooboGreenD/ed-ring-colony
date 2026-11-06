@@ -140,7 +140,7 @@ export async function GET(req: Request) {
     } catch (error) {
       summaryError = /powerplay_admin_summary|schema cache|does not exist/i.test(String((error as Error)?.message))
         ? t('adm.ppSummaryAfterMigration')
-        : `Сводка недоступна: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
+        : t('adm.bgsSummaryFailed', { message: String((error as Error)?.message ?? error).slice(0, 200) });
     }
     const live = getPowerplayLiveRun();
     const last = live ?? getPowerplayLastRun();
@@ -220,7 +220,7 @@ export async function GET(req: Request) {
         success: false,
         error: missing
           ? t('adm.ppTablesMissing')
-          : `Не удалось прочитать состояние PowerPlay: ${message.slice(0, 300)}`,
+          : t('api.ppStateReadFailed', { message: message.slice(0, 300) }),
       },
       { status: 503, headers },
     );
@@ -285,7 +285,7 @@ export async function POST(req: Request) {
       const message = String((error as Error)?.message ?? error);
       const missing = /eddn_listener_state|schema cache|does not exist/i.test(message);
       return NextResponse.json(
-        { success: false, error: missing ? t('adm.eddnStateTableMissing') : `Не удалось переключить EDDN: ${message.slice(0, 200)}` },
+        { success: false, error: missing ? t('adm.eddnStateTableMissing') : t('api.eddnToggleFailed', { message: message.slice(0, 200) }) },
         { status: 503, headers },
       );
     }

@@ -26,6 +26,7 @@ const MAX_SITES = 200;
  * GET /api/architect/plans?system=HIP%2090297
  */
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const system = (searchParams.get('system') || '').trim();
@@ -85,7 +86,7 @@ export async function POST(req: Request) {
     const requestedSystem = typeof record.system === 'string' ? record.system.trim() : '';
     const parsed = parsePlan(record.plan);
     if (!parsed.plan) {
-      return NextResponse.json({ error: parsed.error || 'Не удалось прочитать план' }, { status: 400 });
+      return NextResponse.json({ error: parsed.error || t('api.planReadFailed') }, { status: 400 });
     }
     const plan = parsed.plan;
     const system = requestedSystem || plan.system;

@@ -252,6 +252,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-refine] ошибка:', error);
-    return NextResponse.json({ error: error?.message || 'Ошибка уточнения маршрута' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringRefineFailed') }, { status: 500 });
   }
 }

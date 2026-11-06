@@ -120,7 +120,7 @@ export async function POST(req: Request) {
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
     const { value, error: invalid } = validateNewProject(parsed.body);
-    if (!value) return jsonError(invalid ?? 'Неверные данные проекта', 400);
+    if (!value) return jsonError(invalid ?? t('api.projectDataInvalid'), 400);
 
     const svc = createServiceClient();
     const { data: owned, error: ownedError } = await svc

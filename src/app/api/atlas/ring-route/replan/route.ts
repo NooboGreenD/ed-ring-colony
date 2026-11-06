@@ -73,6 +73,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-replan] ошибка:', error);
-    return NextResponse.json({ error: error?.message || 'Не удалось сбросить сессию для повтора' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringReplanFailed') }, { status: 500 });
   }
 }

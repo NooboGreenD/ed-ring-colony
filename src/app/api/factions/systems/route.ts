@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { loadBgsLayer } from '@/lib/bgsStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -20,6 +21,7 @@ export const runtime = 'nodejs';
  * `?meta=1` отдаёт только `status`, `version` и `meta`.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     // `?meta=1` — только состояние (без систем): так вкладка следит за идущим
     // импортом, не перекачивая мегабайты слоя каждые 15 секунд.
@@ -47,7 +49,7 @@ export async function GET(request: Request) {
     console.error('[factions/systems]', message);
     const missing = /bgs_|schema cache|does not exist/i.test(message);
     return NextResponse.json(
-      { error: missing ? 'Таблиц фракций нет в базе: нужна миграция 20261019120000_minor_factions.sql' : 'Не удалось загрузить системы фракций' },
+      { error: missing ? t('api.factionTablesMissingShort') : t('api.factionSystemsFailed') },
       { status: 503 },
     );
   }

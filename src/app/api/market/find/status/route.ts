@@ -1,10 +1,12 @@
 import { marketError } from '@/lib/marketUpstream';
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(request.url);
     const job_id = searchParams.get('id');
@@ -46,7 +48,7 @@ export async function GET(request: Request) {
   } catch (e: any) {
     console.error('[Market Status] Error:', e);
     return NextResponse.json(
-      { error: marketError(e) || 'Не удалось проверить статус' },
+      { error: marketError(e) || t('api.findStatusFailed') },
       { status: 500 }
     );
   }

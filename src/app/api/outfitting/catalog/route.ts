@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server';
 import { mergeCatalog } from '@/lib/outfitting/catalog';
 import { loadCatalogSource, readCatalogState } from '@/lib/outfitting/catalogStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /** Public, read-only effective catalogue. Private audit/actor data stays in admin. */
 export async function GET() {
+  const t = await apiTranslate();
   try {
     const [base, state] = await Promise.all([loadCatalogSource(), readCatalogState()]);
     return NextResponse.json(mergeCatalog(base, state), { headers: { 'Cache-Control': 'no-store' } });
@@ -14,6 +16,6 @@ export async function GET() {
     // Never silently resurrect deleted modules by returning the static source
     // during a configured DB outage. The browser retains its last good copy.
     console.error('[outfitting/catalog]', error);
-    return NextResponse.json({ error: 'Каталог верфи временно недоступен. Повторите загрузку позже' }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json({ error: t('api.outfittingUnavailable') }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
   }
 }

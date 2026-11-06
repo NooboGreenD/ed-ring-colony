@@ -133,7 +133,7 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     console.error('[ring-route] шаг не удался:', error);
-    return NextResponse.json({ error: error?.message || 'Ошибка поиска кольца' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringSearchFailed') }, { status: 500 });
   }
 }
 

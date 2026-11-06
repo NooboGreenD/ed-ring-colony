@@ -36,13 +36,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     console.error('[projects/progress GET]', message);
     const missing = /system_progress_sources|schema cache|does not exist/i.test(message);
     return NextResponse.json(
-      { error: missing ? 'Прогресс систем ждёт миграцию 20261020120000_unified_system_data.sql' : 'Не удалось посчитать прогресс систем', systems: [] },
+      { error: missing ? t('api.systemsMigrationPending') : t('api.systemsProgressFailed'), systems: [] },
       { status: 503 },
     );
   }
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const projectId = parseInt(resolvedParams.id);

@@ -28,11 +28,11 @@ export async function POST(req: Request) {
       progress: {
         percent: 100,
         stage: 'done',
-        message: `Кольцо собрано: ${result.route.length} точек, расчётных ${result.totals.syntheticPoints}`,
+        message: t('api.ringAssembled', { points: result.route.length, synthetic: result.totals.syntheticPoints }),
       },
     });
   } catch (error: any) {
     console.error('[ring-route/finalize] ошибка:', error);
-    return NextResponse.json({ error: error?.message || 'Не удалось собрать маршрут кольца' }, { status: 500 });
+    return NextResponse.json({ error: error?.message || t('api.ringAssembleFailed') }, { status: 500 });
   }
 }

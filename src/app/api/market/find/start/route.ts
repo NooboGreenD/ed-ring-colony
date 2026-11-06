@@ -174,7 +174,7 @@ export async function POST(request: Request) {
   } catch (e: any) {
     console.error('[Market Start] Error:', e);
     return NextResponse.json(
-      { error: marketError(e) || 'Не удалось запустить поиск' },
+      { error: marketError(e) || t('api.findStartFailed') },
       { status: 500 }
     );
   }
