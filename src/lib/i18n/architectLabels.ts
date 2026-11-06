@@ -1,10 +1,3 @@
-/**
- * Подписи справочника «Архитектор системы» на языках интерфейса.
- *
- * Русские значения остаются в `lib/architect/catalogue.ts`: по ним сверяются
- * тесты и строятся планы. Здесь — перевод для экрана по идентификатору.
- */
-
 export const architectLabelTranslations: Record<string, Record<string, string>> = {
   ru: {
     'arch.preReq.satellite': 'спутник',
@@ -65,6 +58,14 @@ export const architectLabelTranslations: Record<string, Record<string, string>> 
     'arch.econ.colony.imports': 'Продовольствие, Техника, Медикаменты и снаряжение',
     'arch.econ.contraband.produces': 'Нелегальные товары',
     'arch.econ.contraband.imports': 'Наркотики и оружие',
+    'arch.primary.scanCoriolis': 'Скан основного порта (ED Wiki): ≈69 000 т против 53 723 т у обычного Кориолиса',
+    'arch.primary.estimateCoriolis': 'База стоит как Кориолис, поэтому основной порт взят по списку Кориолиса (≈69 000 т)',
+    'arch.primary.scanOrbis': 'Скан основного порта (ED Wiki): ≈242 000 т против 209 122 т у обычного Орбиса',
+    'arch.primary.estimateOrbis': 'Оцеллус стоит как Орбис, поэтому основной порт взят по списку Орбиса (≈242 000 т)',
+    'arch.primary.estimateDodec': 'Оценка: обычный список ×{factor} — точного скана основного Додекаэдра нет',
+    'arch.primary.estimatePlanetary': 'Оценка: обычный список ×{factor} — точного скана основного планетарного порта нет',
+    'arch.primary.estimateOutpost': 'Оценка: обычный список ×{factor} — основной аванпост дороже примерно на 18 %',
+    'arch.primary.estimateMilitary': 'Оценка: обычный список ×{factor} — военный аванпост везёт другой набор грузов',
   },
   en: {
     'arch.preReq.satellite': 'satellite',
@@ -125,6 +126,14 @@ export const architectLabelTranslations: Record<string, Record<string, string>> 
     'arch.econ.colony.imports': 'Food, Equipment, Medicines and gear',
     'arch.econ.contraband.produces': 'Illegal goods',
     'arch.econ.contraband.imports': 'Drugs and weapons',
+    'arch.primary.scanCoriolis': 'Primary port scan (ED Wiki): ≈69,000 t versus 53,723 t for a regular Coriolis',
+    'arch.primary.estimateCoriolis': 'The base costs the same as a Coriolis, so the primary port uses the Coriolis list (≈69,000 t)',
+    'arch.primary.scanOrbis': 'Primary port scan (ED Wiki): ≈242,000 t versus 209,122 t for a regular Orbis',
+    'arch.primary.estimateOrbis': 'The Ocellus costs the same as an Orbis, so the primary port uses the Orbis list (≈242,000 t)',
+    'arch.primary.estimateDodec': 'Estimate: regular list ×{factor} — there is no exact scan of a primary Dodecahedron',
+    'arch.primary.estimatePlanetary': 'Estimate: regular list ×{factor} — there is no exact scan of a primary planetary port',
+    'arch.primary.estimateOutpost': 'Estimate: regular list ×{factor} — a primary outpost costs about 18 % more',
+    'arch.primary.estimateMilitary': 'Estimate: regular list ×{factor} — a military outpost carries a different cargo set',
   },
   de: {
     'arch.preReq.satellite': 'Satellit',
@@ -185,6 +194,14 @@ export const architectLabelTranslations: Record<string, Record<string, string>> 
     'arch.econ.colony.imports': 'Nahrung, Geräte, Medikamente und Ausrüstung',
     'arch.econ.contraband.produces': 'Illegale Waren',
     'arch.econ.contraband.imports': 'Drogen und Waffen',
+    'arch.primary.scanCoriolis': 'Scan des Hauptports (ED Wiki): ≈69 000 t gegenüber 53 723 t bei einem normalen Coriolis',
+    'arch.primary.estimateCoriolis': 'Die Basis kostet wie ein Coriolis, daher nutzt der Hauptport die Coriolis-Liste (≈69 000 t)',
+    'arch.primary.scanOrbis': 'Scan des Hauptports (ED Wiki): ≈242 000 t gegenüber 209 122 t bei einem normalen Orbis',
+    'arch.primary.estimateOrbis': 'Der Ocellus kostet wie ein Orbis, daher nutzt der Hauptport die Orbis-Liste (≈242 000 t)',
+    'arch.primary.estimateDodec': 'Schätzung: normale Liste ×{factor} — es gibt keinen genauen Scan eines Haupt-Dodekaeders',
+    'arch.primary.estimatePlanetary': 'Schätzung: normale Liste ×{factor} — es gibt keinen genauen Scan eines planetaren Hauptports',
+    'arch.primary.estimateOutpost': 'Schätzung: normale Liste ×{factor} — ein Haupt-Außenposten kostet etwa 18 % mehr',
+    'arch.primary.estimateMilitary': 'Schätzung: normale Liste ×{factor} — ein militärischer Außenposten führt eine andere Fracht',
   },
   it: {
     'arch.preReq.satellite': 'satellite',
@@ -245,6 +262,14 @@ export const architectLabelTranslations: Record<string, Record<string, string>> 
     'arch.econ.colony.imports': 'Cibo, Attrezzature, Medicinali ed equipaggiamento',
     'arch.econ.contraband.produces': 'Merci illegali',
     'arch.econ.contraband.imports': 'Droghe e armi',
+    'arch.primary.scanCoriolis': 'Scansione del porto principale (ED Wiki): ≈69 000 t contro 53 723 t di un Coriolis normale',
+    'arch.primary.estimateCoriolis': 'La base costa come un Coriolis, quindi il porto principale usa la lista Coriolis (≈69 000 t)',
+    'arch.primary.scanOrbis': 'Scansione del porto principale (ED Wiki): ≈242 000 t contro 209 122 t di un Orbis normale',
+    'arch.primary.estimateOrbis': 'L’Ocellus costa come un Orbis, quindi il porto principale usa la lista Orbis (≈242 000 t)',
+    'arch.primary.estimateDodec': 'Stima: lista normale ×{factor} — non esiste una scansione esatta di un Dodecaedro principale',
+    'arch.primary.estimatePlanetary': 'Stima: lista normale ×{factor} — non esiste una scansione esatta di un porto planetario principale',
+    'arch.primary.estimateOutpost': 'Stima: lista normale ×{factor} — un avamposto principale costa circa il 18 % in più',
+    'arch.primary.estimateMilitary': 'Stima: lista normale ×{factor} — un avamposto militare porta un insieme di carichi diverso',
   },
   ko: {
     'arch.preReq.satellite': '위성',
@@ -305,6 +330,14 @@ export const architectLabelTranslations: Record<string, Record<string, string>> 
     'arch.econ.colony.imports': '식량, 장비, 의약품 및 장비',
     'arch.econ.contraband.produces': '불법 물품',
     'arch.econ.contraband.imports': '마약 및 무기',
+    'arch.primary.scanCoriolis': '주요 항구 스캔(ED Wiki): 일반 코리올리스의 53,723 t 대비 ≈69,000 t',
+    'arch.primary.estimateCoriolis': '기지는 코리올리스와 같은 가격이므로 주요 항구는 코리올리스 목록을 사용합니다(≈69,000 t)',
+    'arch.primary.scanOrbis': '주요 항구 스캔(ED Wiki): 일반 오르비스의 209,122 t 대비 ≈242,000 t',
+    'arch.primary.estimateOrbis': '오셀루스는 오르비스와 같은 가격이므로 주요 항구는 오르비스 목록을 사용합니다(≈242,000 t)',
+    'arch.primary.estimateDodec': '추정: 일반 목록 ×{factor} — 주요 도데카에드론의 정확한 스캔은 없습니다',
+    'arch.primary.estimatePlanetary': '추정: 일반 목록 ×{factor} — 주요 행성 항구의 정확한 스캔은 없습니다',
+    'arch.primary.estimateOutpost': '추정: 일반 목록 ×{factor} — 주요 전초기지는 약 18 % 더 비쌉니다',
+    'arch.primary.estimateMilitary': '추정: 일반 목록 ×{factor} — 군사 전초기지는 다른 화물 구성을 운반합니다',
   },
   zh: {
     'arch.preReq.satellite': '卫星',
@@ -365,6 +398,14 @@ export const architectLabelTranslations: Record<string, Record<string, string>> 
     'arch.econ.colony.imports': '食品、设备、药品与装备',
     'arch.econ.contraband.produces': '非法货物',
     'arch.econ.contraband.imports': '毒品与武器',
+    'arch.primary.scanCoriolis': '主港口扫描（ED Wiki）：≈69,000 吨，普通科里奥利斯为 53,723 吨',
+    'arch.primary.estimateCoriolis': '基地与科里奥利斯同价，因此主港口采用科里奥利斯清单（≈69,000 吨）',
+    'arch.primary.scanOrbis': '主港口扫描（ED Wiki）：≈242,000 吨，普通奥比斯为 209,122 吨',
+    'arch.primary.estimateOrbis': '奥赛勒斯与奥比斯同价，因此主港口采用奥比斯清单（≈242,000 吨）',
+    'arch.primary.estimateDodec': '估算：普通清单 ×{factor}——没有主十二面体的精确扫描',
+    'arch.primary.estimatePlanetary': '估算：普通清单 ×{factor}——没有主行星港口的精确扫描',
+    'arch.primary.estimateOutpost': '估算：普通清单 ×{factor}——主前哨站约贵 18%',
+    'arch.primary.estimateMilitary': '估算：普通清单 ×{factor}——军事前哨站运输不同的货物组合',
   },
   ja: {
     'arch.preReq.satellite': '人工衛星',
@@ -425,6 +466,14 @@ export const architectLabelTranslations: Record<string, Record<string, string>> 
     'arch.econ.colony.imports': '食料、装置、医薬品と装備',
     'arch.econ.contraband.produces': '違法品',
     'arch.econ.contraband.imports': '麻薬と武器',
+    'arch.primary.scanCoriolis': '主港のスキャン（ED Wiki）: 通常のコリオリスの 53,723 t に対し ≈69,000 t',
+    'arch.primary.estimateCoriolis': '基地はコリオリスと同じ価格のため、主港はコリオリスのリストを使用します（≈69,000 t）',
+    'arch.primary.scanOrbis': '主港のスキャン（ED Wiki）: 通常のオービスの 209,122 t に対し ≈242,000 t',
+    'arch.primary.estimateOrbis': 'オセルスはオービスと同じ価格のため、主港はオービスのリストを使用します（≈242,000 t）',
+    'arch.primary.estimateDodec': '推定: 通常リスト ×{factor} — 主十二面体の正確なスキャンはありません',
+    'arch.primary.estimatePlanetary': '推定: 通常リスト ×{factor} — 主惑星港の正確なスキャンはありません',
+    'arch.primary.estimateOutpost': '推定: 通常リスト ×{factor} — 主前哨基地は約 18 % 高価です',
+    'arch.primary.estimateMilitary': '推定: 通常リスト ×{factor} — 軍事前哨基地は別の貨物構成を運びます',
   },
 };
 

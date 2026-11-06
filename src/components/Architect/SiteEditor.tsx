@@ -13,7 +13,7 @@ import {
   placementCheck,
 } from '@/lib/architect/planner';
 import type { SitePatch } from '@/lib/architect/planner';
-import { economyFitText, placementCheckTexts } from '@/lib/i18n/planText';
+import { economyFitText, placementCheckTexts, primaryNoteText } from '@/lib/i18n/planText';
 import type {
   ArchitectBody,
   ArchitectPlan,
@@ -238,7 +238,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                   </button>
                   <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
                     {primary
-                      ? t('sed.primaryNote', { effective: formatTons(effectiveTons), regular: formatTons(regularTons), estimate: primaryCargo?.approximate ? t('sed.estimateNote') : '', note: installation.primary?.note ?? '' })
+                      ? t('sed.primaryNote', { effective: formatTons(effectiveTons), regular: formatTons(regularTons), estimate: primaryCargo?.approximate ? t('sed.estimateNote') : '', note: primaryNoteText(installation.primary, t) })
                       : t('sed.primaryHint')}
                   </div>
                 </div>

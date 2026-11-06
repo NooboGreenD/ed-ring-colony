@@ -12,7 +12,7 @@ import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } fro
 import type { ArchitectPlan, PlanEvaluation, SystemEconomy, SystemEffectKey } from '@/lib/architect/types';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { architectLabel } from '@/lib/i18n/architectLabels';
-import { bodyTraitLabel, economyMarketText, issueText } from '@/lib/i18n/planText';
+import { bodyTraitLabel, economyMarketText, issueText, primaryNoteText } from '@/lib/i18n/planText';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
   pop: 'psm.effPop',
@@ -159,7 +159,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
               {t('psm.materials')} {primaryPort.approximate ? '≈ ' : ''}{formatTons(primaryPort.tons)}
               {' · '}{t('psm.noSystemPoints')}
             </div>
-            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>{primaryInstallation.primary?.note}</div>
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>{primaryNoteText(primaryInstallation.primary, t)}</div>
             {primaryCargoList.length > 0 && (
               <>
                 <button type="button" style={linkButton} onClick={() => setShowPrimaryCargo((value) => !value)}>

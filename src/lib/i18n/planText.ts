@@ -24,6 +24,15 @@ export function issueText(issue: PlanIssue, t: PlanTranslate): string {
   return resolve(issue.key, issue.params, issue.message, t);
 }
 
+/** Откуда взяты тонны основного порта: подсказка в карточке постройки. */
+export function primaryNoteText(
+  primary: { note: string; noteKey?: string; noteParams?: Record<string, string | number> } | null | undefined,
+  t: PlanTranslate,
+): string {
+  if (!primary) return '';
+  return resolve(primary.noteKey, primary.noteParams, primary.note, t);
+}
+
 /** Рынок экономики одной строкой: что станция продаёт и что ввозит. */
 export function economyMarketText(economy: SystemEconomy, side: 'produces' | 'imports', t: PlanTranslate): string {
   const key = `arch.econ.${economy}.${side}`;

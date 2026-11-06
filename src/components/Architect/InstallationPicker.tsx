@@ -5,7 +5,7 @@ import { BUILD_CLASS_LABELS_RU, ECONOMY_LABELS_RU, PAD_LABELS_RU, PRE_REQS, inst
 import { ECONOMY_MARKET } from '@/lib/architect/economy';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { architectLabel } from '@/lib/i18n/architectLabels';
-import { economyMarketText, placementCheckTexts } from '@/lib/i18n/planText';
+import { economyMarketText, placementCheckTexts, primaryNoteText } from '@/lib/i18n/planText';
 import {
   commodityLabel,
   formatTons,
@@ -209,7 +209,7 @@ function PickerRow({
             <span style={{ color: 'var(--muted)', fontSize: 12 }}> · {installation.id}</span>
             {primary ? (
               <span
-                title={primary.note}
+                title={primaryNoteText(primary, t)}
                 style={{ marginLeft: 6, fontSize: 11, color: 'var(--orange)', border: '1px solid var(--orange)', borderRadius: 3, padding: '0 5px' }}
               >
                 {t('ipk.canBePrimary')}
@@ -300,7 +300,7 @@ function PickerRow({
               <div style={{ fontSize: 11, color: 'var(--orange)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
                 {t('ipk.primaryMaterials', { estimate: primary.approximate ? t('ipk.estimate') : '', tons: formatTons(primaryTons) })}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>{primary.note}</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>{primaryNoteText(primary, t)}</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '2px 16px', fontSize: 12 }}>
                 {primaryCargo.map(([key, tons]) => (
                   <div key={key} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
