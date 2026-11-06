@@ -26,10 +26,41 @@ import {
 import SquadronChat from "@/components/SquadronChat";
 import CarrierPanel from "@/components/Carriers/CarrierPanel";
 import Avatar from "@/components/Avatar";
+import { useI18n } from '@/lib/i18n/I18nContext';
+
+/** Подписи типов принадлежности и активности живут в squadronConstants на
+ *  русском; здесь только соответствие ключам словаря. */
+const ALLEGIANCE_KEYS: Record<string, string> = {
+  Independent: "sq.algIndependent",
+  Alliance: "sq.algAlliance",
+  Empire: "sq.algEmpire",
+  Federation: "sq.algFederation",
+};
+
+const ACTIVITY_KEYS: Record<string, string> = {
+  Mixed: "sq.actMixed",
+  Combat: "sq.actCombat",
+  Exploration: "sq.actExploration",
+  Trading: "sq.actTrading",
+  Mining: "sq.actMining",
+  "Bounty Hunting": "sq.actBounty",
+  Roleplay: "sq.actRoleplay",
+  Colonia: "sq.actColonization",
+};
+
+const LANGUAGE_KEYS: Record<string, string> = { Other: "sq.langOther" };
+
 
 type Tab = "overview" | "pilots" | "ranks" | "projects" | "carrier" | "settings" | "chat";
 
 export default function SquadronPage() {
+  const { t, locale } = useI18n();
+  const optionLabel = (map: Record<string, string>, entry: { value: string; label: string }) => {
+    const key = map[entry.value];
+    if (!key) return entry.label;
+    const value = t(key);
+    return value === key ? entry.label : value;
+  };
   const params = useParams();
   const id = parseInt(params.id as string);
 
@@ -113,9 +144,9 @@ export default function SquadronPage() {
     });
     const json = await res.json();
     if (!res.ok) {
-      setMsg(json.error || "Ошибка сохранения");
+      setMsg(json.error || t("sq.saveError"));
     } else {
-      setMsg("Сохранено");
+      setMsg(t("sq.saved"));
       setSquadron(json.squadron);
       setForm(json.squadron);
     }
@@ -125,7 +156,7 @@ export default function SquadronPage() {
   const uploadBranding = async (kind: "logo" | "banner", file: File | null) => {
     if (!file) return;
     if (file.size > SQUADRON_IMAGE_LIMITS[kind]) {
-      setMsg(`Изображение больше ${SQUADRON_IMAGE_LIMITS[kind] / 1024 / 1024} МБ — уменьшите файл`);
+      setMsg(t("sq.imageTooLarge", { mb: SQUADRON_IMAGE_LIMITS[kind] / 1024 / 1024 }));
       return;
     }
     setBrandingBusy(kind); setMsg("");
@@ -135,24 +166,24 @@ export default function SquadronPage() {
     try {
       const res = await authFetch(`/api/squadrons/${id}/branding`, { method: "POST", body: data });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Не удалось загрузить изображение");
+      if (!res.ok) throw new Error(json.error || t("sq.imageUploadFailed"));
       setSquadron(json.squadron);
       setForm(json.squadron);
-      setMsg(json.warning || (kind === "logo" ? "Логотип обновлён" : "Фоновое изображение обновлено"));
+      setMsg(json.warning || (kind === "logo" ? t("sq.logoUpdated") : t("sq.bannerUpdated")));
     } catch (error) {
-      setMsg(error instanceof Error ? error.message : "Ошибка загрузки");
+      setMsg(error instanceof Error ? error.message : t("sq.uploadError"));
     } finally { setBrandingBusy(null); }
   };
 
   const removeBranding = async (kind: "logo" | "banner") => {
-    if (!confirm(`Удалить ${kind === "logo" ? "логотип" : "фоновое изображение"}?`)) return;
+    if (!confirm(kind === "logo" ? t("sq.deleteLogoConfirm") : t("sq.deleteBannerConfirm"))) return;
     setBrandingBusy(kind); setMsg("");
     try {
       const res = await authFetch(`/api/squadrons/${id}/branding?kind=${kind}`, { method: "DELETE" });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Не удалось удалить изображение");
-      setSquadron(json.squadron); setForm(json.squadron); setMsg("Оформление обновлено");
-    } catch (error) { setMsg(error instanceof Error ? error.message : "Ошибка удаления"); }
+      if (!res.ok) throw new Error(json.error || t("sq.imageDeleteFailed"));
+      setSquadron(json.squadron); setForm(json.squadron); setMsg(t("sq.brandingUpdated"));
+    } catch (error) { setMsg(error instanceof Error ? error.message : t("sq.deleteError")); }
     finally { setBrandingBusy(null); }
   };
 
@@ -167,10 +198,10 @@ export default function SquadronPage() {
 
   const nameChangeBlocked = daysUntilNameChange() !== null && (daysUntilNameChange() ?? 0) > 0;
 
-  if (loading) return <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--muted)", fontFamily: "ui-monospace, monospace", letterSpacing: 2, textTransform: "uppercase" }}>Загрузка...</div>;
-  if (!squadron) return <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Эскадрилья не найдена</div>;
+  if (loading) return <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--muted)", fontFamily: "ui-monospace, monospace", letterSpacing: 2, textTransform: "uppercase" }}>{t("common.loading")}</div>;
+  if (!squadron) return <div className="card" style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>{t("sq.notFound")}</div>;
 
-  const statusText = squadron.status === "active" ? "Активна" : squadron.status === "recruiting" ? "Набор" : squadron.status === "closed" ? "Закрыта" : "Расформирована";
+  const statusText = squadron.status === "active" ? t("sq.statusActive") : squadron.status === "recruiting" ? t("sq.statusRecruiting") : squadron.status === "closed" ? t("sq.statusClosed") : t("sq.statusDisbanded");
   const statusColor = squadron.status === "active" ? "#22c55e" : squadron.status === "recruiting" ? "#e67e22" : "#9ca3af";
 
   return (
@@ -184,10 +215,10 @@ export default function SquadronPage() {
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, position: "relative", zIndex: 1 }}>
           {squadron.logo_url ? (
-            <img src={squadron.logo_url} alt={`Логотип ${squadron.name}`} style={{ width: 88, height: 88, objectFit: "contain", borderRadius: 8, background: "rgba(0,0,0,.45)", border: `1px solid ${squadron.color}`, padding: 4 }} />
+            <img src={squadron.logo_url} alt={t("sq.logoAlt", { name: squadron.name })} style={{ width: 88, height: 88, objectFit: "contain", borderRadius: 8, background: "rgba(0,0,0,.45)", border: `1px solid ${squadron.color}`, padding: 4 }} />
           ) : <div style={{ width: 12, height: 48, borderRadius: 2, background: squadron.color, flexShrink: 0 }} />}
           <div>
-            <div className="kicker">{squadron.tag ? `[${squadron.tag}]` : "Эскадрилья"}</div>
+            <div className="kicker">{squadron.tag ? `[${squadron.tag}]` : t("sq.squadron")}</div>
             <h1 style={{ margin: "4px 0 0", color: squadron.color }}>{squadron.name}</h1>
             {squadron.motto && <div style={{ color: "#f3f4f6", fontSize: 13, fontStyle: "italic", marginTop: 4 }}>«{squadron.motto}»</div>}
             {squadron.description && <p style={{ color: squadron.banner_url ? "#d1d5db" : "var(--muted)", marginTop: 6, maxWidth: 600, fontSize: 14, lineHeight: 1.6 }}>{squadron.description}</p>}
@@ -209,11 +240,11 @@ export default function SquadronPage() {
           </span>
           {isCreator && (
             <button onClick={async () => {
-              if (!confirm("Удалить эскадрилью? Это необратимо.")) return;
+              if (!confirm(t("sq.deleteConfirm"))) return;
               await authFetch(`/api/squadrons/${id}`, { method: "DELETE" });
               window.location.href = "/squadrons";
             }} className="btn" style={{ fontSize: 11, padding: "6px 12px", borderColor: "#e74c3c", color: "#e74c3c" }}>
-              Удалить
+              {t("sq.delete")}
             </button>
           )}
         </div>
@@ -223,47 +254,47 @@ export default function SquadronPage() {
       <div className="stat-grid" style={{ marginBottom: 24 }}>
         <div className="stat-box">
           <div className="num" style={{ color: squadron.color }}>{members.length}</div>
-          <div className="lbl">Пилотов</div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, fontFamily: "ui-monospace, monospace" }}>из {squadron.member_limit || SQUADRON_MEMBER_LIMIT}</div>
+          <div className="lbl">{t("sq.pilots")}</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, fontFamily: "ui-monospace, monospace" }}>{t("sq.outOf", { max: squadron.member_limit || SQUADRON_MEMBER_LIMIT })}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: squadron.color }}>{projects.length}</div>
-          <div className="lbl">Проектов</div>
+          <div className="lbl">{t("sq.projects")}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: squadron.color }}>{ranks.filter(r => !r.is_default).length}</div>
-          <div className="lbl">Кастомных званий</div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, fontFamily: "ui-monospace, monospace" }}>из 15</div>
+          <div className="lbl">{t("sq.customRanks")}</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, fontFamily: "ui-monospace, monospace" }}>{t("sq.outOf", { max: 15 })}</div>
         </div>
         {squadron.allegiance && (
           <div className="stat-box">
             <div className="num" style={{ color: squadron.color, fontSize: 18 }}>{squadron.allegiance}</div>
-            <div className="lbl">Принадлежность</div>
+            <div className="lbl">{t("sq.allegiance")}</div>
           </div>
         )}
         {squadron.power && (
           <div className="stat-box">
             <div className="num" style={{ color: squadron.color, fontSize: 18 }}>{squadron.power}</div>
-            <div className="lbl">Сила</div>
+            <div className="lbl">{t("sq.power")}</div>
           </div>
         )}
         {squadron.language && (
           <div className="stat-box">
             <div className="num" style={{ color: squadron.color, fontSize: 18 }}>{squadron.language}</div>
-            <div className="lbl">Язык</div>
+            <div className="lbl">{t("sq.language")}</div>
           </div>
         )}
         {squadron.home_system && (
           <div className="stat-box">
             <div className="num" style={{ color: squadron.color, fontSize: 18 }}>{squadron.home_system}</div>
-            <div className="lbl">Домашняя система</div>
+            <div className="lbl">{t("sq.homeSystem")}</div>
           </div>
         )}
       </div>
 
       {msg && (
         <p style={{
-          color: msg === "Сохранено" ? "#22c55e" : "#e67e22",
+          color: msg === t("sq.saved") ? "#22c55e" : "#e67e22",
           marginBottom: 16,
           fontFamily: "ui-monospace, monospace",
           fontSize: 12,
@@ -275,17 +306,17 @@ export default function SquadronPage() {
 
       {/* Вкладки */}
       <div className="tabs" style={{ marginBottom: 20 }}>
-        <button className={tab === "overview" ? "tab tab-active" : "tab"} onClick={() => setTab("overview")}>Обзор</button>
-        <button className={tab === "pilots" ? "tab tab-active" : "tab"} onClick={() => setTab("pilots")}>Пилоты ({members.length})</button>
-        <button className={tab === "ranks" ? "tab tab-active" : "tab"} onClick={() => setTab("ranks")}>Звания</button>
-        <button className={tab === "projects" ? "tab tab-active" : "tab"} onClick={() => setTab("projects")}>Проекты ({projects.length})</button>
-        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => setTab("carrier")}>Авианосец</button>
+        <button className={tab === "overview" ? "tab tab-active" : "tab"} onClick={() => setTab("overview")}>{t("sq.tabOverview")}</button>
+        <button className={tab === "pilots" ? "tab tab-active" : "tab"} onClick={() => setTab("pilots")}>{t("sq.tabPilots", { count: members.length })}</button>
+        <button className={tab === "ranks" ? "tab tab-active" : "tab"} onClick={() => setTab("ranks")}>{t("sq.tabRanks")}</button>
+        <button className={tab === "projects" ? "tab tab-active" : "tab"} onClick={() => setTab("projects")}>{t("sq.tabProjects", { count: projects.length })}</button>
+        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => setTab("carrier")}>{t("sq.tabCarrier")}</button>
         {(canEditSquadron || isCreator) && (
-          <button className={tab === "settings" ? "tab tab-active" : "tab"} onClick={() => setTab("settings")}>Настройки</button>
+          <button className={tab === "settings" ? "tab tab-active" : "tab"} onClick={() => setTab("settings")}>{t("sq.tabSettings")}</button>
         )}
         {myMembership && (
           <>
-            <button className={tab === "chat" ? "tab tab-active" : "tab"} onClick={() => setTab("chat")}>Чат</button>
+            <button className={tab === "chat" ? "tab tab-active" : "tab"} onClick={() => setTab("chat")}>{t("sq.tabChat")}</button>
           </>
         )}
       </div>
@@ -343,7 +374,7 @@ export default function SquadronPage() {
                       gap: 6,
                     }}
                   >
-                    <IconWebsite size={12} color="#22c55e" /> Веб-сайт
+                    <IconWebsite size={12} color="#22c55e" /> {t("sq.website")}
                   </a>
                 )}
               </div>
@@ -352,21 +383,21 @@ export default function SquadronPage() {
             {/* Приветственное сообщение */}
             {squadron.recruitment_message && (
               <div className="card" style={{ background: "#25282b" }}>
-                <div style={{ fontSize: 12, color: "var(--muted)", fontFamily: "ui-monospace, monospace", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Сообщение эскадрильи</div>
+                <div style={{ fontSize: 12, color: "var(--muted)", fontFamily: "ui-monospace, monospace", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{t("sq.squadronMessage")}</div>
                 <p style={{ margin: 0, color: "var(--text)", lineHeight: 1.6 }}>{squadron.recruitment_message}</p>
               </div>
             )}
           </div>
 
-          <h3 style={{ marginTop: 0, marginBottom: 12 }}>Командный состав</h3>
+          <h3 style={{ marginTop: 0, marginBottom: 12 }}>{t("sq.staff")}</h3>
           <div className="table-scroll">
             <table>
               <thead>
                 <tr>
-                  <th>Пилот</th>
-                  <th>Звание</th>
-                  <th>Позывной</th>
-                  <th>В составе с</th>
+                  <th>{t("sq.thPilot")}</th>
+                  <th>{t("sq.thRank")}</th>
+                  <th>{t("sq.thCallsign")}</th>
+                  <th>{t("sq.thSince")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -376,17 +407,17 @@ export default function SquadronPage() {
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <Avatar url={m.avatar_url} name={m.cmdr_name} size={34} className="avatar-sm" />
                         <Link href={`/cmdr/${encodeURIComponent(m.cmdr_name || "")}`} style={{ color: "var(--text)", textDecoration: "none", fontWeight: 600 }}>
-                          {m.cmdr_name || "Неизвестный"}
+                          {m.cmdr_name || t("sq.unknownPilot")}
                         </Link>
                       </div>
                     </td>
                     <td style={{ color: "var(--muted)", fontSize: 13 }}>{m.rank_name}</td>
                     <td style={{ color: "var(--muted)", fontSize: 13 }}>{m.callsign || "—"}</td>
-                    <td style={{ color: "var(--muted)", fontSize: 13, fontFamily: "ui-monospace, monospace" }}>{new Date(m.joined_at).toLocaleDateString("ru-RU")}</td>
+                    <td style={{ color: "var(--muted)", fontSize: 13, fontFamily: "ui-monospace, monospace" }}>{new Date(m.joined_at).toLocaleDateString(locale)}</td>
                   </tr>
                 ))}
                 {members.filter(m => m.rank_order && m.rank_order <= 3).length === 0 && (
-                  <tr><td colSpan={4} style={{ color: "var(--muted)", textAlign: "center" }}>Нет данных о командном составе</td></tr>
+                  <tr><td colSpan={4} style={{ color: "var(--muted)", textAlign: "center" }}>{t("sq.noStaff")}</td></tr>
                 )}
               </tbody>
             </table>
@@ -437,118 +468,118 @@ export default function SquadronPage() {
       {/* Настройки — отдельная вкладка */}
       {tab === "settings" && (canEditSquadron || isCreator) && (
         <div className="card" style={{ background: "#25282b" }}>
-          <h3 style={{ margin: "0 0 16px", color: "var(--text)" }}>Настройки эскадрильи</h3>
+          <h3 style={{ margin: "0 0 16px", color: "var(--text)" }}>{t("sq.settingsTitle")}</h3>
 
           <div style={{ border: "1px solid var(--line)", background: "var(--bg)", padding: 14, marginBottom: 16 }}>
-            <h4 style={{ margin: "0 0 10px", color: "var(--text)" }}>Оформление страницы</h4>
+            <h4 style={{ margin: "0 0 10px", color: "var(--text)" }}>{t("sq.brandingTitle")}</h4>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 14 }}>
               <div>
-                <label style={labelStyle}>Логотип (до 2 МБ)</label>
-                {form.logo_url && <img src={form.logo_url} alt="Логотип" style={{ width: 92, height: 92, objectFit: "contain", display: "block", marginBottom: 8, background: "#111", border: "1px solid var(--line)" }} />}
+                <label style={labelStyle}>{t("sq.logoLabel", { mb: SQUADRON_IMAGE_LIMITS.logo / 1024 / 1024 })}</label>
+                {form.logo_url && <img src={form.logo_url} alt={t("sq.logoAlt", { name: form.name || t("sq.squadron") })} style={{ width: 92, height: 92, objectFit: "contain", display: "block", marginBottom: 8, background: "#111", border: "1px solid var(--line)" }} />}
                 <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={brandingBusy !== null} onChange={e => { void uploadBranding("logo", e.target.files?.[0] ?? null); e.target.value = ""; }} />
-                {form.logo_url && <button type="button" className="btn" disabled={brandingBusy !== null} onClick={() => void removeBranding("logo")} style={{ fontSize: 11, marginTop: 6 }}>Удалить логотип</button>}
+                {form.logo_url && <button type="button" className="btn" disabled={brandingBusy !== null} onClick={() => void removeBranding("logo")} style={{ fontSize: 11, marginTop: 6 }}>{t("sq.removeLogo")}</button>}
               </div>
               <div>
-                <label style={labelStyle}>Фоновое изображение (до 6 МБ)</label>
+                <label style={labelStyle}>{t("sq.bannerLabel", { mb: SQUADRON_IMAGE_LIMITS.banner / 1024 / 1024 })}</label>
                 {form.banner_url && <div style={{ height: 92, marginBottom: 8, backgroundImage: `url("${form.banner_url}")`, backgroundSize: "cover", backgroundPosition: `center ${form.banner_position || "center"}`, border: "1px solid var(--line)" }} />}
                 <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={brandingBusy !== null} onChange={e => { void uploadBranding("banner", e.target.files?.[0] ?? null); e.target.value = ""; }} />
-                {form.banner_url && <button type="button" className="btn" disabled={brandingBusy !== null} onClick={() => void removeBranding("banner")} style={{ fontSize: 11, marginTop: 6 }}>Удалить фон</button>}
+                {form.banner_url && <button type="button" className="btn" disabled={brandingBusy !== null} onClick={() => void removeBranding("banner")} style={{ fontSize: 11, marginTop: 6 }}>{t("sq.removeBanner")}</button>}
               </div>
               <div>
-                <label style={labelStyle}>Положение фонового изображения</label>
+                <label style={labelStyle}>{t("sq.bannerPosition")}</label>
                 <select value={form.banner_position || "center"} onChange={e => setForm(p => ({ ...p, banner_position: e.target.value as Squadron["banner_position"] }))} style={{ width: "100%" }}>
-                  <option value="top">По верхнему краю</option><option value="center">По центру</option><option value="bottom">По нижнему краю</option>
+                  <option value="top">{t("sq.posTop")}</option><option value="center">{t("sq.posCenter")}</option><option value="bottom">{t("sq.posBottom")}</option>
                 </select>
               </div>
               <div>
-                <label style={labelStyle}>Девиз</label>
-                <input value={form.motto || ""} maxLength={160} onChange={e => setForm(p => ({ ...p, motto: e.target.value }))} placeholder="Короткий девиз эскадрильи" style={{ width: "100%" }} />
+                <label style={labelStyle}>{t("sq.motto")}</label>
+                <input value={form.motto || ""} maxLength={160} onChange={e => setForm(p => ({ ...p, motto: e.target.value }))} placeholder={t("sq.mottoPlaceholder")} style={{ width: "100%" }} />
               </div>
             </div>
-            {brandingBusy && <div style={{ color: "var(--cyan)", fontSize: 12, marginTop: 8 }}>Загрузка изображения…</div>}
+            {brandingBusy && <div style={{ color: "var(--cyan)", fontSize: 12, marginTop: 8 }}>{t("sq.imageUploading")}</div>}
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 12 }}>
             {/* Название */}
             <div style={{ gridColumn: "1 / -1" }}>
-              <label style={labelStyle}>Название эскадрильи {nameChangeBlocked && <span style={{ color: "#e74c3c", fontSize: 11 }}>(изменено {daysUntilNameChange()} дн. назад, подождите ещё {daysUntilNameChange()} дн.)</span>}</label>
+              <label style={labelStyle}>{t("sq.nameLabel")} {nameChangeBlocked && <span style={{ color: "#e74c3c", fontSize: 11 }}>{t("sq.nameCooldownDays", { days: daysUntilNameChange() ?? 0 })}</span>}</label>
               <input
                 value={form.name || ""}
                 onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
                 style={{ width: "100%", fontSize: 13 }}
                 disabled={nameChangeBlocked}
-                title={nameChangeBlocked ? `Название можно менять раз в ${NAME_CHANGE_COOLDOWN_DAYS} дней` : ""}
+                title={nameChangeBlocked ? t("sq.nameCooldownTitle", { days: NAME_CHANGE_COOLDOWN_DAYS }) : ""}
               />
             </div>
 
             {/* Тег */}
             <div>
-              <label style={labelStyle}>Тег [TAG]</label>
+              <label style={labelStyle}>{t("sq.tagLabel")}</label>
               <input
                 value={form.tag || ""}
                 onChange={e => setForm(p => ({ ...p, tag: e.target.value }))}
                 style={{ width: "100%", fontSize: 13 }}
-                placeholder="2-10 символов"
+                placeholder={t("sq.tagPlaceholder")}
               />
             </div>
 
             {/* Описание */}
             <div style={{ gridColumn: "1 / -1" }}>
-              <label style={labelStyle}>Описание</label>
+              <label style={labelStyle}>{t("sq.description")}</label>
               <textarea
                 value={form.description || ""}
                 onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
                 style={{ width: "100%", minHeight: 80, fontSize: 13 }}
-                placeholder="Описание эскадрильи..."
+                placeholder={t("sq.descriptionPlaceholder")}
                 maxLength={1000}
               />
             </div>
 
             {/* Принадлежность */}
             <div>
-              <label style={labelStyle}>Принадлежность</label>
+              <label style={labelStyle}>{t("sq.allegiance")}</label>
               <select
                 value={form.allegiance || "Independent"}
                 onChange={e => setForm(p => ({ ...p, allegiance: e.target.value }))}
                 style={{ width: "100%", fontSize: 13 }}
               >
                 {ED_ALLEGIANCES.map(a => (
-                  <option key={a.value} value={a.value}>{a.label}</option>
+                  <option key={a.value} value={a.value}>{optionLabel(ALLEGIANCE_KEYS, a)}</option>
                 ))}
               </select>
             </div>
 
             {/* Сила (держава) */}
             <div>
-              <label style={labelStyle}>Сила (Power)</label>
+              <label style={labelStyle}>{t("sq.powerLabel")}</label>
               <select
                 value={form.power || ""}
                 onChange={e => setForm(p => ({ ...p, power: e.target.value || null }))}
                 style={{ width: "100%", fontSize: 13 }}
               >
                 {ED_POWERS.map(p => (
-                  <option key={p.value} value={p.value}>{p.label}</option>
+                  <option key={p.value} value={p.value}>{p.value ? p.label : t("sq.noneSelected")}</option>
                 ))}
               </select>
             </div>
 
             {/* Язык */}
             <div>
-              <label style={labelStyle}>Язык</label>
+              <label style={labelStyle}>{t("sq.language")}</label>
               <select
                 value={form.language || "Russian"}
                 onChange={e => setForm(p => ({ ...p, language: e.target.value }))}
                 style={{ width: "100%", fontSize: 13 }}
               >
                 {LANGUAGES.map(l => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
+                  <option key={l.value} value={l.value}>{optionLabel(LANGUAGE_KEYS, l)}</option>
                 ))}
               </select>
             </div>
 
             {/* Часовой пояс */}
             <div>
-              <label style={labelStyle}>Часовой пояс</label>
+              <label style={labelStyle}>{t("sq.timezone")}</label>
               <select
                 value={form.timezone || "UTC+03:00"}
                 onChange={e => setForm(p => ({ ...p, timezone: e.target.value }))}
@@ -562,39 +593,39 @@ export default function SquadronPage() {
 
             {/* Лимит участников */}
             <div>
-              <label style={labelStyle}>Лимит участников</label>
+              <label style={labelStyle}>{t("sq.memberLimit")}</label>
               <input
                 type="number"
                 value={SQUADRON_MEMBER_LIMIT}
                 disabled
                 style={{ width: "100%", fontSize: 13, opacity: 0.6 }}
-                title="Фиксированный лимит Elite Dangerous"
+                title={t("sq.memberLimitTitle")}
               />
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>Фиксировано: {SQUADRON_MEMBER_LIMIT}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{t("sq.fixedValue", { value: SQUADRON_MEMBER_LIMIT })}</div>
             </div>
 
             {/* Тип активности */}
             <div>
-              <label style={labelStyle}>Тип активности</label>
+              <label style={labelStyle}>{t("sq.activityType")}</label>
               <select
                 value={form.activity_type || "Mixed"}
                 onChange={e => setForm(p => ({ ...p, activity_type: e.target.value }))}
                 style={{ width: "100%", fontSize: 13 }}
               >
                 {ACTIVITY_TYPES.map(a => (
-                  <option key={a.value} value={a.value}>{a.label}</option>
+                  <option key={a.value} value={a.value}>{optionLabel(ALLEGIANCE_KEYS, a)}</option>
                 ))}
               </select>
             </div>
 
             {/* Домашняя система */}
             <div>
-              <label style={labelStyle}>Домашняя система</label>
+              <label style={labelStyle}>{t("sq.homeSystem")}</label>
               <input
                 value={form.home_system || ""}
                 onChange={e => setForm(p => ({ ...p, home_system: e.target.value }))}
                 style={{ width: "100%", fontSize: 13 }}
-                placeholder="Напр. Shinrarta Dezhra"
+                placeholder={t("sq.homeSystemPlaceholder")}
               />
             </div>
 
@@ -611,7 +642,7 @@ export default function SquadronPage() {
 
             {/* Сайт */}
             <div>
-              <label style={labelStyle}>Веб-сайт</label>
+              <label style={labelStyle}>{t("sq.website")}</label>
               <input
                 value={form.website_url || ""}
                 onChange={e => setForm(p => ({ ...p, website_url: e.target.value }))}
@@ -622,15 +653,15 @@ export default function SquadronPage() {
 
             {/* Статус */}
             <div>
-              <label style={labelStyle}>Статус набора</label>
+              <label style={labelStyle}>{t("sq.recruitStatus")}</label>
               <select
                 value={form.status || "active"}
                 onChange={e => setForm(p => ({ ...p, status: e.target.value as any }))}
                 style={{ width: "100%", fontSize: 13 }}
               >
-                <option value="active">Активна</option>
-                <option value="recruiting">Набор открыт</option>
-                <option value="closed">Закрыта</option>
+                <option value="active">{t("sq.statusActive")}</option>
+                <option value="recruiting">{t("sq.statusRecruitingOpen")}</option>
+                <option value="closed">{t("sq.statusClosed")}</option>
               </select>
             </div>
 
@@ -642,12 +673,12 @@ export default function SquadronPage() {
                 checked={form.is_open_recruitment ?? true}
                 onChange={e => setForm(p => ({ ...p, is_open_recruitment: e.target.checked }))}
               />
-              <label htmlFor="openRecruit" style={{ ...labelStyle, margin: 0, cursor: "pointer" }}>Свободное вступление без заявки</label>
+              <label htmlFor="openRecruit" style={{ ...labelStyle, margin: 0, cursor: "pointer" }}>{t("sq.openRecruit")}</label>
             </div>
 
             {/* Цвет */}
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <label style={labelStyle}>Цвет:</label>
+              <label style={labelStyle}>{t("sq.color")}</label>
               <input
                 type="color"
                 value={form.color || "#3b82f6"}
@@ -659,12 +690,12 @@ export default function SquadronPage() {
 
             {/* Приветственное сообщение */}
             <div style={{ gridColumn: "1 / -1" }}>
-              <label style={labelStyle}>Приветственное сообщение для новичков</label>
+              <label style={labelStyle}>{t("sq.welcomeLabel")}</label>
               <textarea
                 value={form.recruitment_message || ""}
                 onChange={e => setForm(p => ({ ...p, recruitment_message: e.target.value }))}
                 style={{ width: "100%", minHeight: 60, fontSize: 13 }}
-                placeholder="Сообщение, которое увидят новые пилоты при вступлении..."
+                placeholder={t("sq.welcomePlaceholder")}
                 maxLength={1000}
               />
             </div>
@@ -672,10 +703,10 @@ export default function SquadronPage() {
 
           <div style={{ marginTop: 20, display: "flex", gap: 12, alignItems: "center" }}>
             <button onClick={saveSettings} className="btn btn-cyan" disabled={saving}>
-              {saving ? "Сохранение..." : "Сохранить настройки"}
+              {saving ? t("sq.saving") : t("sq.saveSettings")}
             </button>
             <button onClick={() => { setForm(squadron); setMsg(""); }} className="btn" disabled={saving}>
-              Сбросить
+              {t("sq.reset")}
             </button>
           </div>
         </div>
@@ -710,6 +741,7 @@ const labelStyle: React.CSSProperties = {
 
 // ========== Вкладка Пилоты ==========
 function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUpdate, setMsg }: any) {
+  const { t, locale } = useI18n();
   const [inviteName, setInviteName] = useState("");
   const [inviteRank, setInviteRank] = useState("");
 
@@ -720,7 +752,7 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
       .select("id")
       .eq("cmdr_name", inviteName.trim())
       .maybeSingle();
-    if (!profile) { setMsg("Пилот не найден"); return; }
+    if (!profile) { setMsg(t("sq.pilotNotFound")); return; }
 
     const res = await authFetch(`/api/squadrons/${squadronId}/members`, {
       method: "POST",
@@ -729,7 +761,7 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
     });
     const json = await res.json();
     if (!res.ok) { setMsg(json.error); return; }
-    setMsg("Пилот приглашён!");
+    setMsg(t("sq.pilotInvited"));
     setInviteName("");
     setInviteRank("");
     onUpdate();
@@ -741,12 +773,12 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id, rank_id }),
     });
-    if (!res.ok) { setMsg("Ошибка обновления звания"); return; }
+    if (!res.ok) { setMsg(t("sq.rankUpdateError")); return; }
     onUpdate();
   };
 
   const kick = async (user_id: string) => {
-    if (!confirm("Исключить пилота?")) return;
+    if (!confirm(t("sq.kickConfirm"))) return;
     await authFetch(`/api/squadrons/${squadronId}/members`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -759,16 +791,16 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
     <div>
       {canManage && (
         <div className="card" style={{ marginBottom: 24, background: "#25282b" }}>
-          <h3 style={{ margin: "0 0 12px", color: "var(--text)" }}>Пригласить пилота</h3>
+          <h3 style={{ margin: "0 0 12px", color: "var(--text)" }}>{t("sq.inviteTitle")}</h3>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <input placeholder="CMDR имя" value={inviteName} onChange={e => setInviteName(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+            <input placeholder={t("sq.cmdrNamePlaceholder")} value={inviteName} onChange={e => setInviteName(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
             <select value={inviteRank} onChange={e => setInviteRank(e.target.value)} style={{ minWidth: 160 }}>
-              <option value="">Без звания</option>
+              <option value="">{t("sq.noRank")}</option>
               {ranks.map((r: SquadronRank) => (
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
-            <button onClick={invite} className="btn btn-cyan">Пригласить</button>
+            <button onClick={invite} className="btn btn-cyan">{t("sq.invite")}</button>
           </div>
         </div>
       )}
@@ -777,11 +809,11 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
         <table>
           <thead>
             <tr>
-              <th>Пилот</th>
-              <th>Звание</th>
-              <th>Позывной</th>
-              <th>В составе с</th>
-              {canManage && <th>Действия</th>}
+              <th>{t("sq.thPilot")}</th>
+              <th>{t("sq.thRank")}</th>
+              <th>{t("sq.thCallsign")}</th>
+              <th>{t("sq.thSince")}</th>
+              {canManage && <th>{t("sq.thActions")}</th>}
             </tr>
           </thead>
           <tbody>
@@ -791,13 +823,13 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <Avatar url={m.avatar_url} name={m.cmdr_name} size={34} className="avatar-sm" />
                     <Link href={`/cmdr/${encodeURIComponent(m.cmdr_name || "")}`} style={{ color: "var(--text)", textDecoration: "none", fontWeight: 600 }}>
-                      {m.cmdr_name || "Неизвестный"}
+                      {m.cmdr_name || t("sq.unknownPilot")}
                     </Link>
                   </div>
                 </td>
                 <td style={{ color: "var(--muted)", fontSize: 13 }}>{m.rank_name}</td>
                 <td style={{ color: "var(--muted)", fontSize: 13 }}>{m.callsign || "—"}</td>
-                <td style={{ color: "var(--muted)", fontSize: 13, fontFamily: "ui-monospace, monospace" }}>{new Date(m.joined_at).toLocaleDateString("ru-RU")}</td>
+                <td style={{ color: "var(--muted)", fontSize: 13, fontFamily: "ui-monospace, monospace" }}>{new Date(m.joined_at).toLocaleDateString(locale)}</td>
                 {canManage && m.user_id !== userId && (
                   <td>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -806,12 +838,12 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
                         onChange={e => updateRank(m.user_id, e.target.value ? parseInt(e.target.value) : null)}
                         style={{ fontSize: 12, padding: "4px 8px" }}
                       >
-                        <option value="">Без звания</option>
+                        <option value="">{t("sq.noRank")}</option>
                         {ranks.map((r: SquadronRank) => (
                           <option key={r.id} value={r.id}>{r.name}</option>
                         ))}
                       </select>
-                      <button onClick={() => kick(m.user_id)} className="btn" style={{ fontSize: 11, padding: "4px 10px", borderColor: "#e74c3c", color: "#e74c3c" }}>Исключить</button>
+                      <button onClick={() => kick(m.user_id)} className="btn" style={{ fontSize: 11, padding: "4px 10px", borderColor: "#e74c3c", color: "#e74c3c" }}>{t("sq.kick")}</button>
                     </div>
                   </td>
                 )}
@@ -819,7 +851,7 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
               </tr>
             ))}
             {members.length === 0 && (
-              <tr><td colSpan={canManage ? 5 : 4} style={{ color: "var(--muted)", textAlign: "center" }}>Нет пилотов</td></tr>
+              <tr><td colSpan={canManage ? 5 : 4} style={{ color: "var(--muted)", textAlign: "center" }}>{t("sq.noPilots")}</td></tr>
             )}
           </tbody>
         </table>
@@ -830,6 +862,7 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
 
 // ========== Вкладка Звания ==========
 function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: any) {
+  const { t } = useI18n();
   const [newRankName, setNewRankName] = useState("");
   const [newRankOrder, setNewRankOrder] = useState(99);
   const [newPerms, setNewPerms] = useState({
@@ -848,14 +881,14 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
     });
     const json = await res.json();
     if (!res.ok) { setMsg(json.error); return; }
-    setMsg("Звание создано");
+    setMsg(t("sq.rankCreated"));
     setNewRankName("");
     onUpdate();
   };
 
   const editName = async (rank: SquadronRank) => {
     if (rank.is_default) return;
-    const name = window.prompt("Название звания", rank.name)?.trim();
+    const name = window.prompt(t("sq.rankNamePrompt"), rank.name)?.trim();
     if (!name || name === rank.name) return;
     const res = await authFetch(`/api/squadrons/${squadronId}/ranks`, {
       method: "PATCH",
@@ -863,13 +896,13 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
       body: JSON.stringify({ rank_id: rank.id, name }),
     });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) { setMsg(json.error || "Ошибка изменения звания"); return; }
-    setMsg("Звание изменено");
+    if (!res.ok) { setMsg(json.error || t("sq.rankRenameError")); return; }
+    setMsg(t("sq.rankRenamed"));
     onUpdate();
   };
 
   const remove = async (rank_id: number) => {
-    if (!confirm("Удалить звание?")) return;
+    if (!confirm(t("sq.rankDeleteConfirm"))) return;
     const res = await authFetch(`/api/squadrons/${squadronId}/ranks`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -885,21 +918,21 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
   return (
     <div>
       <div style={{ marginBottom: 16, color: "var(--muted)", fontSize: 14, fontFamily: "ui-monospace, monospace" }}>
-        Кастомных званий: {customCount} / 15 (всего {ranks.length} / 20)
+        {t("sq.ranksSummary", { custom: customCount, total: ranks.length })}
       </div>
 
       {canManage && customCount < 15 && (
         <div className="card" style={{ marginBottom: 24, background: "#25282b" }}>
-          <h3 style={{ margin: "0 0 12px", color: "var(--text)" }}>Новое звание</h3>
+          <h3 style={{ margin: "0 0 12px", color: "var(--text)" }}>{t("sq.newRank")}</h3>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
-            <input placeholder="Название звания" value={newRankName} onChange={e => setNewRankName(e.target.value)} />
+            <input placeholder={t("sq.rankNamePlaceholder")} value={newRankName} onChange={e => setNewRankName(e.target.value)} />
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13, color: "var(--muted)" }}>
-              <label><input type="checkbox" checked={newPerms.can_manage_projects} onChange={e => setNewPerms(p => ({ ...p, can_manage_projects: e.target.checked }))} /> Управление проектами</label>
-              <label><input type="checkbox" checked={newPerms.can_manage_members} onChange={e => setNewPerms(p => ({ ...p, can_manage_members: e.target.checked }))} /> Управление пилотами</label>
-              <label><input type="checkbox" checked={newPerms.can_manage_ranks} onChange={e => setNewPerms(p => ({ ...p, can_manage_ranks: e.target.checked }))} /> Управление званиями</label>
-              <label><input type="checkbox" checked={newPerms.can_edit_squadron} onChange={e => setNewPerms(p => ({ ...p, can_edit_squadron: e.target.checked }))} /> Редактирование эскадрильи</label>
+              <label><input type="checkbox" checked={newPerms.can_manage_projects} onChange={e => setNewPerms(p => ({ ...p, can_manage_projects: e.target.checked }))} /> {t("sq.permProjects")}</label>
+              <label><input type="checkbox" checked={newPerms.can_manage_members} onChange={e => setNewPerms(p => ({ ...p, can_manage_members: e.target.checked }))} /> {t("sq.permMembers")}</label>
+              <label><input type="checkbox" checked={newPerms.can_manage_ranks} onChange={e => setNewPerms(p => ({ ...p, can_manage_ranks: e.target.checked }))} /> {t("sq.permRanks")}</label>
+              <label><input type="checkbox" checked={newPerms.can_edit_squadron} onChange={e => setNewPerms(p => ({ ...p, can_edit_squadron: e.target.checked }))} /> {t("sq.permEdit")}</label>
             </div>
-            <button onClick={create} className="btn btn-cyan">Создать звание</button>
+            <button onClick={create} className="btn btn-cyan">{t("sq.createRank")}</button>
           </div>
         </div>
       )}
@@ -908,14 +941,14 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
         <table>
           <thead>
             <tr>
-              <th>Порядок</th>
-              <th>Название</th>
-              <th>Проекты</th>
-              <th>Пилоты</th>
-              <th>Звания</th>
-              <th>Эскадрилья</th>
-              <th>Тип</th>
-              {canManage && <th>Действия</th>}
+              <th>{t("sq.thOrder")}</th>
+              <th>{t("sq.thName")}</th>
+              <th>{t("sq.thProjects")}</th>
+              <th>{t("sq.thPilots")}</th>
+              <th>{t("sq.thRanks")}</th>
+              <th>{t("sq.thSquadron")}</th>
+              <th>{t("sq.thType")}</th>
+              {canManage && <th>{t("sq.thActions")}</th>}
             </tr>
           </thead>
           <tbody>
@@ -925,18 +958,18 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
                 <td style={{ fontWeight: 600, color: "var(--text)" }}>
                   {r.name}
                   {canManage && !r.is_default && (
-                    <button onClick={() => editName(r)} className="btn" style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px" }}>Изменить</button>
+                    <button onClick={() => editName(r)} className="btn" style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px" }}>{t("sq.rename")}</button>
                   )}
                 </td>
                 <td style={{ color: r.can_manage_projects ? "#22c55e" : "var(--muted)" }}>{r.can_manage_projects ? <IconCheck size={14} color="#22c55e" /> : "—"}</td>
                 <td style={{ color: r.can_manage_members ? "#22c55e" : "var(--muted)" }}>{r.can_manage_members ? <IconCheck size={14} color="#22c55e" /> : "—"}</td>
                 <td style={{ color: r.can_manage_ranks ? "#22c55e" : "var(--muted)" }}>{r.can_manage_ranks ? <IconCheck size={14} color="#22c55e" /> : "—"}</td>
                 <td style={{ color: r.can_edit_squadron ? "#22c55e" : "var(--muted)" }}>{r.can_edit_squadron ? <IconCheck size={14} color="#22c55e" /> : "—"}</td>
-                <td>{r.is_default ? <span style={{ color: "var(--muted)", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>Стандартное</span> : <span style={{ color: "#22c55e", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>Кастомное</span>}</td>
+                <td>{r.is_default ? <span style={{ color: "var(--muted)", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>{t("sq.defaultRank")}</span> : <span style={{ color: "#22c55e", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>{t("sq.customRank")}</span>}</td>
                 {canManage && (
                   <td>
                     {!r.is_default && (
-                      <button onClick={() => remove(r.id)} className="btn" style={{ fontSize: 11, padding: "2px 8px", borderColor: "#e74c3c", color: "#e74c3c" }}>Удалить</button>
+                      <button onClick={() => remove(r.id)} className="btn" style={{ fontSize: 11, padding: "2px 8px", borderColor: "#e74c3c", color: "#e74c3c" }}>{t("sq.delete")}</button>
                     )}
                   </td>
                 )}
@@ -951,6 +984,7 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
 
 // ========== Вкладка Проекты ==========
 function SquadronProjectsTab({ squadronId, projects, canManage, onUpdate, setMsg }: any) {
+  const { t } = useI18n();
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectDesc, setNewProjectDesc] = useState("");
 
@@ -963,7 +997,7 @@ function SquadronProjectsTab({ squadronId, projects, canManage, onUpdate, setMsg
     });
     const json = await res.json();
     if (!res.ok) { setMsg(json.error); return; }
-    setMsg("Проект создан");
+    setMsg(t("sq.projectCreated"));
     setNewProjectName("");
     setNewProjectDesc("");
     onUpdate();
@@ -973,16 +1007,16 @@ function SquadronProjectsTab({ squadronId, projects, canManage, onUpdate, setMsg
     <div>
       {canManage && (
         <div className="card" style={{ marginBottom: 24, background: "#25282b" }}>
-          <h3 style={{ margin: "0 0 12px", color: "var(--text)" }}>Новый проект</h3>
+          <h3 style={{ margin: "0 0 12px", color: "var(--text)" }}>{t("sq.newProject")}</h3>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
-            <input placeholder="Название проекта" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} />
-            <textarea placeholder="Описание..." value={newProjectDesc} onChange={e => setNewProjectDesc(e.target.value)} style={{ minHeight: 60 }} />
-            <button onClick={create} className="btn btn-cyan">Создать проект</button>
+            <input placeholder={t("sq.projectNamePlaceholder")} value={newProjectName} onChange={e => setNewProjectName(e.target.value)} />
+            <textarea placeholder={t("sq.projectDescPlaceholder")} value={newProjectDesc} onChange={e => setNewProjectDesc(e.target.value)} style={{ minHeight: 60 }} />
+            <button onClick={create} className="btn btn-cyan">{t("sq.createProject")}</button>
           </div>
         </div>
       )}
 
-      {projects.length === 0 && <p style={{ color: "var(--muted)", fontFamily: "ui-monospace, monospace", letterSpacing: 1 }}>Проектов пока нет.</p>}
+      {projects.length === 0 && <p style={{ color: "var(--muted)", fontFamily: "ui-monospace, monospace", letterSpacing: 1 }}>{t("sq.noProjects")}</p>}
 
       <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))" }}>
         {projects.map((p: any) => (
@@ -999,8 +1033,8 @@ function SquadronProjectsTab({ squadronId, projects, canManage, onUpdate, setMsg
               {p.description && <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 6, lineHeight: 1.5 }}>{p.description}</p>}
               <div style={{ display: "flex", gap: 16, marginTop: 12, fontSize: 12, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>
                 <span><IconMembers size={12} color="var(--muted)" /> {p.member_count || 0}</span>
-                <span><IconHomeSystem size={12} color="var(--muted)" /> {p.system_count || 0} систем</span>
-                <span><IconDone size={12} color="var(--muted)" /> {p.systems_done || 0} готово</span>
+                <span><IconHomeSystem size={12} color="var(--muted)" /> {t("sq.systemsCount", { count: p.system_count || 0 })}</span>
+                <span><IconDone size={12} color="var(--muted)" /> {t("sq.doneCount", { count: p.systems_done || 0 })}</span>
               </div>
             </div>
           </Link>
