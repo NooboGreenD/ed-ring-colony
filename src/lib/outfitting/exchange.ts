@@ -28,8 +28,10 @@ import type { OutfittingData, OutfittingModule, ShipBuild } from './types';
 export type ExchangeFormat = 'coriolis' | 'slef' | 'native';
 
 export interface ImportIssue {
-  /** Что именно не удалось перенести. */
-  text: string;
+  /** Код сообщения: `src/lib/i18n/exchangeText.ts` переводит его на язык интерфейса. */
+  code: string;
+  /** Значения для подстановки в шаблон: `{slot}`, `{module}`, `{ship}`, … */
+  params?: Record<string, string | number>;
   level: 'warn' | 'error';
 }
 
@@ -97,7 +99,7 @@ export function fromCoriolisCode(
   const issues: ImportIssue[] = [];
   const ship = data.ships[shipId];
   if (!ship) {
-    return { build: null, format: 'coriolis', issues: [{ level: 'error', text: `Корабль «${shipId}» не найден в справочнике` }] };
+    return { build: null, format: 'coriolis', issues: [{ level: 'error', code: 'exchange.shipNotFound', params: { ship: shipId } }] };
   }
 
   let code = rawCode.trim();
@@ -127,7 +129,7 @@ export function fromCoriolisCode(
     if (!id) return;
     const module = findModule(data, STANDARD_GROUPS[index], id);
     if (module) build.standard[index] = moduleRef(module);
-    else issues.push({ level: 'warn', text: `Основной слот ${index + 1}: модуль «${id}» не найден` });
+    else issues.push({ level: 'warn', code: 'exchange.standardSlotMissing', params: { slot: index + 1, module: id } });
   });
 
   ship.slots.hardpoints.forEach((_, index) => {
@@ -135,7 +137,7 @@ export function fromCoriolisCode(
     if (!id) return;
     const module = findInSection(data, hardpointGroups, id);
     if (module) build.hardpoints[index] = moduleRef(module);
-    else issues.push({ level: 'warn', text: `Пилон ${index + 1}: модуль «${id}» не найден` });
+    else issues.push({ level: 'warn', code: 'exchange.hardpointMissing', params: { slot: index + 1, module: id } });
   });
 
   ship.slots.internal.forEach((_, index) => {
@@ -143,13 +145,13 @@ export function fromCoriolisCode(
     if (!id) return;
     const module = findInSection(data, internalGroups, id);
     if (module) build.internal[index] = moduleRef(module);
-    else issues.push({ level: 'warn', text: `Отсек ${index + 1}: модуль «${id}» не найден` });
+    else issues.push({ level: 'warn', code: 'exchange.internalMissing', params: { slot: index + 1, module: id } });
   });
 
   if (cursor < code.length - 1) {
-    issues.push({ level: 'warn', text: 'Код длиннее набора слотов корабля — лишнее пропущено' });
+    issues.push({ level: 'warn', code: 'exchange.codeTooLong' });
   }
-  issues.push({ level: 'warn', text: 'Короткий код Coriolis не содержит инженерию — доработки придётся выставить заново' });
+  issues.push({ level: 'warn', code: 'exchange.codeNoEngineering' });
 
   return { build, format: 'coriolis', issues };
 }
@@ -240,7 +242,7 @@ function journalSlotName(section: string, index: number, size: number, counters:
 export function toSlef(data: OutfittingData, build: ShipBuild, appVersion: string): ExportResult {
   const issues: ImportIssue[] = [];
   const ship = data.ships[build.ship];
-  if (!ship) return { text: '', issues: [{ level: 'error', text: 'Корабль не найден' }] };
+  if (!ship) return { text: '', issues: [{ level: 'error', code: 'exchange.shipNotFound', params: { ship: build.ship } }] };
 
   const modules: LoadoutModule[] = [];
   const counters: Record<string, number> = {};
@@ -253,7 +255,7 @@ export function toSlef(data: OutfittingData, build: ShipBuild, appVersion: strin
     const size = slot.section === 'hardpoints' ? slot.class : slot.class;
     const name = journalSlotName(slot.section, slot.index, size, counters);
     if (!symbol) {
-      issues.push({ level: 'warn', text: `${name}: у модуля «${slot.module.name ?? slot.module.grp}» особое внутриигровое имя — пропущен` });
+      issues.push({ level: 'warn', code: 'exchange.specialNameSkipped', params: { slot: name, module: slot.module.name ?? slot.module.grp } });
       continue;
     }
     const entry: LoadoutModule = { Slot: name, Item: symbol, On: true, Priority: 1 };
@@ -275,7 +277,7 @@ export function toSlef(data: OutfittingData, build: ShipBuild, appVersion: strin
     },
   }];
 
-  issues.push({ level: 'warn', text: 'SLEF переносит состав модулей; уровни инженерии нужно выставить на принимающей стороне' });
+  issues.push({ level: 'warn', code: 'exchange.slefNoEngineering' });
   return { text: JSON.stringify(payload, null, 2), issues };
 }
 
@@ -288,13 +290,13 @@ export function fromSlef(data: OutfittingData, parsed: unknown, options: { stric
     : root) as Record<string, unknown> | undefined;
 
   if (!loadout || typeof loadout.Ship !== 'string') {
-    return { build: null, format: 'slef', issues: [{ level: 'error', text: 'В тексте нет события Loadout с полем Ship' }] };
+    return { build: null, format: 'slef', issues: [{ level: 'error', code: 'exchange.noLoadoutEvent' }] };
   }
 
   const shipId = shipCoriolisId(loadout.Ship);
   const ship = data.ships[shipId];
   if (!ship) {
-    return { build: null, format: 'slef', issues: [{ level: 'error', text: `Корабль «${loadout.Ship}» не найден в справочнике` }] };
+    return { build: null, format: 'slef', issues: [{ level: 'error', code: 'exchange.shipNotFound', params: { ship: loadout.Ship } }] };
   }
 
   const build = defaultBuild(data, shipId);
@@ -350,7 +352,7 @@ export function fromSlef(data: OutfittingData, parsed: unknown, options: { stric
       const modification = journalModification(data, null, entry);
       if (modification) build.mods.BH = modification;
       else if (entry.Engineering && typeof entry.Engineering === 'object') {
-        issues.push({ level: 'warn', text: `${slotName || item}: инженерная модификация переборки не распознана` });
+        issues.push({ level: 'warn', code: 'exchange.bulkheadModUnknown', params: { slot: slotName || item } });
       }
       continue;
     }
@@ -360,7 +362,7 @@ export function fromSlef(data: OutfittingData, parsed: unknown, options: { stric
     const catalogGrade = moduleGrade(item);
     const spec = parsedSpec ? { ...parsedSpec, ...(catalogGrade ?? {}) } : null;
     if (!spec) {
-      issues.push({ level: 'warn', text: `${slotName || item}: модуль не распознан` });
+      issues.push({ level: 'warn', code: 'exchange.itemUnknown', params: { slot: slotName || item } });
       continue;
     }
 
@@ -385,8 +387,11 @@ export function fromSlef(data: OutfittingData, parsed: unknown, options: { stric
             : options.strict ? null
               : list.find((candidate) => !spec.mount || !candidate.mount || candidate.mount === spec.mount) ?? list[0] ?? null;
     if (!module) {
-      const reason = list.length > 1 ? 'неоднозначный вариант; оставлен без расчёта' : 'нет такого модуля в справочнике';
-      issues.push({ level: 'warn', text: `${slotName || item}: ${reason}` });
+      issues.push({
+        level: 'warn',
+        code: list.length > 1 ? 'exchange.ambiguousModule' : 'exchange.moduleNotInCatalog',
+        params: { slot: slotName || item },
+      });
       continue;
     }
 
@@ -401,24 +406,24 @@ export function fromSlef(data: OutfittingData, parsed: unknown, options: { stric
     const preferred = section === 'standard' && standardIndex >= 0 ? standardIndex : undefined;
     const slotKey = place(section, module, preferred);
     if (!slotKey) {
-      issues.push({ level: 'warn', text: `${slotName || item}: подходящий слот не нашёлся` });
+      issues.push({ level: 'warn', code: 'exchange.noFreeSlot', params: { slot: slotName || item } });
       continue;
     }
     const modification = journalModification(data, module, entry);
     if (modification) build.mods[slotKey] = modification;
     else if (entry.Engineering && typeof entry.Engineering === 'object') {
       const blueprintName = entry.Engineering.BlueprintName;
-      issues.push({ level: 'warn', text: blueprintName
-        ? `${slotName || item}: чертёж «${blueprintName}» не распознан для модуля`
-        : `${slotName || item}: инженерная модификация не содержит распознаваемого чертежа` });
+      issues.push(blueprintName
+        ? { level: 'warn', code: 'exchange.blueprintUnknown', params: { slot: slotName || item, blueprint: blueprintName } }
+        : { level: 'warn', code: 'exchange.modWithoutBlueprint', params: { slot: slotName || item } });
     }
     if (entry.ExperimentalEffect && !modification?.special) {
-      issues.push({ level: 'warn', text: `${slotName || item}: экспериментальный эффект «${entry.ExperimentalEffect}» не распознан` });
+      issues.push({ level: 'warn', code: 'exchange.specialEffectUnknown', params: { slot: slotName || item, effect: entry.ExperimentalEffect } });
     }
   }
 
   if (incoming.some((entry) => entry.Engineering === true)) {
-    issues.push({ level: 'warn', text: 'В Loadout указано наличие инженерии без чертежа и уровня; точную инженерную дальность восстановить нельзя' });
+    issues.push({ level: 'warn', code: 'exchange.engineeringWithoutBlueprint' });
   }
   return { build, format: 'slef', name: build.name, issues };
 }
@@ -431,7 +436,7 @@ export function fromSlef(data: OutfittingData, parsed: unknown, options: { stric
  */
 export function parseImport(data: OutfittingData, raw: string): ImportResult {
   const text = raw.trim();
-  if (!text) return { build: null, format: null, issues: [{ level: 'error', text: 'Пусто' }] };
+  if (!text) return { build: null, format: null, issues: [{ level: 'error', code: 'exchange.empty' }] };
 
   // 1. Ссылка Coriolis.
   const coriolis = parseCoriolisUrl(text);
@@ -469,7 +474,7 @@ export function parseImport(data: OutfittingData, raw: string): ImportResult {
       }
       return fromSlef(data, parsed);
     } catch {
-      return { build: null, format: null, issues: [{ level: 'error', text: 'Не похоже на JSON: проверьте, что скопирован весь текст' }] };
+      return { build: null, format: null, issues: [{ level: 'error', code: 'exchange.notJson' }] };
     }
   }
 
@@ -478,10 +483,7 @@ export function parseImport(data: OutfittingData, raw: string): ImportResult {
     return {
       build: null,
       format: null,
-      issues: [{
-        level: 'error',
-        text: 'Ссылки EDSY закодированы их собственным форматом. На EDSY нажмите OPS → Export → SLEF и вставьте полученный текст сюда.',
-      }],
+      issues: [{ level: 'error', code: 'exchange.edsyLink' }],
     };
   }
 
@@ -490,11 +492,11 @@ export function parseImport(data: OutfittingData, raw: string): ImportResult {
     return {
       build: null,
       format: 'coriolis',
-      issues: [{ level: 'error', text: 'Похоже на код Coriolis без ссылки: вставьте ссылку целиком, чтобы был известен корабль' }],
+      issues: [{ level: 'error', code: 'exchange.coriolisCodeOnly' }],
     };
   }
 
-  return { build: null, format: null, issues: [{ level: 'error', text: 'Формат не распознан' }] };
+  return { build: null, format: null, issues: [{ level: 'error', code: 'exchange.formatUnknown' }] };
 }
 
 /** Текст для кнопки «скопировать»: наша ссылка на сборку. */
