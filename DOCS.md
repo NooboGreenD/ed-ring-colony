@@ -18,6 +18,7 @@
 | Обновить работающий сервер | [MONITORING.md](MONITORING.md) → «Ручное обновление проекта» (Админка → Мониторинг → «Обновить сейчас») |
 | Регистрация отвечает «временно закрыта», хотя SMTP настроен | [SIGNUP-DISABLED-FIX.md](SIGNUP-DISABLED-FIX.md) |
 | Сайт не открывается: «слишком длинные cookie» (400/431), инкогнито помогает | [COOKIE-SIZE-FIX.md](COOKIE-SIZE-FIX.md) — диагностика: `sh deploy/diag-cookies.sh` |
+| Лаунчер пишет «Сервер обновлений недоступен» и `latin-1` в тексте ошибки | [UPDATE-CHECK-HEADER-FIX.md](UPDATE-CHECK-HEADER-FIX.md) — длинное тире в `User-Agent` на свежей установке |
 | Цели сообщества: почему нет наград/тиров, куда уходят истёкшие CG | [COMMUNITY-GOALS.md](COMMUNITY-GOALS.md) |
 | «Не загружаются картинки», Supabase Storage упал: проверить и перезапустить | [STORAGE-RESTART.md](STORAGE-RESTART.md) — Админка → Мониторинг → «Хранилище файлов» |
 | Поставить сервер с нуля | [SELFHOST.md](SELFHOST.md), [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md), [SERVER-SETUP.md](SERVER-SETUP.md) |
@@ -53,6 +54,7 @@
 | [uploader/README.md](uploader/README.md) | Что умеет программа, установка, сборка, как обновляется, заметки к версиям |
 | [uploader/CHANGES.md](uploader/CHANGES.md) | Подробный журнал по «раундам». **Первый раздел — заметки текущего релиза** (их берёт `build_bundle.py`) |
 | [UPLOADER-UPDATE-STRUCTURE.md](UPLOADER-UPDATE-STRUCTURE.md) | Канал обновлений: лаунчер + пакет кода, подпись Ed25519, публикация из админки |
+| [UPDATE-CHECK-HEADER-FIX.md](UPDATE-CHECK-HEADER-FIX.md) | Почему проверка обновлений на свежей установке сообщала «сервер недоступен»: заглушка версии `"—"` в `User-Agent` (latin-1) и как это закрыто |
 | [HELPER-LAUNCHER-LINK.md](HELPER-LAUNCHER-LINK.md) | Лаунчер: возврат после Helper, профиль пилота в правом верхнем углу, привязка учётной записи кодом, перенос раскладки оверлея, загрузка установщика Setup в админке |
 
 ## База данных

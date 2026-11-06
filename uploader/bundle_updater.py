@@ -39,6 +39,14 @@ from i18n import tr
 
 import bundle
 
+try:  # http_errors лежит рядом; в тестах пакет может не резолвиться
+    from http_errors import header_token
+except Exception:  # pragma: no cover - страховка, а не сценарий
+    def header_token(value: Any, fallback: str = "") -> str:
+        token = "".join(ch for ch in str(value or "")
+                        if ch.isalnum() or ch in "._+-").strip("._+-")[:40]
+        return token if any(ch.isalnum() for ch in token) else fallback
+
 try:  # site_config лежит рядом; в тестах модуль может быть недоступен
     from site_config import DEFAULT_SITE_URL
 except Exception:  # pragma: no cover - страховка, а не сценарий
@@ -107,9 +115,18 @@ def _session(session=None):
 
 
 def _headers(current: str = "") -> Dict[str, str]:
+    """Заголовки запросов к серверу обновлений.
+
+    Версия клиента уходит в `User-Agent`, а заголовки кодируются в latin-1.
+    Лаунчер показывает пустое состояние как «—» (U+2014), и раньше эта
+    строка целиком попадала в заголовок: запрос падал с
+    `UnicodeEncodeError: 'latin-1' codec can't encode character '\\u2014'`
+    ещё до отправки, а пользователь видел «сервер обновлений недоступен».
+    Поэтому в заголовок идёт только безопасный токен версии.
+    """
     return {
         "Accept": "application/json",
-        "User-Agent": f"ColonialHelper/{current or 'dev'} (bundle update)",
+        "User-Agent": f"ColonialHelper/{header_token(current, 'dev')} (bundle update)",
     }
 
 
