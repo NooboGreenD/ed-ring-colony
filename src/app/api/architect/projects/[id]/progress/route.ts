@@ -6,6 +6,7 @@ import { persistRavenSystemProgress, readableProgress } from '@/lib/systemProgre
 import { staleSystems } from '@/lib/architect/projectProgress';
 import { computeProjectProgress, loadSystemRows, storeProgressSummary } from '@/lib/architect/projectStore';
 import { errorResponse, jsonError, openProject } from '@/lib/architect/projectRouteKit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -45,6 +46,7 @@ async function respond(svc: unknown, projectId: string, extra: Record<string, un
 }
 
 export async function GET(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
@@ -55,11 +57,12 @@ export async function GET(req: Request, { params }: Params) {
 }
 
 export async function POST(req: Request, { params }: Params) {
+  const t = await apiTranslate();
   try {
     const opened = await openProject(req, (await params).id);
     if (!opened.ok) return opened.response;
     const { svc, access } = opened;
-    if (!access.permissions.refresh) return jsonError('Нет доступа', 403);
+    if (!access.permissions.refresh) return jsonError(t('prj.noAccess'), 403);
     const projectId = access.project.id;
 
     const now = Date.now();
