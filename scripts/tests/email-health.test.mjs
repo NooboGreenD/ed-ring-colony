@@ -183,10 +183,11 @@ test('панель: кнопка «Включить и применить» пи
 
   // Кнопка показывается только у проверок, которые реально чинятся одним кликом.
   assert.match(card, /check\.action && check\.action !== 'configure-smtp'/);
-  assert.match(card, /Включить и применить/);
+  assert.match(card, /mail\.enableApply/);
   assert.match(card, /setSignupOpen\(true\)/, 'галочка в панели обновляется без перезагрузки страницы');
 
   // Ловушка с именем ключа видна до нажатия «Сохранить», а не только после.
   assert.match(card, /status\?\.legacySignupKey/, 'панель предупреждает про GOTRUE_DISABLE_SIGNUP в .env');
-  assert.match(card, /Рабочий ключ — <code>DISABLE_SIGNUP<\/code>/, 'в предупреждении — рабочее имя');
+  assert.match(card, /mail\.legacyMid/, 'в предупреждении — текст с рабочим именем');
+  assert.match(card, /<code>DISABLE_SIGNUP<\/code>/, 'в предупреждении — рабочее имя');
 });

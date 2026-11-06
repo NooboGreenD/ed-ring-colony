@@ -21,13 +21,13 @@ export type PlanVisibility = 'private' | 'unlisted' | 'public';
 
 export const PLAN_VISIBILITIES: PlanVisibility[] = ['private', 'unlisted', 'public'];
 
-export const VISIBILITY_LABELS_RU: Record<PlanVisibility, string> = {
+export const VISIBILITY_LABEL_KEYS: Record<PlanVisibility, string> = {
   private: 'shr.visPrivate',
   unlisted: 'shr.visUnlisted',
   public: 'shr.visPublic',
 };
 
-export const VISIBILITY_HINTS_RU: Record<PlanVisibility, string> = {
+export const VISIBILITY_HINT_KEYS: Record<PlanVisibility, string> = {
   private: 'shr.hintPrivate',
   unlisted: 'shr.hintUnlisted',
   public: 'shr.hintPublic',
