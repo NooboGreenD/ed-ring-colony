@@ -7,11 +7,14 @@ import { assessProfileBinding } from '@/lib/capi/profileBinding';
 import { mergePilotStats } from '@/lib/pilotDossier';
 import CmdrDossier from '@/components/CmdrDossier';
 import { IconSquadron, IconLeaderboard } from '@/components/Icons';
+import { Tr } from '@/components/Translate';
+import { getServerI18n } from '@/lib/i18n/server';
 import { CmdrProfileHeader, CmdrProfileName } from '@/components/Cosmetics/CmdrProfileCosmetics';
 
 export const dynamic = 'force-dynamic';
 
 export default async function CmdrPage({ params }: { params: Promise<{ name: string }> }) {
+  const { locale } = await getServerI18n();
   const resolvedParams = await params;
   const name = decodeURIComponent(resolvedParams.name);
   const supabase = await createClient();
@@ -248,8 +251,8 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
             <CmdrProfileName userId={profileId ?? null} name={name} />
           </h1>
           {squadron?.name && <p style={{ margin: '4px 0 0', color: '#9ca3af', fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}><IconSquadron size={14} color='#9ca3af' /> {squadron.name}</p>}
-          {rank && <p style={{ margin: '4px 0 0', color: '#e67e22', fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}><IconLeaderboard size={14} color='#e67e22' /> Место в лидерборде: #{rank}</p>}
-          {profile?.created_at && <p style={{ margin: '4px 0 0', color: '#9ca3af', fontSize: 12 }}>С нами с {new Date(profile.created_at).toLocaleDateString('ru-RU')}</p>}
+          {rank && <p style={{ margin: '4px 0 0', color: '#e67e22', fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}><IconLeaderboard size={14} color='#e67e22' /> <Tr k="cd.leaderboardRank" params={{ rank }} /></p>}
+          {profile?.created_at && <p style={{ margin: '4px 0 0', color: '#9ca3af', fontSize: 12 }}><Tr k="cd.withUsSince" params={{ date: new Date(profile.created_at).toLocaleDateString(locale) }} /></p>}
         </div>
       </div>
 

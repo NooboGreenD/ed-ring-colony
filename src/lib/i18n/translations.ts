@@ -6939,6 +6939,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'amk.fromRef': 'От референса:',
     'amk.toArrival': 'До прибытия:',
     'amk.scanValue': 'Стоимость скана:',
+    'frnd.loginFirst': 'Сначала войдите на странице',
+    'cd.leaderboardRank': 'Место в лидерборде: #{rank}',
+    'cd.withUsSince': 'С нами с {date}',
+    'map.engineInit': 'Инициализация 3D-движка...',
   },
 
   en: {
@@ -13874,6 +13878,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'amk.fromRef': 'From the reference:',
     'amk.toArrival': 'To arrival:',
     'amk.scanValue': 'Scan value:',
+    'frnd.loginFirst': 'Sign in first on',
+    'cd.leaderboardRank': 'Leaderboard place: #{rank}',
+    'cd.withUsSince': 'With us since {date}',
+    'map.engineInit': 'Initialising the 3D engine...',
   },
 
   de: {
@@ -20809,6 +20817,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'amk.fromRef': 'Vom Referenzpunkt:',
     'amk.toArrival': 'Bis Ankunft:',
     'amk.scanValue': 'Scan-Wert:',
+    'frnd.loginFirst': 'Bitte zuerst anmelden unter',
+    'cd.leaderboardRank': 'Platz im Leaderboard: #{rank}',
+    'cd.withUsSince': 'Dabei seit {date}',
+    'map.engineInit': '3D-Engine wird initialisiert...',
   },
   it: {
     'nav.home': 'Home',
@@ -27743,6 +27755,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'amk.fromRef': 'Dal riferimento:',
     'amk.toArrival': 'All\'arrivo:',
     'amk.scanValue': 'Valore della scansione:',
+    'frnd.loginFirst': 'Accedi prima su',
+    'cd.leaderboardRank': 'Posizione in classifica: #{rank}',
+    'cd.withUsSince': 'Con noi dal {date}',
+    'map.engineInit': 'Inizializzazione del motore 3D...',
   },
   ko: {
     'nav.home': '홈',
@@ -34677,6 +34693,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'amk.fromRef': '기준점에서:',
     'amk.toArrival': '도착까지:',
     'amk.scanValue': '스캔 가치:',
+    'frnd.loginFirst': '먼저 로그인하세요:',
+    'cd.leaderboardRank': '리더보드 순위: #{rank}',
+    'cd.withUsSince': '{date}부터 함께합니다',
+    'map.engineInit': '3D 엔진 초기화 중...',
   },
   zh: {
     'nav.home': '首页',
@@ -41611,6 +41631,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'amk.fromRef': '距参考点：',
     'amk.toArrival': '至抵达：',
     'amk.scanValue': '扫描价值：',
+    'frnd.loginFirst': '请先登录：',
+    'cd.leaderboardRank': '排行榜名次：#{rank}',
+    'cd.withUsSince': '加入于 {date}',
+    'map.engineInit': '正在初始化 3D 引擎...',
   },
   ja: {
     'nav.home': 'ホーム',
@@ -48544,6 +48568,10 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'amk.fromRef': '基準点から:',
     'amk.toArrival': '到着まで:',
     'amk.scanValue': 'スキャン価値:',
+    'frnd.loginFirst': 'まずログインしてください:',
+    'cd.leaderboardRank': 'リーダーボード順位: #{rank}',
+    'cd.withUsSince': '{date} から参加',
+    'map.engineInit': '3D エンジンを初期化中...',
   },
 };
 
