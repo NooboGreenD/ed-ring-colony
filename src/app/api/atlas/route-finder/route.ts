@@ -294,6 +294,8 @@ export async function POST(req: Request) {
     let route = findRouteAStar(fromCoords, toCoords, graphSystems, effectiveMaxJump);
     let syntheticWaypoints = false;
     if (!route && routeMode === 'ship') {
+      // Корабль: расчётные точки не подставляем — их нельзя выбрать в игре,
+      // поэтому честно сообщаем, что маршрута по известным системам нет.
       return NextResponse.json({
         error: t('api.routeFinderNotFound'),
         from: { name: from_system, ...fromCoords },
