@@ -154,6 +154,34 @@ class BuildBundleTests(unittest.TestCase):
         self.build(["--branch", "arena/experiment", "--channel", "stable"])
         self.assertEqual(self.manifest()["channel"], "stable")
 
+    def test_release_notes_are_the_fresh_changelog_section(self):
+        """Заметки релиза — только свежий раздел, а не вся история.
+
+        Заголовки `CHANGES.md` сменили формат с «# Раунд 69 — 2.13.2: …» на
+        «# 2.26.0 — …». Прежний шаблон знал только первый вариант, поэтому
+        заметки молча превращались в первые 4000 символов файла — то есть
+        в несколько прошлых выпусков подряд.
+        """
+        changes = self.work / "CHANGES.md"
+        changes.write_text(
+            "# 2.26.0 — карта системы\n\n* Новое.\n\n"
+            "# 2.25.2 — обновления\n\n* Старое.\n",
+            encoding="utf-8",
+        )
+        notes = build_bundle.latest_changelog(changes)
+        self.assertIn("2.26.0", notes)
+        self.assertIn("Новое", notes)
+        self.assertNotIn("2.25.2", notes)
+
+        changes.write_text(
+            "# Раунд 69 — 2.13.2: пакетом\n\n* Старый формат.\n\n"
+            "# Раунд 68 — 2.13.1\n",
+            encoding="utf-8",
+        )
+        legacy = build_bundle.latest_changelog(changes)
+        self.assertIn("Раунд 69", legacy)
+        self.assertNotIn("Раунд 68", legacy)
+
     def test_min_launcher_is_taken_from_the_launcher(self):
         """Пакет не должен требовать сборку новее той, что умеет его ставить."""
         self.build()

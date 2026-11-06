@@ -2,7 +2,7 @@
 
 Журнал слитых pull request'ов сайта, базы и сопутствующих программ — от новых к
 старым. Сейчас: **сайт 2.27.9** (`package.json` → `version`), **Colonial Helper
-2.25.1** (`uploader/colonial_helper.py` → `VERSION`), **лаунчер 1.4.1**
+2.26.0** (`uploader/colonial_helper.py` → `VERSION`), **лаунчер 1.4.1**
 (`uploader/launcher.py` → `LAUNCHER_VERSION`).
 
 * Подробные заметки к каждой версии Helper — [uploader/CHANGES.md](uploader/CHANGES.md)

@@ -554,6 +554,22 @@ class TranslationTests(unittest.TestCase):
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "обмен настройками: " + "; ".join(missing))
 
+    def test_crash_log_keeps_diagnostics_in_russian(self):
+        """Журнал падений — диагностика: перевод сделал бы его нечитаемым.
+
+        Это единственный модуль Helper, где русский текст в файле оставлен
+        намеренно. Проверка фиксирует обе стороны: строки перечислены в
+        ``crash_log.NON_UI_LITERALS``, а всё остальное в модуле — не текст.
+        """
+        import crash_log
+
+        missing = [f"crash_log.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "crash_log.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in crash_log.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "журнал падений: " + "; ".join(missing))
+        self.assertTrue(crash_log.NON_UI_LITERALS, "список исключений пуст")
+
     def test_system_map_strings_are_in_the_catalog(self):
         """Карта системы: подписи объектов, сводка для чата, строка состояния."""
         import system_map

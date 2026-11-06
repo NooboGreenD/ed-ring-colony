@@ -71,8 +71,10 @@ def channel_for_branch(branch: str) -> str:
 #: the full PySide6 desktop runtime just to discover a package version.
 _VERSION_RE = re.compile(r'^VERSION\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
 
-#: Заголовок свежего раздела ченджлога: «# Раунд 69 — 2.13.2: …».
-_ROUND_RE = re.compile(r"^# Раунд\b.*$", re.MULTILINE)
+#: Заголовок раздела ченджлога. Новый формат — «# 2.26.0 — …», старый —
+#: «# Раунд 69 — 2.13.2: …». Оба должны находиться: по ним берётся только
+#: свежий раздел, иначе в заметки релиза попадает вся история целиком.
+_ROUND_RE = re.compile(r"^# (?:Раунд\b|\d+\.\d+).*$", re.MULTILINE)
 
 #: Сколько строк ченджлога попадает в заметки релиза.
 NOTES_MAX_LINES = 60
