@@ -150,13 +150,13 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
       body: JSON.stringify({ post_id: postId, content: editContent.trim() }),
     });
     const result = await res.json();
-    if (!res.ok) { alert(result.error || 'Ошибка сохранения'); return; }
+    if (!res.ok) { alert(result.error || t('forum.errorSave')); return; }
     setEditingPost(null);
     loadPosts();
   };
 
   const deletePost = async (postId: number) => {
-    if (!confirm("Удалить сообщение?")) return;
+    if (!confirm(t('sqchat.confirmDelete'))) return;
     await supabase.from("forum_posts").update({ is_deleted: true }).eq("id", postId);
     loadPosts();
   };
@@ -175,7 +175,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
 
   const deleteThread = async () => {
     if (!isAdmin) return;
-    if (!confirm("Удалить всю тему?")) return;
+    if (!confirm(t('thd.confirmDeleteThread'))) return;
     await supabase.from("forum_threads").delete().eq("id", thread.id);
     window.location.href = `/forum/${category?.slug ?? ""}`;
   };
