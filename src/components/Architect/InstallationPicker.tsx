@@ -5,7 +5,7 @@ import { BUILD_CLASS_LABELS_RU, ECONOMY_LABELS_RU, PAD_LABELS_RU, PRE_REQS, inst
 import { ECONOMY_MARKET } from '@/lib/architect/economy';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { architectLabel } from '@/lib/i18n/architectLabels';
-import { placementCheckTexts } from '@/lib/i18n/planText';
+import { economyMarketText, placementCheckTexts } from '@/lib/i18n/planText';
 import {
   commodityLabel,
   formatTons,
@@ -277,12 +277,12 @@ function PickerRow({
               )}
               {market.produces.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  <span style={{ color: 'var(--green)' }}>{t('ipk.marketSells')}</span> {market.produces.join(', ')}
+                  <span style={{ color: 'var(--green)' }}>{t('ipk.marketSells')}</span> {economyMarketText(installation.influence, 'produces', t)}
                 </div>
               )}
               {market.imports.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  <span style={{ color: 'var(--cyan)' }}>{t('ipk.marketImports')}</span> {market.imports.join(', ')}
+                  <span style={{ color: 'var(--cyan)' }}>{t('ipk.marketImports')}</span> {economyMarketText(installation.influence, 'imports', t)}
                 </div>
               )}
             </div>

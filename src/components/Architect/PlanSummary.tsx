@@ -12,7 +12,7 @@ import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } fro
 import type { ArchitectPlan, PlanEvaluation, SystemEconomy, SystemEffectKey } from '@/lib/architect/types';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { architectLabel } from '@/lib/i18n/architectLabels';
-import { bodyTraitLabel, issueText } from '@/lib/i18n/planText';
+import { bodyTraitLabel, economyMarketText, issueText } from '@/lib/i18n/planText';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
   pop: 'psm.effPop',
@@ -303,12 +303,12 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                   </div>
                   {market.produces.length > 0 && (
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-                      <span style={{ color: 'var(--green)' }}>{t('psm.sells')}</span> {market.produces.join(', ')}
+                      <span style={{ color: 'var(--green)' }}>{t('psm.sells')}</span> {economyMarketText(economy, 'produces', t)}
                     </div>
                   )}
                   {market.imports.length > 0 && (
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-                      <span style={{ color: 'var(--cyan)' }}>{t('psm.imports')}</span> {market.imports.join(', ')}
+                      <span style={{ color: 'var(--cyan)' }}>{t('psm.imports')}</span> {economyMarketText(economy, 'imports', t)}
                     </div>
                   )}
                   {affinity.bodyDependent && affinity.boost.length > 0 && (

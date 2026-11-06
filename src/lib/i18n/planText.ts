@@ -7,9 +7,9 @@
  * показываем русский оригинал, а не пустоту.
  */
 
-import type { PlacementCheck, PlacementNote, PlanIssue } from '@/lib/architect/types';
+import type { PlacementCheck, PlacementNote, PlanIssue, SystemEconomy } from '@/lib/architect/types';
 import type { EconomyBodyFit } from '@/lib/architect/economy';
-import { BODY_TRAIT_LABELS_RU, type BodyTrait } from '@/lib/architect/economy.ts';
+import { BODY_TRAIT_LABELS_RU, ECONOMY_MARKET, type BodyTrait } from '@/lib/architect/economy.ts';
 
 export type PlanTranslate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -22,6 +22,13 @@ function resolve(key: string | undefined, params: Record<string, string | number
 /** Сообщение плана (ошибка или предупреждение). */
 export function issueText(issue: PlanIssue, t: PlanTranslate): string {
   return resolve(issue.key, issue.params, issue.message, t);
+}
+
+/** Рынок экономики одной строкой: что станция продаёт и что ввозит. */
+export function economyMarketText(economy: SystemEconomy, side: 'produces' | 'imports', t: PlanTranslate): string {
+  const key = `arch.econ.${economy}.${side}`;
+  const fallback = (ECONOMY_MARKET[economy]?.[side] ?? []).join(', ');
+  return resolve(key, undefined, fallback, t);
 }
 
 /** Одно сообщение проверки размещения. */

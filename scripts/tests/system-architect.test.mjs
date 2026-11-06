@@ -616,3 +616,34 @@ test('импорт: пометка основного порта читаетс�
   assert.equal(round.warning, undefined);
   assert.equal(round.plan.sites[0].primary, true);
 });
+
+// ── Язык сообщений плана ──────────────────────────────────────────────
+
+/**
+ * Сообщения разбора и сводки плана должны идти на языке интерфейса.
+ *
+ * `planner.ts` не знает про React: активную локаль ему выставляет
+ * `setFormatLocale` из `I18nProvider`. Без неё остаются русские оригиналы —
+ * на них опираются CLI и остальные тесты, поэтому проверяем оба состояния.
+ */
+test('сообщения плана переводятся на язык интерфейса', async () => {
+  const { setFormatLocale } = await import('../../src/lib/i18n/format.ts');
+  const plan = createPlan('Sol');
+  const evaluation = evaluatePlan(plan);
+
+  try {
+    assert.equal(parsePlan('{не json').error, 'Файл не является JSON');
+    assert.match(summarizePlan(plan, evaluation), /^План застройки: Sol/);
+
+    setFormatLocale('en');
+    assert.equal(parsePlan('{не json').error, 'The file is not JSON');
+    assert.match(summarizePlan(plan, evaluation), /^Construction plan: Sol/);
+    assert.match(summarizePlan(plan, evaluation), /catalogue v\d+\.$/);
+
+    setFormatLocale('de');
+    assert.match(parsePlan('{не json').error, /Die Datei ist kein JSON/);
+    assert.match(summarizePlan(plan, evaluation), /^Bauplan: Sol/);
+  } finally {
+    setFormatLocale('ru');
+  }
+});
