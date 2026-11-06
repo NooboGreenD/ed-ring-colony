@@ -1,13 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import {
-  BUILD_CLASS_LABELS_RU,
-  ECONOMY_LABELS_RU,
-  installationLinks,
-  PAD_LABELS_RU,
-  PRE_REQS,
-} from '@/lib/architect/catalogue';
+import { BUILD_CLASS_LABELS_RU, ECONOMY_LABELS_RU, PAD_LABELS_RU, PRE_REQS, installationLinks, installationName } from '@/lib/architect/catalogue';
 import { ECONOMY_MARKET } from '@/lib/architect/economy';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { architectLabel } from '@/lib/i18n/architectLabels';
@@ -41,7 +35,7 @@ type TierFilter = 0 | 1 | 2 | 3;
 const TIER_LABELS: Record<TierFilter, string> = { 0: 'ipk.tierAny', 1: 'T1', 2: 'T2', 3: 'T3' };
 
 export default function InstallationPicker({ body, plan, onPick, onClose, initialLocation = 'any' }: InstallationPickerProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [query, setQuery] = useState('');
   const [location, setLocation] = useState<LocationFilter>(initialLocation);
   const [tier, setTier] = useState<TierFilter>(0);
@@ -69,7 +63,8 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
     }));
     return checked.sort((left, right) => {
       if (left.check.ok !== right.check.ok) return left.check.ok ? -1 : 1;
-      return right.installation.score - left.installation.score || left.installation.nameRu.localeCompare(right.installation.nameRu);
+      return right.installation.score - left.installation.score
+        || installationName(left.installation, locale).localeCompare(installationName(right.installation, locale));
     });
   }, [body, plan, query, location, tier]);
 
@@ -185,7 +180,7 @@ function PickerRow({
   onToggle: () => void;
   onPick: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const preReq = installation.preReq ? PRE_REQS[installation.preReq] : null;
   const links = installationLinks(installation.id);
   const market = ECONOMY_MARKET[installation.influence];
@@ -209,7 +204,7 @@ function PickerRow({
         </button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ color: 'var(--text)', fontSize: 14 }}>
-            {installation.nameRu}
+            {installationName(installation, locale)}
             <span style={{ color: 'var(--muted)', fontSize: 12 }}> · {installation.id}</span>
             {primary ? (
               <span
@@ -276,7 +271,7 @@ function PickerRow({
               )}
               {links.requiredBy.length > 0 && (
                 <div style={{ color: 'var(--muted)' }}>
-                  {t('ipk.requiredFor')} <span style={{ color: 'var(--text)' }}>{links.requiredBy.map((ref) => ref.nameRu).join(', ')}</span>
+                  {t('ipk.requiredFor')} <span style={{ color: 'var(--text)' }}>{links.requiredBy.map((ref) => installationName(ref, locale)).join(', ')}</span>
                 </div>
               )}
               {market.produces.length > 0 && (

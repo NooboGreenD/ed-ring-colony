@@ -20,7 +20,7 @@ import SourcingPanel from '@/components/Architect/SourcingPanel';
 import SyncPanel from '@/components/Architect/SyncPanel';
 import SystemProjectsPanel from '@/components/Architect/SystemProjectsPanel';
 import RavenCreatePanel from '@/components/Architect/RavenCreatePanel';
-import { CATALOGUE_VERSION, ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
+import { CATALOGUE_VERSION, ECONOMY_LABELS_RU, installationName } from '@/lib/architect/catalogue';
 import { bodyBoostedEconomies, economyBodyFit } from '@/lib/architect/economy';
 import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
 import { buildBodyIndex, resolveBodyName } from '@/lib/architect/bodyNames';
@@ -125,7 +125,7 @@ function writeRecent(system: string) {
 }
 
 export default function ArchitectWorkspace() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [systemInput, setSystemInput] = useState('');
   const [systemName, setSystemName] = useState('');
   const [rawRows, setRawRows] = useState<Record<string, unknown>[]>([]);
@@ -598,8 +598,8 @@ export default function ArchitectWorkspace() {
   const primarySite = useMemo(() => plan?.sites.find((site) => site.primary) ?? null, [plan]);
   const primaryName = useMemo(() => {
     if (!primarySite) return null;
-    return getInstallation(primarySite.installationId)?.nameRu.split(' (')[0] ?? null;
-  }, [primarySite]);
+    return installationName(getInstallation(primarySite.installationId), locale).split(' (')[0] || null;
+  }, [primarySite, locale]);
 
   return (
     <main style={{ maxWidth: 1440, margin: '24px auto', padding: '0 16px' }}>
@@ -1459,7 +1459,7 @@ function SiteRow({
   onEdit: (siteId: string) => void;
   onTogglePrimary: (siteId: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const installation = getInstallation(site.installationId);
   if (!installation) {
     return (
@@ -1492,7 +1492,7 @@ function SiteRow({
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 13, color: 'var(--text)' }}>
           {isPrimary && <span style={{ color: 'var(--orange)' }} title={t('arch.primaryPortTitle')}>★ </span>}
-          {installation.nameRu}
+          {installationName(installation, locale)}
           <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {installation.id}</span>
         </div>
         {!body && (

@@ -11,6 +11,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { installationName } from '@/lib/architect/catalogue';
 import { formatTons, getInstallation, siteCargo } from '@/lib/architect/planner';
 import type { SiteProgress } from '@/lib/architect/progress';
 import type {
@@ -53,7 +54,7 @@ export default function SiteTable({
   onCycle,
   onTogglePrimary,
 }: SiteTableProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [sort, setSort] = useState<SortKey>('order');
   const [query, setQuery] = useState('');
 
@@ -78,14 +79,14 @@ export default function SiteTable({
       })
       .filter((row) => {
         if (!text) return true;
-        return `${row.installation?.nameRu ?? row.site.installationId} ${row.site.bodyName} ${row.site.note ?? ''}`
+        return `${installationName(row.installation, locale) || row.site.installationId} ${row.site.bodyName} ${row.site.note ?? ''}`
           .toLocaleLowerCase()
           .includes(text);
       });
 
     const compare: Record<SortKey, (a: typeof list[number], b: typeof list[number]) => number> = {
       order: (a, b) => a.order - b.order,
-      name: (a, b) => (a.installation?.nameRu ?? '').localeCompare(b.installation?.nameRu ?? '', 'ru'),
+      name: (a, b) => installationName(a.installation, locale).localeCompare(installationName(b.installation, locale)),
       body: (a, b) => a.site.bodyName.localeCompare(b.site.bodyName, 'ru'),
       tier: (a, b) => (b.installation?.tier ?? 0) - (a.installation?.tier ?? 0),
       tons: (a, b) => b.tons - a.tons,
@@ -169,7 +170,7 @@ export default function SiteTable({
                       }}
                     >
                       {site.primary && <span style={{ color: 'var(--orange)' }} title={t('stbl.primaryPort')}>★ </span>}
-                      {installation?.nameRu ?? site.installationId}
+                      {installationName(installation, locale) || site.installationId}
                     </button>
                     <div style={{ fontSize: 10, color: 'var(--muted)' }}>
                       T{installation?.tier ?? '?'} · {installation?.id ?? '—'}

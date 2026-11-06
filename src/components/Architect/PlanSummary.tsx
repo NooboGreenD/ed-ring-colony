@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ECONOMY_LABELS_RU, installationLinks } from '@/lib/architect/catalogue';
+import { ECONOMY_LABELS_RU, installationLinks, installationName } from '@/lib/architect/catalogue';
 import {
   BODY_TRAIT_LABELS_RU,
   ECONOMY_AFFINITY,
@@ -33,7 +33,7 @@ interface PlanSummaryProps {
 }
 
 export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSummaryProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [showAllCargo, setShowAllCargo] = useState(false);
   const [showAllUnlocks, setShowAllUnlocks] = useState(false);
   const [showPrimaryCargo, setShowPrimaryCargo] = useState(false);
@@ -58,12 +58,12 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         const links = installationLinks(id);
         const hasPreReq = links.requires.length === 0
           || links.requires.every((req) => req.options.some((option) => installedIds.has(option.id)));
-        return { id, nameRu: installation?.nameRu ?? id, count, links, hasPreReq };
+        return { id, name: installationName(installation, locale) || id, count, links, hasPreReq };
       })
       // В граф попадают только постройки, у которых есть хоть какая-то связь.
       .filter((entry) => entry.links.requires.length > 0 || entry.links.enables.length > 0)
-      .sort((left, right) => left.nameRu.localeCompare(right.nameRu));
-  }, [plan.sites]);
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [plan.sites, locale]);
 
   const cargo = useMemo(() => cargoList(evaluation), [evaluation]);
   const errors = evaluation.issues.filter((issue) => issue.level === 'error');
@@ -131,7 +131,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
               return (
                 <div key={port.siteId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)' }}>
                   <span>
-                    {index + 1}. {installation?.nameRu ?? port.installationId}
+                    {index + 1}. {installationName(installation, locale) || port.installationId}
                     {port.siteId === primaryPort?.siteId ? t('psm.primaryFree') : ''}
                   </span>
                   <span style={{ color: port.taxed ? 'var(--orange)' : 'var(--text)' }}>
@@ -149,7 +149,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         {primaryPort && primaryInstallation ? (
           <>
             <div style={{ fontSize: 14, color: 'var(--text)' }}>
-              {primaryInstallation.nameRu}
+              {installationName(primaryInstallation, locale)}
               <span style={{ color: 'var(--muted)', fontSize: 12 }}> — {primaryPort.bodyName}</span>
             </div>
             <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
@@ -193,7 +193,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                       onClick={() => onMarkPrimary(site.id)}
                       style={{ ...chipStyle, borderColor: 'var(--orange)', color: 'var(--orange)' }}
                     >
-                      ★ {installation?.nameRu ?? site.installationId}
+                      ★ {installationName(installation, locale) || site.installationId}
                     </button>
                   );
                 })}
@@ -233,7 +233,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
             return (
               <li key={siteId} style={{ marginBottom: 4 }}>
                 {site.primary ? <span style={{ color: 'var(--orange)' }}>★ </span> : null}
-                {installation.nameRu}
+                {installationName(installation, locale)}
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                   {' · '}
                   {site.bodyName || <span style={{ color: 'var(--orange)' }}>{t('psm.bodyMissing')}</span>}
@@ -329,7 +329,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
             {t('psm.linksNote')}
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {buildingLinks.map(({ id, nameRu, count, links, hasPreReq }) => (
+            {buildingLinks.map(({ id, name, count, links, hasPreReq }) => (
               <div
                 key={id}
                 style={{
@@ -360,7 +360,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                   </>
                 )}
                 <span style={{ color: 'var(--text)', fontWeight: 600 }}>
-                  {nameRu}{count > 1 ? ` ×${count}` : ''}
+                  {name}{count > 1 ? ` ×${count}` : ''}
                 </span>
                 {links.enables.length > 0 && (
                   <>
@@ -457,7 +457,7 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: s
 }
 
 function TierBadge({ tier, free, spent, given }: { tier: string; free: number; spent: number; given: number }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   return (
     <div
       style={{

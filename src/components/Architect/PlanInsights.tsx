@@ -13,6 +13,8 @@
  */
 
 import { useMemo, useState } from 'react';
+import { installationName } from '@/lib/architect/catalogue';
+import { getInstallation } from '@/lib/architect/planner';
 import {
   bodyLoads,
   cargoShares,
@@ -115,7 +117,7 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
           {timeline.map((step) => {
             const height2 = Math.max(2, Math.round((Math.abs(step.tier2After) / peak) * 38));
             const height3 = Math.max(2, Math.round((Math.abs(step.tier3After) / peak) * 38));
-            const title = t('pi.stepTitle', { index: step.index, name: step.nameRu, body: step.bodyName || t('pi.noBody') }) + '\n'
+            const title = t('pi.stepTitle', { index: step.index, name: installationName(getInstallation(step.installationId), locale), body: step.bodyName || t('pi.noBody') }) + '\n'
               + t('pi.stepTiers', { t2: step.tier2After, t3: step.tier3After }) + '\n'
               + (step.cost > 0 ? t('pi.stepCost', { cost: step.cost, tier: step.costTier }) : t('pi.stepNoCost'))
               + (step.gives > 0 ? t('pi.stepGives', { gives: step.gives, tier: step.givesTier }) : '');

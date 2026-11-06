@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { installationName } from '@/lib/architect/catalogue';
 import { getInstallation } from '@/lib/architect/planner';
 import type { SyncSourceState } from '@/lib/architect/bodySync';
 import { parseExistingStructures, type ExistingStructure } from '@/lib/architect/existing';
@@ -71,7 +72,7 @@ export function structureKey(bodyName: string | null, installationId: string | n
 }
 
 export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply, onSources }: ExistingPanelProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [structures, setStructures] = useState<ExistingStructure[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -201,7 +202,7 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
                 />
                 <span style={{ minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: 13, color: 'var(--text)' }}>
-                    {installation?.nameRu ?? item.installationId}
+                    {installationName(installation, locale) || item.installationId}
                     <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {item.name}</span>
                   </span>
                   <span style={{ display: 'block', fontSize: 11, color: 'var(--muted)' }}>

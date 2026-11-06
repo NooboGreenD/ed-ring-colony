@@ -2,13 +2,7 @@
 
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { useMemo, useState } from 'react';
-import {
-  BUILD_CLASS_LABELS_RU,
-  ECONOMY_LABELS_RU,
-  installationLinks,
-  PAD_LABELS_RU,
-  PRE_REQS,
-} from '@/lib/architect/catalogue';
+import { BUILD_CLASS_LABELS_RU, ECONOMY_LABELS_RU, PAD_LABELS_RU, PRE_REQS, installationLinks, installationName } from '@/lib/architect/catalogue';
 import { economyBodyFit } from '@/lib/architect/economy';
 import {
   canBePrimary,
@@ -43,7 +37,7 @@ const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'sed.stPlan', b
  * «Сохранить» не даст положить постройку туда, где она невозможна.
  */
 export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDelete }: SiteEditorProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [installationId, setInstallationId] = useState(site.installationId);
   const [bodyName, setBodyName] = useState(site.bodyName);
   const [status, setStatus] = useState<PlannedSiteStatus>(site.status);
@@ -69,7 +63,8 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
       .map((entry) => ({ entry, check: placementCheck(targetBody, entry.id, planWithoutSite) }))
       .sort((left, right) => {
         if (left.check.ok !== right.check.ok) return left.check.ok ? -1 : 1;
-        return right.entry.score - left.entry.score || left.entry.nameRu.localeCompare(right.entry.nameRu);
+        return right.entry.score - left.entry.score
+          || installationName(left.entry, locale).localeCompare(installationName(right.entry, locale));
       });
   }, [query, targetBody, planWithoutSite]);
 
@@ -116,7 +111,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                 {t('sed.editTitle')}
               </div>
               <div style={{ fontSize: 18, color: 'var(--text)' }}>
-                {installation?.nameRu ?? site.installationId}
+                {installationName(installation, locale) || site.installationId}
                 {site.primary ? <span style={{ color: 'var(--orange)', fontSize: 14 }}> {t('sed.primaryPort')}</span> : null}
               </div>
             </div>
@@ -182,7 +177,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                   >
                     <span style={{ minWidth: 0, textAlign: 'left' }}>
                       <span style={{ display: 'block', color: 'var(--text)', fontSize: 13 }}>
-                        {entry.nameRu}
+                        {installationName(entry, locale)}
                         {entry.primary ? <span style={{ color: 'var(--orange)', fontSize: 11 }}> ★</span> : null}
                         <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {entry.id}</span>
                       </span>
@@ -273,7 +268,7 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                   )}
                   {links && links.requiredBy.length > 0 && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
-                      {t('sed.requiredFor')} {links.requiredBy.map((ref) => ref.nameRu).join(', ')}
+                      {t('sed.requiredFor')} {links.requiredBy.map((ref) => installationName(ref, locale)).join(', ')}
                     </div>
                   )}
                 </div>

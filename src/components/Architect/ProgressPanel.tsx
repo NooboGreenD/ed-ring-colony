@@ -11,6 +11,7 @@
  */
 
 import { getInstallation, formatTons } from '@/lib/architect/planner';
+import { installationName } from '@/lib/architect/catalogue';
 import type { ProgressReport, SiteProgress } from '@/lib/architect/progress';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import {
@@ -48,7 +49,7 @@ function ProgressRow({ entry }: { entry: SiteProgress }) {
   return (
     <tr>
       <td style={tdStyle}>
-        <div style={{ fontSize: 12, color: 'var(--text)' }}>{installation?.nameRu ?? entry.site.installationId}</div>
+        <div style={{ fontSize: 12, color: 'var(--text)' }}>{installationName(installation, locale) || entry.site.installationId}</div>
         <div style={{ fontSize: 11, color: 'var(--muted)' }}>
           {entry.site.bodyName} · {t(MATCH_LABELS[entry.matchKind])}
         </div>
