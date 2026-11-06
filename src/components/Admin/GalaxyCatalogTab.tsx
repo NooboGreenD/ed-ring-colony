@@ -627,21 +627,21 @@ docker compose --env-file .env.production --profile monitoring \\
       </div>
 
       <div style={cardStyle}>
-        <div style={labelStyle}>Диск с данными каталога</div>
+        <div style={labelStyle}>{t('gc.diskTitle')}</div>
         {storage ? (
           <>
             <div style={{ fontSize: 13, marginBottom: 6 }}>
               <code>{storage.disk?.path || storage.dir}</code>
               {storage.disk ? (
                 <>
-                  {' '}— свободно{' '}
+                  {' '}— {t('gc.diskFree')}{' '}
                   <strong style={{ color: storage.disk.free < 8 * 1024 ** 3 ? '#e67e22' : '#22c55e' }}>
                     {formatBytes(storage.disk.free)}
                   </strong>{' '}
-                  из {formatBytes(storage.disk.total)}
+                  {t('gc.diskOf', { size: formatBytes(storage.disk.total) })}
                 </>
               ) : (
-                <span style={{ color: '#9ca3af' }}> — размер диска недоступен</span>
+                <span style={{ color: '#9ca3af' }}> — {t('gc.diskUnknown')}</span>
               )}
             </div>
             {storage.disk && storage.disk.total > 0 && (
@@ -656,17 +656,16 @@ docker compose --env-file .env.production --profile monitoring \\
               </div>
             )}
             <div style={{ fontSize: 13, color: '#d1d5db', marginBottom: 8 }}>
-              Каталог занимает {formatBytes(storage.total_bytes)}: архивы {formatBytes(storage.archives_bytes)}
-              {storage.archives.length > 0 ? ` (${storage.archives.length} шт.)` : ''}, шарды{' '}
-              {formatBytes(storage.shards_bytes)}
-              {storage.shards_files > 0 ? ` (${storage.shards_files} файл(ов))` : ''}.
+              {t('gc.catalogUsage', { size: formatBytes(storage.total_bytes), archives: formatBytes(storage.archives_bytes) })}
+              {storage.archives.length > 0 ? t('gc.archivesCount', { count: storage.archives.length }) : ''}{t('gc.shardsPart', { size: formatBytes(storage.shards_bytes) })}
+              {storage.shards_files > 0 ? t('gc.shardsCount', { count: storage.shards_files }) : '.'}
             </div>
             {storage.archives.length > 0 && (
               <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
                 {storage.archives.map((item) => (
                   <div key={item.path}>
                     <code>{item.file}</code> — {formatBytes(item.bytes)}
-                    {item.partial ? ', докачивается' : ''}
+                    {item.partial ? t('gc.partialDownloading') : ''}
                     {item.mtime ? `, ${formatTime(item.mtime)}` : ''}
                   </div>
                 ))}
@@ -678,79 +677,68 @@ docker compose --env-file .env.production --profile monitoring \\
                 className="btn"
                 disabled={busy !== null || running || downloadRunning || unpackRunning}
                 onClick={() => void act('cleanup')}
-                title="Удалить архивы, которые больше не нужны, и шарды без архива"
+                title={t('gc.cleanupHint')}
               >
-                Освободить место
+                {t('gc.cleanupButton')}
               </button>
               <button
                 type="button"
                 className="btn"
                 disabled={busy !== null || running || downloadRunning || unpackRunning || storage.shards_files === 0}
                 onClick={() => {
-                  if (window.confirm('Удалить распакованные шарды? Для импорта архив придётся распаковать заново.')) {
+                  if (window.confirm(t('gc.dropShardsConfirm'))) {
                     void act('cleanup', { drop_shards: true });
                   }
                 }}
-                title="Удалить и шарды тоже"
+                title={t('gc.dropShardsTitle')}
               >
-                Удалить шарды
+                {t('gc.dropShardsButton')}
               </button>
             </div>
           </>
         ) : (
-          <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 8 }}>Нет данных о диске.</div>
+          <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 8 }}>{t('gc.noDiskData')}</div>
         )}
         <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
-          Архивы и распакованные шарды лежат на отдельном диске сервера (<code>{storage?.dir || status?.archive_dir}</code>,
-          шарды — <code>{storage?.shards_dir || '…/shards'}</code>). Старый дамп удаляется перед загрузкой нового, а архив —
-          после успешного импорта{storage?.keep_archive ? '; сейчас это отключено через GALAXY_ARCHIVE_KEEP=1' : ''}.
-          Загрузка, которой заведомо не хватит места, не стартует: сервер сразу скажет, сколько нужно и сколько есть.
+          {t('gc.diskNote', { dir: storage?.dir || status?.archive_dir || '', shardsDir: storage?.shards_dir || '…/shards' })}{storage?.keep_archive ? t('gc.keepArchiveOff') : ''}{t('gc.diskNoteTail')}
         </div>
       </div>
 
       <div style={cardStyle}>
-        <div style={labelStyle}>Шарды (распакованный архив)</div>
+        <div style={labelStyle}>{t('gc.shardsTitle')}</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
           <button
             type="button"
             className="btn"
             disabled={busy !== null || running || unpackRunning}
             onClick={() => void act('unpack')}
-            title="Прочитать архив один раз и разложить его в сжатые шарды по 2 млн систем"
+            title={t('gc.unpackTitle')}
           >
-            {shards?.manifest && !shards.manifest.complete ? 'Продолжить распаковку' : 'Распаковать архив в шарды'}
+            {shards?.manifest && !shards.manifest.complete ? t('gc.resumeUnpack') : t('gc.unpackButton')}
           </button>
           <button type="button" className="btn" disabled={busy !== null || !unpackRunning} onClick={() => void act('cancel-unpack')}>
-            Остановить распаковку
+            {t('gc.stopUnpack')}
           </button>
         </div>
 
         {shards?.manifest ? (
           <div style={{ fontSize: 13, color: shards.manifest.complete ? '#22c55e' : '#e67e22', marginBottom: 8 }}>
-            {shards.manifest.complete ? 'Готово: ' : 'В процессе: '}
-            {formatCount(shards.manifest.rows)} систем в {shards.manifest.shards.length} шард(ах),
-            {' '}{formatBytes(shards.bytes)} на диске
+            {t(shards.manifest.complete ? 'gc.shardDone' : 'gc.shardInProgress')}{t('gc.shardsSummary', { rows: formatCount(shards.manifest.rows), shards: shards.manifest.shards.length, size: formatBytes(shards.bytes) })}
             {shards.manifest.completed_at ? `, ${formatTime(shards.manifest.completed_at)}` : ''}
           </div>
         ) : (
-          <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 8 }}>Архив ещё не распакован.</div>
+          <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 8 }}>{t('gc.archiveNotUnpacked')}</div>
         )}
 
         {unpackRunning && shards?.progress && (
           <div style={{ fontSize: 12, color: '#ffd166', marginBottom: 8 }}>
-            Распаковано {formatCount(shards.progress.rows)} систем в {shards.progress.shards} шард(ов)…
+            {t('gc.unpackProgress', { rows: formatCount(shards.progress.rows), shards: shards.progress.shards })}
           </div>
         )}
 
         <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
-          Gzip нельзя раскодировать с середины, поэтому «Продолжить импорт» перечитывает весь архив, чтобы
-          пропустить уже записанное — это часы процессора на каждом перезапуске. Распаковка делает это один
-          раз: архив превращается в сжатые TSV-шарды по {formatCount(shards?.manifest?.rows_per_shard ?? 2000000)} систем,
-          и дальше возобновление стоит O(1) — импорт просто начинает со следующего файла. Шарды можно
-          переносить по одному (rsync/scp), раздавать зеркалом и удалять по мере импорта
-          (<code>GALAXY_SHARDS_PRUNE=1</code>). Распаковку можно запускать прямо во время скачивания —
-          она дочитывает файл по мере его роста.
-          {shards?.dir ? <><br />Каталог: <code>{shards.dir}</code></> : null}
+          {t('gc.unpackNote', { count: formatCount(shards?.manifest?.rows_per_shard ?? 2000000) })}
+          {shards?.dir ? <><br />{t('gc.unpackDir')} <code>{shards.dir}</code></> : null}
         </div>
 
         {!!shards?.log?.length && (
@@ -774,28 +762,28 @@ docker compose --env-file .env.production --profile monitoring \\
       </div>
 
       <div style={cardStyle}>
-        <div style={labelStyle}>Импорт</div>
+        <div style={labelStyle}>{t('gc.importPanel')}</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           <button
             type="button"
             className="btn btn-cyan"
             disabled={busy !== null || running || backendMissing || downloadRunning}
-            title={downloadRunning ? 'Дождитесь окончания скачивания архива' : undefined}
+            title={downloadRunning ? t('gc.waitDownload') : undefined}
             onClick={() => void act('start')}
           >
-            {canResume ? 'Продолжить импорт' : 'Запустить импорт'}
+            {canResume ? t('gc.resumeImport') : t('gc.startImport')}
           </button>
           <button
             type="button"
             className="btn"
             disabled={busy !== null || running || downloadRunning || backendMissing}
             onClick={() => void act('start', { fresh: true })}
-            title="Скачать свежий дамп заново и импортировать с первой записи"
+            title={t('gc.freshTitle')}
           >
-            Начать заново (свежий дамп)
+            {t('gc.freshButton')}
           </button>
           <button type="button" className="btn" disabled={busy !== null || !running} onClick={() => void act('cancel')}>
-            Остановить
+            {t('gc.stop')}
           </button>
         </div>
 
@@ -806,11 +794,11 @@ docker compose --env-file .env.production --profile monitoring \\
             </div>
             <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>
               {percent.toFixed(1)}% — {formatBytes(state?.bytes_done)}
-              {state?.bytes_total ? ` из ${formatBytes(state.bytes_total)}` : ''}
-              {state?.written ? `, записано ${formatCount(state.written)} строк` : ''}
-              {state?.skipped ? `, пропущено ${formatCount(state.skipped)} уже записанных` : ''}
+              {state?.bytes_total ? ' ' + t('gc.ofSize', { size: formatBytes(state.bytes_total) }) : ''}
+              {state?.written ? t('gc.written', { count: formatCount(state.written) }) : ''}
+              {state?.skipped ? t('gc.skipped', { count: formatCount(state.skipped) }) : ''}
               {state?.mode === 'shards' && state?.shards_total
-                ? `, шард ${formatCount(state.shard_index ?? 0)} из ${formatCount(state.shards_total)}`
+                ? t('gc.shardOf', { index: formatCount(state.shard_index ?? 0), total: formatCount(state.shards_total) })
                 : ''}
               {state?.variant ? ` · ${variantLabel(status, state.variant)}` : ''}
             </div>
@@ -824,42 +812,34 @@ docker compose --env-file .env.production --profile monitoring \\
             </div>
             {/cannot affect row a second time/i.test(state.error) && (
               <div style={{ marginTop: 6, color: '#e67e22' }}>
-                В одной пачке оказалось две системы с одним именем или id64 — Postgres так upsert не принимает.
-                Запустите импорт ещё раз: повторы теперь схлопываются, и загрузка из-за этого не обрывается.
+                {t('gc.dupError')}
               </div>
             )}
             {/statement timeout|57014/i.test(state.error) && (
               <div style={{ marginTop: 6, color: '#e67e22' }}>
-                База не успела записать пачку за отведённое время (statement timeout): PostgREST даёт каждому
-                запросу лишь несколько секунд. Медленные пачки делятся пополам и повторяются, а строки, которые
-                база не берёт даже по одной, откладываются и дописываются в конце прохода. Один раз можно
-                просто продолжить импорт с сохранённой точки; если ошибка повторяется регулярно — это потолок
-                PostgREST, а не случайность: подключите веб-процессу прямой Postgres (<code>SUPABASE_DB_URL</code>,
-                см. предупреждение выше) или запускайте импорт, когда база менее загружена.
+                {t('gc.timeoutError')}
               </div>
             )}
           </div>
         )}
         {state?.points_error && (
           <div style={{ color: '#e67e22', fontSize: 12, marginBottom: 8 }}>
-            Файл точек не загружен в storage: {state.points_error}. Карта соберёт облако из таблицы при первом
-            включении слоя (это медленно, но работает).
+            {t('gc.pointsUploadFailed', { error: state.points_error })}
           </div>
         )}
         {state?.phase === 'done' && !state.error && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginBottom: 8 }}>
             <IconCheckCircle size={14} color="#22c55e" />
             <span>
-              Готово {formatTime(state.finished_at)}: {formatCount(state.systems_count)} систем
-              {state.points_count ? `, облако ${formatCount(state.points_count)} точек` : ''}
+              {t('gc.doneAt', { time: formatTime(state.finished_at), count: formatCount(state.systems_count) })}
+              {state.points_count ? t('gc.pointsCountPart', { count: formatCount(state.points_count) }) : ''}
             </span>
           </div>
         )}
 
         {backendMissing && (
           <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 8 }}>
-            Импорт не запустится: веб-процессу нужен <code>DATABASE_URL</code>/<code>SUPABASE_DB_URL</code> (быстрый
-            прямой Postgres) либо <code>NEXT_PUBLIC_SUPABASE_URL</code> + <code>SUPABASE_SERVICE_ROLE_KEY</code>.
+            {t('gc.backendMissing')}
           </div>
         )}
 
@@ -869,18 +849,18 @@ docker compose --env-file .env.production --profile monitoring \\
             className="btn"
             disabled={busy !== null}
             onClick={() => void checkDb()}
-            title="Один запрос к Postgres из веб-процесса: показывает, виден ли хост из DATABASE_URL"
+            title={t('gc.checkDbTitle')}
           >
-            Проверить подключение к БД
+            {t('gc.checkDb')}
           </button>
           {dbCheck && (
             <span style={{ fontSize: 12, color: dbCheck.direct.ok || !dbCheck.direct.configured ? '#22c55e' : '#ef4444' }}>
               {dbCheck.direct.configured
                 ? dbCheck.direct.ok
-                  ? `прямой Postgres (${dbCheck.direct.host ?? '?'}) — ${dbCheck.direct.message}`
-                  : `прямой Postgres (${dbCheck.direct.host ?? '?'}) недоступен`
-                : 'прямой Postgres не настроен'}
-              {` · PostgREST: ${dbCheck.postgrest.configured ? 'настроен' : 'не настроен'}`}
+                  ? t('gc.directOk', { host: dbCheck.direct.host ?? '?', message: dbCheck.direct.message })
+                  : t('gc.directDown', { host: dbCheck.direct.host ?? '?' })
+                : t('gc.directMissing')}
+              {t('gc.postgrestState', { state: dbCheck.postgrest.configured ? t('gc.stateConfigured') : t('gc.stateNotConfigured') })}
             </span>
           )}
         </div>
@@ -890,47 +870,47 @@ docker compose --env-file .env.production --profile monitoring \\
             {dbCheck.direct.message}
             {dbCheck.direct.network && (
               <div style={{ color: '#9ca3af', marginTop: 4 }}>
-                DNS «{dbCheck.direct.network.host}»:{' '}
+                {t('gc.dnsHost', { host: dbCheck.direct.network.host })}{' '}
                 {dbCheck.direct.network.addresses.length
                   ? dbCheck.direct.network.addresses.join(', ')
-                  : 'имя не резолвится'}
+                  : t('gc.dnsUnresolved')}
                 {' · '}
-                порт {dbCheck.direct.network.port}: {dbCheck.direct.network.kind}
+                {t('gc.portKind', { port: dbCheck.direct.network.port, kind: dbCheck.direct.network.kind })}
               </div>
             )}
           </div>
         )}
 
-        <div style={{ ...labelStyle, marginTop: 4 }}>Облако точек для карты</div>
+        <div style={{ ...labelStyle, marginTop: 4 }}>{t('gc.pointsCardTitle')}</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
           <button
             type="button"
             className="btn btn-cyan"
             disabled={busy !== null || pointsBuildRunning || running || backendMissing}
-            title="Прочитать таблицу каталога и собрать файл, из которого слой «Все системы» рисует карту. Если систем больше потолка, строки берутся с равномерным шагом прямо в запросе — лишние байты не читаются."
+            title={t('gc.buildTitle')}
             onClick={() => void act('build-points', maxPointsPayload(pointsMax))}
           >
-            {pointsBuildRunning ? 'Сборка облака идёт…' : 'Собрать облако точек из таблицы'}
+            {pointsBuildRunning ? t('gc.buildRunning') : t('gc.buildButton')}
           </button>
           {canRepublishPoints && (
             <button
               type="button"
               className="btn"
               disabled={busy !== null || pointsBuildRunning}
-              title="Облако уже лежит в каталоге данных — нужен только bucket galaxy-data. Файл перечитывается с диска, таблица не трогается."
+              title={t('gc.republishTitle')}
               onClick={() => void act('publish-points')}
             >
-              {busy === 'publish-points' ? 'Загружаю в storage…' : 'Повторить загрузку в storage'}
+              {busy === 'publish-points' ? t('gc.republishRunning') : t('gc.republishButton')}
             </button>
           )}
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af' }}>
-            максимум точек
+            {t('gc.maxPoints')}
             <input
               type="text"
               inputMode="numeric"
               value={pointsMax}
               onChange={(event) => setPointsMax(event.target.value)}
-              placeholder={pointsBudget ? String(pointsBudget.max_points) : 'по лимиту'}
+              placeholder={pointsBudget ? String(pointsBudget.max_points) : t('gc.byLimit')}
               style={{
                 width: 120,
                 background: '#0f1113',
@@ -945,15 +925,16 @@ docker compose --env-file .env.production --profile monitoring \\
         </div>
         <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8, lineHeight: 1.6 }}>
           {pointsInStorage
-            ? `в хранилище: ${formatCount(status?.stats?.points_count ?? null)} точек${status?.stats?.points_bytes ? `, ${formatBytes(status.stats.points_bytes)}` : ''}${status?.stats?.points_stride && status.stats.points_stride > 1 ? `, шаг ${formatCount(status.stats.points_stride)} строк на точку` : ''}`
+            ? t('gc.inStorage', { count: formatCount(status?.stats?.points_count ?? null) })
+              + (status?.stats?.points_bytes ? t('gc.inStorageSize', { size: formatBytes(status.stats.points_bytes) }) : '')
+              + (status?.stats?.points_stride && status.stats.points_stride > 1 ? t('gc.inStorageStride', { count: formatCount(status.stats.points_stride) }) : '')
             : pointsOnDisk
-              ? `в хранилище файла нет — облако лежит в ${pointsCache?.dir} и отдаётся с него; другие процессы (и пересобранный контейнер) его не увидят`
-              : 'файла нет ни в хранилище, ни на диске — слой карты соберёт его сам при первом включении (это медленнее)'}
+              ? t('gc.onDiskCache', { dir: pointsCache?.dir ?? '…' })
+              : t('gc.noPointsFile')}
           {pointsBudget && (
             <>
-              {' · '}потолок {formatCount(pointsBudget.max_points)} точек ({formatBytes(pointsBudget.budget_bytes)})
-              {pointsBudget.bucket_bytes != null &&
-                `, лимит бакета galaxy-data ${formatBytes(pointsBudget.bucket_bytes)}`}
+              {' · '}{t('gc.budget', { count: formatCount(pointsBudget.max_points), size: formatBytes(pointsBudget.budget_bytes) })}
+              {pointsBudget.bucket_bytes != null && t('gc.bucketLimit', { size: formatBytes(pointsBudget.bucket_bytes) })}
             </>
           )}
         </div>
@@ -973,21 +954,21 @@ docker compose --env-file .env.production --profile monitoring \\
             }}
           >
             {pointsBuild.running
-              ? 'Читаю таблицу каталога и собираю облако точек — это может занять несколько минут…'
+              ? t('gc.buildReading')
               : pointsBuild.ok
-                ? `${pointsBuild.published === 'storage' ? 'Облако собрано и загружено' : 'Облако собрано и записано в локальный кэш'}: ${formatCount(pointsBuild.count)} точек из ${formatCount(pointsBuild.rows)} строк`
-                  + `${pointsBuild.stride && pointsBuild.stride > 1 ? ` (шаг ${formatCount(pointsBuild.stride)})` : ''}`
-                  + `${pointsBuild.bytes ? `, файл ${formatBytes(pointsBuild.bytes)}` : ''} · ${formatTime(pointsBuild.finished_at)}`
-                  + (pointsBuild.published !== 'storage' && pointsBuild.error
-                    ? `. storage не принял файл: ${pointsBuild.error} — кнопка «Повторить загрузку в storage» пробует снова, таблицу перечитывать не нужно`
-                    : '')
-                : `Облако точек собрать не удалось: ${pointsBuild.error ?? 'неизвестная ошибка'}`}
+                ? (pointsBuild.published === 'storage' ? t('gc.builtStorage') : t('gc.builtLocal'))
+                  + t('gc.builtCount', { count: formatCount(pointsBuild.count), rows: formatCount(pointsBuild.rows) })
+                  + (pointsBuild.stride && pointsBuild.stride > 1 ? t('gc.stride', { count: formatCount(pointsBuild.stride) }) : '')
+                  + (pointsBuild.bytes ? t('gc.fileSize', { size: formatBytes(pointsBuild.bytes) }) : '')
+                  + ` · ${formatTime(pointsBuild.finished_at)}`
+                  + (pointsBuild.published !== 'storage' && pointsBuild.error ? t('gc.uploadRejected', { error: pointsBuild.error }) : '')
+                : t('gc.buildFailed', { error: pointsBuild.error ?? t('gc.unknownError') })}
           </div>
         )}
         {pointsBuild && pointsBuild.log.length > 0 && (
           <details style={{ marginBottom: 10 }}>
             <summary style={{ fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
-              Журнал сборки облака ({pointsBuild.log.length})
+              {t('gc.buildLog', { count: pointsBuild.log.length })}
             </summary>
             <pre
               style={{
@@ -1005,18 +986,10 @@ docker compose --env-file .env.production --profile monitoring \\
         )}
 
         <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
-          Режим записи: <strong style={{ color: '#e5e7eb' }}>{status?.backends.backend ?? 'недоступен'}</strong>
-          {status?.backends.backend === 'supabase' && ' (PostgREST, медленнее — добавьте SUPABASE_DB_URL для прямого Postgres)'}
+          {t('gc.writeMode')} <strong style={{ color: '#e5e7eb' }}>{status?.backends.backend ?? t('gc.unavailable')}</strong>
+          {status?.backends.backend === 'supabase' && t('gc.writeModeFallback')}
           <br />
-          Если архива на диске ещё нет, импорт сначала скачает его (с возобновлением при обрывах), а затем
-          прочитает с диска; RAM &lt; 1 ГБ. Прерванный импорт продолжается: дамп перечитывается с диска (сеть
-          уже не нужна), уже записанные системы пропускаются, поэтому повторная запись в базу не идёт.
-          Повторы одной системы в дампе (то же имя или тот же id64 в одной пачке) схлопываются в одну строку —
-          иначе Postgres обрывает upsert ошибкой «cannot affect row a second time». Пачки, не уложившиеся в
-          statement timeout базы, автоматически делятся пополам и повторяются. После завершения файл точек
-          загружается в бакет <code>galaxy-data</code> (а всегда — в каталог данных, поэтому сбой хранилища
-          больше не означает «облака нет»), и слой «Все системы» на карте начинает работать. Счётчики
-          каталога ниже могут отставать на минуту — их отдаёт кэш.
+          {t('gc.importNote')}
         </div>
 
         {!!status?.log?.length && (
