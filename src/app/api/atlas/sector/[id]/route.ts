@@ -17,70 +17,70 @@ function inside(x: number, z: number, path: number[][]): boolean {
   return result;
 }
 
-function getSectorIntel(id: number, name: string, distToSgrA: number, distToSol: number) {
+function getSectorIntel(id: number, name: string, distToSgrA: number, distToSol: number, t: (key: string, params?: Record<string, string | number>) => string) {
   if (id === 1) {
     return {
-      type: 'Галактическое Ядро',
+      type: t('sec.core.type'),
       typeEn: 'Galactic Core',
       code: 'CORE-CENTRE',
-      starDensity: 'Экстремальная (> 10 звёзд/св.л³)',
-      navigationRisk: 'Высокий (гравитационные колодцы, чёрные дыры)',
-      fuelAvailability: 'Изобилие (классы A, F, G, K, M)',
-      description: 'Центральная область Млечного Пути вокруг сверхмассивной чёрной дыры Sagittarius A*. Колоссальная концентрация звёзд и скоплений. Навигационные системы кораблей испытывают повышенную нагрузку при прокладке дальних маршрутов.',
+      starDensity: t('sec.core.starDensity'),
+      navigationRisk: t('sec.core.navigationRisk'),
+      fuelAvailability: t('sec.core.fuelAvailability'),
+      description: t('sec.core.description'),
     };
   }
   if (id === 18) {
     return {
-      type: 'Обитаемый Рукав (Колыбель)',
+      type: t('sec.inhabited.type'),
       typeEn: 'Human Inhabited Space',
       code: 'CORE-WORLDS',
-      starDensity: 'Средняя (0.004 звёзд/св.л³)',
-      navigationRisk: 'Минимальный (навигационные маяки, развитая сеть станций)',
-      fuelAvailability: 'Гарантированная (повсеместно)',
-      description: 'Исторический сектор зарождения цивилизации людей. Включает Солнечную систему (Sol), колонии Пузыря (The Bubble), верфи трёх сверхдержав, а также базовые колониальные маршруты инициативы Ring Colony.',
+      starDensity: t('sec.inhabited.starDensity'),
+      navigationRisk: t('sec.inhabited.navigationRisk'),
+      fuelAvailability: t('sec.inhabited.fuelAvailability'),
+      description: t('sec.inhabited.description'),
     };
   }
   if (id === 31) {
     return {
-      type: 'Аномальный Рубеж (Formidine Rift)',
+      type: t('sec.rift.type'),
       typeEn: 'Anomalous Sector',
       code: 'ANOMALY-RIFT',
-      starDensity: 'Низкая (разреженное звёздное поле)',
-      navigationRisk: 'Повышенный (звёздные провалы, ограниченная дозаправка)',
-      fuelAvailability: 'Ограниченная (встречаются коридоры коричневых карликов)',
-      description: 'Печально известный Разлом Формидин между рукавами Персея и Ориона-Лебедя. Историческая зона экспедиции Project Dynasty и тайных мегашипов серии Зулу.',
+      starDensity: t('sec.rift.starDensity'),
+      navigationRisk: t('sec.rift.navigationRisk'),
+      fuelAvailability: t('sec.rift.fuelAvailability'),
+      description: t('sec.rift.description'),
     };
   }
   if ([40, 41, 42].includes(id) || distToSol > 50000) {
     return {
-      type: 'Дальний Космос / Край Галактики',
+      type: t('sec.deep.type'),
       typeEn: 'Deep Space / Far Rim',
       code: 'DEEP-RIM',
-      starDensity: 'Критически низкая (< 0.0005 звёзд/св.л³)',
-      navigationRisk: 'Критический (риск изоляции без запаса топлива)',
-      fuelAvailability: 'Редкая (требуется фильтр по классам KGBFOAM)',
-      description: 'Внешний рубеж галактического диска. Огромные расстояния между звёздами требуют увеличенной дальности прыжка FSD, использования впрысков премиум-синтеза и предварительной разведки маршрута.',
+      starDensity: t('sec.deep.starDensity'),
+      navigationRisk: t('sec.deep.navigationRisk'),
+      fuelAvailability: t('sec.deep.fuelAvailability'),
+      description: t('sec.deep.description'),
     };
   }
   if (distToSgrA < 12000) {
     return {
-      type: 'Околоядерная Область',
+      type: t('sec.boundary.type'),
       typeEn: 'Inner Core Boundary',
       code: 'CORE-BOUNDARY',
-      starDensity: 'Очень высокая (1-5 звёзд/св.л³)',
-      navigationRisk: 'Средний (высокая температура пространства)',
-      fuelAvailability: 'Изобилие',
-      description: 'Внутренний сектор вблизи галактического балджа. Обширные поля протозвёзд, нейтронных маяков и богатые минералами планетные системы.',
+      starDensity: t('sec.boundary.starDensity'),
+      navigationRisk: t('sec.boundary.navigationRisk'),
+      fuelAvailability: t('sec.boundary.fuelAvailability'),
+      description: t('sec.boundary.description'),
     };
   }
   return {
-    type: 'Спиральный Рукав',
+    type: t('sec.arm.type'),
     typeEn: 'Galactic Spiral Arm',
     code: 'SPIRAL-ARM',
-    starDensity: 'Стандартная (0.01-0.05 звёзд/св.л³)',
-    navigationRisk: 'Низкий',
-    fuelAvailability: 'Стабильная',
-    description: `Сектор рукава галактики ${name}. Сбалансированное распределение звёзд главной последовательности, оптимальная среда для дальних исследовательских миссий и поиска планет, пригодных для терраформирования.`,
+    starDensity: t('sec.arm.starDensity'),
+    navigationRisk: t('sec.arm.navigationRisk'),
+    fuelAvailability: t('sec.arm.fuelAvailability'),
+    description: t('sec.arm.description', { name }),
   };
 }
 
@@ -129,7 +129,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     .sort((a: any, b: any) => a.distance - b.distance)
     .slice(0, 5);
 
-  const intel = getSectorIntel(region.id, region.name, distToSgrA, distToSol);
+  const intel = getSectorIntel(region.id, region.name, distToSgrA, distToSol, t);
 
   // Attempt database retrieval with resilient fallback
   let cachedSystems = 0;
