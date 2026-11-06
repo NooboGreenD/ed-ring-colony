@@ -10,6 +10,8 @@ import Link from "next/link";
 import { systemKey, systemPageHref } from "@/lib/systemIdentity";
 import { IconClock, IconSatellite, IconTrash, IconCheckCircle, IconConstruction, IconX } from "@/components/Icons";
 import Avatar from "@/components/Avatar";
+import type { TFn } from '@/lib/i18n/gameLabels';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
  type ProjectMember = {
   user_id: string;
@@ -47,23 +49,23 @@ import Avatar from "@/components/Avatar";
  type ProgressState = { current: number; total: number; phase: string; pct: number } | null;
  type EdsmProgress = { current: number; total: number; systemName: string } | null;
 
-const statusLabel = (s: string) => {
+const statusLabel = (t: TFn, s: string) => {
   switch (s) {
-    case "active": return "Активен";
-    case "paused": return "Приостановлен";
-    case "completed": return "Завершён";
-    case "archived": return "Архив";
+    case "active": return t('project.statusActive');
+    case "paused": return t('project.statusPaused');
+    case "completed": return t('project.statusCompleted');
+    case "archived": return t('project.statusArchived');
     default: return s;
   }
 };
 
-const sysStatusLabel = (s: string) => {
+const sysStatusLabel = (t: TFn, s: string) => {
   switch (s) {
-    case "done": return "Готово";
-    case "building": return "Строится";
-    case "planned": return "Запланировано";
-    case "preparing": return "Подготовка";
-    case "on_hold": return "На паузе";
+    case "done": return t('project.sysDone');
+    case "building": return t('project.sysBuilding');
+    case "planned": return t('project.sysPlanned');
+    case "preparing": return t('project.sysPreparing');
+    case "on_hold": return t('project.sysOnHold');
     default: return s;
   }
 };
@@ -74,17 +76,18 @@ const sysStatusClass = (s: string) => {
   return "status-planned";
 };
 
-const formatCoordinates = (system: { x?: unknown; y?: unknown; z?: unknown }) => {
+const formatCoordinates = (t: TFn, system: { x?: unknown; y?: unknown; z?: unknown }) => {
   const coords = readSystemCoordinates(system);
   const coordinates = coords ? [coords.x, coords.y, coords.z] : [];
   return coords && coordinates.every(Number.isFinite)
     ? coordinates.map((value) => value.toFixed(2)).join(", ")
-    : "Координаты не загружены";
+    : t('project.coordsMissing');
 };
 
 export default function ProjectPage() {
   const params = useParams();
   const id = parseInt(params.id as string);
+  const { t, locale } = useI18n();
 
   const [user, setUser] = useState<any>(null);
   const [data, setData] = useState<any>(null);
@@ -260,7 +263,7 @@ export default function ProjectPage() {
     // shared map cache as well. The old loop posted { system_name } to the
     // route endpoint, whose contract requires an ids array, so every request
     // was rejected and the map was left with stale planned points.
-    setProgress({ current: 0, total: systems.length, phase: "Синхронизация RavenColonial...", pct: 5 });
+    setProgress({ current: 0, total: systems.length, phase: t('project.syncPhase'), pct: 5 });
     try {
       const response = await fetch(`/api/projects/${id}/progress`, {
         method: "POST",
@@ -268,12 +271,12 @@ export default function ProjectPage() {
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error || "Не удалось синхронизировать прогресс");
+        throw new Error(payload.error || t('project.syncFailed'));
       }
-      setProgress({ current: payload.synced ?? systems.length, total: systems.length, phase: "Кэш карты обновлён", pct: 100 });
+      setProgress({ current: payload.synced ?? systems.length, total: systems.length, phase: t('project.syncDone'), pct: 100 });
     } catch (error: any) {
       console.error(error);
-      alert(error?.message || "Не удалось синхронизировать прогресс");
+      alert(error?.message || t('project.syncFailed'));
     } finally {
       // Keep the completed state visible briefly so the action does not look
       // like a no-op when the server answers quickly.
@@ -285,14 +288,14 @@ export default function ProjectPage() {
   const fetchSystemCoords = async () => {
     if (!canEdit) return;
     setEdsmLoading(true);
-    setEdsmProgress({ current: 0, total: 0, systemName: "Загрузка полного списка проекта..." });
+    setEdsmProgress({ current: 0, total: 0, systemName: t('project.loadingList') });
     try {
       const listResponse = await fetch(`/api/projects/${id}/systems?coordinates_only=1`, { cache: "no-store" });
       const listData = await listResponse.json().catch(() => ({}));
-      if (!listResponse.ok || !Array.isArray(listData.systems)) throw new Error(listData.error || "Не удалось загрузить полный список проекта");
+      if (!listResponse.ok || !Array.isArray(listData.systems)) throw new Error(listData.error || t('project.listFailed'));
       const allSystems: ProjectSystem[] = listData.systems;
       const missing = allSystems.filter(row => !readSystemCoordinates(row));
-      if (!missing.length) { alert(allSystems.length ? "У всех систем уже есть координаты" : "В проекте пока нет систем"); return; }
+      if (!missing.length) { alert(allSystems.length ? t('project.allHaveCoords') : t('project.noSystemsInProject')); return; }
       setEdsmProgress({ current: 0, total: missing.length, systemName: "EDSM / Spansh..." });
       const result = await updateSystemCoordinates(allSystems, async (system, coords) => {
         // Project coordinates belong exclusively to project_systems.
@@ -305,8 +308,8 @@ export default function ProjectPage() {
           throw new Error(body.error || `HTTP ${response.status}`);
         }
       }, { endpoint: "/api/edsm/batch", onProgress: (current, total, systemName) => setEdsmProgress({ current, total, systemName }) });
-      alert(`Обновлено координат: ${result.updated} из ${result.total}. EDSM: ${result.sources.edsm}, Spansh: ${result.sources.spansh + result.sources.spansh_catalog}. Не найдены: ${result.unresolved}, ошибок записи: ${result.failed}. ${result.errors.join(' ')} ${result.warnings.join(' ')}`);
-    } catch (error: any) { alert("Ошибка получения координат: " + error.message); }
+      alert(t('project.coordsResult', { updated: result.updated, total: result.total, edsm: result.sources.edsm, spansh: result.sources.spansh + result.sources.spansh_catalog, unresolved: result.unresolved, failed: result.failed, errors: result.errors.join(' '), warnings: result.warnings.join(' ') }));
+    } catch (error: any) { alert(t('project.coordsError', { message: error.message })); }
     finally { setEdsmLoading(false); setEdsmProgress(null); load(); }
   };
 
@@ -335,7 +338,7 @@ export default function ProjectPage() {
   };
 
   const removePilot = async (user_id: string) => {
-    if (!confirm("Удалить пилота из проекта?")) return;
+    if (!confirm(t('project.confirmRemovePilot'))) return;
     await fetch(`/api/projects/${id}/assign`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -372,29 +375,29 @@ export default function ProjectPage() {
   }, []);
 
   const removeSystemFromRoute = async (systemId: string | number, systemName: string) => {
-    if (!confirm(`Удалить "${systemName}" из маршрута?`)) return;
+    if (!confirm(t('project.confirmRemoveSystem', { name: systemName }))) return;
     const res = await fetch(`/api/projects/${id}/systems`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ system_id: systemId }),
     });
     if (res.ok) load();
-    else { const data = await res.json().catch(() => ({})); alert(`Ошибка удаления: ${data.error || res.statusText}`); }
+    else { const data = await res.json().catch(() => ({})); alert(t('project.removeFailed', { error: data.error || res.statusText })); }
   };
 
   const clearRoute = async () => {
-    if (!confirm("Очистить ВЕСЬ маршрут проекта? Это удалит все системы.")) return;
+    if (!confirm(t('project.confirmClearRoute'))) return;
     const res = await fetch(`/api/projects/${id}/systems`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
     if (res.ok) load();
-    else { const data = await res.json().catch(() => ({})); alert(`Ошибка очистки маршрута: ${data.error || res.statusText}`); }
+    else { const data = await res.json().catch(() => ({})); alert(t('project.clearFailed', { error: data.error || res.statusText })); }
   };
 
-  if (loading) return <div style={{ padding: 40, textAlign: "center" }}>Загрузка...</div>;
-  if (!project) return <div style={{ padding: 40, textAlign: "center" }}>Проект не найден</div>;
+  if (loading) return <div style={{ padding: 40, textAlign: "center" }}>{t('project.loading')}</div>;
+  if (!project) return <div style={{ padding: 40, textAlign: "center" }}>{t('project.notFound')}</div>;
 
   const doneCount = systems.filter((s: any) => s.planned_status === "done").length;
   const buildingCount = systems.filter((s: any) => s.planned_status === "building").length;
@@ -406,7 +409,7 @@ export default function ProjectPage() {
       {/* Debug panel */}
       {debugInfo && (members.length === 0 || systems.length === 0) && (
         <div style={{ background: "#323538", border: "1px solid #e67e22", borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 12, color: "#f39c12" }}>
-          <strong>&#9888; Отладка:</strong> API вернул пустые данные.
+          <strong>&#9888; {t('project.debugLabel')}</strong> {t('project.debugEmpty')}
           <div style={{ marginTop: 4, color: "#9ca3af" }}>
             hasServiceKey: {debugInfo.hasServiceKey ? "&#9989;" : "&#10060;"} |
             members: {debugInfo.membersCount} |
@@ -433,38 +436,38 @@ export default function ProjectPage() {
                 />
                 <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                   <button onClick={saveDescription} className="btn btn-cyan" style={{ fontSize: 12 }}>
-                    Сохранить
+                    {t('project.save')}
                   </button>
                   <button
                     onClick={() => { setEditingDesc(false); setDescDraft(project.description || ""); }}
                     style={{ fontSize: 12 }}
                   >
-                    Отмена
+                    {t('project.cancel')}
                   </button>
                 </div>
               </div>
             ) : (
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 6 }}>
                 <p style={{ color: "var(--muted)", fontSize: 14, lineHeight: 1.6, flex: 1, margin: 0 }}>
-                  {project.description || "Описание не задано"}
+                  {project.description || t('project.noDescription')}
                 </p>
                 {canEdit && (
                   <button
                     onClick={() => setEditingDesc(true)}
                     style={{ fontSize: 11, padding: "4px 10px", background: "#3a3d40", color: "#eeeeee", borderRadius: 2, flexShrink: 0 }}
                   >
-                    &#9998; Редактировать
+                    &#9998; {t('project.edit')}
                   </button>
                 )}
               </div>
             )}
             <div className="project-detail-meta">
-              <span>&#9679; {statusLabel(project.status)}</span>
-              <span>&#128100; {members.length} пилотов</span>
-              <span>&#127759; {total} систем</span>
+              <span>&#9679; {statusLabel(t, project.status)}</span>
+              <span>&#128100; {t('project.pilotsCount', { count: members.length })}</span>
+              <span>&#127759; {t('project.systemsCount', { count: total })}</span>
               {project.squadron_id && (
                 <Link href={`/squadrons/${project.squadron_id}`} style={{ color: "var(--orange)" }}>
-                  &#128737; Эскадрилья
+                  &#128737; {t('project.squadron')}
                 </Link>
               )}
             </div>
@@ -472,18 +475,18 @@ export default function ProjectPage() {
         </div>
         <div className="project-detail-actions">
           <Link href={`/atlas?project=${id}`} className="btn btn-cyan">
-            &#9733; Атлас
+            &#9733; {t('project.atlas')}
           </Link>
           {canEdit && (
             <button
               onClick={async () => {
-                if (!confirm("Удалить проект?")) return;
+                if (!confirm(t('project.confirmDeleteProject'))) return;
                 await fetch(`/api/projects/${id}`, { method: "DELETE" });
                 window.location.href = "/projects";
               }}
               className="btn danger-btn"
             >
-              Удалить
+              {t('project.deleteProject')}
             </button>
           )}
         </div>
@@ -493,23 +496,23 @@ export default function ProjectPage() {
       <div className="stat-grid" style={{ marginBottom: 20 }}>
         <div className="stat-box">
           <div className="num">{total}</div>
-          <div className="lbl">Систем</div>
+          <div className="lbl">{t('project.statSystems')}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: "#22c55e" }}>{doneCount}</div>
-          <div className="lbl">Готово</div>
+          <div className="lbl">{t('project.statDone')}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: "#e67e22" }}>{buildingCount}</div>
-          <div className="lbl">Строится</div>
+          <div className="lbl">{t('project.statBuilding')}</div>
         </div>
         <div className="stat-box">
           <div className="num">{members.length}</div>
-          <div className="lbl">Участников</div>
+          <div className="lbl">{t('project.statMembers')}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: project.color }}>{pct}%</div>
-          <div className="lbl">Готовности</div>
+          <div className="lbl">{t('project.statReadiness')}</div>
         </div>
       </div>
 
@@ -522,17 +525,17 @@ export default function ProjectPage() {
       {/* Tabs */}
       <div className="tabs" style={{ marginBottom: 20 }}>
         <button className={activeTab === "overview" ? "tab tab-active" : "tab"} onClick={() => setActiveTab("overview")}>
-          Обзор
+          {t('project.tabOverview')}
         </button>
         <button className={activeTab === "members" ? "tab tab-active" : "tab"} onClick={() => setActiveTab("members")}>
-          Участники
+          {t('project.tabMembers')}
         </button>
         <button className={activeTab === "route" ? "tab tab-active" : "tab"} onClick={() => setActiveTab("route")}>
-          Маршрут
+          {t('project.tabRoute')}
         </button>
         {canEdit && (
           <button className={activeTab === "manage" ? "tab tab-active" : "tab"} onClick={() => setActiveTab("manage")}>
-            Управление
+            {t('project.tabManage')}
           </button>
         )}
       </div>
@@ -555,9 +558,9 @@ export default function ProjectPage() {
       {/* Overview tab */}
       {activeTab === "overview" && (
         <div>
-          <h2 style={{ fontSize: 14, letterSpacing: 2, marginBottom: 12 }}>Системы проекта</h2>
+          <h2 style={{ fontSize: 14, letterSpacing: 2, marginBottom: 12 }}>{t('project.systemsTitle')}</h2>
           {systems.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>Системы ещё не добавлены</p>
+            <p style={{ color: "var(--muted)" }}>{t('project.noSystems')}</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {systems.map((s: any) => (
@@ -566,11 +569,11 @@ export default function ProjectPage() {
                   className={`system-row ${sysStatusClass(s.planned_status)}`}
                   onClick={() => focusSystemOnMap(s)}
                   style={{ cursor: 'pointer' }}
-                  title="Кликните для фокуса на карте"
+                  title={t('project.clickToFocus')}
                 >
                   <span className="sys-name">{s.system_name}</span>
                   <span className="sys-meta">
-                    <span>{sysStatusLabel(s.planned_status)}</span>
+                    <span>{sysStatusLabel(t, s.planned_status)}</span>
                     {(() => {
                       const unified = systemProgress[systemKey(s.system_name)];
                       if (!unified || unified.progress == null) return null;
@@ -578,27 +581,27 @@ export default function ProjectPage() {
                       return (
                         <span
                           className="sys-unified-progress"
-                          title={`Тот же расчёт, что в «Проектах систем»: площадок ${sites} (готово ${unified.sitesComplete})${unified.remaining != null ? `, осталось ${unified.remaining.toLocaleString("ru-RU")} т` : ""}`}
+                          title={`${t('project.unifiedTitle', { sites, done: unified.sitesComplete })}${unified.remaining != null ? t('project.unifiedRemaining', { tons: unified.remaining.toLocaleString(locale) }) : ''}`}
                           style={{ color: unified.status === "done" ? "#22c55e" : "#e67e22", fontFamily: "ui-monospace, monospace" }}
                         >
-                          {unified.progress.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%
+                          {unified.progress.toLocaleString(locale, { maximumFractionDigits: 1 })}%
                         </span>
                       );
                     })()}
-                    {s.target_date && <span>&#8594; {new Date(s.target_date).toLocaleDateString("ru-RU")}</span>}
+                    {s.target_date && <span>&#8594; {new Date(s.target_date).toLocaleDateString(locale)}</span>}
                     {s.assignee?.cmdr_name && <span style={{ color: "#60a5fa" }}>@{s.assignee.cmdr_name}</span>}
                   </span>
-                  <span className="project-system-coordinates" title="Координаты проекта">
-                    {formatCoordinates(s)}
+                  <span className="project-system-coordinates" title={t('project.projectCoords')}>
+                    {formatCoordinates(t, s)}
                   </span>
                   <div className="sys-links">
                     <Link
                       className="project-link-button"
                       href={systemPageHref(s.system_name)}
                       onClick={(event) => event.stopPropagation()}
-                      title="Карточка системы: стройки, фракции, PowerPlay, станции, авианосцы"
+                      title={t('project.systemCardTitle')}
                     >
-                      Система
+                      {t('project.systemLink')}
                     </Link>
                     <a
                       className="project-link-button"
@@ -630,9 +633,9 @@ export default function ProjectPage() {
       {activeTab === "members" && (
         <div>
           <div className="panel-box">
-            <h3>Участники проекта</h3>
+            <h3>{t('project.membersTitle')}</h3>
             {members.length === 0 ? (
-              <p className="empty">Участников пока нет</p>
+              <p className="empty">{t('project.noMembers')}</p>
             ) : (
               <div>
                 {members.map((m: ProjectMember) => (
@@ -650,7 +653,7 @@ export default function ProjectPage() {
                       {m.profile?.cmdr_name || "Unknown"}
                     </Link>
                     <span className={`member-role ${m.role}`}>
-                      {m.role === "leader" ? "Лидер" : m.role === "officer" ? "Офицер" : "Участник"}
+                      {m.role === "leader" ? t('project.roleLeader') : m.role === "officer" ? t('project.roleOfficer') : t('project.roleMember')}
                     </span>
                     <span style={{ color: "var(--muted)", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>
                       {m.callsign || "—"}
@@ -664,7 +667,7 @@ export default function ProjectPage() {
                         className="btn danger-btn"
                         style={{ fontSize: 11, padding: "4px 10px" }}
                       >
-                        Удалить
+                        {t('project.deleteProject')}
                       </button>
                     )}
                   </div>
@@ -675,9 +678,9 @@ export default function ProjectPage() {
 
           {canEdit && data?.project?.squadron_id && (
             <div className="panel-box">
-              <h3>Назначить пилота из эскадрильи</h3>
+              <h3>{t('project.assignFromSquadron')}</h3>
               {squadronPilots.filter((sp: any) => !members.find((m: any) => m.user_id === sp.user_id)).length === 0 ? (
-                <p className="empty">Все пилоты эскадрильи уже в проекте</p>
+                <p className="empty">{t('project.allPilotsInProject')}</p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {squadronPilots
@@ -698,7 +701,7 @@ export default function ProjectPage() {
                           className="btn btn-cyan"
                           style={{ fontSize: 11, padding: "4px 12px" }}
                         >
-                          Назначить
+                          {t('project.assign')}
                         </button>
                       </div>
                     ))}
@@ -713,7 +716,7 @@ export default function ProjectPage() {
       {activeTab === "route" && (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-            <h2 style={{ fontSize: 14, letterSpacing: 2, margin: 0 }}>Маршрут проекта</h2>
+            <h2 style={{ fontSize: 14, letterSpacing: 2, margin: 0 }}>{t('project.routeTitle')}</h2>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button
                 onClick={fetchSystemCoords}
@@ -721,7 +724,7 @@ export default function ProjectPage() {
                 className="btn success-btn"
                 style={{ fontSize: 11, padding: "6px 14px" }}
               >
-                {edsmLoading ? <><IconClock size={14} /> Загрузка...</> : <><IconSatellite size={14} /> Координаты EDSM / Spansh</>}
+                {edsmLoading ? <><IconClock size={14} /> {t('project.coordsLoading')}</> : <><IconSatellite size={14} /> {t('project.fetchCoords')}</>}
               </button>
               {canEdit && systems.length > 0 && (
                 <button
@@ -729,7 +732,7 @@ export default function ProjectPage() {
                   className="btn danger-btn"
                   style={{ fontSize: 11, padding: "6px 14px" }}
                 >
-                  <IconTrash size={14} /> Очистить маршрут
+                  <IconTrash size={14} /> {t('project.clearRoute')}
                 </button>
               )}
             </div>
@@ -739,7 +742,7 @@ export default function ProjectPage() {
             <div className="panel-box">
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                 <span style={{ color: "var(--muted)", fontSize: 13 }}>
-                  Загрузка координат: <strong style={{ color: "var(--text)" }}>{edsmProgress.systemName}</strong>
+                  {t('project.coordsProgress')} <strong style={{ color: "var(--text)" }}>{edsmProgress.systemName}</strong>
                 </span>
                 <span style={{ color: "var(--muted)", fontSize: 13, fontFamily: "ui-monospace, monospace" }}>
                   {edsmProgress.current} / {edsmProgress.total}
@@ -758,7 +761,7 @@ export default function ProjectPage() {
           )}
 
           {route.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>Маршрут пуст</p>
+            <p style={{ color: "var(--muted)" }}>{t('project.routeEmpty')}</p>
           ) : (
             <div className="panel-box" style={{ padding: 0 }}>
               {route.map((r: RoutePoint, i: number) => (
@@ -774,7 +777,7 @@ export default function ProjectPage() {
                     z: r.z,
                   } as any)}
                   style={{ cursor: 'pointer' }}
-                  title="Кликните для фокуса на карте"
+                  title={t('project.clickToFocus')}
                 >
                   <span className="route-idx">{i + 1}</span>
                   <span className="route-name">{r.system_name}</span>
@@ -786,7 +789,7 @@ export default function ProjectPage() {
                   </span>
                   <div className="sys-links">
                     <Link href={systemPageHref(r.system_name)} onClick={(event) => event.stopPropagation()}>
-                      Система
+                      {t('project.systemLink')}
                     </Link>
                     <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(r.system_name)}`} target="_blank" rel="noreferrer">
                       RC
@@ -803,7 +806,7 @@ export default function ProjectPage() {
                       }}
                       className="btn danger-btn"
                       style={{ fontSize: 10, padding: "2px 8px" }}
-                      title="Удалить из маршрута"
+                      title={t('project.removeFromRoute')}
                     >
                       <IconX size={12} />
                     </button>
@@ -819,9 +822,9 @@ export default function ProjectPage() {
       {activeTab === "manage" && canEdit && (
         <div>
           <div className="panel-box">
-            <h3>Массовое добавление систем</h3>
+            <h3>{t('project.bulkTitle')}</h3>
             <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 12 }}>
-              Вставьте список систем (по одной на строку)
+              {t('project.bulkHint')}
             </p>
             <textarea
               id="bulk-systems"
@@ -838,16 +841,16 @@ export default function ProjectPage() {
                 className="btn btn-cyan"
                 style={{ fontSize: 12 }}
               >
-                Добавить системы
+                {t('project.addSystems')}
               </button>
             </div>
           </div>
 
           <button onClick={syncAllProgress} className="btn btn-orange" style={{ marginBottom: 16, fontSize: 12 }}>
-            &#128260; Синхронизировать прогресс
+            &#128260; {t('project.syncProgress')}
           </button>
 
-          <h2 style={{ fontSize: 14, letterSpacing: 2, marginBottom: 12 }}>Системы</h2>
+          <h2 style={{ fontSize: 14, letterSpacing: 2, marginBottom: 12 }}>{t('project.systemsHeading')}</h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {systems.map((s: any) => (
               <div key={s.id} className={`system-row ${sysStatusClass(s.planned_status)}`}>
@@ -860,11 +863,11 @@ export default function ProjectPage() {
                   }}
                   className="inline-select"
                 >
-                  <option value="planned">Запланировано</option>
-                  <option value="preparing">Подготовка</option>
-                  <option value="building">Строится</option>
-                  <option value="done">Готово</option>
-                  <option value="on_hold">На паузе</option>
+                  <option value="planned">{t('project.sysPlanned')}</option>
+                  <option value="preparing">{t('project.sysPreparing')}</option>
+                  <option value="building">{t('project.sysBuilding')}</option>
+                  <option value="done">{t('project.sysDone')}</option>
+                  <option value="on_hold">{t('project.sysOnHold')}</option>
                 </select>
                 <button
                   onClick={async () => {
@@ -874,7 +877,7 @@ export default function ProjectPage() {
                   className="btn danger-btn"
                   style={{ fontSize: 11, padding: "4px 10px" }}
                 >
-                  Удалить
+                  {t('project.deleteProject')}
                 </button>
               </div>
             ))}
