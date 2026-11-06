@@ -6,14 +6,16 @@ import LeaderboardStats from '@/components/LeaderboardStats';
 import type { LeaderboardEntry } from '@/types/atlas';
 import { ACHIEVEMENT_TRACKS, rankProgress, tierColor, tierBg, tierBorder } from '@/lib/achievements';
 import { IconLeaderboard } from '@/components/Icons';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 function MiniMedal({ trackId, tier }: { trackId: string; tier: number }) {
+  const { t } = useI18n();
   if (tier <= 0) return null;
   const track = ACHIEVEMENT_TRACKS.find(t => t.id === trackId);
   if (!track) return null;
   const color = tierColor(tier);
   return (
-    <span title={`${track.title} — Тир ${tier}`} style={{
+    <span title={t('lb.tierTitle', { track: track.title, tier })} style={{
       display: 'inline-flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -71,6 +73,7 @@ function RankBadge({ rank }: { rank: number }) {
 }
 
 export function Leaderboard() {
+  const { t, locale } = useI18n();
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [period, setPeriod] = useState<'all' | 'week' | 'month'>('all');
   const [loading, setLoading] = useState(false);
@@ -97,7 +100,7 @@ export function Leaderboard() {
     return medals;
   }
 
-  const periodLabels: Record<string, string> = { all: 'Всё время', week: 'Неделя', month: 'Месяц' };
+  const periodLabels: Record<string, string> = { all: 'lb.periodAll', week: 'lb.periodWeek', month: 'lb.periodMonth' };
 
   return (
     <>
@@ -106,7 +109,7 @@ export function Leaderboard() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
         <IconLeaderboard size={22} color="#e67e22" />
         <h2 style={{ margin: 0, fontSize: 18, color: '#eeeeee', fontWeight: 600, letterSpacing: 0.5 }}>
-          Лидерборд пилотов
+          {t('lb.title')}
         </h2>
       </div>
 
@@ -119,13 +122,13 @@ export function Leaderboard() {
             className={period === p ? 'tab tab-active' : 'tab'}
             onClick={() => setPeriod(p)}
           >
-            {periodLabels[p]}
+            {t(periodLabels[p])}
           </button>
         ))}
       </div>
 
       {loading && (
-        <p style={{ color: '#9ca3af', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>Загрузка…</p>
+        <p style={{ color: '#9ca3af', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>{t('lb.loading')}</p>
       )}
 
       <div className="table-scroll">
@@ -134,10 +137,10 @@ export function Leaderboard() {
             <tr style={{ color: '#9ca3af', textAlign: 'left', borderBottom: '1px solid #323538' }}>
               <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>#</th>
               <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>CMDR</th>
-              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>Тоннаж</th>
-              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>Рейсов</th>
-              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>Хабов</th>
-              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>Медали</th>
+              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>{t('lb.colTonnage')}</th>
+              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>{t('lb.colTrips')}</th>
+              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>{t('lb.colHubs')}</th>
+              <th style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', fontWeight: 600 }}>{t('lb.colMedals')}</th>
             </tr>
           </thead>
           <tbody>
@@ -154,7 +157,7 @@ export function Leaderboard() {
                   <td style={{ padding: '10px 8px' }}>
                     <PilotIdentity userId={e.user_id} cmdrName={e.cmdr_name} showAvatar={false} fontSize={13} style={{ color: '#e67e22' }} />
                   </td>
-                  <td style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', color: '#e67e22', fontWeight: 600 }}>{e.total_amount.toLocaleString('ru')}</td>
+                  <td style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', color: '#e67e22', fontWeight: 600 }}>{e.total_amount.toLocaleString(locale)}</td>
                   <td style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace' }}>{e.deliveries_count}</td>
                   <td style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace' }}>{e.hubs_visited}</td>
                   <td style={{ padding: '10px 8px' }}>
@@ -173,7 +176,7 @@ export function Leaderboard() {
       </div>
 
       {entries.length === 0 && !loading && (
-        <p style={{ color: '#9ca3af', textAlign: 'center', marginTop: 24, fontSize: 13 }}>Пока нет данных</p>
+        <p style={{ color: '#9ca3af', textAlign: 'center', marginTop: 24, fontSize: 13 }}>{t('lb.empty')}</p>
       )}
     </div>
 

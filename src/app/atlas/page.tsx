@@ -1,6 +1,7 @@
 'use client';
 
 import { GalaxyMapClient } from '@/components/GalaxyMap/GalaxyMapClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import Link from 'next/link';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -59,16 +60,16 @@ type ProjectItem = {
 
 type AtlasTab = 'search' | 'route' | 'route-finder' | 'ship-route' | 'ring-route' | 'market' | 'nearby' | 'powerplay' | 'factions';
 
-const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }[] = [
-  { id: 'search', label: 'Поиск', icon: <IconSearch size={14} />, hint: 'Поиск миров по типам (Alt+1)' },
-  { id: 'route', label: 'Маршрут', icon: <IconMap size={14} />, hint: 'Маршрут проекта (Alt+2)' },
-  { id: 'route-finder', label: 'Колонизация A→B', icon: <IconRoute size={14} />, hint: 'Маршрут с лимитом колонизации 14,99 св. л. (Alt+3)' },
-  { id: 'ship-route', label: 'Маршрут корабля', icon: <IconRoute size={14} />, hint: 'Маршрут по текущему Loadout из Colonial Helper (Alt+4)' },
-  { id: 'ring-route', label: 'Кольцо', icon: <IconGlobe size={14} />, hint: 'Галактическое кольцо колонизации (Alt+5)' },
-  { id: 'market', label: 'Рынок', icon: <IconStore size={14} />, hint: 'Поиск товаров для стройки (Alt+6)' },
-  { id: 'nearby', label: 'Поблизости', icon: <IconGlobe size={14} />, hint: 'Все системы в сфере/кубе 1–50 св.л. (Alt+7)' },
-  { id: 'powerplay', label: 'PowerPlay', icon: <IconPower size={14} />, hint: 'Системы под контролем держав PowerPlay (Alt+8)' },
-  { id: 'factions', label: 'Фракции', icon: <IconShieldHalf size={14} />, hint: 'Минорные фракции: поиск и их системы на карте (Alt+9)' },
+const TABS: { id: AtlasTab; labelKey: string; icon: React.ReactNode; hintKey: string }[] = [
+  { id: 'search', labelKey: 'atlas.tabSearch', icon: <IconSearch size={14} />, hintKey: 'atlas.hintSearch' },
+  { id: 'route', labelKey: 'atlas.tabRoute', icon: <IconMap size={14} />, hintKey: 'atlas.hintRoute' },
+  { id: 'route-finder', labelKey: 'atlas.tabColonisation', icon: <IconRoute size={14} />, hintKey: 'atlas.hintRouteFinder' },
+  { id: 'ship-route', labelKey: 'atlas.tabShip', icon: <IconRoute size={14} />, hintKey: 'atlas.hintShip' },
+  { id: 'ring-route', labelKey: 'atlas.tabRing', icon: <IconGlobe size={14} />, hintKey: 'atlas.hintRing' },
+  { id: 'market', labelKey: 'atlas.tabMarket', icon: <IconStore size={14} />, hintKey: 'atlas.hintMarket' },
+  { id: 'nearby', labelKey: 'atlas.tabNearby', icon: <IconGlobe size={14} />, hintKey: 'atlas.hintNearby' },
+  { id: 'powerplay', labelKey: 'atlas.tabPowerplay', icon: <IconPower size={14} />, hintKey: 'atlas.hintPowerplay' },
+  { id: 'factions', labelKey: 'atlas.tabFactions', icon: <IconShieldHalf size={14} />, hintKey: 'atlas.hintFactions' },
 ];
 
 const CANDIDATE_PAGE_SIZE = 200;
@@ -81,10 +82,11 @@ function parseTab(value: string | null): AtlasTab {
 }
 
 export default function AtlasPage() {
+  const { t } = useI18n();
   // useSearchParams в клиентском компоненте требует Suspense-границы:
   // без неё страница не собирается в статический пререндер.
   return (
-    <Suspense fallback={<div className="atlas-map-loading">Загрузка атласа…</div>}>
+    <Suspense fallback={<div className="atlas-map-loading">{t('atlas.loadingMap')}</div>}>
       <AtlasProvider>
         <AtlasPageInner />
       </AtlasProvider>
@@ -93,6 +95,7 @@ export default function AtlasPage() {
 }
 
 function AtlasPageInner() {
+  const { t, locale } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
   const stationFocus = useMemo(() => atlasFocusFromParams(searchParams), [searchParams]);
@@ -114,7 +117,7 @@ function AtlasPageInner() {
     status: string;
     serverPercent?: number;
     serverMessage?: string;
-  }>({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'idle' });
+  }>({ elapsedMs: 0, phase: t('atlas.phasePrepare'), found: 0, status: 'idle' });
   const [candidateSearchStartedAt, setCandidateSearchStartedAt] = useState<number | null>(null);
   const [candidateTotal, setCandidateTotal] = useState<number | null>(null);
   const [candidatesLoadingMore, setCandidatesLoadingMore] = useState(false);
@@ -224,11 +227,11 @@ function AtlasPageInner() {
     if (!isSearching || !candidateSearchStartedAt) return;
     const timer = window.setInterval(() => {
       const elapsedMs = Date.now() - candidateSearchStartedAt;
-      const phase = elapsedMs < 1500 ? 'Проверка параметров'
-        : elapsedMs < 8000 ? 'Поиск в Spansh'
-          : elapsedMs < 18000 ? 'Сверка координат EDSM'
-            : elapsedMs < 30000 ? 'Фильтрация кандидатов'
-              : 'Сохранение результатов';
+      const phase = elapsedMs < 1500 ? t('atlas.phaseCheck')
+        : elapsedMs < 8000 ? t('atlas.phaseSpansh')
+          : elapsedMs < 18000 ? t('atlas.phaseCoords')
+            : elapsedMs < 30000 ? t('atlas.phaseFiltering')
+              : t('atlas.phaseSaving');
       setCandidateSearchProgress((current) => ({ ...current, elapsedMs, phase, status: 'running' }));
     }, 250);
     return () => window.clearInterval(timer);
@@ -308,7 +311,7 @@ function AtlasPageInner() {
       const res = await fetch(`/api/projects/${projectId}/systems`);
       const data = await res.json();
       if (!res.ok) {
-        toast(data.error || 'Не удалось загрузить системы проекта', 'error');
+        toast(data.error || t('atlas.errProjectSystems'), 'error');
         return;
       }
       const systems = data.systems || [];
@@ -335,11 +338,11 @@ function AtlasPageInner() {
       setSquadronRoutePoints(points);
       setSelectedProject(projectId);
       selectTab('route');
-      toast(`Загружено систем проекта: ${points.length}`, 'success');
+      toast(t('atlas.projectSystemsLoaded', { count: points.length }), 'success');
     } catch (err: any) {
-      toast(err.message || 'Ошибка загрузки систем проекта', 'error');
+      toast(err.message || t('atlas.errProjectSystemsLoad'), 'error');
     }
-  }, [selectTab]);
+  }, [selectTab, t]);
 
   const clearProjectRoute = useCallback(() => {
     setSelectedProject(null);
@@ -358,8 +361,8 @@ function AtlasPageInner() {
   const handleRouteFound = useCallback((route: RoutePoint[], tab: AtlasTab = 'route-finder') => {
     setRouteFinderPoints(route);
     selectTab(tab);
-    toast(`Маршрут построен: ${route.length} систем`, 'success');
-  }, [selectTab]);
+    toast(t('atlas.routeBuilt', { count: route.length }), 'success');
+  }, [selectTab, t]);
 
   /* ── ?project= из URL ── */
   useEffect(() => {
@@ -395,7 +398,7 @@ function AtlasPageInner() {
   const collectCandidates = useCallback(async (sessionId: string) => {
     const res = await fetch(`/api/atlas/candidates?search_id=${encodeURIComponent(sessionId)}&limit=${CANDIDATE_PAGE_SIZE}`);
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Не удалось загрузить кандидатов');
+    if (!res.ok) throw new Error(data.error || t('atlas.errLoadCandidates'));
     setCandidates(Array.isArray(data.candidates) ? data.candidates : []);
     setCandidateTotal(typeof data.total === 'number' ? data.total : null);
   }, [setCandidates]);
@@ -407,18 +410,18 @@ function AtlasPageInner() {
     setCandidateTotal(null);
     setIsSearching(true);
     setCandidateSearchStartedAt(Date.now());
-    setCandidateSearchProgress({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'pending', serverPercent: 0 });
+    setCandidateSearchProgress({ elapsedMs: 0, phase: t('atlas.phasePrepare'), found: 0, status: 'pending', serverPercent: 0 });
     stopPolling();
     // Новый поиск полностью вытесняет прошлый: точки и счётчики не смешиваются.
     startAtlasSearchProgress({
       kind: 'world',
-      title: 'ПОИСК МИРОВ ATLAS',
+      title: t('atlas.searchOverlayTitle'),
       stage: 'coords',
       percent: 2,
-      message: `Определяем координаты системы ${params.reference_system}`,
+      message: t('atlas.searchRefCoords', { system: params.reference_system }),
       cube: null,
       beam: null,
-      counters: { 'Система отсчёта': params.reference_system },
+      counters: { [t('atlas.counterRefSystem')]: params.reference_system },
       summary: '',
     });
 
@@ -431,20 +434,20 @@ function AtlasPageInner() {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         const message = res.status === 429
-          ? 'Слишком много поисков подряд — подождите минуту'
-          : json.error || 'Не удалось запустить поиск';
+          ? t('atlas.tooManySearches')
+          : json.error || t('atlas.errStartSearch');
         toast(message, 'error');
         setIsSearching(false);
         setCandidateSearchStartedAt(null);
-        setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
+        setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: t('atlas.phaseError') }));
         finishAtlasSearchProgress({ message });
         return;
       }
       if (!json.session_id) {
-        toast('Сервер не вернул идентификатор поиска', 'error');
+        toast(t('atlas.noSearchId'), 'error');
         setIsSearching(false);
         setCandidateSearchStartedAt(null);
-        finishAtlasSearchProgress({ message: 'Сервер не вернул идентификатор поиска' });
+        finishAtlasSearchProgress({ message: t('atlas.noSearchId') });
         return;
       }
 
@@ -463,7 +466,7 @@ function AtlasPageInner() {
         kind: 'world',
         stage: 'catalog',
         percent: 5,
-        message: `Поиск вокруг ${params.reference_system}`,
+        message: t('atlas.searchAround', { system: params.reference_system }),
         cube: reference
           ? { cx: reference.x, cy: reference.y, cz: reference.z, half: params.cube_size_ly / 2 }
           : null,
@@ -479,9 +482,9 @@ function AtlasPageInner() {
           stopPolling();
           setIsSearching(false);
           setCandidateSearchStartedAt(null);
-          setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Таймаут' }));
-          finishAtlasSearchProgress({ message: 'Поиск идёт слишком долго — откройте историю позже' });
-          toast('Поиск идёт слишком долго — откройте историю позже', 'error');
+          setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: t('atlas.phaseTimeout') }));
+          finishAtlasSearchProgress({ message: t('atlas.searchTooLong') });
+          toast(t('atlas.searchTooLong'), 'error');
           return;
         }
         try {
@@ -534,14 +537,14 @@ function AtlasPageInner() {
           publishAtlasSearchProgress({
             active: true,
             kind: 'world',
-            title: 'ПОИСК МИРОВ ATLAS',
+            title: t('atlas.searchOverlayTitle'),
             stage: typeof serverProgress.stage === 'string' ? serverProgress.stage : 'scan',
             percent: serverPercent,
             message: typeof serverProgress.message === 'string' && serverProgress.message
               ? serverProgress.message
-              : 'Поиск миров',
+              : t('atlas.searchWorlds'),
             counters: {
-              'Найдено': foundNow,
+              [t('atlas.counterFound')]: foundNow,
               ...(serverProgress.stats || {}),
             },
           });
@@ -555,23 +558,23 @@ function AtlasPageInner() {
             }
             setIsSearching(false);
             setCandidateSearchStartedAt(null);
-            setCandidateSearchProgress((current) => ({ ...current, status: 'completed', phase: 'Готово', serverPercent: 100 }));
+            setCandidateSearchProgress((current) => ({ ...current, status: 'completed', phase: t('atlas.phaseDone'), serverPercent: 100 }));
             const total = Number(data.total_candidates || 0);
             finishAtlasSearchProgress({
               stage: 'completed',
               percent: 100,
-              message: `Поиск завершён: ${total.toLocaleString('ru-RU')} объектов`,
-              summary: 'Найденное сохранено в базе проекта — повторный поиск в этом районе пойдёт быстрее.',
+              message: t('atlas.searchFinished', { count: total.toLocaleString(locale) }),
+              summary: t('atlas.searchSavedNote'),
               beam: null,
-              counters: { 'Найдено': total },
+              counters: { [t('atlas.counterFound')]: total },
             });
-            toast(`Найдено объектов: ${total.toLocaleString('ru-RU')}`, 'success');
+            toast(t('atlas.foundObjects', { count: total.toLocaleString(locale) }), 'success');
           } else if (data.session?.status === 'failed') {
             stopPolling();
             setIsSearching(false);
             setCandidateSearchStartedAt(null);
-            setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
-            const message = data.session.error_message || 'Поиск завершился ошибкой';
+            setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: t('atlas.phaseError') }));
+            const message = data.session.error_message || t('atlas.searchFailed');
             finishAtlasSearchProgress({ message });
             toast(message, 'error');
           }
@@ -582,20 +585,20 @@ function AtlasPageInner() {
             stopPolling();
             setIsSearching(false);
             setCandidateSearchStartedAt(null);
-            setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Связь потеряна' }));
-            finishAtlasSearchProgress({ message: 'Не удалось получить результат поиска' });
-            toast('Не удалось получить результат поиска', 'error');
+            setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: t('atlas.phaseConnectionLost') }));
+            finishAtlasSearchProgress({ message: t('atlas.errSearchResult') });
+            toast(t('atlas.errSearchResult'), 'error');
           }
         }
       }, 2000);
     } catch (err: any) {
-      toast(err.message || 'Ошибка поиска', 'error');
+      toast(err.message || t('atlas.errSearch'), 'error');
       setIsSearching(false);
       setCandidateSearchStartedAt(null);
-      setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
-      finishAtlasSearchProgress({ message: err?.message || 'Ошибка поиска' });
+      setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: t('atlas.phaseError') }));
+      finishAtlasSearchProgress({ message: err?.message || t('atlas.errSearch') });
     }
-  }, [collectCandidates, recordSearch, setCandidates, stopPolling]);
+  }, [collectCandidates, recordSearch, setCandidates, stopPolling, t]);
 
   const loadMoreCandidates = useCallback(async () => {
     const sessionId = searchSessionRef.current;
@@ -604,36 +607,36 @@ function AtlasPageInner() {
     try {
       const res = await fetch(`/api/atlas/candidates?search_id=${encodeURIComponent(sessionId)}&limit=${CANDIDATE_PAGE_SIZE}&offset=${candidates.length}`);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Не удалось догрузить кандидатов');
+      if (!res.ok) throw new Error(data.error || t('atlas.errLoadMore'));
       const rows = Array.isArray(data.candidates) ? data.candidates : [];
       setCandidates((current) => [...current, ...rows.filter((row: AtlasCandidate) => !current.some((item) => item.id === row.id))]);
       if (typeof data.total === 'number') setCandidateTotal(data.total);
     } catch (err: any) {
-      toast(err.message || 'Ошибка загрузки', 'error');
+      toast(err.message || t('atlas.errLoad'), 'error');
     } finally {
       setCandidatesLoadingMore(false);
     }
-  }, [candidates.length, candidatesLoadingMore, setCandidates]);
+  }, [candidates.length, candidatesLoadingMore, setCandidates, t]);
 
   const handleSelectSession = useCallback(async (session: AtlasSearchSession) => {
     if (session.status !== 'completed') {
-      toast('Поиск ещё не завершён', 'info');
+      toast(t('atlas.searchNotDone'), 'info');
       return;
     }
     try {
       const res = await fetch(`/api/atlas/search?session_id=${encodeURIComponent(session.id)}`);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Не удалось открыть результаты');
+      if (!res.ok) throw new Error(data.error || t('atlas.errOpenResults'));
       setActiveFilter('all');
       setSelectedCandidate(null);
       searchSessionRef.current = session.id;
       setCandidates(Array.isArray(data.candidates) ? data.candidates : []);
       setCandidateTotal(typeof data.total_candidates === 'number' ? data.total_candidates : null);
-      toast(`Загружены результаты: ${session.reference_system}`, 'success');
+      toast(t('atlas.resultsLoaded', { system: session.reference_system }), 'success');
     } catch (err: any) {
-      toast(err.message || 'Ошибка загрузки результатов', 'error');
+      toast(err.message || t('atlas.errLoadResults'), 'error');
     }
-  }, [setCandidates]);
+  }, [setCandidates, t]);
 
   const handleFavoriteSelect = useCallback((favorite: AtlasFavorite) => {
     focusCandidateOnMap({
@@ -653,7 +656,7 @@ function AtlasPageInner() {
   const exportCandidates = useCallback(() => {
     if (filteredCandidates.length === 0) return;
     downloadCsv(`atlas-candidates-${new Date().toISOString().slice(0, 10)}`, [
-      ['Система', 'Тело', 'Тип', 'X', 'Y', 'Z', 'Дистанция от точки, св.л.', 'До звезды, св.с.', 'Оценка скана, CR', 'В избранном'],
+      [t('atlas.csvSystem'), t('atlas.csvBody'), t('atlas.csvType'), 'X', 'Y', 'Z', t('atlas.csvDistance'), t('atlas.csvToStar'), t('atlas.csvScanValue'), t('atlas.csvFavorite')],
       ...filteredCandidates.map((candidate) => [
         candidate.system_name,
         candidate.body_name || '',
@@ -664,10 +667,10 @@ function AtlasPageInner() {
         candidate.distance_from_ref?.toFixed(2) ?? '',
         candidate.distance_to_arrival?.toFixed(0) ?? '',
         candidate.estimated_value ?? '',
-        favoriteKeys.has(favoriteKey(candidate.system_name, candidate.world_type)) ? 'да' : '',
+        favoriteKeys.has(favoriteKey(candidate.system_name, candidate.world_type)) ? t('atlas.csvYes') : '',
       ]),
     ]);
-  }, [favoriteKeys, filteredCandidates]);
+  }, [favoriteKeys, filteredCandidates, t]);
 
   const clearCandidates = useCallback(() => {
     stopPolling();
@@ -676,9 +679,9 @@ function AtlasPageInner() {
     setCandidateTotal(null);
     setSelectedCandidate(null);
     setActiveFilter('all');
-    setCandidateSearchProgress({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'idle' });
-    toast('Список кандидатов очищен', 'info');
-  }, [setCandidates, stopPolling]);
+    setCandidateSearchProgress({ elapsedMs: 0, phase: t('atlas.phasePrepare'), found: 0, status: 'idle' });
+    toast(t('atlas.candidatesCleared'), 'info');
+  }, [setCandidates, stopPolling, t]);
 
   /* ── маршрут проекта: список с фильтром и экспортом ── */
   const filteredRoute = useMemo(() => {
@@ -737,8 +740,8 @@ function AtlasPageInner() {
               type="button"
               className="atlas-icon-btn"
               onClick={() => setSidebarOpen(false)}
-              title="Свернуть панель и открыть карту во всю ширину"
-              aria-label="Свернуть панель Atlas"
+              title={t('atlas.collapsePanel')}
+              aria-label={t('atlas.collapsePanelAria')}
             >
               <IconX size={14} />
             </button>
@@ -746,37 +749,37 @@ function AtlasPageInner() {
 
           <div className="atlas-quick-stats">
             <span className="atlas-stat">
-              <strong>{candidates.length.toLocaleString('ru-RU')}</strong>
-              <span>кандидатов</span>
+              <strong>{candidates.length.toLocaleString(locale)}</strong>
+              <span>{t('atlas.statCandidates')}</span>
             </span>
             <span className="atlas-stat">
-              <strong>{systemCount.toLocaleString('ru-RU')}</strong>
-              <span>систем</span>
+              <strong>{systemCount.toLocaleString(locale)}</strong>
+              <span>{t('atlas.statSystems')}</span>
             </span>
             <span className="atlas-stat">
-              <strong>{favoriteCount.toLocaleString('ru-RU')}</strong>
-              <span>в избранном</span>
+              <strong>{favoriteCount.toLocaleString(locale)}</strong>
+              <span>{t('atlas.statFavorites')}</span>
             </span>
           </div>
 
           <div className="atlas-header-links">
-            <Link href="/atlas/sector" className="btn atlas-sectors-link" title="Реестр 42 секторов галактики">
-              Секторы (42)
+            <Link href="/atlas/sector" className="btn atlas-sectors-link" title={t('atlas.sectorsTitle')}>
+              {t('atlas.sectors')}
             </Link>
             {lastSession && (
               <button
                 type="button"
                 className="atlas-link-btn"
                 onClick={() => void handleSelectSession(lastSession)}
-                title={`Открыть последний поиск: ${lastSession.reference_system}`}
+                title={t('atlas.openLastSearch', { system: lastSession.reference_system })}
               >
-                Последний поиск: {lastSession.reference_system}
+                {t('atlas.lastSearch', { system: lastSession.reference_system })}
               </button>
             )}
           </div>
         </div>
 
-        <div className="atlas-tabs" role="tablist" aria-label="Разделы Atlas">
+        <div className="atlas-tabs" role="tablist" aria-label={t('atlas.tabsAria')}>
           {TABS.map((tab, index) => (
             <button
               key={tab.id}
@@ -785,10 +788,10 @@ function AtlasPageInner() {
               tabIndex={activeTab === tab.id ? 0 : -1}
               className={`atlas-tab${activeTab === tab.id ? ' active' : ''}`}
               onClick={() => selectTab(tab.id)}
-              title={`${tab.hint}`}
+              title={t(tab.hintKey)}
             >
               {tab.icon}
-              <span>{tab.label}</span>
+              <span>{t(tab.labelKey)}</span>
             </button>
           ))}
         </div>
@@ -804,12 +807,12 @@ function AtlasPageInner() {
               {candidates.length > 0 && (
                 <div className="atlas-section">
                   <div className="atlas-section-head">
-                    <h4>Кандидаты</h4>
+                    <h4>{t('atlas.candidates')}</h4>
                     <div className="atlas-section-actions">
-                      <button type="button" className="atlas-icon-btn" title="Экспорт списка в CSV" onClick={exportCandidates}>
+                      <button type="button" className="atlas-icon-btn" title={t('atlas.exportCandidatesCsv')} onClick={exportCandidates}>
                         <IconDownload size={12} />
                       </button>
-                      <button type="button" className="atlas-icon-btn danger" title="Очистить список" onClick={clearCandidates}>
+                      <button type="button" className="atlas-icon-btn danger" title={t('atlas.clearList')} onClick={clearCandidates}>
                         <IconTrash size={12} />
                       </button>
                     </div>
@@ -821,7 +824,7 @@ function AtlasPageInner() {
                       onClick={() => setActiveFilter('all')}
                       className={`atlas-filter-pill${activeFilter === 'all' ? ' active' : ''}`}
                     >
-                      Все ({candidates.length})
+                      {t('atlas.allCount', { count: candidates.length })}
                     </button>
                     {typeCounts.map(({ type, count }) => (
                       <button
@@ -851,17 +854,17 @@ function AtlasPageInner() {
           {activeTab === 'route' && (
             <div className="atlas-section">
               <div className="atlas-section-head">
-                <h4>Маршрут проекта</h4>
+                <h4>{t('atlas.projectRoute')}</h4>
                 {squadronRoutePoints.length > 0 && (
                   <div className="atlas-section-actions">
                     <button
                       type="button"
                       className="atlas-icon-btn"
-                      title="Экспорт маршрута проекта в CSV"
+                      title={t('atlas.exportRouteCsv')}
                       onClick={() => downloadCsv(
                         `project-route-${selectedProjectName || selectedProject || 'atlas'}`,
                         [
-                          ['Порядок', 'Система', 'X', 'Y', 'Z', 'Статус'],
+                          [t('atlas.csvOrder'), t('atlas.csvSystem'), 'X', 'Y', 'Z', t('atlas.csvStatus')],
                           ...squadronRoutePoints.map((point, index) => [
                             index + 1, point.system_name,
                             point.x.toFixed(6), point.y.toFixed(6), point.z.toFixed(6),
@@ -877,7 +880,7 @@ function AtlasPageInner() {
               </div>
 
               <div className="atlas-project-select">
-                <label htmlFor="atlas-project">Проект:</label>
+                <label htmlFor="atlas-project">{t('atlas.projectLabel')}</label>
                 <select
                   id="atlas-project"
                   value={selectedProject || ''}
@@ -891,7 +894,7 @@ function AtlasPageInner() {
                   }}
                   disabled={projectsLoading}
                 >
-                  <option value="">{projectsLoading ? 'Загрузка…' : 'Выберите проект'}</option>
+                  <option value="">{projectsLoading ? t('atlas.loadingDots') : t('atlas.pickProject')}</option>
                   {projects.map((project) => (
                     <option key={project.id} value={project.id}>
                       {project.squadron_name ? `[${project.squadron_name}] ` : ''}
@@ -903,14 +906,16 @@ function AtlasPageInner() {
 
               {selectedProject && (
                 <div className="atlas-project-meta">
-                  <span className="atlas-badge">{selectedProjectName || `Проект #${selectedProject}`}: {squadronRoutePoints.length} систем</span>
-                  <button type="button" className="atlas-link-btn" onClick={clearProjectRoute}>Сбросить</button>
+                  <span className="atlas-badge">{selectedProjectName
+                    ? t('atlas.projectBadgeNamed', { name: selectedProjectName, count: squadronRoutePoints.length })
+                    : t('atlas.projectBadgeNumbered', { id: selectedProject, count: squadronRoutePoints.length })}</span>
+                  <button type="button" className="atlas-link-btn" onClick={clearProjectRoute}>{t('atlas.reset')}</button>
                 </div>
               )}
 
               {squadronRoutePoints.length === 0 ? (
                 <p className="atlas-muted">
-                  Маршрут не загружен. Выберите проект или передайте его идентификатор в ссылке: <code>/atlas?project=ID</code>.
+                  {t('atlas.routeNotLoadedHint')} <code>/atlas?project=ID</code>.
                 </p>
               ) : (
                 <>
@@ -920,16 +925,16 @@ function AtlasPageInner() {
                       type="search"
                       value={routeFilter}
                       onChange={(event) => setRouteFilter(event.target.value)}
-                      placeholder="Найти систему в маршруте"
-                      aria-label="Фильтр маршрута проекта"
+                      placeholder={t('atlas.findInRoute')}
+                      aria-label={t('atlas.routeFilterAria')}
                     />
                     {routeFilter && (
-                      <button type="button" onClick={() => setRouteFilter('')} aria-label="Очистить фильтр">
+                      <button type="button" onClick={() => setRouteFilter('')} aria-label={t('atlas.clearFilter')}>
                         <IconX size={11} />
                       </button>
                     )}
                   </div>
-                  <p className="atlas-list-counter">Показано {filteredRoute.length} из {squadronRoutePoints.length}</p>
+                  <p className="atlas-list-counter">{t('atlas.shownOf', { shown: filteredRoute.length, total: squadronRoutePoints.length })}</p>
                   <div className="atlas-route-list">
                     {filteredRoute.map((point, index) => (
                       <button
@@ -937,7 +942,7 @@ function AtlasPageInner() {
                         type="button"
                         className="route-row as-button"
                         onClick={() => focusRoutePointOnMap(point)}
-                        title="Показать систему на карте"
+                        title={t('atlas.showOnMap')}
                       >
                         <span className="route-idx">{index + 1}</span>
                         <span className="route-name">{point.system_name}</span>
@@ -987,13 +992,13 @@ function AtlasPageInner() {
       {/* ── Карта ── */}
       <div className="atlas-map-area">
         {stationFocus && (focusFrom === 'system' ? (
-          <div className="station-atlas-focus"><strong>{stationFocus.name}</strong> — система из карточки системы
-            <Link href={systemPageHref(stationFocus.name)}>← Вернуться к карточке системы</Link>
+          <div className="station-atlas-focus"><strong>{stationFocus.name}</strong>{t('atlas.fromSystemCard')}
+            <Link href={systemPageHref(stationFocus.name)}>{t('atlas.backToSystemCard')}</Link>
           </div>
         ) : (
-          <div className="station-atlas-focus"><strong>{stationFocus.name}</strong> — система из поиска станций
-            <Link href="/station-search">← Вернуться к поиску по станциям</Link>
-            <Link href={systemPageHref(stationFocus.name)}>Карточка системы →</Link>
+          <div className="station-atlas-focus"><strong>{stationFocus.name}</strong>{t('atlas.fromStationSearch')}
+            <Link href="/station-search">{t('atlas.backToStationSearch')}</Link>
+            <Link href={systemPageHref(stationFocus.name)}>{t('atlas.systemCardLink')}</Link>
           </div>
         ))}
         {!sidebarOpen && (
@@ -1001,15 +1006,15 @@ function AtlasPageInner() {
             type="button"
             className="atlas-panel-toggle"
             onClick={() => setSidebarOpen(true)}
-            title="Показать панель Atlas"
+            title={t('atlas.showPanel')}
           >
-            <IconAtlas size={14} /> Панель Atlas
+            <IconAtlas size={14} /> {t('atlas.panel')}
           </button>
         )}
         <GalaxyMapClient
           loadingFallback={(
             <div className="atlas-map-loading">
-              Загрузка 3D-движка…
+              {t('atlas.engineLoading')}
             </div>
           )}
           // 3D-слой синхронизирован с пилюлями категорий, а не только со списком.
