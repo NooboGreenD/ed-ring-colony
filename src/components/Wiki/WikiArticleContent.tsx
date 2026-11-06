@@ -6,6 +6,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import { IconHistory, IconStar } from '@/components/Icons';
 import { useState, useEffect } from 'react';
 import { getWikiAuthHeaders } from '@/lib/wikiAuth';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface WikiArticleContentProps {
   article: any;
@@ -14,6 +15,7 @@ interface WikiArticleContentProps {
 }
 
 export default function WikiArticleContent({ article, tags, related }: WikiArticleContentProps) {
+  const { t, locale } = useI18n();
   const [isFav, setIsFav] = useState(false);
   const [favId, setFavId] = useState<string | null>(null);
 
@@ -49,7 +51,7 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
   return (
     <div>
       <div style={{ marginBottom: 16, fontSize: 11, fontFamily: 'ui-monospace', letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--muted)' }}>
-        <Link href="/wiki" style={{ color: 'var(--muted)' }}>Вики</Link>
+        <Link href="/wiki" style={{ color: 'var(--muted)' }}>{t('wa.wiki')}</Link>
         {' / '}
         {article.wiki_categories && (
           <Link href={`/wiki/category/${article.wiki_categories.slug}`} style={{ color: 'var(--muted)' }}>
@@ -63,22 +65,22 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
           {article.title}
         </h1>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, fontFamily: 'ui-monospace', color: 'var(--muted)' }}>
-          <span>Автор: {article.profiles?.cmdr_name || 'Unknown'}</span>
+          <span>{t('wa.author', { name: article.profiles?.cmdr_name || t('wa.unknownAuthor') })}</span>
           <span>·</span>
-          <span>Версия {article.version}</span>
+          <span>{t('wa.version', { version: article.version })}</span>
           <span>·</span>
-          <span>{article.view_count} просмотров</span>
+          <span>{t('wh.views', { count: article.view_count || 0 })}</span>
           <span>·</span>
-          <span>{new Date(article.updated_at).toLocaleDateString('ru-RU')}</span>
+          <span>{new Date(article.updated_at).toLocaleDateString(locale)}</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
             <button onClick={toggleFav} className="btn" style={{ padding: '6px 14px', fontSize: 11 }}>
               <IconStar size={12} color={isFav ? 'var(--orange)' : 'var(--muted)'} style={{ marginRight: 4 }} />
-              {isFav ? 'В избранном' : 'В избранное'}
+              {isFav ? t('wa.favIn') : t('wa.favAdd')}
             </button>
-            <Link href={`/wiki/edit/${article.slug}`} className="btn" style={{ padding: '6px 14px', fontSize: 11 }}>Редактировать</Link>
+            <Link href={`/wiki/edit/${article.slug}`} className="btn" style={{ padding: '6px 14px', fontSize: 11 }}>{t('wa.edit')}</Link>
             <Link href={`/wiki/history/${article.slug}`} className="btn" style={{ padding: '6px 14px', fontSize: 11 }}>
               <IconHistory size={12} style={{ marginRight: 4 }} />
-              История
+              {t('wa.history')}
             </Link>
           </div>
         </div>
@@ -122,7 +124,7 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
       {related.length > 0 && (
         <div style={{ marginTop: 40, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
           <h3 style={{ fontSize: 14, color: 'var(--orange)', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: 12 }}>
-            СВЯЗАННЫЕ СТАТЬИ
+            {t('wa.related')}
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {related.map((r: any) => (
