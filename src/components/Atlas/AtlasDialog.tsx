@@ -2,6 +2,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { IconX } from '@/components/Icons';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * Модальное окно для расширенных настроек кольца (повторный прогон,
@@ -23,6 +24,7 @@ export default function AtlasDialog({
   busy?: boolean;
   wide?: boolean;
 }) {
+  const { t } = useI18n();
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
@@ -60,7 +62,7 @@ export default function AtlasDialog({
           {eyebrow && <span className="atlas-modal-eyebrow">{eyebrow}</span>}
           <h2 id={titleId}>{title}</h2>
         </div>
-        <button type="button" className="atlas-modal-close" aria-label="Закрыть окно" disabled={busy} onClick={onClose}>
+        <button type="button" className="atlas-modal-close" aria-label={t('atlas.ui.closeWindow')} disabled={busy} onClick={onClose}>
           <IconX size={18} color="currentColor" />
         </button>
       </header>

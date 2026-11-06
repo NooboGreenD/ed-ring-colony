@@ -129,8 +129,8 @@ test('Atlas: кольцо можно сохранить в проект эска
   assert.ok(saveRoute.includes('loadRingRoute'), 'маршрут не читается из сессии');
 
   assert.ok(ring.includes('/api/atlas/ring-route/save'), 'панель кольца не сохраняет маршрут в проект');
-  assert.ok(ring.includes('Скачать CSV'), 'выгрузка CSV спрятана: у кнопки нет подписи');
-  assert.ok(ring.includes('Копировать текстом'), 'копирование маршрута не подписано');
+  assert.ok(ring.includes("atlas.ui.downloadCsv"), 'выгрузка CSV спрятана: у кнопки нет подписи');
+  assert.ok(ring.includes("atlas.ui.ringCopyText"), 'копирование маршрута не подписано');
   assert.ok(ring.includes('ring-save-project'), 'в панели кольца нет выбора проекта');
   assert.ok(page.includes('projects={projects}'), 'страница не передаёт проекты в поиск кольца');
 });

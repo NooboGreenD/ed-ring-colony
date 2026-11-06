@@ -54,19 +54,21 @@ import {
   type BgsMapPoint,
 } from '@/lib/bgs';
 import { formatBgsBytes } from '@/lib/bgsProgress';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import { ALLEGIANCE_KEYS, GOVERNMENT_KEYS, STATE_KEYS, gameLabel } from '@/lib/i18n/gameLabels';
 
 const PAGE_SIZE = 150;
 const SHAPE_GLYPH = { 0: 'Exploited', 1: 'Fortified', 2: 'Stronghold' } as const;
 
-function formatCount(value: number): string {
-  return value.toLocaleString('ru-RU');
+function formatCount(value: number, locale: string): string {
+  return value.toLocaleString(locale);
 }
 
-function formatDateTime(value: string | null | undefined): string {
+function formatDateTime(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) return '—';
-  return new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return new Date(ms).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function StatusBar({ percent, label }: { percent: number | null; label: string }) {
@@ -90,6 +92,10 @@ export interface AtlasFactionsPanelProps {
 }
 
 export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
+  const { t, locale } = useI18n();
+  const allegianceText = (value?: string | null) => gameLabel(t, ALLEGIANCE_KEYS, value, allegianceLabel(value));
+  const governmentText = (value?: string | null) => gameLabel(t, GOVERNMENT_KEYS, value, governmentLabel(value));
+  const stateText = (value?: string | null) => gameLabel(t, STATE_KEYS, value, stateLabel(value));
   const {
     visible, setVisible, status, data, error, reload, systems, allegianceCounts, filter, setFilter, selection, presence,
     presenceStatus, presenceError, addFaction, removeFaction, toggleFactionHidden, soloFaction, clearSelection, points,
@@ -165,65 +171,63 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
     const percent = download?.total ? (download.received / download.total) * 100 : null;
     statusBlock = (
       <>
-        <div className="powerplay-status-title">Загружаю населённые системы…</div>
-        <StatusBar percent={percent} label="Загрузка систем с фракциями" />
+        <div className="powerplay-status-title">{t('atlas.ui.bgsLoadingSystems')}</div>
+        <StatusBar percent={percent} label={t('atlas.ui.bgsLoadingProgress')} />
         <div className="powerplay-status-detail">
           {download && download.received > 0
-            ? `${formatBgsBytes(download.received)}${download.total ? ` из ${formatBgsBytes(download.total)}` : ''}`
-            : 'Запрашиваю набор у сервера'}
+            ? (download.total ? t('atlas.ui.bgsBytesOf', { received: formatBgsBytes(download.received), total: formatBgsBytes(download.total) }) : formatBgsBytes(download.received))
+            : t('atlas.ui.bgsRequestingSet')}
         </div>
       </>
     );
   } else if (statusKind === 'importing') {
     statusBlock = (
       <>
-        <div className="powerplay-status-title">Сервер загружает дамп EDSM{serverProgress ? ` — ${Math.round(serverProgress.percent)} %` : '…'}</div>
-        <StatusBar percent={serverProgress ? serverProgress.percent : null} label="Импорт дампа EDSM на сервере" />
-        <div className="powerplay-status-detail">{serverProgress?.message || 'Скачивание и разбор дампа EDSM'}</div>
-        <div className="powerplay-status-hint">Дамп большой (≈0,5 ГБ) — это может занять долго. Карта заполнится сама.</div>
+        <div className="powerplay-status-title">{t('atlas.ui.bgsServerImport')}{serverProgress ? ` — ${Math.round(serverProgress.percent)} %` : '…'}</div>
+        <StatusBar percent={serverProgress ? serverProgress.percent : null} label={t('atlas.ui.bgsDumpImportLabel')} />
+        <div className="powerplay-status-detail">{serverProgress?.message || t('atlas.ui.bgsDumpParsing')}</div>
+        <div className="powerplay-status-hint">{t('atlas.ui.bgsDumpHint')}</div>
       </>
     );
   } else if (statusKind === 'error') {
     statusBlock = (
       <>
-        <div className="powerplay-status-title"><IconAlert size={12} /> Не удалось загрузить данные о фракциях</div>
-        <div className="powerplay-status-detail">{error || 'Сервер не ответил'}</div>
-        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>Повторить</button>
+        <div className="powerplay-status-title"><IconAlert size={12} /> {t('atlas.ui.bgsLoadFailed')}</div>
+        <div className="powerplay-status-detail">{error || t('atlas.ui.bgsServerNoAnswer')}</div>
+        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>{t('atlas.ui.bgsRetry')}</button>
       </>
     );
   } else if (statusKind === 'empty') {
     statusBlock = (
       <>
-        <div className="powerplay-status-title"><IconAlert size={12} /> Данных о фракциях пока нет</div>
+        <div className="powerplay-status-title"><IconAlert size={12} /> {t('atlas.ui.bgsNoDataYet')}</div>
         <div className="powerplay-status-detail">
-          {meta?.lastError ? `Последняя загрузка не удалась: ${meta.lastError}.` : 'Дамп EDSM на сервер ещё не загружали.'}
+          {meta?.lastError ? t('atlas.ui.bgsLastLoadFailed', { error: meta.lastError }) : t('atlas.ui.bgsDumpNotUploaded')}
         </div>
         <div className="powerplay-status-hint">
-          Администратор загружает данные в Админка → Игровые данные → Фракции (дамп EDSM, ≈0,5 ГБ). Системы, где побывали
-          пилоты с Colonial Helper или чьи журналы загружены на сайт, появятся и без него.
+          {t('atlas.ui.bgsAdminHint')}
         </div>
-        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>Проверить снова</button>
+        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>{t('atlas.ui.bgsCheckAgain')}</button>
       </>
     );
   } else {
     statusBlock = (
       <>
         <div className="powerplay-status-title">
-          <IconCheckCircle size={12} /> {formatCount(systems.length)} населённых систем · фракций: {formatCount(meta?.factions ?? 0)}
+          <IconCheckCircle size={12} /> {t('atlas.ui.bgsSystemsAndFactions', { systems: formatCount(systems.length, locale), factions: formatCount(meta?.factions ?? 0, locale) })}
         </div>
         <div className="powerplay-status-detail">
-          {meta?.dumpGeneratedAt || meta?.syncedAt ? <>Дамп EDSM от {formatBgsDate(meta?.dumpGeneratedAt ?? meta?.syncedAt)}</> : 'Дамп EDSM не загружен'}
-          {meta?.pilotUpdateAt ? ` · пилоты обновляли ${formatDateTime(meta.pilotUpdateAt)}` : ''}
+          {meta?.dumpGeneratedAt || meta?.syncedAt ? <>{t('atlas.ui.bgsDumpFrom', { date: formatBgsDate(meta?.dumpGeneratedAt ?? meta?.syncedAt) })}</> : t('atlas.ui.bgsDumpMissing')}
+          {meta?.pilotUpdateAt ? t('atlas.ui.bgsPilotsUpdated', { date: formatDateTime(meta.pilotUpdateAt, locale) }) : ''}
           {' · '}
           <a href={meta?.sourceUrl || 'https://www.edsm.net/en/nightly-dumps'} target="_blank" rel="noopener noreferrer">EDSM</a>
         </div>
         {importing && (
           <div className="powerplay-status-hint">
-            Сервер обновляет данные{serverProgress ? `: ${serverProgress.stageLabel.toLowerCase()}, ${Math.round(serverProgress.percent)} %` : '…'} —
-            новый набор подгрузится сам.
+            {t('atlas.ui.bgsServerUpdating', { progress: serverProgress ? `: ${serverProgress.stageLabel.toLowerCase()}, ${Math.round(serverProgress.percent)} %` : '…' })}
           </div>
         )}
-        {meta?.lastError && <div className="powerplay-warning">Последнее обновление не удалось: {meta.lastError}</div>}
+        {meta?.lastError && <div className="powerplay-warning">{t('atlas.ui.bgsLastUpdateFailed', { error: meta.lastError })}</div>}
       </>
     );
   }
@@ -234,13 +238,13 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
     <div className="atlas-section powerplay-panel bgs-panel" data-bgs-panel="">
       <div className="atlas-section-head">
         <h4>
-          <IconShieldHalf size={13} /> Минорные фракции
+          <IconShieldHalf size={13} /> {t('atlas.ui.bgsTitle')}
         </h4>
         <div className="atlas-section-actions">
-          <button type="button" className="atlas-icon-btn" title="Выгрузить список в CSV" onClick={exportList} disabled={listed.length === 0}>
+          <button type="button" className="atlas-icon-btn" title={t('atlas.ui.bgsExportCsvTitle')} onClick={exportList} disabled={listed.length === 0}>
             <IconDownload size={12} />
           </button>
-          <button type="button" className="atlas-icon-btn" title="Перезапросить данные" onClick={reload}>
+          <button type="button" className="atlas-icon-btn" title={t('atlas.ui.bgsReloadTitle')} onClick={reload}>
             <IconRefresh size={12} />
           </button>
         </div>
@@ -252,21 +256,21 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
 
       <label className="powerplay-toggle bgs-toggle">
         <input type="checkbox" checked={visible} onChange={(event) => setVisible(event.target.checked)} />
-        Показывать на карте
-        {(loaded || selectionMode) && <span className="powerplay-toggle-count">{formatCount(mapCount)}</span>}
+        {t('atlas.ui.bgsShowOnMap')}
+        {(loaded || selectionMode) && <span className="powerplay-toggle-count">{formatCount(mapCount, locale)}</span>}
       </label>
 
       {/* ── Поиск и выбор фракций ── */}
       <div className="bgs-picker" data-bgs-picker="">
         <div className="powerplay-group-head">
-          <span className="powerplay-group-title">Фракции на карте · выбрано {selection.length} из {BGS_MAX_SELECTED}</span>
+          <span className="powerplay-group-title">{t('atlas.ui.bgsMapFactionsTitle', { selected: selection.length, max: BGS_MAX_SELECTED })}</span>
           {selectionMode && (
             <span className="powerplay-group-actions">
-              <button type="button" className="atlas-link-btn" onClick={() => focusOverview()} disabled={mapCount === 0} title="Подвести камеру к системам выбранных фракций">
-                показать целиком
+              <button type="button" className="atlas-link-btn" onClick={() => focusOverview()} disabled={mapCount === 0} title={t('atlas.ui.bgsFocusSelectedTitle')}>
+                {t('atlas.ui.bgsShowWhole')}
               </button>
               <button type="button" className="atlas-link-btn" onClick={clearSelection} data-bgs-clear="">
-                сбросить
+                {t('atlas.ui.bgsReset')}
               </button>
             </span>
           )}
@@ -277,25 +281,25 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Найти минорную фракцию (от 2 букв)"
-            aria-label="Поиск минорной фракции"
+            placeholder={t('atlas.ui.bgsSearchFactionPlaceholder')}
+            aria-label={t('atlas.ui.bgsSearchFactionAria')}
           />
           {query && (
-            <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск фракции">
+            <button type="button" onClick={() => setQuery('')} aria-label={t('atlas.ui.bgsClearFactionSearchAria')}>
               <IconX size={11} />
             </button>
           )}
         </div>
         <label className="bgs-check">
           <input type="checkbox" checked={playerOnly} onChange={(event) => setPlayerOnly(event.target.checked)} />
-          только фракции игроков (PMF)
+          {t('atlas.ui.bgsPlayerOnly')}
         </label>
         {searchActive && (
-          <ul className="bgs-results" aria-label="Найденные фракции" data-bgs-results="">
-            {search.loading && search.results.length === 0 && <li className="powerplay-empty">Ищу…</li>}
+          <ul className="bgs-results" aria-label={t('atlas.ui.bgsResultsAria')} data-bgs-results="">
+            {search.loading && search.results.length === 0 && <li className="powerplay-empty">{t('atlas.ui.bgsSearching')}</li>}
             {search.error && <li className="powerplay-empty" style={{ color: '#f87171' }}>{search.error}</li>}
             {!search.loading && !search.error && search.results.length === 0 && (
-              <li className="powerplay-empty">{query.trim().length >= 2 ? `Фракция «${query.trim()}» не найдена` : 'Ничего не найдено'}</li>
+              <li className="powerplay-empty">{query.trim().length >= 2 ? t('atlas.ui.bgsFactionNotFound', { name: query.trim() }) : t('atlas.ui.bgsNothingFound')}</li>
             )}
             {search.results.map((result) => {
               const chosen = selectedIds.has(result.id);
@@ -307,17 +311,17 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
                     className={`bgs-result${chosen ? ' chosen' : ''}`}
                     data-bgs-result={result.name}
                     disabled={full}
-                    title={chosen ? 'Уже на карте — убрать' : full ? `Не больше ${BGS_MAX_SELECTED} фракций за раз` : 'Показать все системы фракции на карте'}
+                    title={chosen ? t('atlas.ui.bgsAlreadyOnMap') : full ? t('atlas.ui.bgsMaxFactions', { count: BGS_MAX_SELECTED }) : t('atlas.ui.bgsShowAllSystems')}
                     onClick={() => (chosen ? removeFaction(result.id) : addFaction(result))}
                   >
                     <PowerSwatch color={BGS_ALLEGIANCE_COLOR[result.allegiance]} />
                     <span className="bgs-result-name">
                       {result.name}
-                      {result.isPlayer && <span className="bgs-pmf" title="Фракция игроков">PMF</span>}
+                      {result.isPlayer && <span className="bgs-pmf" title={t('atlas.ui.bgsPlayerFactionTitle')}>PMF</span>}
                     </span>
                     <span className="bgs-result-meta">
-                      {allegianceLabel(result.allegiance)} · {governmentLabel(result.government)} · систем {formatCount(result.systems)}
-                      {result.controlled > 0 ? ` · у власти ${formatCount(result.controlled)}` : ''}
+                      {t('atlas.ui.bgsFactionMeta', { allegiance: allegianceText(result.allegiance), government: governmentText(result.government), systems: formatCount(result.systems, locale) })}
+                      {result.controlled > 0 ? t('atlas.ui.bgsControlledSuffix', { count: formatCount(result.controlled, locale) }) : ''}
                     </span>
                     <span className="bgs-result-action" aria-hidden="true">{chosen ? <IconX size={11} /> : <IconPlus size={11} />}</span>
                   </button>
@@ -328,18 +332,18 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
         )}
 
         {selectionMode ? (
-          <ul className="bgs-selected" aria-label="Выбранные фракции" data-bgs-selected="">
+          <ul className="bgs-selected" aria-label={t('atlas.ui.bgsSelectedAria')} data-bgs-selected="">
             {selection.map((item) => {
               const info = presenceFor(item.id);
               const counts = info
-                ? `систем ${formatCount(info.systems.length)} · у власти ${formatCount(info.systems.filter((system) => system.controls).length)}`
-                : presenceStatus === 'error' ? 'ошибка загрузки' : 'загрузка…';
+                ? t('atlas.ui.bgsPresenceCounts', { systems: formatCount(info.systems.length, locale), controlled: formatCount(info.systems.filter((system) => system.controls).length, locale) })
+                : presenceStatus === 'error' ? t('atlas.ui.bgsPresenceLoadError') : t('atlas.ui.bgsPresenceLoading');
               return (
                 <li key={item.id} className={`bgs-selected-item${item.hidden ? ' off' : ''}`} data-bgs-selected-faction={item.name}>
                   <button
                     type="button"
                     className="bgs-swatch-btn"
-                    title={item.hidden ? 'Показать на карте' : 'Скрыть с карты (останется в списке)'}
+                    title={item.hidden ? t('atlas.ui.bgsShowOnMapShort') : t('atlas.ui.bgsHideFromMap')}
                     aria-pressed={!item.hidden}
                     onClick={() => toggleFactionHidden(item.id)}
                   >
@@ -348,7 +352,7 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
                   <button
                     type="button"
                     className="bgs-selected-name"
-                    title="Подвести камеру к системам фракции"
+                    title={t('atlas.ui.bgsFocusFactionTitle')}
                     onClick={() => info && focusOverview(info.systems.filter((system) => !filter.controlsOnly || system.controls))}
                   >
                     <span className="bgs-selected-title">
@@ -357,13 +361,13 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
                     </span>
                     <span className="bgs-selected-meta">{counts}</span>
                   </button>
-                  <button type="button" className="powerplay-solo" title="Оставить на карте только эту фракцию" onClick={() => soloFaction(item.id)}>
-                    только
+                  <button type="button" className="powerplay-solo" title={t('atlas.ui.bgsSoloTitle')} onClick={() => soloFaction(item.id)}>
+                    {t('atlas.ui.bgsSoloOnly')}
                   </button>
-                  <button type="button" className="bgs-icon-btn" title={item.hidden ? 'Показать' : 'Скрыть'} aria-label={item.hidden ? 'Показать фракцию' : 'Скрыть фракцию'} onClick={() => toggleFactionHidden(item.id)}>
+                  <button type="button" className="bgs-icon-btn" title={item.hidden ? t('atlas.ui.bgsShow') : t('atlas.ui.bgsHide')} aria-label={item.hidden ? t('atlas.ui.bgsShowFactionAria') : t('atlas.ui.bgsHideFactionAria')} onClick={() => toggleFactionHidden(item.id)}>
                     <IconEye size={11} />
                   </button>
-                  <button type="button" className="bgs-icon-btn" title="Убрать с карты" aria-label={`Убрать ${item.name}`} onClick={() => removeFaction(item.id)}>
+                  <button type="button" className="bgs-icon-btn" title={t('atlas.ui.bgsRemoveFromMap')} aria-label={t('atlas.ui.bgsRemoveFactionAria', { name: item.name })} onClick={() => removeFaction(item.id)}>
                     <IconX size={11} />
                   </button>
                 </li>
@@ -372,8 +376,7 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
           </ul>
         ) : (
           <p className="powerplay-hint bgs-hint">
-            Фракции не выбраны — на карте все населённые системы с минорными фракциями. Найдите фракцию и нажмите на неё,
-            чтобы показать только её системы; можно выбрать несколько (до {BGS_MAX_SELECTED}).
+            {t('atlas.ui.bgsNoSelectionHint', { max: BGS_MAX_SELECTED })}
           </p>
         )}
         {presenceError && <div className="powerplay-warning">{presenceError}</div>}
@@ -381,13 +384,13 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
           <div className="bgs-options">
             <label className="bgs-check">
               <input type="checkbox" checked={filter.controlsOnly} onChange={(event) => setFilter({ ...filter, controlsOnly: event.target.checked })} />
-              только системы, где выбранная фракция у власти
+              {t('atlas.ui.bgsControlsOnly')}
             </label>
             <label className="bgs-check">
               <input type="checkbox" checked={filter.background} onChange={(event) => setFilter({ ...filter, background: event.target.checked })} />
-              остальные населённые системы — фоном
+              {t('atlas.ui.bgsBackground')}
             </label>
-            {visibleSelected === 0 && <div className="powerplay-warning">Все выбранные фракции скрыты — включите хотя бы одну.</div>}
+            {visibleSelected === 0 && <div className="powerplay-warning">{t('atlas.ui.bgsAllHidden')}</div>}
           </div>
         )}
       </div>
@@ -396,14 +399,14 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
       {(!selectionMode || filter.background) && (
         <div className="bgs-allegiance-filter">
           <div className="powerplay-group-head">
-            <span className="powerplay-group-title">Принадлежность систем</span>
+            <span className="powerplay-group-title">{t('atlas.ui.bgsAllegianceTitle')}</span>
             <span className="powerplay-group-actions">
               <button type="button" className="atlas-link-btn" onClick={() => setFilter({ ...filter, hiddenAllegiances: DEFAULT_BGS_FILTER.hiddenAllegiances })} disabled={filter.hiddenAllegiances.length === 0}>
-                все
+                {t('atlas.ui.bgsAll')}
               </button>
             </span>
           </div>
-          <div className="powerplay-chips" role="group" aria-label="Принадлежность систем">
+          <div className="powerplay-chips" role="group" aria-label={t('atlas.ui.bgsAllegianceTitle')}>
             {BGS_ALLEGIANCES.filter((allegiance) => allegianceCounts[allegiance] > 0 || !loaded).map((allegiance) => {
               const on = !filter.hiddenAllegiances.includes(allegiance);
               return (
@@ -413,13 +416,13 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
                   className={`powerplay-chip bgs-chip${on ? ' active' : ''}`}
                   aria-pressed={on}
                   data-bgs-allegiance={allegiance}
-                  title={on ? `Скрыть: ${allegianceLabel(allegiance)} (двойной клик — только эта)` : `Показать: ${allegianceLabel(allegiance)}`}
+                  title={on ? t('atlas.ui.bgsHideAllegiance', { name: allegianceText(allegiance) }) : t('atlas.ui.bgsShowAllegiance', { name: allegianceText(allegiance) })}
                   onClick={() => setFilter(toggleAllegiance(filter, allegiance))}
                   onDoubleClick={() => setFilter(soloAllegiance(filter, allegiance))}
                 >
                   <span className="bgs-dot" style={{ background: BGS_ALLEGIANCE_COLOR[allegiance] }} />
-                  {allegianceLabel(allegiance)}
-                  {loaded && <span className="powerplay-chip-count">{formatCount(allegianceCounts[allegiance])}</span>}
+                  {allegianceText(allegiance)}
+                  {loaded && <span className="powerplay-chip-count">{formatCount(allegianceCounts[allegiance], locale)}</span>}
                 </button>
               );
             })}
@@ -431,19 +434,19 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
         <>
           <div className="powerplay-summary">
             <span>
-              На карте: <strong>{formatCount(mapCount)}</strong> {selectionMode ? 'систем выбранных фракций' : `из ${formatCount(systems.length)} населённых систем`}
+              {t('atlas.ui.bgsOnMapLead')} <strong>{formatCount(mapCount, locale)}</strong> {selectionMode ? t('atlas.ui.bgsOnMapSelected') : t('atlas.ui.bgsOnMapOf', { count: formatCount(systems.length, locale) })}
             </span>
             <button
               type="button"
               className="atlas-link-btn powerplay-overview"
               onClick={() => focusOverview()}
               disabled={mapCount === 0}
-              title="Подвести камеру так, чтобы были видны все системы под фильтром"
+              title={t('atlas.ui.bgsOverviewTitle')}
             >
-              Показать целиком
+              {t('atlas.ui.bgsShowWholeBtn')}
             </button>
-            {!visible && <div className="powerplay-warning">Слой выключен — включите «Показывать на карте».</div>}
-            <div className="powerplay-hint">Системы кликабельны: щёлкните точку на карте или строку списка — откроется карточка со всеми фракциями системы.</div>
+            {!visible && <div className="powerplay-warning">{t('atlas.ui.bgsLayerOff')}</div>}
+            <div className="powerplay-hint">{t('atlas.ui.bgsClickHint')}</div>
           </div>
 
           <div className="atlas-inline-search">
@@ -455,20 +458,20 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
                 setListQuery(event.target.value);
                 setLimit(PAGE_SIZE);
               }}
-              placeholder="Найти систему на карте"
-              aria-label="Поиск системы среди систем слоя"
+              placeholder={t('atlas.ui.bgsSearchSystemPlaceholder')}
+              aria-label={t('atlas.ui.bgsSearchSystemAria')}
             />
             {listQuery && (
-              <button type="button" onClick={() => setListQuery('')} aria-label="Очистить поиск системы">
+              <button type="button" onClick={() => setListQuery('')} aria-label={t('atlas.ui.bgsClearSystemSearchAria')}>
                 <IconX size={11} />
               </button>
             )}
           </div>
           <p className="atlas-list-counter">
-            Показано {formatCount(shown.length)} из {formatCount(listed.length)}
-            {selectionMode ? ' — сначала где выбранные фракции у власти, затем по влиянию' : ' — по имени'}
+            {t('atlas.shownOf', { shown: formatCount(shown.length, locale), total: formatCount(listed.length, locale) })}
+            {selectionMode ? t('atlas.ui.bgsListCountSuffixOrder') : t('atlas.ui.bgsListCountSuffixName')}
           </p>
-          <ul className="powerplay-list bgs-list" aria-label="Системы слоя «Фракции»">
+          <ul className="powerplay-list bgs-list" aria-label={t('atlas.ui.bgsListAria')}>
             {shown.map((point) => (
               <li key={point.key}>
                 <FactionRow point={point} active={selectedKey === point.key} onClick={() => select(point, { focus: true })} />
@@ -477,21 +480,20 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
             {listed.length === 0 && (
               <li className="powerplay-empty">
                 {listQuery
-                  ? 'Под поиск ничего не нашлось'
+                  ? t('atlas.ui.bgsNoSearchResults')
                   : selectionMode
-                    ? presenceStatus === 'loading' ? 'Загружаю системы выбранных фракций…' : 'У выбранных фракций под фильтром систем нет'
-                    : 'Под фильтр систем нет'}
+                    ? presenceStatus === 'loading' ? t('atlas.ui.bgsLoadingSelectedSystems') : t('atlas.ui.bgsNoSelectedUnderFilter')
+                    : t('atlas.ui.bgsNoFilterResults')}
               </li>
             )}
           </ul>
           {listed.length > shown.length && (
             <button type="button" className="atlas-link-btn powerplay-more" onClick={() => setLimit((value) => value + PAGE_SIZE)}>
-              Показать ещё {formatCount(Math.min(PAGE_SIZE, listed.length - shown.length))}
+              {t('atlas.ui.bgsShowMore', { count: formatCount(Math.min(PAGE_SIZE, listed.length - shown.length), locale) })}
             </button>
           )}
           <p className="powerplay-hint">
-            Источники: ночной дамп EDSM и журналы пилотов — Colonial Helper и загрузка журналов на сайте обновляют системы,
-            где пилоты побывали, сразу после прыжка (свежее наблюдение побеждает).
+            {t('atlas.ui.bgsSourcesHint')}
           </p>
         </>
       )}
@@ -500,6 +502,9 @@ export function AtlasFactionsPanel({ factions }: AtlasFactionsPanelProps) {
 }
 
 function FactionRow({ point, active, onClick }: { point: BgsMapPoint; active: boolean; onClick: () => void }) {
+  const { t } = useI18n();
+  const allegianceText = (value?: string | null) => gameLabel(t, ALLEGIANCE_KEYS, value, allegianceLabel(value));
+  const stateText = (value?: string | null) => gameLabel(t, STATE_KEYS, value, stateLabel(value));
   const lead = point.entries[0];
   let meta: ReactNode;
   if (point.entries.length > 0) {
@@ -507,9 +512,9 @@ function FactionRow({ point, active, onClick }: { point: BgsMapPoint; active: bo
       <span key={entry.factionId}>
         {index > 0 ? ' · ' : ''}
         <span style={{ color: entry.color }}>{entry.name}</span> {formatInfluence(entry.influence)}
-        {entry.controls ? ' (у власти)' : ''}
+        {entry.controls ? t('atlas.ui.bgsControlsSuffix') : ''}
         {entry.state && entry.state !== 'None' ? (
-          <span style={{ color: BGS_CONFLICT_STATES.has(entry.state) ? '#f87171' : undefined }}>, {stateLabel(entry.state).toLowerCase()}</span>
+          <span style={{ color: BGS_CONFLICT_STATES.has(entry.state) ? '#f87171' : undefined }}>, {stateText(entry.state)}</span>
         ) : null}
       </span>
     ));
@@ -517,9 +522,9 @@ function FactionRow({ point, active, onClick }: { point: BgsMapPoint; active: bo
     meta = (
       <>
         {point.system?.controlling ? `${point.system.controlling} · ` : ''}
-        {allegianceLabel(point.system?.allegiance)}
+        {allegianceText(point.system?.allegiance)}
         {point.system?.population ? ` · ${formatPopulation(point.system.population)}` : ''}
-        {point.system ? ` · фракций ${point.system.factionsCount}` : ''}
+        {point.system ? t('atlas.ui.bgsFactionsSuffix', { count: point.system.factionsCount }) : ''}
       </>
     );
   }
@@ -530,9 +535,9 @@ function FactionRow({ point, active, onClick }: { point: BgsMapPoint; active: bo
       aria-pressed={active}
       data-bgs-row={point.name}
       onClick={onClick}
-      title="Показать на карте и открыть карточку"
+      title={t('atlas.ui.bgsRowTitle')}
     >
-      <PowerplayGlyph state={SHAPE_GLYPH[point.shape]} color={lead?.color ?? point.color} size={12} title={lead?.controls ? 'у власти' : 'система'} />
+      <PowerplayGlyph state={SHAPE_GLYPH[point.shape]} color={lead?.color ?? point.color} size={12} title={lead?.controls ? t('atlas.ui.bgsInControl') : t('atlas.ui.bgsSystemWord')} />
       <span className="powerplay-row-name">{point.name}</span>
       <span className="powerplay-row-meta">{meta}</span>
     </button>
