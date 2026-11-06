@@ -2,6 +2,7 @@
 import { cloneElement, useId, useState, type ReactElement, type ReactNode } from 'react';
 import { IconPlus, IconRefresh, IconSave, IconTrash, IconWrench } from '@/components/Icons';
 import { isRecord, validateCatalogValue } from '@/lib/outfitting/catalog';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { InternalSlot, OutfittingData, OutfittingShip, ShipProperties } from '@/lib/outfitting/types';
 import { STANDARD_GROUPS } from '@/lib/outfitting/calc';
 import type { CatalogEditorItem } from './OutfittingEditor';
@@ -10,17 +11,17 @@ import styles from './OutfittingAdmin.module.css';
 
 type Section = 'hardpoints' | 'internal';
 type Tab = 'main' | 'specs' | 'slots' | 'json';
-const TABS: Record<Tab, string> = { main: 'Основное', specs: 'Характеристики', slots: 'Слоты и комплектация', json: 'JSON' };
+const TABS: Record<Tab, string> = { main: 'ofs.tabMain', specs: 'ofs.tabSpecs', slots: 'ofs.tabSlots', json: 'JSON' };
 const SPECS: { key: keyof ShipProperties; label: string; optional?: boolean }[] = [
-  { key: 'speed', label: 'Скорость, м/с' }, { key: 'boost', label: 'Форсаж, м/с' },
-  { key: 'boostEnergy', label: 'Расход на форсаж, МДж' }, { key: 'boostInt', label: 'Интервал форсажа, с', optional: true },
-  { key: 'baseShieldStrength', label: 'Базовый щит' }, { key: 'baseArmour', label: 'Базовая броня' },
-  { key: 'heatCapacity', label: 'Теплоёмкость' }, { key: 'hardness', label: 'Твёрдость корпуса' },
-  { key: 'hullMass', label: 'Масса корпуса, т' }, { key: 'masslock', label: 'Фактор блокировки FSD' },
-  { key: 'pipSpeed', label: 'Заряд распределителя за секунду' }, { key: 'reserveFuelCapacity', label: 'Резерв топлива, т' },
-  { key: 'minthrust', label: 'Минимальная тяга', optional: true },
-  { key: 'pitch', label: 'Тангаж, °/с', optional: true }, { key: 'roll', label: 'Крен, °/с', optional: true },
-  { key: 'yaw', label: 'Рысканье, °/с', optional: true },
+  { key: 'speed', label: 'ofs.specSpeed' }, { key: 'boost', label: 'ofs.specBoost' },
+  { key: 'boostEnergy', label: 'ofs.specBoostEnergy' }, { key: 'boostInt', label: 'ofs.specBoostInt', optional: true },
+  { key: 'baseShieldStrength', label: 'ofs.specBaseShield' }, { key: 'baseArmour', label: 'ofs.specBaseArmour' },
+  { key: 'heatCapacity', label: 'ofs.specHeat' }, { key: 'hardness', label: 'ofs.specHardness' },
+  { key: 'hullMass', label: 'ofs.specHullMass' }, { key: 'masslock', label: 'ofs.specMasslock' },
+  { key: 'pipSpeed', label: 'ofs.specPipSpeed' }, { key: 'reserveFuelCapacity', label: 'ofs.specReserveFuel' },
+  { key: 'minthrust', label: 'ofs.specMinthrust', optional: true },
+  { key: 'pitch', label: 'ofs.specPitch', optional: true }, { key: 'roll', label: 'ofs.specRoll', optional: true },
+  { key: 'yaw', label: 'ofs.specYaw', optional: true },
 ];
 
 function Field({ label, hint, children, wide = false }: { label: string; hint?: string; children: ReactNode; wide?: boolean }) {
@@ -61,6 +62,7 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
   onClose: () => void;
   onSave: (key: string, value: OutfittingShip) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const initial = item.value as OutfittingShip;
   const creating = item.mode === 'create';
   const [draft, setDraft] = useState<OutfittingShip>(() => structuredClone(initial));
@@ -97,8 +99,8 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
     const saved = !creating && index < initial.slots[section].length;
     const label = `${section === 'hardpoints' ? 'H' : 'I'}${index}`;
     const warning = saved
-      ? `Удалить слот ${label}? Он исчезнет из новых сборок, но останется на прежнем индексе для старых ссылок. Его можно восстановить в редакторе.`
-      : `Удалить слот ${label}? Его параметры и заводской модуль будут потеряны.`;
+      ? t('ofs.removeSaved', { label })
+      : t('ofs.removeNew', { label });
     if (!window.confirm(warning)) return;
     if (saved) {
       // Existing slots are archived, never spliced: build links use array indices.
@@ -148,7 +150,7 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
   const prepare = (): OutfittingShip => {
     if (tab === 'json') {
       const parsed: unknown = JSON.parse(json);
-      if (!isRecord(parsed)) throw new Error('JSON должен содержать объект корабля');
+      if (!isRecord(parsed)) throw new Error(t('ofs.jsonObject'));
       return parsed as unknown as OutfittingShip;
     }
     const value = structuredClone(draft);
@@ -170,16 +172,16 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
     try {
       const value = prepare();
       if (tab === 'json' && next !== 'json' && !canRenderShip(value)) {
-        throw new Error('Укажите характеристики, броню, слоты и заводскую комплектацию');
+        throw new Error(t('ofs.fillRequired'));
       }
       setDraft(value);
       setEligibleText(eligibleBuffers(value));
       if (next === 'json') setJson(JSON.stringify(value, null, 2));
       setTab(next); setError('');
-    } catch { setError('Исправьте JSON слотов перед переключением вкладки'); }
+    } catch { setError(t('ofs.jsonSlotsFix')); }
   };
   const requestClose = () => {
-    if (!busy && (!dirty || window.confirm('Есть несохранённые изменения. Закрыть редактор без сохранения?'))) onClose();
+    if (!busy && (!dirty || window.confirm(t('ofs.confirmClose')))) onClose();
   };
   const submit = async () => {
     setError('');
@@ -189,41 +191,41 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
       const validated = validateCatalogValue('ship', key, value, data) as OutfittingShip;
       setBusy(true);
       await onSave(key, validated);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось сохранить корабль'); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : t('ofs.saveFailed')); }
     finally { setBusy(false); }
   };
 
   const slotList = (section: Section) => {
     const archivedCount = draft.slots[section].filter((slot) => typeof slot !== 'number' && slot.archived).length;
     return <div className={styles.slotSection} key={section}>
-    <div className={styles.slotHeading}><h3>{section === 'hardpoints' ? 'Орудия и утилиты' : 'Внутренние отсеки'}</h3>
-      <button type="button" className={styles.secondaryButton} disabled={draft.slots[section].length >= 64} onClick={() => addSlot(section)}><IconPlus size={14} color="currentColor" /> Добавить слот</button></div>
-    <p className={styles.helpText}>Сохранённые слоты удаляются без смещения индексов: новые сборки их не используют, а старые сохраняют модули. Новые, ещё не сохранённые слоты удаляются окончательно. Размер 0 — вспомогательный слот (только для орудий/утилит).</p>
+    <div className={styles.slotHeading}><h3>{section === 'hardpoints' ? t('ofs.hardpoints') : t('ofs.internal')}</h3>
+      <button type="button" className={styles.secondaryButton} disabled={draft.slots[section].length >= 64} onClick={() => addSlot(section)}><IconPlus size={14} color="currentColor" /> {t('ofs.addSlot')}</button></div>
+    <p className={styles.helpText}>{t('ofs.slotHelp')}</p>
     {archivedCount > 0 && <button type="button" className={styles.quietButton} aria-expanded={showArchived[section]}
       onClick={() => setShowArchived((previous) => ({ ...previous, [section]: !previous[section] }))}>
-      {showArchived[section] ? 'Скрыть удалённые слоты' : `Показать удалённые слоты (${archivedCount})`}
+      {showArchived[section] ? t('ofs.hideArchived') : t('ofs.showArchived', { count: archivedCount })}
     </button>}
     {draft.slots[section].map((slot, index) => {
       const label = `${section === 'hardpoints' ? 'H' : 'I'}${index}`;
       const archived = typeof slot !== 'number' && slot.archived;
       if (archived) return showArchived[section] ? <div key={index} className={`${styles.slotRow} ${styles.deletedSlotRow}`}>
-        <strong>{label}</strong><span className={styles.slotGroup}>Удалённый слот · размер {slot.class}{slot.name ? ` · ${slot.name}` : ''}</span>
-        <button type="button" className={styles.restoreButton} aria-label={`Восстановить слот ${section} ${index}`} onClick={() => restoreSlot(section, index)}><IconRefresh size={14} color="currentColor" /> Восстановить</button>
-        {(creating || index >= initial.slots[section].length) && <button type="button" className={styles.iconButton} aria-label={`Удалить слот ${section} ${index}`} title="Удалить окончательно" onClick={() => removeSlot(section, index)}><IconTrash size={15} color="currentColor" /></button>}
+        <strong>{label}</strong><span className={styles.slotGroup}>{t('ofs.archivedSlot', { size: slot.class })}{slot.name ? ` · ${slot.name}` : ''}</span>
+        <button type="button" className={styles.restoreButton} aria-label={t('ofs.restoreSlot', { section, index })} onClick={() => restoreSlot(section, index)}><IconRefresh size={14} color="currentColor" /> {t('ofa.restoreLabel')}</button>
+        {(creating || index >= initial.slots[section].length) && <button type="button" className={styles.iconButton} aria-label={t('ofs.deleteSlotAria', { section, index })} title={t('ofs.deleteSlotForever')} onClick={() => removeSlot(section, index)}><IconTrash size={15} color="currentColor" /></button>}
       </div> : null;
       const special = typeof slot === 'object';
       return <div key={index} className={styles.slotRow}>
         <strong>{section === 'hardpoints' ? 'H' : 'I'}{index}</strong>
-        <label>Размер<select aria-label={`${section} ${index}: размер`} value={special ? slot.class : slot} onChange={(event) => setSlot(section, index, special ? { ...slot, class: Number(event.target.value) } : Number(event.target.value))}>
+        <label>{t('ofa.size')}<select aria-label={t('ofs.sizeAria', { section, index })} value={special ? slot.class : slot} onChange={(event) => setSlot(section, index, special ? { ...slot, class: Number(event.target.value) } : Number(event.target.value))}>
           {Array.from({ length: section === 'hardpoints' ? 5 : 8 }, (_, size) => <option key={size} value={section === 'hardpoints' ? size : size + 1}>{section === 'hardpoints' ? size : size + 1}</option>)}
         </select></label>
-        <label>Заводской модуль<input aria-label={`${section} ${index}: заводской модуль`} value={String(draft.defaults[section][index] ?? '')} placeholder="ID модуля / 0" maxLength={64}
+        <label>{t('ofs.factoryModule')}<input aria-label={t('ofs.factoryAria', { section, index })} value={String(draft.defaults[section][index] ?? '')} placeholder={t('ofs.moduleIdPlaceholder')} maxLength={64}
           onChange={(event) => setDefault(section, index, event.target.value)} /></label>
-        <label className={styles.slotToggle}><input type="checkbox" checked={special} onChange={() => toggleSpecial(section, index)} /> Особый</label>
-        <button type="button" className={styles.iconButton} aria-label={`Удалить слот ${section} ${index}`} title="Удалить слот" onClick={() => removeSlot(section, index)}><IconTrash size={15} color="currentColor" /></button>
+        <label className={styles.slotToggle}><input type="checkbox" checked={special} onChange={() => toggleSpecial(section, index)} /> {t('ofs.special')}</label>
+        <button type="button" className={styles.iconButton} aria-label={t('ofs.deleteSlotAria', { section, index })} title={t('ofs.deleteSlotTitle')} onClick={() => removeSlot(section, index)}><IconTrash size={15} color="currentColor" /></button>
         {special && <div className={styles.slotSpecial}>
-          <Field label="Назначение слота"><input value={slot.name ?? ''} maxLength={80} placeholder="Military / Mining / Cargo" onChange={(event) => setSlot(section, index, { ...slot, name: event.target.value })} /></Field>
-          <Field label="Допустимые группы (JSON)" hint={'Например {"hr":1,"mrp":1}; пусто — без ограничений. Группы должны существовать.'}>
+          <Field label={t('ofs.slotPurpose')}><input value={slot.name ?? ''} maxLength={80} placeholder="Military / Mining / Cargo" onChange={(event) => setSlot(section, index, { ...slot, name: event.target.value })} /></Field>
+          <Field label={t('ofs.allowedGroups')} hint={t('ofs.allowedHint')}>
             <textarea rows={3} className={styles.codeInput} spellCheck={false} value={eligibleText[`${section}:${index}`] ?? ''}
               onChange={(event) => { setEligibleText((previous) => ({ ...previous, [`${section}:${index}`]: event.target.value })); setError(''); }} />
           </Field>
@@ -233,63 +235,63 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
   </div>;
   };
 
-  return <OutfittingDialog title={`${creating ? 'Добавление' : 'Редактирование'} корабля`} eyebrow={creating ? 'Новый корпус' : item.key} onClose={requestClose} busy={busy}>
+  return <OutfittingDialog title={creating ? t('ofs.titleAdd') : t('ofs.titleEdit')} eyebrow={creating ? t('ofs.dialogNew') : item.key} onClose={requestClose} busy={busy}>
     <form className={styles.editorForm} onSubmit={(event) => { event.preventDefault(); void submit(); }}
       onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); event.currentTarget.requestSubmit(); } }}>
-      <div className={styles.editorTabs} role="tablist" aria-label="Параметры корабля">
+      <div className={styles.editorTabs} role="tablist" aria-label={t('ofs.paramsAria')}>
         {(Object.keys(TABS) as Tab[]).map((key) => <button type="button" role="tab" aria-selected={tab === key} aria-controls="ship-editor-panel" key={key}
-          disabled={busy} className={tab === key ? styles.activeTab : styles.tabButton} onClick={() => changeTab(key)}>{TABS[key]}</button>)}
+          disabled={busy} className={tab === key ? styles.activeTab : styles.tabButton} onClick={() => changeTab(key)}>{t(TABS[key])}</button>)}
       </div>
-      <div key={tab} className={styles.editorScroll} role="region" aria-label="Содержимое редактора корабля" tabIndex={0}>
-        <fieldset disabled={busy} className={styles.editorBody} id="ship-editor-panel" role="tabpanel" aria-label={TABS[tab]}>
+      <div key={tab} className={styles.editorScroll} role="region" aria-label={t('ofs.contentAria')} tabIndex={0}>
+        <fieldset disabled={busy} className={styles.editorBody} id="ship-editor-panel" role="tabpanel" aria-label={t(TABS[tab])}>
         {tab === 'main' && <>
-          <div className={styles.note}><IconWrench size={16} color="currentColor" /><span>Кнопка добавления использует шаблон Sidewinder; можно также копировать подходящий корпус из списка. ID существующего корабля не меняется: он используется в ссылках и сохранённых сборках.</span></div>
+          <div className={styles.note}><IconWrench size={16} color="currentColor" /><span>{t('ofs.templateNote')}</span></div>
           <div className={styles.formGrid}>
-            <Field label="ID корабля" hint="Строчные латинские буквы, цифры, _ или -. После создания не меняется.">
+            <Field label={t('ofs.shipId')} hint={t('ofs.shipIdHint')}>
               <input data-autofocus autoFocus required disabled={!creating} pattern="[a-z][a-z0-9_\-]{0,63}" maxLength={64} value={draft.id} onChange={(event) => update((ship) => { ship.id = event.target.value; })} />
             </Field>
-            <Field label="Название корабля"><input required maxLength={160} value={draft.properties.name} onChange={(event) => setProperty('name', event.target.value)} /></Field>
-            <Field label="Производитель"><input required maxLength={120} value={draft.properties.manufacturer} onChange={(event) => setProperty('manufacturer', event.target.value)} /></Field>
-            <Field label="Размер корпуса"><select value={draft.properties.class} onChange={(event) => setProperty('class', Number(event.target.value))}>
-              <option value={1}>1 — малый</option><option value={2}>2 — средний</option><option value={3}>3 — большой</option>
+            <Field label={t('ofs.shipName')}><input required maxLength={160} value={draft.properties.name} onChange={(event) => setProperty('name', event.target.value)} /></Field>
+            <Field label={t('ofa.manufacturer')}><input required maxLength={120} value={draft.properties.manufacturer} onChange={(event) => setProperty('manufacturer', event.target.value)} /></Field>
+            <Field label={t('ofs.hullSize')}><select value={draft.properties.class} onChange={(event) => setProperty('class', Number(event.target.value))}>
+              <option value={1}>{t('ofs.sizeSmallOpt')}</option><option value={2}>{t('ofs.sizeMediumOpt')}</option><option value={3}>{t('ofs.sizeLargeOpt')}</option>
             </select></Field>
-            <Field label="Стоимость корпуса, CR"><input type="number" min={0} step="any" required value={draft.properties.hullCost} onChange={(event) => setProperty('hullCost', event.target.value === '' ? undefined : Number(event.target.value))} /></Field>
-            <Field label="Цена покупки, CR"><input type="number" min={0} step="any" required value={draft.retailCost} onChange={(event) => update((ship) => { ship.retailCost = Number(event.target.value); })} /></Field>
-            <Field label="Экипаж"><input type="number" min={1} max={16} step={1} required value={draft.properties.crew} onChange={(event) => setProperty('crew', event.target.value === '' ? undefined : Number(event.target.value))} /></Field>
-            <label className={styles.checkField}><input type="checkbox" checked={draft.properties.fighterHangars === true} onChange={(event) => setProperty('fighterHangars', event.target.checked)} /><span>Можно установить ангар истребителей</span></label>
-            <label className={styles.checkField}><input type="checkbox" checked={draft.properties.luxuryCabins === true} onChange={(event) => setProperty('luxuryCabins', event.target.checked)} /><span>Доступны каюты люкс</span></label>
+            <Field label={t('ofs.hullCost')}><input type="number" min={0} step="any" required value={draft.properties.hullCost} onChange={(event) => setProperty('hullCost', event.target.value === '' ? undefined : Number(event.target.value))} /></Field>
+            <Field label={t('ofs.retailCost')}><input type="number" min={0} step="any" required value={draft.retailCost} onChange={(event) => update((ship) => { ship.retailCost = Number(event.target.value); })} /></Field>
+            <Field label={t('ofs.crew')}><input type="number" min={1} max={16} step={1} required value={draft.properties.crew} onChange={(event) => setProperty('crew', event.target.value === '' ? undefined : Number(event.target.value))} /></Field>
+            <label className={styles.checkField}><input type="checkbox" checked={draft.properties.fighterHangars === true} onChange={(event) => setProperty('fighterHangars', event.target.checked)} /><span>{t('ofs.fighterHangar')}</span></label>
+            <label className={styles.checkField}><input type="checkbox" checked={draft.properties.luxuryCabins === true} onChange={(event) => setProperty('luxuryCabins', event.target.checked)} /><span>{t('ofs.luxuryCabins')}</span></label>
           </div>
-          <p className={styles.helpText}>Броня: {draft.bulkheads.filter((entry) => !entry.archived).length} вариантов. После создания параметры и архивирование переборок доступны на вкладке «Броня» каталога.</p>
+          <p className={styles.helpText}>{t('ofs.armourCount', { count: draft.bulkheads.filter((entry) => !entry.archived).length })}</p>
         </>}
-        {tab === 'specs' && <><div className={styles.note}>Числовые характеристики используются калькулятором верфи. Масса корпуса и заряд распределителя должны быть больше нуля; остальные значения не могут быть отрицательными.</div>
-          <div className={styles.formGrid}>{SPECS.map(({ key, label, optional }) => <Field key={key} label={label}>
+        {tab === 'specs' && <><div className={styles.note}>{t('ofs.specsNote')}</div>
+          <div className={styles.formGrid}>{SPECS.map(({ key, label, optional }) => <Field key={key} label={t(label)}>
             <input type="number" min={key === 'hullMass' || key === 'pipSpeed' ? '0.000001' : 0} step="any" required={!optional}
-              value={typeof draft.properties[key] === 'number' ? String(draft.properties[key]) : ''} placeholder={optional ? 'Не задано' : undefined}
+              value={typeof draft.properties[key] === 'number' ? String(draft.properties[key]) : ''} placeholder={optional ? t('ofs.notSet') : undefined}
               onChange={(event) => setProperty(key, event.target.value === '' ? undefined : Number(event.target.value))} />
           </Field>)}</div>
         </>}
         {tab === 'slots' && <>
-          <div className={styles.note}>Семь основных слотов обязательны. Орудийные и внутренние слоты можно добавить или удалить по отдельности; уже сохранённый слот архивируется, чтобы не сместить оборудование в старых сборках. Удалённые слоты можно восстановить. Заводская комплектация: ID модуля (в основных слотах можно класс+рейтинг, например 2E); 0 — пусто. Неизвестный ID оставит слот пустым.</div>
-          <div className={styles.slotSection}><div className={styles.slotHeading}><h3>Основные модули</h3><span className={styles.helpText}>7 обязательных слотов</span></div>
+          <div className={styles.note}>{t('ofs.slotsNote')}</div>
+          <div className={styles.slotSection}><div className={styles.slotHeading}><h3>{t('ofs.standardModules')}</h3><span className={styles.helpText}>{t('ofs.sevenSlots')}</span></div>
             {draft.slots.standard.map((size, index) => <div className={styles.slotRow} key={index}>
               <strong>S{index}</strong><span className={styles.slotGroup}>{data.groups[STANDARD_GROUPS[index]]?.name ?? STANDARD_GROUPS[index]}</span>
-              <label>Размер<select aria-label={`standard ${index}: размер`} value={size} onChange={(event) => update((ship) => { ship.slots.standard[index] = Number(event.target.value); })}>
+              <label>{t('ofa.size')}<select aria-label={t('ofs.standardSizeAria', { index })} value={size} onChange={(event) => update((ship) => { ship.slots.standard[index] = Number(event.target.value); })}>
                 {Array.from({ length: 8 }, (_, index) => <option key={index} value={index + 1}>{index + 1}</option>)}
               </select></label>
-              <label>Заводской модуль<input aria-label={`standard ${index}: заводской модуль`} maxLength={64} value={String(draft.defaults.standard[index] ?? '')} onChange={(event) => setDefault('standard', index, event.target.value)} /></label>
+              <label>{t('ofs.factoryModule')}<input aria-label={t('ofs.standardFactoryAria', { index })} maxLength={64} value={String(draft.defaults.standard[index] ?? '')} onChange={(event) => setDefault('standard', index, event.target.value)} /></label>
             </div>)}
           </div>
           {slotList('hardpoints')}{slotList('internal')}
         </>}
-        {tab === 'json' && <><div className={styles.note}>Полная запись корпуса и слотов. ID неизменен; броню существующего корабля редактируйте в отдельной вкладке «Броня» — прямые изменения этого массива не сохраняются.</div>
-          <Field label="Данные корабля (JSON)" wide><textarea className={styles.codeInput} rows={22} spellCheck={false} value={json} onChange={(event) => { setJson(event.target.value); setError(''); }} /></Field>
+        {tab === 'json' && <><div className={styles.note}>{t('ofs.jsonNote')}</div>
+          <Field label={t('ofs.jsonLabel')} wide><textarea className={styles.codeInput} rows={22} spellCheck={false} value={json} onChange={(event) => { setJson(event.target.value); setError(''); }} /></Field>
         </>}
         </fieldset>
       </div>
       {error && <div role="alert" className={styles.formError}>{error}</div>}
-      <footer className={styles.dialogFooter}><span className={styles.helpText}>{dirty ? 'Есть несохранённые изменения' : 'Изменения появятся в верфи после сохранения'}</span>
-        <div className={styles.actions}><button type="button" disabled={busy} className={styles.secondaryButton} onClick={requestClose}>Отмена</button>
-          <button type="submit" disabled={busy} className={styles.primaryButton}><IconSave size={16} color="currentColor" />{busy ? 'Сохранение…' : 'Сохранить'}</button></div>
+      <footer className={styles.dialogFooter}><span className={styles.helpText}>{dirty ? t('ofs.dirtyNote') : t('ofs.savedNote')}</span>
+        <div className={styles.actions}><button type="button" disabled={busy} className={styles.secondaryButton} onClick={requestClose}>{t('ofa.cancel')}</button>
+          <button type="submit" disabled={busy} className={styles.primaryButton}><IconSave size={16} color="currentColor" />{busy ? t('ofs.saving') : t('ofs.save')}</button></div>
       </footer>
     </form>
   </OutfittingDialog>;
