@@ -223,7 +223,10 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
   const exportList = () => {
     if (listed.length === 0) return;
     downloadCsv(`powerplay-${new Date().toISOString().slice(0, 10)}`, [
-      ['Система', 'Держава', 'Как определена', 'Державы в системе', 'Состояние', 'X', 'Y', 'Z', 'id64', 'Наблюдение'],
+      [
+        t('csv.system'), t('csv.power'), t('csv.basis'), t('csv.powersInSystem'), t('csv.state'),
+        'X', 'Y', 'Z', 'id64', t('csv.observed'),
+      ],
       ...listed.map((system) => [
         system.name,
         powerInfo(system.power).label,
