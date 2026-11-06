@@ -78,6 +78,7 @@ import {
   POWER_STATE_HINT_KEYS,
   POWER_STATE_KEYS,
   POWER_STATE_PLURAL_KEYS,
+  gameLabel,
 } from '@/lib/i18n/gameLabels';
 
 const PAGE_SIZE = 150;
@@ -232,7 +233,7 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
         powerInfo(system.power).label,
         isUnknownPower(system.power) ? POWERPLAY_BASIS_SHORT.unknown : system.basis ? POWERPLAY_BASIS_SHORT[system.basis] : '',
         (system.candidates ?? []).map((candidate) => powerInfo(candidate).label).join('; '),
-        POWERPLAY_STATE_LABEL[system.state],
+        gameLabel(t, POWER_STATE_KEYS, system.state, POWERPLAY_STATE_LABEL[system.state]),
         system.x,
         system.y,
         system.z,

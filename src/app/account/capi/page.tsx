@@ -5,7 +5,7 @@ import { IconCheck, IconError, IconSync, IconWaiting } from '@/components/Icons'
 import { authFetch } from '@/lib/supabaseClient';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import type { TFn } from '@/lib/i18n/gameLabels';
-import { capiReasonText, describeJournalStatus } from '@/lib/capi/messages';
+import { capiJournalKey, capiReasonKeys } from '@/lib/capi/messages';
 import { NO_ENTITLEMENT_MESSAGE } from '@/lib/capi/entitlement';
 import { platformSelection } from '@/lib/capi/platform';
 
@@ -206,19 +206,19 @@ export default function CapiPage() {
       const reason = params.get('reason');
       const detail = params.get('detail');
       const cmdr = params.get('cmdr');
-      const text = capiReasonText(reason);
+      const text = capiReasonKeys(reason);
 
       if (status === 'success') {
         setNotice({
           kind: 'success',
           title: cmdr ? t('capi.linkedTitleCmdr', { cmdr }) : t('capi.linkedTitle'),
-          hint: reason ? text.hint : t('capi.linkedHint'),
+          hint: reason ? t(text.hintKey) : t('capi.linkedHint'),
         });
       } else {
         setNotice({
           kind: status === 'partial' ? 'partial' : 'error',
-          title: text.title,
-          hint: text.hint,
+          title: t(text.titleKey),
+          hint: t(text.hintKey),
           detail: detail || undefined,
         });
       }
@@ -582,7 +582,7 @@ export default function CapiPage() {
                 {syncReport.cmdrName ? `CMDR ${syncReport.cmdrName}. ` : ''}
                 {t('capi.eventsImported', { count: syncReport.eventsImported })}
                 {syncReport.eventsDuplicate ? t('capi.eventsDuplicates', { count: syncReport.eventsDuplicate }) : ''}
-                {' · '}{describeJournalStatus(syncReport.journalStatus)}
+                {' · '}{t(capiJournalKey(syncReport.journalStatus))}
                 {syncReport.durationMs != null
                   ? t('capi.durationSeconds', { seconds: Math.round(syncReport.durationMs / 100) / 10 })
                   : ''}

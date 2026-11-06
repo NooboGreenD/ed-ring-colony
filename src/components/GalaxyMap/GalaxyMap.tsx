@@ -10,6 +10,7 @@ import type { AtlasCandidate } from '@/types/atlas';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
 import { NEBULA_KIND_KEYS } from '@/lib/i18n/nebulaLabels';
+import { gameLabel, POWER_STATE_KEYS } from '@/lib/i18n/gameLabels';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
 import { useAtlasSearchProgress, useAtlasSearchResult } from '@/hooks/useAtlasSearchProgress';
@@ -1372,7 +1373,7 @@ export default function GalaxyMap({
           style={{ left: powerplayHoverAt.current.x + 14, top: powerplayHoverAt.current.y + 14 }}
         >
           <strong style={{ color: powerInfo(hoveredPowerplay.power).color }}>{hoveredPowerplay.name}</strong>
-          <span>{powerInfo(hoveredPowerplay.power).label} · {POWERPLAY_STATE_LABEL[hoveredPowerplay.state].toLowerCase()}</span>
+          <span>{powerInfo(hoveredPowerplay.power).label} · {gameLabel(t, POWER_STATE_KEYS, hoveredPowerplay.state, POWERPLAY_STATE_LABEL[hoveredPowerplay.state]).toLowerCase()}</span>
           <em>{t('gmap.clickSystemCard')}</em>
         </div>
       )}
