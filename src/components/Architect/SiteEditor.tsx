@@ -3,6 +3,7 @@
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { useMemo, useState } from 'react';
 import { BUILD_CLASS_LABELS_RU, ECONOMY_LABELS_RU, PAD_LABELS_RU, PRE_REQS, installationLinks, installationName } from '@/lib/architect/catalogue';
+import { architectLabel } from '@/lib/i18n/architectLabels';
 import { economyBodyFit } from '@/lib/architect/economy';
 import {
   canBePrimary,
@@ -182,10 +183,10 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                         <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {entry.id}</span>
                       </span>
                       <span style={{ display: 'block', color: 'var(--muted)', fontSize: 11 }}>
-                        {BUILD_CLASS_LABELS_RU[entry.buildClass]} · T{entry.tier}
+                        {architectLabel('buildClass', entry.buildClass, BUILD_CLASS_LABELS_RU[entry.buildClass], t)} · T{entry.tier}
                         {' · '}
                         {entry.location === 'surface' ? t('sed.surface') : t('sed.orbital')}
-                        {entry.pad !== 'none' ? t('sed.pad', { pad: PAD_LABELS_RU[entry.pad] }) : ''}
+                        {entry.pad !== 'none' ? t('sed.pad', { pad: architectLabel('pad', entry.pad, PAD_LABELS_RU[entry.pad], t) }) : ''}
                         {check.errors.length > 0 ? ` · ${check.errors[0]}` : ''}
                       </span>
                     </span>
@@ -207,8 +208,8 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                 <div style={{ fontSize: 12, color: 'var(--muted)' }}>
                   {installation.needs.count > 0 ? t('sed.needs', { count: installation.needs.count, tier: installation.needs.tier }) : t('sed.noPoints')}
                   {installation.gives.count > 0 ? t('sed.gives', { count: installation.gives.count, tier: installation.gives.tier }) : ''}
-                  {installation.preReq && PRE_REQS[installation.preReq] ? t('sed.predecessor', { label: PRE_REQS[installation.preReq].label }) : ''}
-                  {t('sed.economy', { label: ECONOMY_LABELS_RU[installation.influence] })}
+                  {installation.preReq && PRE_REQS[installation.preReq] ? t('sed.predecessor', { label: architectLabel('preReq', installation.preReq, PRE_REQS[installation.preReq].label, t) }) : ''}
+                  {t('sed.economy', { label: architectLabel('economy', installation.influence, ECONOMY_LABELS_RU[installation.influence], t) })}
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text)', fontFamily: 'ui-monospace, monospace' }}>
                   {formatTons(effectiveTons)}

@@ -1,5 +1,6 @@
 'use client';
 
+import { formatTranslate } from '@/lib/i18n/format';
 import { useEffect, useState } from 'react';
 import { ringBasis3D, ringHeightOffset, type XYZ } from '@/lib/atlasRingGeometry';
 import { publishAtlasRingPreview } from '@/lib/atlasRingPreview';
@@ -30,16 +31,16 @@ export function useAtlasRingPreview(startSystem: string, centerSystem: string, r
         const params = new URLSearchParams({ start_system: start, center_system: center });
         const response = await fetch(`/api/atlas/ring-route/preview?${params}`, { signal: controller.signal });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Не удалось загрузить координаты кольца');
+        if (!response.ok) throw new Error(data.error || formatTranslate('arp.loadFailed'));
         if (![data.start, data.center].every(point => point && [point.x, point.y, point.z].every(Number.isFinite))) {
-          throw new Error('Координаты кольца недоступны');
+          throw new Error(formatTranslate('arp.noCoords'));
         }
         if (controller.signal.aborted) return;
         coordinatesCache.set(key, data);
         setResolved({ key, coordinates: data });
         setFailure(null);
       } catch (error) {
-        if (!controller.signal.aborted) setFailure({ key, message: error instanceof Error ? error.message : 'Превью недоступно' });
+        if (!controller.signal.aborted) setFailure({ key, message: error instanceof Error ? error.message : formatTranslate('arp.unavailable') });
       }
     }, 350);
     return () => { clearTimeout(timer); controller.abort(); };
@@ -63,11 +64,13 @@ export function useAtlasRingPreview(startSystem: string, centerSystem: string, r
   }, [enabled, sx, sy, sz, cx, cy, cz, radius, height, tilt, axis]);
 
   if (!enabled) return '';
-  if (!start) return 'Укажите начальную систему для предварительного контура.';
-  if (failure?.key === key && !coordinates) return `Предварительный контур: ${failure.message}`;
+  if (!start) return formatTranslate('arp.pickStart');
+  if (failure?.key === key && !coordinates) return formatTranslate('arp.failure', { message: failure.message });
   const effectiveHeight = cy === undefined ? height : ringHeightOffset(cy, radius, tilt, height);
   const tooTall = radius * Math.abs(Math.sin(tilt * Math.PI / 180)) > 6000;
   return coordinates
-    ? `Контур на карте · наклон ${tilt}° · ось ${axis}°.${Math.abs(effectiveHeight - height) > 0.5 ? ` Высота центра скорректирована до ${Math.round(effectiveHeight)} св.л.` : ''}${tooTall ? ' Кольцо шире диска ±6000 св.л.; полностью уместить его нельзя. Уменьшите радиус или наклон.' : ''}`
-    : 'Загрузка координат для предварительного контура…';
+    ? formatTranslate('arp.ready', { tilt, axis })
+      + (Math.abs(effectiveHeight - height) > 0.5 ? formatTranslate('arp.heightAdjusted', { value: Math.round(effectiveHeight) }) : '')
+      + (tooTall ? formatTranslate('arp.tooTall') : '')
+    : formatTranslate('arp.loading');
 }

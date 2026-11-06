@@ -65,6 +65,7 @@ import {
   updateSite,
 } from '@/lib/architect/planner';
 import type { ArchitectBody, ArchitectPlan, PlannedSite, PlannedSiteStatus } from '@/lib/architect/types';
+import { architectLabel } from '@/lib/i18n/architectLabels';
 
 const SystemOrrery3D = dynamic(() => import('@/components/SystemMap/SystemOrrery3D'), { ssr: false });
 
@@ -1325,7 +1326,7 @@ function BodyCard({
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
               {t('arch.boostsEconomies')}{' '}
               <span style={{ color: 'var(--green)' }}>
-                {boostedEconomies.map((economy) => ECONOMY_LABELS_RU[economy]).join(', ')}
+                {boostedEconomies.map((economy) => architectLabel('economy', economy, ECONOMY_LABELS_RU[economy], t)).join(', ')}
               </span>
             </div>
           )}
@@ -1516,7 +1517,7 @@ function SiteRow({
             title={t('arch.economyAddsTitle')}
             style={{ ...chipStyle, padding: '1px 5px', color: installation.influence === 'none' ? 'var(--muted)' : 'var(--cyan)' }}
           >
-            {ECONOMY_LABELS_RU[installation.influence]}
+            {architectLabel('economy', installation.influence, ECONOMY_LABELS_RU[installation.influence], t)}
           </span>
           {economyFit && economyFit.level !== 'neutral' && (
             <span

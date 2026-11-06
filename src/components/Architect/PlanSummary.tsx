@@ -153,7 +153,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
               <span style={{ color: 'var(--muted)', fontSize: 12 }}> — {primaryPort.bodyName}</span>
             </div>
             <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
-              {t('psm.economyOf')} {ECONOMY_LABELS_RU[primaryPort.economy] ?? primaryPort.economy}
+              {t('psm.economyOf')} {architectLabel('economy', primaryPort.economy, ECONOMY_LABELS_RU[primaryPort.economy] ?? primaryPort.economy, t)}
               {' · '}
               {t('psm.materials')} {primaryPort.approximate ? '≈ ' : ''}{formatTons(primaryPort.tons)}
               {' · '}{t('psm.noSystemPoints')}
@@ -279,7 +279,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)' }}>
             {t('psm.economies')}{' '}
             {Object.entries(evaluation.economies)
-              .map(([economy, count]) => `${ECONOMY_LABELS_RU[economy as keyof typeof ECONOMY_LABELS_RU] ?? economy} ×${count}`)
+              .map(([economy, count]) => `${architectLabel('economy', economy, ECONOMY_LABELS_RU[economy as keyof typeof ECONOMY_LABELS_RU] ?? economy, t)} ×${count}`)
               .join(', ')}
           </div>
         )}
@@ -298,7 +298,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
               return (
                 <div key={economy} style={{ borderLeft: '2px solid var(--line)', paddingLeft: 10 }}>
                   <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600 }}>
-                    {ECONOMY_LABELS_RU[economy]} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>×{count}</span>
+                    {architectLabel('economy', economy, ECONOMY_LABELS_RU[economy], t)} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>×{count}</span>
                   </div>
                   {market.produces.length > 0 && (
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
@@ -404,7 +404,7 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                     const affinity = ECONOMY_AFFINITY[economy];
                     return (
                       <tr key={economy} style={{ borderTop: '1px solid var(--line)' }}>
-                        <td style={{ ...refCell, color: 'var(--text)' }}>{ECONOMY_LABELS_RU[economy]}</td>
+                        <td style={{ ...refCell, color: 'var(--text)' }}>{architectLabel('economy', economy, ECONOMY_LABELS_RU[economy], t)}</td>
                         <td style={{ ...refCell, color: 'var(--muted)' }}>
                           {affinity.boost.length > 0
                             ? affinity.boost.map((trait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')

@@ -382,7 +382,7 @@ function NebulaLabels({
   selectedName: string | null;
 }) {
 
-  const { t } = useI18n();  return (
+  const { t, locale } = useI18n();  return (
     <group>
       {MAJOR_NEBULAE.map((nebula) => {
         const position = eliteToThreeCentered(nebula);
@@ -420,7 +420,7 @@ function NebulaLabels({
                 opacity: active ? 1 : 0.8,
               }}
             >
-              {nebula.ru}
+              {locale === 'ru' ? nebula.ru : nebula.name}
             </button>
           </Html>
         );
