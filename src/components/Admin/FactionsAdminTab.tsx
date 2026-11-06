@@ -5,7 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { authFetch } from '@/lib/supabaseClient';
 import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconRefresh, IconShieldHalf, IconTrash, IconXCircle } from '@/components/Icons';
 import ArchiveUploadControl from '@/components/Admin/ArchiveUploadControl';
-import { BGS_ALLEGIANCE_COLOR, BGS_SOURCE_LABEL, allegianceLabel, formatBgsDate, normalizeSource } from '@/lib/bgs';
+import { BGS_ALLEGIANCE_COLOR, BGS_SOURCE_LABEL, allegianceLabel, normalizeSource } from '@/lib/bgs';
+import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
 import {
   BGS_MODE_LABEL,
   BGS_PHASE_LABEL,
@@ -170,53 +171,81 @@ const STAGE_COLORS: Record<BgsStageProgress['status'], string> = {
 const SEGMENT_CHOICES = [1, 2, 4, 6, 8, 12, 16];
 
 const RUNNING_PILL: Record<RunMode, string> = {
-  full: 'идёт загрузка дампа',
-  download: 'идёт скачивание архива на сервер',
-  split: 'идёт разбивка архива на куски',
-  import: 'идёт запись кусков в базу',
+  full: 'bgsAdmin.runFull',
+  download: 'bgsAdmin.runDownload',
+  split: 'bgsAdmin.runSplit',
+  import: 'bgsAdmin.runImport',
 };
 
 const SCHEDULE_REASON: Record<string, string> = {
-  running: 'импорт уже идёт',
-  running_elsewhere: 'импорт идёт в другом процессе',
-  not_initialized: 'первый импорт ещё не делали — задача ждёт его из админки',
-  fresh: 'данные свежие',
-  stale: 'данные устарели — задача обновит их',
-  interrupted: 'прошлый импорт оборвался — задача продолжит его',
-  forced: 'принудительно',
+  running: 'bgsAdmin.schedRunning',
+  running_elsewhere: 'bgsAdmin.schedRunningElsewhere',
+  not_initialized: 'bgsAdmin.schedNotInitialized',
+  fresh: 'bgsAdmin.schedFresh',
+  stale: 'bgsAdmin.schedStale',
+  interrupted: 'bgsAdmin.schedInterrupted',
+  forced: 'bgsAdmin.schedForced',
 };
 
-function formatTime(value: string | null | undefined): string {
+function formatTime(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const at = Date.parse(value);
-  return Number.isFinite(at) ? new Date(at).toLocaleString('ru-RU') : value;
+  return Number.isFinite(at) ? new Date(at).toLocaleString(locale) : value;
 }
 
-function formatClock(value: string): string {
+function formatClock(value: string, locale: string): string {
   const at = Date.parse(value);
-  return Number.isFinite(at) ? new Date(at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+  return Number.isFinite(at) ? new Date(at).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
 }
 
-function formatUtc(value: string | null | undefined): string {
+function formatUtc(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const at = Date.parse(value);
   if (!Number.isFinite(at)) return value;
   const date = new Date(at);
-  return `${formatTime(value)} (${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')} UTC)`;
+  return `${formatTime(value, locale)} (${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')} UTC)`;
 }
 
-function stageStatusLabel(stage: BgsStageProgress, phase: BgsSyncProgress['phase']): string {
+type TFn = (key: string, params?: TranslationParams) => string;
+
+function formatBytes(bytes: number | null | undefined, t: TFn): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return '—';
+  const units = [t('mon.unitB'), t('mon.unitKB'), t('mon.unitMB'), t('mon.unitGB'), t('mon.unitTB')];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
+function formatDuration(ms: number | null | undefined, t: TFn): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  const total = Math.round(ms / 1000);
+  if (total < 60) return `${total} ${t('mon.unitSecond')}`;
+  const minutes = Math.floor(total / 60);
+  return `${minutes} ${t('mon.unitMinute')} ${String(total % 60).padStart(2, '0')} ${t('mon.unitSecond')}`;
+}
+
+function formatDate(value: string | number | null | undefined, locale: string): string {
+  const ms = typeof value === 'number' ? value : value ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toLocaleDateString(locale) : '—';
+}
+
+function stageStatusLabel(stage: BgsStageProgress, phase: BgsSyncProgress['phase'], t: TFn): string {
   switch (stage.status) {
     case 'running':
-      return 'идёт';
+      return t('bgsAdmin.stageRunning');
     case 'done':
-      return 'готово';
+      return t('bgsAdmin.stageDone');
     case 'skipped':
-      return 'не нужен';
+      return t('bgsAdmin.stageSkipped');
     case 'error':
-      return phase === 'cancelled' ? 'остановлен' : 'ошибка';
+      return phase === 'cancelled' ? t('bgsAdmin.stageCancelled') : t('bgsAdmin.stageError');
     default:
-      return 'ждёт';
+      return t('bgsAdmin.stageWaiting');
   }
 }
 
@@ -227,14 +256,14 @@ function stageDuration(stage: BgsStageProgress, serverNow: number): string {
   return Number.isFinite(start) && Number.isFinite(end) ? formatBgsDuration(Math.max(0, end - start)) : '';
 }
 
-function phasePill(status: AdminStatus | null): { text: string; color: string } {
-  if (!status) return { text: 'загрузка…', color: MUTED };
-  if (status.running) return { text: RUNNING_PILL[status.mode ?? 'full'] ?? RUNNING_PILL.full, color: RUN };
-  if (status.interrupted) return { text: 'загрузка прервана перезапуском сайта', color: '#e67e22' };
+function phasePill(status: AdminStatus | null, t: TFn): { text: string; color: string } {
+  if (!status) return { text: t('bgsAdmin.pillLoading'), color: MUTED };
+  if (status.running) return { text: t(RUNNING_PILL[status.mode ?? 'full'] ?? RUNNING_PILL.full), color: RUN };
+  if (status.interrupted) return { text: t('bgsAdmin.pillInterrupted'), color: '#e67e22' };
   const systems = status.summary?.systems ?? status.state.systems_total;
-  if (status.state.status === 'error') return { text: systems > 0 ? 'ошибка последней загрузки' : 'ошибка — данных нет', color: '#ef4444' };
-  if (systems > 0) return { text: 'данные загружены', color: '#22c55e' };
-  return { text: 'данных нет', color: MUTED };
+  if (status.state.status === 'error') return { text: systems > 0 ? t('bgsAdmin.pillLastError') : t('bgsAdmin.pillNoDataError'), color: '#ef4444' };
+  if (systems > 0) return { text: t('bgsAdmin.pillLoaded'), color: '#22c55e' };
+  return { text: t('bgsAdmin.pillNoData'), color: MUTED };
 }
 
 function ProgressBar({ fraction, color, height = 8, indeterminate = false, label }: { fraction: number; color: string; height?: number; indeterminate?: boolean; label?: string }) {
@@ -272,6 +301,7 @@ function Stat({ label, value, color, small = false, title }: { label: string; va
 }
 
 export default function FactionsAdminTab() {
+  const { t, locale } = useI18n();
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -322,7 +352,7 @@ export default function FactionsAdminTab() {
   const connections = segments ?? status?.config.segments ?? 8;
 
   const act = async (action: Action) => {
-    if (action === 'cleanup' && !window.confirm('Удалить архив дампа и куски с сервера? Следующая загрузка скачает дамп заново.')) return;
+    if (action === 'cleanup' && !window.confirm(t('bgsAdmin.confirmCleanup'))) return;
     setBusy(action);
     setMessage('');
     setIsError(false);
@@ -337,29 +367,27 @@ export default function FactionsAdminTab() {
       });
       const payload = await response.json().catch(() => null);
       if (response.status === 409) {
-        setMessage(payload?.reason || 'Импорт уже идёт');
+        setMessage(payload?.reason || t('bgsAdmin.msgImportRunning'));
       } else if (!response.ok || payload?.success === false) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       } else if (action === 'cancel') {
-        setMessage(payload?.cancelled
-          ? 'Останавливаю… Скачанное и разбитое останется на сервере — следующий запуск продолжит с того же места.'
-          : 'Импорт не выполнялся');
+        setMessage(payload?.cancelled ? t('bgsAdmin.cancelStopping') : t('bgsAdmin.cancelNotRun'));
       } else if (action === 'cleanup') {
         setMessage(payload?.removed
-          ? `Архив и куски удалены с сервера — освобождено ${formatBgsBytes(payload?.freed)}`
-          : 'На сервере нет ни архива, ни кусков');
+          ? t('bgsAdmin.cleanupRemoved', { size: formatBytes(payload?.freed ?? 0, t) })
+          : t('bgsAdmin.cleanupNothing'));
       } else if (action === 'download') {
-        setMessage(`Архив скачивается на сервер в ${connections} соедин. Страницу можно закрыть: при обрыве или перезапуске скачивание продолжится с того же места.`);
+        setMessage(t('bgsAdmin.downloadStarted', { connections }));
       } else if (action === 'split') {
-        setMessage('Разбивка архива на куски запущена — она не обращается к EDSM.');
+        setMessage(t('bgsAdmin.splitStarted'));
       } else if (action === 'import') {
-        setMessage('Запись в базу запущена: то, что уже на сервере, без обращения к EDSM.');
+        setMessage(t('bgsAdmin.importStarted'));
       } else {
         setMessage(force
-          ? 'Загрузка запущена принудительно: дамп загружается, даже если он тот же, и принимается, даже если он заметно меньше прошлого.'
+          ? t('bgsAdmin.startForced')
           : status?.archive.uploaded && status.archive.complete
-            ? 'Загрузка запущена: архив, загруженный с компьютера, разбивается на куски, затем куски пишутся в базу — без EDSM.'
-            : `Загрузка запущена: архив целиком скачивается на сервер (${connections} соедин.), затем разбивается на куски, затем куски пишутся в базу. Если дамп тот же, что в прошлый раз, загрузка закончится сразу.`);
+            ? t('bgsAdmin.startUploaded')
+            : t('bgsAdmin.startDownload', { connections }));
       }
       stickToBottom.current = true;
       await load();
@@ -383,7 +411,7 @@ export default function FactionsAdminTab() {
     }
   };
 
-  const pill = phasePill(status);
+  const pill = phasePill(status, t);
   const progress = status?.progress ?? null;
   const serverNow = status ? Date.parse(status.serverTime) || Date.now() : Date.now();
   const elapsed = progress ? Math.max(0, (progress.finishedAt ? Date.parse(progress.finishedAt) : serverNow) - Date.parse(progress.startedAt)) : 0;
@@ -416,11 +444,11 @@ export default function FactionsAdminTab() {
       <style>{'@keyframes bgs-admin-indeterminate { 0% { left: -30%; } 100% { left: 100%; } }'}</style>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <IconShieldHalf size={16} color={ACCENT} /> Минорные фракции (BGS)
+          <IconShieldHalf size={16} color={ACCENT} /> {t('bgsAdmin.header')}
         </h3>
         <span style={{ fontSize: 12, color: pill.color }} data-bgs-admin-pill="">● {pill.text}</span>
         <button type="button" className="btn" style={{ fontSize: 12, padding: '3px 8px' }} onClick={() => void load()}>
-          <IconRefresh size={12} color="#9ca3af" /> Обновить
+          <IconRefresh size={12} color="#9ca3af" /> {t('bgsAdmin.refresh')}
         </button>
       </div>
 
@@ -432,48 +460,44 @@ export default function FactionsAdminTab() {
 
       {/* ── Что в базе ── */}
       <div style={cardStyle} data-bgs-admin-data="">
-        <div style={labelStyle}>Данные в базе проекта</div>
+        <div style={labelStyle}>{t('bgsAdmin.dataTitle')}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
-          <Stat label="Населённых систем" value={formatBgsCount(systems)} color={systems > 0 ? '#22c55e' : MUTED} />
-          <Stat label="Фракций" value={summary ? formatBgsCount(summary.factions) : '—'} title={summary ? `из них фракций игроков (PMF): ${summary.playerFactions}` : undefined} />
-          <Stat label="Присутствий" value={summary ? formatBgsCount(summary.presence) : '—'} title="Пар «система — фракция»" />
-          <Stat label="Обновлено за 7 дней" value={summary ? formatBgsCount(summary.fresh7d) : '—'} title="Систем с наблюдением не старше недели" />
-          <Stat label="Дамп EDSM от" value={formatTime(status?.state.dump_generated_at)} small />
-          <Stat label="Импорт записан" value={formatTime(status?.state.synced_at)} small />
+          <Stat label={t('bgsAdmin.statSystems')} value={formatBgsCount(systems)} color={systems > 0 ? '#22c55e' : MUTED} />
+          <Stat label={t('bgsAdmin.statFactions')} value={summary ? formatBgsCount(summary.factions) : '—'} title={summary ? t('bgsAdmin.statFactionsTitle', { count: summary.playerFactions }) : undefined} />
+          <Stat label={t('bgsAdmin.statPresence')} value={summary ? formatBgsCount(summary.presence) : '—'} title={t('bgsAdmin.statPresenceTitle')} />
+          <Stat label={t('bgsAdmin.statFresh')} value={summary ? formatBgsCount(summary.fresh7d) : '—'} title={t('bgsAdmin.statFreshTitle')} />
+          <Stat label={t('bgsAdmin.statDump')} value={formatTime(status?.state.dump_generated_at, locale)} small />
+          <Stat label={t('bgsAdmin.statWritten')} value={formatTime(status?.state.synced_at, locale)} small />
         </div>
         {summary && systems > 0 && (
           <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
-            Источник последнего наблюдения:{' '}
+            {t('bgsAdmin.sourceLast')}{' '}
             {Object.entries(summary.sources).map(([source, n], index) => (
               <span key={source}>{index > 0 ? ' · ' : ''}{BGS_SOURCE_LABEL[normalizeSource(source)]} {formatBgsCount(n)}</span>
             ))}
             {summary.oldestObservation && summary.newestObservation && (
-              <> · наблюдения {formatBgsDate(summary.oldestObservation)} – {formatBgsDate(summary.newestObservation)}</>
+              <>{t('bgsAdmin.sourceObservations', { from: formatDate(summary.oldestObservation, locale), to: formatDate(summary.newestObservation, locale) })}</>
             )}
           </div>
         )}
         {status && systems === 0 && !running && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 13, color: '#fbbf24', marginBottom: 8 }}>
             <IconAlert size={14} color="#fbbf24" />
-            <span>
-              Данных о фракциях в базе нет — вкладка «Фракции» в Atlas пуста. Нажмите «Загрузить данные» ниже: дамп EDSM весит
-              ≈0,5 ГБ, ход скачивания и записи виден по этапам и в журнале. Колонии и системы, где побывали пилоты с Colonial
-              Helper, появятся и без него.
-            </span>
+            <span>{t('bgsAdmin.emptyNoData')}</span>
           </div>
         )}
         {status?.state.status === 'error' && status.state.error && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 13, color: '#ef4444', marginBottom: 8 }} data-bgs-admin-error="">
             <IconXCircle size={14} color="#ef4444" />
             <span>
-              Последняя загрузка не удалась: {status.state.error}
-              {systems > 0 ? ' — на карте остались прежние данные.' : ''}
+              {t('bgsAdmin.errorLast', { error: status.state.error })}
+              {systems > 0 ? t('bgsAdmin.errorPrevKept') : ''}
             </span>
           </div>
         )}
         {status?.summaryError && <div style={{ fontSize: 12, color: '#e67e22', marginBottom: 8 }}>{status.summaryError}</div>}
         {allegiances.length > 0 && (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }} aria-label="Системы по принадлежности">
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }} aria-label={t('bgsAdmin.tableAllegiance')}>
             <tbody>
               {allegiances.map(([allegiance, n]) => {
                 const color = BGS_ALLEGIANCE_COLOR[allegiance as keyof typeof BGS_ALLEGIANCE_COLOR] ?? DIM;
@@ -697,7 +721,7 @@ export default function FactionsAdminTab() {
                 {' · '}{progress.percent.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} %
               </span>
               <span>
-                <IconClock size={11} /> {formatBgsDuration(elapsed)} · {formatTime(progress.startedAt)}
+                <IconClock size={11} /> {formatBgsDuration(elapsed)} · {formatTime(progress.startedAt, locale)}
               </span>
             </div>
             <ProgressBar
@@ -731,11 +755,11 @@ export default function FactionsAdminTab() {
                         style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                         title={stage.detail || undefined}
                       >
-                        {stage.detail || stageStatusLabel(stage, progress.phase)}
+                        {stage.detail || stageStatusLabel(stage, progress.phase, t)}
                       </span>
                     </span>
                     <span style={{ fontSize: 11, color: DIM, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                      {stageStatusLabel(stage, progress.phase)}
+                      {stageStatusLabel(stage, progress.phase, t)}
                       {stageDuration(stage, serverNow) ? <><br />{stageDuration(stage, serverNow)}</> : null}
                     </span>
                   </li>
@@ -810,10 +834,10 @@ export default function FactionsAdminTab() {
           выполняется.
           <br />
           Автоматически: задача <code>factions-sync</code> раз в сутки
-          {status?.config.nextScheduledRun ? <> (ближайший запуск — {formatUtc(status.config.nextScheduledRun)})</> : null} обновляет
+          {status?.config.nextScheduledRun ? <> (ближайший запуск — {formatUtc(status.config.nextScheduledRun, locale)})</> : null} обновляет
           данные старше {status?.config.refreshDays ?? 7} дн. (<code>FACTIONS_REFRESH_DAYS</code>) и продолжает оборванный импорт;
           первый импорт — только отсюда.
-          {decision ? <> Сейчас задача: <strong style={{ color: TEXT }}>{SCHEDULE_REASON[decision.reason] ?? decision.reason}</strong>.</> : null}
+          {decision ? <> Сейчас задача: <strong style={{ color: TEXT }}>{SCHEDULE_REASON[decision.reason] ? t(SCHEDULE_REASON[decision.reason]) : decision.reason}</strong>.</> : null}
         </div>
       </div>
 
@@ -825,7 +849,7 @@ export default function FactionsAdminTab() {
           <Stat label="Систем обновлено за 24 ч" value={summary ? formatBgsCount(summary.applied24h) : '—'} />
           <Stat label="Систем за 7 дней" value={summary ? formatBgsCount(summary.applied7d) : '—'} />
           <Stat label="Пилотов за 7 дней" value={summary ? formatBgsCount(summary.reporters7d) : '—'} />
-          <Stat label="Последнее обновление" value={formatTime(summary?.lastUpdate)} small />
+          <Stat label="Последнее обновление" value={formatTime(summary?.lastUpdate, locale)} small />
         </div>
         {status?.updates.length ? (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }} aria-label="Последние обновления от пилотов">
@@ -841,7 +865,7 @@ export default function FactionsAdminTab() {
             <tbody>
               {status.updates.map((row, index) => (
                 <tr key={`${row.received_at}-${index}`} data-bgs-admin-update={row.source} style={{ borderTop: '1px solid #24272a' }}>
-                  <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{formatTime(row.received_at)}</td>
+                  <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{formatTime(row.received_at, locale)}</td>
                   <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{BGS_SOURCE_LABEL[normalizeSource(row.source)]}</td>
                   <td style={{ padding: '4px 6px', color: TEXT }}>{row.cmdr ?? '—'}</td>
                   <td style={{ padding: '4px 6px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }} title="пришло / применено / устарело / новых">
@@ -904,7 +928,7 @@ export default function FactionsAdminTab() {
                   marginTop: /^Запуск( импорта)?:/.test(line.text) && index > 0 ? 4 : undefined,
                 }}
               >
-                <span style={{ color: DIM }}>{formatClock(line.at)}</span> {line.text}
+                <span style={{ color: DIM }}>{formatClock(line.at, locale)}</span> {line.text}
               </div>
             ))}
           </pre>
