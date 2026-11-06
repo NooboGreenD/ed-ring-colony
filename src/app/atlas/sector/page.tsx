@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import regionPack from '@/lib/galacticRegions.json';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   IconAtlas,
   IconSearch,
@@ -27,6 +28,7 @@ interface RawRegion {
 const RAW_REGIONS: RawRegion[] = (regionPack as any).regions;
 
 export default function GalacticSectorsIndexPage() {
+  const { t, locale } = useI18n();
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState<'all' | 'sol' | 'core' | 'arms' | 'rim'>('all');
   const [sortBy, setSortBy] = useState<'id' | 'name' | 'distSol' | 'distSgrA'>('id');
@@ -153,12 +155,12 @@ export default function GalacticSectorsIndexPage() {
         <div className="sector-breadcrumbs">
           <Link href="/atlas">ATLAS</Link>
           <span className="sep">//</span>
-          <span className="current">РЕЕСТР ГАЛАКТИЧЕСКИХ СЕКТОРОВ</span>
+          <span className="current">{t('asec.breadcrumb')}</span>
         </div>
 
         <div className="sector-toolbar-actions">
           <Link href="/atlas" className="btn btn-orange" style={{ padding: '6px 14px', fontSize: 11 }}>
-            <IconAtlas size={12} /> 3D КАРТА ATLAS
+            <IconAtlas size={12} /> {t('asec.atlas3d')}
           </Link>
         </div>
       </div>
@@ -170,19 +172,17 @@ export default function GalacticSectorsIndexPage() {
 
         <div className="sector-tag-row">
           <span className="sector-badge">
-            <IconTarget size={12} /> CODEX REGIONS // 42 СЕКТОРА
+            <IconTarget size={12} /> {t('asec.badge')}
           </span>
           <span className="sector-status-pill">
             <span className="dot" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--green)' }} />
-            КАРТОГРАФИРОВАНИЕ АКТИВНО
+            {t('asec.statusActive')}
           </span>
         </div>
 
-        <h1 className="sector-title">ГАЛАКТИЧЕСКИЕ СЕКТОРЫ</h1>
+        <h1 className="sector-title">{t('asec.title')}</h1>
         <p className="sector-subtitle">
-          Официальный реестр 42 секторов Млечного Пути из базы Codex Elite Dangerous.
-          Каждый сектор содержит полигональные границы квантованной сетки, пространственные координаты,
-          удаление от центра ядра (Sagittarius A*) и Солнечной системы (Sol).
+          {t('asec.subtitle')}
         </p>
       </div>
 
@@ -190,19 +190,19 @@ export default function GalacticSectorsIndexPage() {
       <div className="stat-grid">
         <div className="stat-box">
           <div className="num">42</div>
-          <div className="lbl">Секторов в реестре</div>
+          <div className="lbl">{t('asec.statRegistry')}</div>
         </div>
         <div className="stat-box">
           <div className="num">~100 000</div>
-          <div className="lbl">Диаметр охвата (св. л.)</div>
+          <div className="lbl">{t('asec.statDiameter')}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: 'var(--cyan)' }}>SEC-18</div>
-          <div className="lbl">Сектор Sol (Orion Spur)</div>
+          <div className="lbl">{t('asec.statSol')}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: '#ffd700' }}>SEC-01</div>
-          <div className="lbl">Галактический Центр</div>
+          <div className="lbl">{t('asec.statCore')}</div>
         </div>
       </div>
 
@@ -216,8 +216,8 @@ export default function GalacticSectorsIndexPage() {
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по названию или номеру (Orion, 18, Core) — клавиша /"
-              aria-label="Поиск секторов галактики"
+              placeholder={t('asec.searchPlaceholder')}
+              aria-label={t('asec.searchAria')}
               style={{ width: '100%', margin: 0, paddingLeft: 36 }}
             />
             <span style={{ position: 'absolute', left: 12, top: 12, color: 'var(--muted)' }}>
@@ -247,7 +247,7 @@ export default function GalacticSectorsIndexPage() {
           {/* Sort selector */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--muted)', letterSpacing: 1, textTransform: 'uppercase' }}>
-              СОРТИРОВКА:
+              {t('asec.sortLabel')}
             </span>
             <select
               value={sortBy}
@@ -255,10 +255,10 @@ export default function GalacticSectorsIndexPage() {
               className="inline-select"
               style={{ margin: 0, padding: '6px 10px', fontSize: 12 }}
             >
-              <option value="id">По номеру ID (1..42)</option>
-              <option value="name">По алфавиту (A..Z)</option>
-              <option value="distSol">Ближе к Sol</option>
-              <option value="distSgrA">Ближе к Sagittarius A*</option>
+              <option value="id">{t('asec.sortId')}</option>
+              <option value="name">{t('asec.sortName')}</option>
+              <option value="distSol">{t('asec.sortSol')}</option>
+              <option value="distSgrA">{t('asec.sortSgrA')}</option>
             </select>
           </div>
         </div>
@@ -270,35 +270,35 @@ export default function GalacticSectorsIndexPage() {
             className={`filter-pill ${filterCategory === 'all' ? 'active' : ''}`}
             onClick={() => setFilterCategory('all')}
           >
-            Все секторы <span className="count">{categoryCounts.all}</span>
+            {t('asec.filterAll')} <span className="count">{categoryCounts.all}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'sol' ? 'active' : ''}`}
             onClick={() => setFilterCategory('sol')}
           >
-            Около Sol (&lt; 15k LY) <span className="count">{categoryCounts.sol}</span>
+            {t('asec.filterSol')} <span className="count">{categoryCounts.sol}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'core' ? 'active' : ''}`}
             onClick={() => setFilterCategory('core')}
           >
-            Галактическое Ядро <span className="count">{categoryCounts.core}</span>
+            {t('asec.filterCore')} <span className="count">{categoryCounts.core}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'arms' ? 'active' : ''}`}
             onClick={() => setFilterCategory('arms')}
           >
-            Спиральные рукава <span className="count">{categoryCounts.arms}</span>
+            {t('asec.filterArms')} <span className="count">{categoryCounts.arms}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'rim' ? 'active' : ''}`}
             onClick={() => setFilterCategory('rim')}
           >
-            Внешний Рубеж (&gt; 45k LY) <span className="count">{categoryCounts.rim}</span>
+            {t('asec.filterRim')} <span className="count">{categoryCounts.rim}</span>
           </button>
         </div>
       </div>
@@ -308,14 +308,14 @@ export default function GalacticSectorsIndexPage() {
         aria-live="polite"
         style={{ marginBottom: 14, fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--muted)', letterSpacing: 1, textTransform: 'uppercase' }}
       >
-        НАЙДЕНО СЕКТОРОВ: <span style={{ color: 'var(--orange)', fontWeight: 'bold' }}>{filteredSectors.length}</span> ИЗ {sectors.length}
+        {t('asec.found', { found: filteredSectors.length, total: sectors.length })}
       </div>
 
       {filteredSectors.length === 0 && (
         <div className="card" style={{ padding: 28, textAlign: 'center' }} role="status">
-          <p style={{ color: 'var(--text)', fontSize: 14, marginBottom: 6 }}>Секторы не найдены</p>
+          <p style={{ color: 'var(--text)', fontSize: 14, marginBottom: 6 }}>{t('asec.emptyTitle')}</p>
           <p className="atlas-muted" style={{ marginBottom: 14 }}>
-            Запрос «{search.trim()}» не совпал ни с названием, ни с номером сектора.
+            {t('asec.emptyBody', { query: search.trim() })}
           </p>
           <button
             type="button"
@@ -325,7 +325,7 @@ export default function GalacticSectorsIndexPage() {
               setFilterCategory('all');
             }}
           >
-            Сбросить фильтры
+            {t('asec.resetFilters')}
           </button>
         </div>
       )}
@@ -377,25 +377,25 @@ export default function GalacticSectorsIndexPage() {
             {/* Telemetry metadata */}
             <div className="sector-catalog-meta">
               <div className="sector-catalog-meta-row">
-                <span>Центр (X / Z):</span>
+                <span>{t('asec.centerXz')}</span>
                 <span>{sector.centerX} / {sector.centerZ} LY</span>
               </div>
               <div className="sector-catalog-meta-row">
-                <span>Дистанция до Sol:</span>
-                <span style={{ color: 'var(--cyan)' }}>{sector.distToSol.toLocaleString('ru-RU')} LY</span>
+                <span>{t('asec.distSol')}</span>
+                <span style={{ color: 'var(--cyan)' }}>{sector.distToSol.toLocaleString(locale)} LY</span>
               </div>
               <div className="sector-catalog-meta-row">
-                <span>Дистанция до Sgr A*:</span>
-                <span style={{ color: 'var(--orange)' }}>{sector.distToSgrA.toLocaleString('ru-RU')} LY</span>
+                <span>{t('asec.distSgrA')}</span>
+                <span style={{ color: 'var(--orange)' }}>{sector.distToSgrA.toLocaleString(locale)} LY</span>
               </div>
               <div className="sector-catalog-meta-row">
-                <span>Габариты региона:</span>
-                <span>{sector.width.toLocaleString('ru-RU')} × {sector.length.toLocaleString('ru-RU')} LY</span>
+                <span>{t('asec.regionSize')}</span>
+                <span>{sector.width.toLocaleString(locale)} × {sector.length.toLocaleString(locale)} LY</span>
               </div>
             </div>
 
             <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: 'var(--orange)', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 1 }}>
-              <span>ОБЗОР СЕКТОРА</span>
+              <span>{t('asec.overview')}</span>
               <IconArrowRight size={12} />
             </div>
           </Link>
