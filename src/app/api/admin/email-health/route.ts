@@ -96,21 +96,21 @@ export async function GET(req: Request) {
       checks.push({
         id: 'site-gateway',
         ok: true,
-        title: 'Публичный шлюз Supabase',
-        detail: `Браузер использует ${publicUrl}; web обращается к GoTrue по приватному адресу ${url}.`,
+        title: t('mail.titleGateway'),
+        detail: t('mail.gatewayDetail', { publicUrl, url }),
       });
     }
 
     checks.push({
       id: 'site-flag',
       ok: emailEnabled,
-      title: 'AUTH_EMAIL_ENABLED на сайте',
+      title: t('mail.titleSiteFlag'),
       detail: emailEnabled
-        ? 'Сайт разрешает регистрацию и восстановление по почте.'
-        : 'Сайт отвечает «Отправка писем временно недоступна»: переменная не равна true.',
+        ? t('mail.siteFlagOn')
+        : t('mail.siteFlagOff'),
       fix: emailEnabled
         ? undefined
-        : 'Включите галочку «формы регистрации/восстановления на сайте» ниже и нажмите «Применить и перезапустить» — панель запишет AUTH_EMAIL_ENABLED=true и пересоздаст web. Вручную: AUTH_EMAIL_ENABLED=true в .env.production сайта, затем перезапуск web.',
+        : t('mail.siteFlagFix'),
       action: emailEnabled ? undefined : 'enable-site-forms',
     });
 
@@ -118,8 +118,8 @@ export async function GET(req: Request) {
       id: 'anon-key',
       ok: Boolean(key),
       title: 'NEXT_PUBLIC_SUPABASE_ANON_KEY',
-      detail: key ? 'Ключ задан.' : 'Ключ не задан — сайт не может обратиться к GoTrue.',
-      fix: key ? undefined : 'Добавьте NEXT_PUBLIC_SUPABASE_ANON_KEY в окружение web.',
+      detail: key ? t('mail.keySet') : t('mail.keyMissing'),
+      fix: key ? undefined : t('mail.keyFix'),
     });
 
     const probe = key ? await probeGoTrue(url, key) : null;
@@ -127,16 +127,16 @@ export async function GET(req: Request) {
     checks.push({
       id: 'gotrue-reachable',
       ok: Boolean(probe?.reachable),
-      title: `Доступность GoTrue из web (${url})`,
+      title: t('mail.titleGoTrueReach', { url }),
       detail: probe
         ? (probe.reachable
-          ? 'GoTrue отвечает.'
+          ? t('mail.gotrueAnswers')
           : t('api.probeFailed', { error: probe.error }))
-        : 'Проверка не выполнялась: нет ключа.',
+        : t('mail.probeSkipped'),
       fix: probe && !probe.reachable
         ? (probe.tls === 'error'
-          ? 'Похоже на проблему с TLS-сертификатом Supabase: проверьте срок действия и цепочку сертификата для домена Supabase, а также системное время сервера. Именно так выглядит «иногда не получается войти»: браузер отвергает соединение до того, как форма входа что-то отправит.'
-          : 'Проверьте, что контейнер Supabase запущен и доступен с сайта (DNS, сеть, обратный прокси).')
+          ? t('mail.fixTls')
+          : t('mail.fixReach'))
         : undefined,
     });
 
@@ -149,13 +149,13 @@ export async function GET(req: Request) {
       checks.push({
         id: 'mailer-autoconfirm',
         ok: autoconfirm === false,
-        title: 'Подтверждение почты в GoTrue',
+        title: t('mail.titleAutoconfirm'),
         detail: autoconfirm === false
-          ? 'mailer_autoconfirm выключен — письма отправляются.'
-          : 'mailer_autoconfirm включён: GoTrue подтверждает адреса сам и писем не шлёт. Сайт такую конфигурацию отклоняет намеренно.',
+          ? t('mail.autoconfirmOff')
+          : t('mail.autoconfirmOn'),
         fix: autoconfirm === false
           ? undefined
-          : 'Заполните SMTP-поля ниже и нажмите «Применить и перезапустить»: контейнер auth пересоздаётся с GOTRUE_MAILER_AUTOCONFIRM=false, письма начнут уходить.',
+          : t('mail.autoconfirmFix'),
         action: autoconfirm === false ? undefined : 'configure-smtp',
       });
 
@@ -170,22 +170,22 @@ export async function GET(req: Request) {
       checks.push({
         id: 'signup',
         ok: disableSignup === false,
-        title: 'Регистрация в GoTrue',
+        title: t('mail.titleSignup'),
         detail: disableSignup === false
-          ? 'Регистрация разрешена.'
+          ? t('mail.signupOpen')
           : disableSignup === undefined
-            ? 'GoTrue не сообщил disable_signup — проверить нельзя, новые аккаунты могут не создаваться.'
-            : 'disable_signup=true — новые пользователи не создаются.',
-        fix: disableSignup === false ? undefined : 'Включите галочку «регистрация новых пилотов открыта» ниже и нажмите «Применить и перезапустить»: панель запишет DISABLE_SIGNUP=false в /opt/supabase/.env и пересоздаст контейнер auth. Вручную — те же два шага: DISABLE_SIGNUP=false в .env стека Supabase и пересоздание auth (docker compose -f docker-compose.yml -f docker-compose.smtp-override.yml up -d --no-deps --force-recreate auth). Ключ именно DISABLE_SIGNUP: GOTRUE_DISABLE_SIGNUP в .env игнорируется.',
+            ? t('mail.signupUnknown')
+            : t('mail.signupClosed'),
+        fix: disableSignup === false ? undefined : t('mail.signupFix'),
         action: disableSignup === false ? undefined : 'enable-signup',
       });
 
       checks.push({
         id: 'email-provider',
         ok: externalEmail !== false,
-        title: 'Провайдер email в GoTrue',
-        detail: externalEmail === false ? 'Вход по почте отключён в GoTrue.' : 'Вход по почте включён.',
-        fix: externalEmail === false ? 'Выставьте GOTRUE_EXTERNAL_EMAIL_ENABLED=true.' : undefined,
+        title: t('mail.titleProvider'),
+        detail: externalEmail === false ? t('mail.providerOff') : t('mail.providerOn'),
+        fix: externalEmail === false ? t('mail.providerFix') : undefined,
       });
     }
 
@@ -197,8 +197,8 @@ export async function GET(req: Request) {
       tls: probe?.tls ?? 'unknown',
       checks,
       summary: blocking.length === 0
-        ? 'Регистрация и письма настроены.'
-        : `Не пройдено проверок: ${blocking.length}. Первая причина: ${blocking[0].title}.`,
+        ? t('mail.summaryOk')
+        : t('mail.summaryFailed', { count: blocking.length, title: blocking[0].title }),
     }, { headers });
   } catch (err) {
     return errorResponse(err);
