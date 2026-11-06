@@ -15,6 +15,7 @@
  */
 
 import { Fragment, useMemo, useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { cardStyle, chipActive, chipStyle, errorText, mutedText, rowStyle, sectionTitle, tableStyle, tdStyle, thStyle } from '@/components/Architect/panelStyles';
 import {
   LEADER_PERIODS,
@@ -73,23 +74,24 @@ function toSegments(slices: LeaderSlice[], tone: (key: string) => string): Segme
 }
 
 export default function ProjectLeaders({ leaders, loading, error, period, scope, color, onPeriod, onScope }: Props) {
+  const { t, locale } = useI18n();
   const tones = useTones(leaders);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showAllPilots, setShowAllPilots] = useState(false);
 
   const controls = (
     <section style={{ ...cardStyle, display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
-      <div style={rowStyle} role="group" aria-label="Период">
+      <div style={rowStyle} role="group" aria-label={t('lead.periodAria')}>
         {LEADER_PERIODS.map((value) => (
           <button key={value} type="button" style={period === value ? { ...chipStyle, ...chipActive } : chipStyle} onClick={() => onPeriod(value)}>
-            {PERIOD_LABELS[value]}
+            {t(PERIOD_LABELS[value])}
           </button>
         ))}
       </div>
-      <div style={rowStyle} role="group" aria-label="Кого считать">
-        <button type="button" style={scope === 'all' ? { ...chipStyle, ...chipActive } : chipStyle} onClick={() => onScope('all')}>Все пилоты</button>
-        <button type="button" style={scope === 'members' ? { ...chipStyle, ...chipActive } : chipStyle} onClick={() => onScope('members')}>Только участники</button>
-        {loading && <span style={mutedText}>обновляем…</span>}
+      <div style={rowStyle} role="group" aria-label={t('lead.scopeAria')}>
+        <button type="button" style={scope === 'all' ? { ...chipStyle, ...chipActive } : chipStyle} onClick={() => onScope('all')}>{t('lead.allPilots')}</button>
+        <button type="button" style={scope === 'members' ? { ...chipStyle, ...chipActive } : chipStyle} onClick={() => onScope('members')}>{t('lead.membersOnly')}</button>
+        {loading && <span style={mutedText}>{t('lead.refreshing')}</span>}
       </div>
     </section>
   );
@@ -98,7 +100,7 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {controls}
-        {error ? <p style={errorText}>{error}</p> : <p style={mutedText}>Собираем вклад пилотов…</p>}
+        {error ? <p style={errorText}>{error}</p> : <p style={mutedText}>{t('lead.collecting')}</p>}
       </div>
     );
   }
@@ -116,33 +118,32 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
       {error && <p style={errorText}>{error}</p>}
 
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
-        <Kpi label="Сдано на площадки" value={formatTons(totals.siteTons)} tone={color} hint={`${totals.siteOps} поставок`} />
-        <Kpi label="Пилотов" value={totals.pilots} hint={`участников ${totals.members} · гостей ${totals.guests}`} />
-        <Kpi label="Площадок" value={totals.sites} hint={`систем ${totals.systems}`} />
-        <Kpi label="Товаров" value={totals.commodities} hint={leaders.commodities[0] ? `больше всего: ${leaders.commodities[0].label}` : undefined} />
-        <Kpi label="На авианосцы" value={formatTons(totals.carrierTons)} hint="отдельно от площадок" />
+        <Kpi label={t('lead.kpiDelivered')} value={formatTons(totals.siteTons)} tone={color} hint={t('lead.kpiOpsHint', { count: totals.siteOps })} />
+        <Kpi label={t('lead.kpiPilots')} value={totals.pilots} hint={t('lead.kpiPilotsHint', { members: totals.members, guests: totals.guests })} />
+        <Kpi label={t('lead.kpiSites')} value={totals.sites} hint={t('lead.kpiSitesHint', { count: totals.systems })} />
+        <Kpi label={t('lead.kpiCommodities')} value={totals.commodities} hint={leaders.commodities[0] ? t('lead.kpiTop', { label: leaders.commodities[0].label }) : undefined} />
+        <Kpi label={t('lead.kpiCarriers')} value={formatTons(totals.carrierTons)} hint={t('lead.kpiCarriersHint')} />
       </section>
 
       {rated.length === 0 ? (
         <EmptyState>
-          За выбранный период поставок в системы проекта нет. Вклад считается по журналам, загруженным на сайт
-          (Colonial Helper или загрузка журналов), — у пилотов должны быть загружены журналы.
+          {t('lead.emptyPeriod')}
         </EmptyState>
       ) : (
         <>
           {podium.length > 0 && (
-            <section aria-label="Пьедестал" style={{ display: 'grid', gridTemplateColumns: `repeat(${podium.length}, minmax(0, 1fr))`, gap: 8 }}>
+            <section aria-label={t('lead.podiumAria')} style={{ display: 'grid', gridTemplateColumns: `repeat(${podium.length}, minmax(0, 1fr))`, gap: 8 }}>
               {podium.map((pilot, index) => (
                 <div key={pilot.key} style={{ ...cardStyle, borderTopWidth: 3, borderTopColor: PODIUM_TONES[index], display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                     <span style={{ ...mono, fontSize: 22, color: PODIUM_TONES[index] }}>#{pilot.rank}</span>
                     <strong style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: pilot.hidden ? 'var(--muted)' : 'var(--text)' }}>
-                      {pilot.name}{pilot.isYou ? ' (вы)' : ''}
+                      {pilot.name}{pilot.isYou ? t('pov.you') : ''}
                     </strong>
                   </div>
                   <div style={{ ...mono, fontSize: 20 }}>{formatTons(pilot.siteTons)}</div>
                   <div style={mutedText}>
-                    {formatPercent(pilot.share * 100)} всего · {pilot.siteOps} поставок · {pilot.sites} площадок
+                    {t('lead.shareLine', { percent: formatPercent(pilot.share * 100), ops: pilot.siteOps, sites: pilot.sites })}
                   </div>
                   <StackedBar segments={toSegments(pilot.commodities, tones.commodity)} total={pilot.siteTons} />
                   <div style={{ ...mutedText, fontSize: 11 }}>
@@ -153,24 +154,24 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
             </section>
           )}
 
-          <section style={cardStyle} aria-label="Рейтинг пилотов">
+          <section style={cardStyle} aria-label={t('lead.ratingAria')}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
-              <h2 style={sectionTitle}>Рейтинг пилотов</h2>
-              <span style={mutedText}>полоса — тонны на площадки по товарам; клик по строке — что и куда</span>
+              <h2 style={sectionTitle}>{t('lead.ratingTitle')}</h2>
+              <span style={mutedText}>{t('lead.ratingHint')}</span>
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={tableStyle}>
                 <thead>
                   <tr>
                     <th style={{ ...thStyle, width: 36 }}>#</th>
-                    <th style={thStyle}>Пилот</th>
-                    <th style={{ ...thStyle, minWidth: 220 }}>Груз на площадки</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Тонн</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Доля</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Поставок</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Площадок</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }} title="Груз, проданный или перегруженный на авианосцы проекта">На FC</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Последняя</th>
+                    <th style={thStyle}>{t('lead.colPilot')}</th>
+                    <th style={{ ...thStyle, minWidth: 220 }}>{t('lead.colCargo')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colTons')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colShare')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colOps')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colSites')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }} title={t('lead.colFcTitle')}>{t('lead.colFc')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colLast')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -189,7 +190,7 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
             </div>
             {rated.length > 25 && (
               <button type="button" style={{ ...chipStyle, marginTop: 8 }} onClick={() => setShowAllPilots((value) => !value)}>
-                {showAllPilots ? 'Показать первые 25' : `Показать всех (${rated.length})`}
+                {showAllPilots ? t('lead.showFirst') : t('lead.showAll', { count: rated.length })}
               </button>
             )}
             <Legend items={leaders.commodities.slice(0, 12).map((commodity) => ({ key: commodity.key, label: commodity.label, tone: tones.commodity(commodity.key) }))} />
@@ -198,8 +199,8 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
           <MatrixSection leaders={leaders} tone={tones.pilot} />
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 12 }}>
-            <section style={cardStyle} aria-label="По товарам">
-              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>По товарам — кто сколько привёз</h2>
+            <section style={cardStyle} aria-label={t('lead.byCommodityAria')}>
+              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>{t('lead.byCommodityTitle')}</h2>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {leaders.commodities.slice(0, 20).map((commodity) => (
                   <div key={commodity.key}>
@@ -209,7 +210,7 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
                         {commodity.label}
                       </span>
                       <span style={{ ...mono, color: 'var(--muted)' }}>
-                        {formatTons(commodity.tons)} · {formatPercent(commodity.share * 100)} · {commodity.pilotCount} пил.
+                        {formatTons(commodity.tons)} · {formatPercent(commodity.share * 100)} · {t('lead.pilotsShort', { count: commodity.pilotCount })}
                       </span>
                     </div>
                     <StackedBar segments={toSegments(commodity.pilots, tones.pilot)} total={commodity.tons} height={8} />
@@ -222,8 +223,8 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
               </div>
             </section>
 
-            <section style={cardStyle} aria-label="По площадкам">
-              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>По площадкам — кто сколько сдал</h2>
+            <section style={cardStyle} aria-label={t('lead.bySitesAria')}>
+              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>{t('lead.bySitesTitle')}</h2>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {leaders.sites.slice(0, 20).map((site) => (
                   <div key={site.key}>
@@ -231,7 +232,7 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
                       <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={site.marketId ? `MarketID ${site.marketId}` : undefined}>
                         {site.name} <span style={{ color: 'var(--muted)' }}>· {site.systemName}</span>
                       </span>
-                      <span style={{ ...mono, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{formatTons(site.tons)} · {site.pilotCount} пил.</span>
+                      <span style={{ ...mono, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{formatTons(site.tons)} · {t('lead.pilotsShort', { count: site.pilotCount })}</span>
                     </div>
                     <StackedBar segments={toSegments(site.pilots, tones.pilot)} total={site.tons} height={8} />
                     <div style={{ ...mutedText, fontSize: 11, marginTop: 2 }}>
@@ -244,16 +245,16 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 12 }}>
-            <section style={cardStyle} aria-label="По системам">
-              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>По системам</h2>
+            <section style={cardStyle} aria-label={t('lead.bySystemsAria')}>
+              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>{t('lead.bySystemsTitle')}</h2>
               <table style={tableStyle}>
                 <thead>
                   <tr>
-                    <th style={thStyle}>Система</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Тонн</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Пилотов</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Площадок</th>
-                    <th style={thStyle}>Больше всех</th>
+                    <th style={thStyle}>{t('lead.colSystem')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colTons')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colPilotsCount')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colSites')}</th>
+                    <th style={thStyle}>{t('lead.colMoreThanAll')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -272,10 +273,10 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
               </table>
             </section>
 
-            <section style={cardStyle} aria-label="Авианосцы проекта">
-              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>Авианосцы проекта</h2>
+            <section style={cardStyle} aria-label={t('lead.carriersAria')}>
+              <h2 style={{ ...sectionTitle, marginBottom: 8 }}>{t('lead.carriersTitle')}</h2>
               {leaders.carriers.length === 0 ? (
-                <EmptyState>На привязанные авианосцы груз за период не поступал.</EmptyState>
+                <EmptyState>{t('lead.carriersEmpty')}</EmptyState>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {leaders.carriers.map((carrier) => (
@@ -295,21 +296,18 @@ export default function ProjectLeaders({ leaders, loading, error, period, scope,
             </section>
           </div>
 
-          <section style={cardStyle} aria-label="Активность по дням">
+          <section style={cardStyle} aria-label={t('lead.activityAria')}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-              <h2 style={sectionTitle}>Активность {leaders.timeline.bucket === 'week' ? 'по неделям' : 'по дням'}</h2>
-              <span style={mutedText}>цвет — лидеры, серый — остальные, голубая риска — груз на авианосцы</span>
+              <h2 style={sectionTitle}>{leaders.timeline.bucket === 'week' ? t('lead.activityByWeeks') : t('lead.activityByDays')}</h2>
+              <span style={mutedText}>{t('lead.activityHint')}</span>
             </div>
-            {leaders.timeline.points.length ? <ActivityChart timeline={leaders.timeline} tone={tones.pilot} /> : <EmptyState>Нет поставок за период.</EmptyState>}
+            {leaders.timeline.points.length ? <ActivityChart timeline={leaders.timeline} tone={tones.pilot} /> : <EmptyState>{t('lead.activityEmpty')}</EmptyState>}
           </section>
         </>
       )}
 
       <p style={{ ...mutedText, margin: 0 }}>
-        Учитываются поставки из журналов, загруженных на сайт: стройплощадки и колониальные корабли в системах проекта
-        {leaders.trackingSince ? ` начиная с ${new Date(leaders.trackingSince).toLocaleDateString('ru-RU')}` : ''}, продажа и
-        перегрузка на привязанные авианосцы. Пилоты вне проекта, скрывшие поставки в настройках приватности, показаны как
-        «Скрытый командир». Сводка собрана {formatAgo(leaders.generatedAt)}.
+        {t('lead.footnote', { since: leaders.trackingSince ? t('lead.footnoteSince', { date: new Date(leaders.trackingSince).toLocaleDateString(locale) }) : '', ago: formatAgo(leaders.generatedAt) })}
       </p>
     </div>
   );
@@ -322,6 +320,7 @@ function PilotRow({ pilot, maxTons, tone, expanded, onToggle }: {
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useI18n();
   const width = maxTons > 0 ? Math.max(2, (pilot.siteTons / maxTons) * 100) : 0;
   return (
     <Fragment>
@@ -333,7 +332,7 @@ function PilotRow({ pilot, maxTons, tone, expanded, onToggle }: {
         <td style={{ ...tdStyle, ...mono, color: pilot.rank <= 3 ? PODIUM_TONES[pilot.rank - 1] : 'var(--muted)' }}>{pilot.rank}</td>
         <td style={tdStyle}>
           <span style={{ color: pilot.hidden ? 'var(--muted)' : 'var(--text)' }}>{pilot.name}</span>
-          {pilot.isYou && <span style={{ color: 'var(--orange)' }}> · вы</span>}
+          {pilot.isYou && <span style={{ color: 'var(--orange)' }}>{t('lead.you')}</span>}
           {pilot.member && <span style={{ marginLeft: 6 }}><RoleBadge role={pilot.role} /></span>}
         </td>
         <td style={tdStyle}>
@@ -357,16 +356,16 @@ function PilotRow({ pilot, maxTons, tone, expanded, onToggle }: {
           <td style={tdStyle} />
           <td colSpan={8} style={{ ...tdStyle, background: 'var(--bg)' }}>
             {pilot.breakdown.length === 0 ? (
-              <span style={mutedText}>Только груз на авианосцы: {pilot.carriers.map((slice) => `${slice.label} ${compactTons(slice.tons)} т`).join(', ')}</span>
+              <span style={mutedText}>{t('lead.carriersOnly', { list: pilot.carriers.map((slice) => `${slice.label} ${compactTons(slice.tons)}`).join(', ') })}</span>
             ) : (
               <table style={{ ...tableStyle, fontSize: 11 }}>
                 <thead>
                   <tr>
-                    <th style={thStyle}>Площадка</th>
-                    <th style={thStyle}>Система</th>
-                    <th style={thStyle}>Товар</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Тонн</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Поставок</th>
+                    <th style={thStyle}>{t('lead.colSite')}</th>
+                    <th style={thStyle}>{t('lead.colSystem')}</th>
+                    <th style={thStyle}>{t('lead.colCommodity')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colTons')}</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colOps')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -387,7 +386,7 @@ function PilotRow({ pilot, maxTons, tone, expanded, onToggle }: {
             )}
             {pilot.carrierTons > 0 && pilot.breakdown.length > 0 && (
               <div style={{ ...mutedText, marginTop: 6 }}>
-                На авианосцы: {pilot.carriers.map((slice) => `${slice.label} ${compactTons(slice.tons)} т`).join(', ')}
+                {t('lead.toCarriers', { list: pilot.carriers.map((slice) => `${slice.label} ${compactTons(slice.tons)}`).join(', ') })}
               </div>
             )}
           </td>
@@ -398,26 +397,27 @@ function PilotRow({ pilot, maxTons, tone, expanded, onToggle }: {
 }
 
 function MatrixSection({ leaders, tone }: { leaders: LeadersResponse; tone: (key: string) => string }) {
+  const { t } = useI18n();
   const { matrix } = leaders;
   if (!matrix.pilots.length || !matrix.sites.length) return null;
   const colTotals = matrix.sites.map((_, column) => matrix.cells.reduce((sum, row) => sum + (row[column] ?? 0), 0));
   return (
-    <section style={cardStyle} aria-label="Матрица пилот × площадка">
+    <section style={cardStyle} aria-label={t('lead.matrixAria')}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
-        <h2 style={sectionTitle}>Кто и куда: пилот × площадка</h2>
-        <span style={mutedText}>яркость клетки — сданные тонны; топ-{matrix.pilots.length} пилотов и топ-{matrix.sites.length} площадок</span>
+        <h2 style={sectionTitle}>{t('lead.matrixTitle')}</h2>
+        <span style={mutedText}>{t('lead.matrixHint', { pilots: matrix.pilots.length, sites: matrix.sites.length })}</span>
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ ...tableStyle, fontSize: 11 }}>
           <thead>
             <tr>
-              <th style={{ ...thStyle, position: 'sticky', left: 0, background: 'var(--panel)' }}>Пилот</th>
+              <th style={{ ...thStyle, position: 'sticky', left: 0, background: 'var(--panel)' }}>{t('lead.colPilot')}</th>
               {matrix.sites.map((site) => (
                 <th key={site.key} style={{ ...thStyle, textAlign: 'center', minWidth: 72, maxWidth: 120, whiteSpace: 'normal', textTransform: 'none' }} title={site.label}>
                   {site.label.length > 28 ? `${site.label.slice(0, 26)}…` : site.label}
                 </th>
               ))}
-              <th style={{ ...thStyle, textAlign: 'right' }}>Всего</th>
+              <th style={{ ...thStyle, textAlign: 'right' }}>{t('lead.colTotal')}</th>
             </tr>
           </thead>
           <tbody>
@@ -433,7 +433,7 @@ function MatrixSection({ leaders, tone }: { leaders: LeadersResponse; tone: (key
                   return (
                     <td
                       key={site.key}
-                      title={`${pilot.label} → ${site.label}: ${formatTons(value)}`}
+                      title={t('lead.matrixCell', { pilot: pilot.label, site: site.label, tons: formatTons(value) })}
                       style={{
                         ...tdStyle,
                         ...mono,
@@ -450,7 +450,7 @@ function MatrixSection({ leaders, tone }: { leaders: LeadersResponse; tone: (key
               </tr>
             ))}
             <tr>
-              <td style={{ ...tdStyle, color: 'var(--muted)', position: 'sticky', left: 0, background: 'var(--panel)' }}>Всего на площадке</td>
+              <td style={{ ...tdStyle, color: 'var(--muted)', position: 'sticky', left: 0, background: 'var(--panel)' }}>{t('lead.rowTotal')}</td>
               {colTotals.map((total, column) => (
                 <td key={matrix.sites[column].key} style={{ ...tdStyle, ...mono, textAlign: 'center', color: 'var(--muted)' }}>{compactTons(matrix.sites[column].tons || total)}</td>
               ))}
@@ -465,6 +465,7 @@ function MatrixSection({ leaders, tone }: { leaders: LeadersResponse; tone: (key
 
 /** Столбики активности: доли лидеров, серый остаток, риска груза на FC. */
 export function ActivityChart({ timeline, tone, height = 160 }: { timeline: LeaderTimeline; tone?: (key: string) => string; height?: number }) {
+  const { t } = useI18n();
   const colorOf = tone ?? ((key: string) => {
     const index = timeline.pilots.findIndex((pilot) => pilot.key === key);
     return index >= 0 ? toneAt(index) : OTHER_TONE;
@@ -478,12 +479,12 @@ export function ActivityChart({ timeline, tone, height = 160 }: { timeline: Lead
         {points.map((point) => {
           const segments = [
             ...timeline.pilots.map((pilot) => ({ key: pilot.key, label: pilot.label, value: point.byPilot[pilot.key] ?? 0 })),
-            { key: '__other', label: 'Остальные', value: point.other },
+            { key: '__other', label: t('lead.other'), value: point.other },
           ].filter((segment) => segment.value > 0);
           const title = [
-            `${point.day}: ${formatTons(point.siteTons)} на площадки`,
+            t('lead.chartDay', { day: point.day, tons: formatTons(point.siteTons) }),
             ...segments.map((segment) => `${segment.label}: ${formatTons(segment.value)}`),
-            point.carrierTons ? `на авианосцы: ${formatTons(point.carrierTons)}` : '',
+            point.carrierTons ? t('lead.chartCarriers', { tons: formatTons(point.carrierTons) }) : '',
           ].filter(Boolean).join('\n');
           return (
             <div key={point.day} title={title} style={{ flex: '1 1 0', minWidth: 2, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', position: 'relative' }}>
@@ -507,7 +508,7 @@ export function ActivityChart({ timeline, tone, height = 160 }: { timeline: Lead
       {timeline.pilots.length > 0 && (
         <Legend items={[
           ...timeline.pilots.map((pilot) => ({ key: pilot.key, label: pilot.label, tone: colorOf(pilot.key), value: pilot.tons })),
-          { key: '__other', label: 'Остальные', tone: OTHER_TONE },
+          { key: '__other', label: t('lead.other'), tone: OTHER_TONE },
         ]} />
       )}
     </div>
