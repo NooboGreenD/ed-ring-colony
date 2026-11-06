@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { AtlasCandidate, AtlasFavorite, AtlasSearchSession, WorldType } from '@/types/atlas';
 import { favoriteKey, normalizeSystemKey } from '@/lib/atlas';
+import { formatTranslate } from '@/lib/i18n/format';
 
 /**
  * Общее состояние раздела Atlas: избранное и история поисков.
@@ -115,7 +116,7 @@ export function AtlasProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Не удалось загрузить избранное');
+      if (!res.ok) throw new Error(data.error || formatTranslate('atlctx.favoritesError'));
       setFavoritesNeedAuth(false);
       setServerFavorites(Array.isArray(data.favorites) ? data.favorites : []);
     } catch {
@@ -135,7 +136,7 @@ export function AtlasProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Не удалось загрузить историю');
+      if (!res.ok) throw new Error(data.error || formatTranslate('atlctx.historyError'));
       setSessionsNeedAuth(false);
       setServerSessions(Array.isArray(data.sessions) ? data.sessions : []);
     } catch {
@@ -203,7 +204,7 @@ export function AtlasProvider({ children }: { children: React.ReactNode }) {
       }
       if (res.status !== 401) {
         const data = await res.json().catch(() => ({}));
-        if (res.status !== 400 && res.status !== 403) throw new Error(data.error || 'Ошибка добавления');
+        if (res.status !== 400 && res.status !== 403) throw new Error(data.error || formatTranslate('atlctx.addError'));
       }
     } catch {
       // Сервер недоступен — сохраняем локально, чтобы кнопка не «теряла» клик.
@@ -313,7 +314,7 @@ export function AtlasProvider({ children }: { children: React.ReactNode }) {
 export function useAtlas(): AtlasContextValue {
   const context = useContext(AtlasContext);
   if (!context) {
-    throw new Error('useAtlas должен вызываться внутри <AtlasProvider>');
+    throw new Error(formatTranslate('atlctx.providerError'));
   }
   return context;
 }

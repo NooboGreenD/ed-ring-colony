@@ -5,8 +5,10 @@ import Link from "next/link";
 import BillingDashboard from "@/components/Admin/BillingDashboard";
 import { supabase } from "@/lib/supabaseClient";
 import { IconArrowLeft } from "@/components/Icons";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 export default function AdminBillingDirectPage() {
+  const { t } = useI18n();
   const [role, setRole] = useState<string | null>(null);
   const [me, setMe] = useState<any>(null);
 
@@ -42,14 +44,14 @@ export default function AdminBillingDirectPage() {
   }, []);
 
   if (role === null) {
-    return <main className="card"><p>Загрузка биллинговой системы...</p></main>;
+    return <main className="card"><p>{t('ab.pageLoading')}</p></main>;
   }
 
   if (!['admin', 'moderator', 'support_manager'].includes(role)) {
     return (
       <main className="card">
-        <p>Доступ запрещен. Требуются права администратора.</p>
-        <Link href="/" className="btn btn-orange">На главную</Link>
+        <p>{t('ab.noAccess')}</p>
+        <Link href="/" className="btn btn-orange">{t('ab.home')}</Link>
       </main>
     );
   }
@@ -59,7 +61,7 @@ export default function AdminBillingDirectPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
           <div className="kicker">Command Center // Financial Telemetry</div>
-          <h1 style={{ margin: "4px 0 0" }}>БИЛЛИНГ И СТАТИСТИКА ПРОЕКТА</h1>
+          <h1 style={{ margin: "4px 0 0" }}>{t('ab.title')}</h1>
         </div>
 
         <Link
@@ -76,7 +78,7 @@ export default function AdminBillingDirectPage() {
           }}
         >
           <IconArrowLeft size={12} />
-          <span>В основную админ-панель</span>
+          <span>{t('ab.backToAdmin')}</span>
         </Link>
       </div>
 

@@ -1,7 +1,11 @@
+'use client';
+
 import type { SiteFooterData } from '@/lib/siteFooter';
 import Link from "next/link";
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function SiteFooter({ copyright, discord, edsm, inara }: SiteFooterData) {
+  const { t } = useI18n();
   const links = [
     { href: discord, label: 'Discord' },
     { href: edsm, label: 'EDSM' },
@@ -13,7 +17,7 @@ export default function SiteFooter({ copyright, discord, edsm, inara }: SiteFoot
       <div className="site-footer-inner">
         <p className="site-footer-copy">{copyright}</p>
         {links.length > 0 && (
-          <nav className="site-footer-links" aria-label="Внешние ресурсы">
+          <nav className="site-footer-links" aria-label={t('foot.externalAria')}>
             {links.map((l) => (
               <a key={l.label} href={l.href} target="_blank" rel="noreferrer">
                 {l.label}
@@ -21,9 +25,9 @@ export default function SiteFooter({ copyright, discord, edsm, inara }: SiteFoot
             ))}
           </nav>
         )}
-        <nav className="site-footer-links" aria-label="Правовая информация и поддержка">
-          <Link href="/offer">Публичная оферта</Link>
-          <Link href="/support">Техподдержка</Link>
+        <nav className="site-footer-links" aria-label={t('foot.legalAria')}>
+          <Link href="/offer">{t('foot.offer')}</Link>
+          <Link href="/support">{t('nav.support')}</Link>
         </nav>
       </div>
     </footer>
