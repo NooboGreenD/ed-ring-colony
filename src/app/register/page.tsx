@@ -3,8 +3,10 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { passwordError } from '@/lib/passwordPolicy';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function RegisterPage() {
+  const { t } = useI18n();
   const [cmdr, setCmdr] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -23,12 +25,12 @@ export default function RegisterPage() {
       return;
     }
     if (password !== confirm) {
-      setError('Пароли не совпадают.');
+      setError(t('reg2.passwordMismatch'));
       return;
     }
     const nick = cmdr.trim();
     if (!nick) {
-      setError('Укажите никнейм / CMDR.');
+      setError(t('reg2.noNick'));
       return;
     }
     setBusy(true);
@@ -39,23 +41,23 @@ export default function RegisterPage() {
         body: JSON.stringify({ email: email.trim(), password, cmdr_name: nick }),
       });
       const payload = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(payload.error || 'Не удалось отправить письмо.'); return; }
+      if (!res.ok) { setError(payload.error || t('reg2.mailFailed')); return; }
       setPassword(''); setConfirm('');
-      setInfo(payload.message || 'Подтвердите адрес по ссылке в письме, чтобы войти.');
-    } catch { setError('Ошибка соединения. Попробуйте ещё раз.'); }
+      setInfo(payload.message || t('reg2.mailSent'));
+    } catch { setError(t('reg2.connectionError')); }
     finally { setBusy(false); }
   };
 
   return (
     <main className="card auth-card">
-      <div className="kicker">Новый пилот</div>
-      <h1>Регистрация</h1>
+      <div className="kicker">{t('reg2.kicker')}</div>
+      <h1>{t('register.title')}</h1>
       {info ? (
-        <div role="status"><p>{info}</p><p>Автоматического входа до подтверждения почты нет.</p><Link href="/resend-confirmation">Отправить письмо повторно</Link></div>
+        <div role="status"><p>{info}</p><p>{t('reg2.noAutoLogin')}</p><Link href="/resend-confirmation">{t('reg2.resend')}</Link></div>
       ) : (
         <form className="auth-form" onSubmit={onSubmit}>
           <label>
-            Никнейм / CMDR
+            {t('reg2.nickname')}
             <input
               type="text"
               required
@@ -77,7 +79,7 @@ export default function RegisterPage() {
             />
           </label>
           <label>
-            Пароль
+            {t('register.password')}
             <input
               type="password"
               required
@@ -86,9 +88,9 @@ export default function RegisterPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          <p>Не менее 12 символов. Можно использовать длинную парольную фразу.</p>
+          <p>{t('reg2.passwordHint')}</p>
           <label>
-            Повтор пароля
+            {t('reg2.repeatPassword')}
             <input
               type="password"
               required
@@ -99,12 +101,12 @@ export default function RegisterPage() {
           </label>
           {error && <p className="auth-error">{error}</p>}
           <button type="submit" disabled={busy}>
-            {busy ? 'Создание...' : 'Создать аккаунт'}
+            {busy ? t('reg2.creating') : t('reg2.createAccount')}
           </button>
         </form>
       )}
       <p className="auth-switch">
-        Уже есть аккаунт? <Link href="/login">Войти</Link>
+        {t('reg2.haveAccount')} <Link href="/login">{t('account.login')}</Link>
       </p>
     </main>
   );
