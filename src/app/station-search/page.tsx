@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import { IconSearch, IconMap, IconPackage, IconWrench, IconRocket, IconGear, IconAlert } from '@/components/Icons';
 import { StationItemPicker, rememberStationPick, useStationSearchOptions } from '@/components/StationSearch/StationItemPicker';
@@ -11,10 +12,10 @@ import { exactStationOption, pickMatchesKind, type StationPickRef, type StationS
 import { cleanSystemName } from '@/lib/systemIdentity';
 
 const TABS = [
-  { id: 'market' as const, title: 'Товары', icon: IconPackage, placeholder: 'Например, сталь, Steel или вода' },
-  { id: 'outfitting' as const, title: 'Модули', icon: IconWrench, placeholder: 'Например, FSD, гипердвигатель или щит' },
-  { id: 'shipyard' as const, title: 'Корабли', icon: IconRocket, placeholder: 'Например, Python, Anaconda или Type-9' },
-  { id: 'services' as const, title: 'Услуги', icon: IconGear, placeholder: 'Услуга или инженер, например Felicity Farseer' },
+  { id: 'market' as const, title: 'ssp.tabMarket', icon: IconPackage, placeholder: 'ssp.phMarket' },
+  { id: 'outfitting' as const, title: 'ssp.tabOutfitting', icon: IconWrench, placeholder: 'ssp.phOutfitting' },
+  { id: 'shipyard' as const, title: 'ssp.tabShipyard', icon: IconRocket, placeholder: 'ssp.phShipyard' },
+  { id: 'services' as const, title: 'ssp.tabServices', icon: IconGear, placeholder: 'ssp.phServices' },
 ];
 /** Быстрый выбор радиуса (св. л.) и минимального запаса (т). */
 const RADIUS_PRESETS = [50, 100, 250, 500, 1000];
@@ -26,6 +27,7 @@ interface FormState {
 }
 
 export default function StationSearchPage() {
+  const { t, locale } = useI18n();
   const [form, setForm] = useState<FormState>({ kind: 'market', q: '', pick: null, reference: '', radius: '500', min_stock: '1', module_class: '', rating: '', fresh: false, sort: 'distance', pad: 'any', carriers: 'include' });
   const [data, setData] = useState<StationSearchStationsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -98,27 +100,27 @@ export default function StationSearchPage() {
         result = await response.json();
       } catch {
         if ([502, 503, 504].includes(response.status)) {
-          throw new Error(`Сервер поиска временно не ответил (HTTP ${response.status}). Повторите поиск.`);
+          throw new Error(t('ssp.timeout', { status: response.status }));
         }
-        throw new Error(`Сервер поиска вернул некорректный ответ (HTTP ${response.status}). Повторите поиск.`);
+        throw new Error(t('ssp.badResponse', { status: response.status }));
       }
       if (current !== generation.current) return;
-      if (!response.ok) throw new Error(result.error || 'Не удалось выполнить поиск');
+      if (!response.ok) throw new Error(result.error || t('ssp.searchFailed'));
       setData({ ...result, stations: Array.isArray(result.stations) ? result.stations : [] });
     } catch (caught) {
       if (current !== generation.current || request.signal.aborted) return;
-      setData(null); setError(caught instanceof Error ? caught.message : 'Ошибка поиска станций');
+      setData(null); setError(caught instanceof Error ? caught.message : t('ssp.searchError'));
     } finally { if (current === generation.current) setLoading(false); }
   }
 
   return (
     <main className="market-page-wrap station-search-page">
       <div className="station-search-heading">
-        <div><div className="station-search-eyebrow">ИНСТРУМЕНТЫ / БАЗА СТАНЦИЙ</div><h1 className="market-title">Поиск по станциям</h1></div>
-        <Link href="/atlas" className="btn"><IconMap size={14} /> Открыть Атлас</Link>
+        <div><div className="station-search-eyebrow">{t('ssp.eyebrow')}</div><h1 className="market-title">{t('ssp.title')}</h1></div>
+        <Link href="/atlas" className="btn"><IconMap size={14} /> {t('ssp.openAtlas')}</Link>
       </div>
-      <p className="atlas-muted">Товары, оснащение, корабли и услуги по наблюдениям Colonial Helper, EDSM, Spansh и EDDN, сохранённым в БД проекта.</p>
-      <div className="station-search-tabs" role="tablist" aria-label="Что искать">
+      <p className="atlas-muted">{t('ssp.intro')}</p>
+      <div className="station-search-tabs" role="tablist" aria-label={t('ssp.whatToSearch')}>
         {TABS.map((entry) => <button key={entry.id} id={`station-tab-${entry.id}`} type="button" role="tab" disabled={!ready} aria-selected={entry.id === form.kind} tabIndex={entry.id === form.kind ? 0 : -1} onKeyDown={(event) => {
           const index = TABS.findIndex((item) => item.id === entry.id);
           const next = event.key === 'ArrowRight' ? (index + 1) % TABS.length : event.key === 'ArrowLeft' ? (index + TABS.length - 1) % TABS.length : event.key === 'Home' ? 0 : event.key === 'End' ? TABS.length - 1 : -1;
@@ -127,7 +129,7 @@ export default function StationSearchPage() {
           document.getElementById(`station-tab-${TABS[next].id}`)?.focus();
         }} aria-controls="station-search-panel"
           className={`btn${entry.id === form.kind ? ' btn-orange' : ''}`} onClick={() => switchTab(entry.id)}>
-          <entry.icon size={14} /> {entry.title}
+          <entry.icon size={14} /> {t(entry.title)}
         </button>)}
       </div>
       <section id="station-search-panel" role="tabpanel" aria-labelledby={`station-tab-${form.kind}`}>
@@ -136,10 +138,10 @@ export default function StationSearchPage() {
             <StationItemPicker
               kind={form.kind}
               id="station-query"
-              label={form.kind === 'services' ? 'Услуга / инженер' : tab.title}
+              label={form.kind === 'services' ? t('ssp.serviceEngineer') : t(tab.title)}
               value={form.q}
               pick={form.pick}
-              placeholder={tab.placeholder}
+              placeholder={t(tab.placeholder)}
               disabled={!ready}
               options={options.options}
               loading={options.loading}
@@ -148,64 +150,64 @@ export default function StationSearchPage() {
               onPick={pickOption}
             />
           </div>
-          <SystemSearchInput value={form.reference} onChange={(reference) => change({ reference })} label="Относительно системы (необязательно)" placeholder="Без ограничения — все известные станции" />
+          <SystemSearchInput value={form.reference} onChange={(reference) => change({ reference })} label={t('ssp.referenceLabel')} placeholder={t('ssp.referencePlaceholder')} />
           <div className="market-field">
-            <label htmlFor="station-radius">Радиус, св. л.</label>
+            <label htmlFor="station-radius">{t('ssp.radius')}</label>
             <input id="station-radius" className="input" type="number" min={1} max={50000} required disabled={!form.reference.trim()} value={form.radius} onChange={(event) => change({ radius: event.target.value })} />
-            <div className="atlas-preset-row station-presets" role="group" aria-label="Быстрый выбор радиуса">
+            <div className="atlas-preset-row station-presets" role="group" aria-label={t('ssp.radiusQuick')}>
               {RADIUS_PRESETS.map((value) => (
                 <button key={value} type="button" disabled={!form.reference.trim()} className={`atlas-preset${form.radius === String(value) ? ' active' : ''}`}
-                  aria-pressed={form.radius === String(value)} title={`${value} св. л.`} onClick={() => change({ radius: String(value) })}>{value.toLocaleString('ru-RU')}</button>
+                  aria-pressed={form.radius === String(value)} title={t('ssp.lyValue', { count: value.toLocaleString(locale) })} onClick={() => change({ radius: String(value) })}>{value.toLocaleString(locale)}</button>
               ))}
             </div>
           </div>
           {form.kind === 'market' && <div className="market-field">
-            <label htmlFor="station-stock">Минимальный запас, т</label>
+            <label htmlFor="station-stock">{t('ssp.minStock')}</label>
             <input id="station-stock" className="input" type="number" min={1} max={1e12} required value={form.min_stock} onChange={(event) => change({ min_stock: event.target.value })} />
-            <div className="atlas-preset-row station-presets" role="group" aria-label="Быстрый выбор запаса">
+            <div className="atlas-preset-row station-presets" role="group" aria-label={t('ssp.stockQuick')}>
               {STOCK_PRESETS.map((value) => (
                 <button key={value} type="button" className={`atlas-preset${form.min_stock === String(value) ? ' active' : ''}`}
-                  aria-pressed={form.min_stock === String(value)} title={`от ${value} т`} onClick={() => change({ min_stock: String(value) })}>{value.toLocaleString('ru-RU')}</button>
+                  aria-pressed={form.min_stock === String(value)} title={t('ssp.stockFrom', { count: value.toLocaleString(locale) })} onClick={() => change({ min_stock: String(value) })}>{value.toLocaleString(locale)}</button>
               ))}
             </div>
           </div>}
           {form.kind === 'outfitting' && <>
-            <div className="market-field"><label htmlFor="station-class">Класс модуля</label><select id="station-class" className="input" value={form.module_class} onChange={(event) => change({ module_class: event.target.value })}><option value="">Любой</option>{Array.from({ length: 9 }, (_, i) => <option key={i} value={i}>{i}</option>)}</select></div>
-            <div className="market-field"><label htmlFor="station-rating">Рейтинг</label><select id="station-rating" className="input" value={form.rating} onChange={(event) => change({ rating: event.target.value })}><option value="">Любой</option>{'ABCDEFGHI'.split('').map((rating) => <option key={rating}>{rating}</option>)}</select></div>
+            <div className="market-field"><label htmlFor="station-class">{t('ssp.moduleClass')}</label><select id="station-class" className="input" value={form.module_class} onChange={(event) => change({ module_class: event.target.value })}><option value="">{t('ssp.any')}</option>{Array.from({ length: 9 }, (_, i) => <option key={i} value={i}>{i}</option>)}</select></div>
+            <div className="market-field"><label htmlFor="station-rating">{t('ssp.rating')}</label><select id="station-rating" className="input" value={form.rating} onChange={(event) => change({ rating: event.target.value })}><option value="">{t('ssp.any')}</option>{'ABCDEFGHI'.split('').map((rating) => <option key={rating}>{rating}</option>)}</select></div>
           </>}
           <div className="market-field">
-            <label htmlFor="station-pad">Площадка под корабль</label>
+            <label htmlFor="station-pad">{t('ssp.padLabel')}</label>
             <select id="station-pad" className="input" value={form.pad} onChange={(event) => change({ pad: event.target.value })} aria-describedby="station-pad-help">
-              <option value="any">Любая / неизвестно</option>
-              <option value="S">S — малый корабль</option>
-              <option value="M">M — средний корабль (M или L)</option>
-              <option value="L">L — большой корабль</option>
+              <option value="any">{t('ssp.padAny')}</option>
+              <option value="S">{t('ssp.padS')}</option>
+              <option value="M">{t('ssp.padM')}</option>
+              <option value="L">{t('ssp.padL')}</option>
             </select>
-            <small id="station-pad-help" className="atlas-muted">При выборе размера станции с неизвестной площадкой исключаются.</small>
+            <small id="station-pad-help" className="atlas-muted">{t('ssp.padHelp')}</small>
           </div>
           <div className="market-field">
-            <label htmlFor="station-carriers">Авианосцы</label>
+            <label htmlFor="station-carriers">{t('ssp.carriers')}</label>
             <select id="station-carriers" className="input" value={form.carriers} onChange={(event) => change({ carriers: event.target.value })}>
-              <option value="include">Включать в поиск</option>
-              <option value="exclude">Исключить из поиска</option>
-              <option value="only">Только авианосцы</option>
+              <option value="include">{t('ssp.carriersInclude')}</option>
+              <option value="exclude">{t('ssp.carriersExclude')}</option>
+              <option value="only">{t('ssp.carriersOnly')}</option>
             </select>
           </div>
-          <div className="market-field"><label htmlFor="station-sort">Сортировка</label><select id="station-sort" className="input" value={form.sort} onChange={(event) => change({ sort: event.target.value })}>
-            <option value="distance">Ближайшие станции</option>{form.kind !== 'services' && <option value="price">Цена покупки</option>}<option value="updated">Свежие наблюдения</option>
+          <div className="market-field"><label htmlFor="station-sort">{t('ssp.sort')}</label><select id="station-sort" className="input" value={form.sort} onChange={(event) => change({ sort: event.target.value })}>
+            <option value="distance">{t('ssp.sortDistance')}</option>{form.kind !== 'services' && <option value="price">{t('ssp.sortPrice')}</option>}<option value="updated">{t('ssp.sortUpdated')}</option>
           </select></div>
-          <div className="station-search-actions"><label className="station-fresh-toggle"><input type="checkbox" checked={form.fresh} onChange={(event) => change({ fresh: event.target.checked })} /> Только данные за последний час</label>
-            <button className="btn btn-orange" disabled={!ready || loading} type="submit"><IconSearch size={14} /> {loading ? 'Поиск…' : 'Найти станции'}</button>
+          <div className="station-search-actions"><label className="station-fresh-toggle"><input type="checkbox" checked={form.fresh} onChange={(event) => change({ fresh: event.target.checked })} /> {t('ssp.freshOnly')}</label>
+            <button className="btn btn-orange" disabled={!ready || loading} type="submit"><IconSearch size={14} /> {loading ? t('ssp.searching') : t('ssp.find')}</button>
           </div>
         </form>
       </section>
-      <p className="station-search-notice"><IconAlert size={14} /> Наличие и цены могут измениться. У инженеров и брокеров могут требоваться приглашения, материалы или разрешения. Поиск показывает данные БД, а не гарантирует доступ к услуге.</p>
+      <p className="station-search-notice"><IconAlert size={14} /> {t('ssp.notice')}</p>
       <div className="station-search-status" aria-live="polite" aria-busy={loading}>
         {error && <div className="station-search-error" role="alert">{error}</div>}
-        {loading && <p className="atlas-muted">Проверяем сохранённые наблюдения станций…</p>}
-        {data && !loading && <span className="station-sr-only">{data.total != null ? `Найдено станций: ${data.total}` : `Станций на странице: ${data.stations.length}`}</span>}
+        {loading && <p className="atlas-muted">{t('ssp.checking')}</p>}
+        {data && !loading && <span className="station-sr-only">{data.total != null ? t('ssp.foundSr', { count: data.total }) : t('ssp.onPageSr', { count: data.stations.length })}</span>}
       </div>
-      {!data && !error && !loading && <div className="station-search-empty"><IconSearch size={28} /><h2>Найдите нужную станцию</h2><p>Выберите категорию и начните вводить название — список подскажет точные варианты. Опорная система позволяет найти ближайшие предложения.</p></div>}
+      {!data && !error && !loading && <div className="station-search-empty"><IconSearch size={28} /><h2>{t('ssp.emptyTitle')}</h2><p>{t('ssp.emptyBody')}</p></div>}
       {data && <StationResultsList data={data} loading={loading} onPage={(page) => void search(page)} />}
     </main>
   );
