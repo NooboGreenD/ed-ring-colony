@@ -17,6 +17,7 @@ import { getInstallation } from '@/lib/architect/planner';
 import type { SyncSourceState } from '@/lib/architect/bodySync';
 import { parseExistingStructures, type ExistingStructure } from '@/lib/architect/existing';
 import type { ArchitectBody } from '@/lib/architect/types';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   cardStyle,
   errorText,
@@ -29,9 +30,9 @@ import {
 } from '@/components/Architect/panelStyles';
 
 const STATUS_LABELS: Record<ExistingStructure['status'], string> = {
-  plan: 'заявлено',
-  building: 'строится',
-  complete: 'построено',
+  plan: 'exst.stPlan',
+  building: 'exst.stBuilding',
+  complete: 'exst.stComplete',
 };
 
 const STATUS_COLORS: Record<ExistingStructure['status'], string> = {
@@ -57,11 +58,11 @@ interface ExistingPanelProps {
 /** Как нашли тело — подпись под названием постройки. */
 const MATCH_LABELS: Record<ExistingStructure['bodyMatch'], string> = {
   exact: '',
-  short: 'имя тела уточнено по каталогу',
-  compact: 'имя тела уточнено по каталогу',
-  id: 'тело определено по номеру',
-  ring: 'кольцо отнесено к родительскому телу',
-  none: 'тело не найдено в каталоге системы',
+  short: 'exst.matchShort',
+  compact: 'exst.matchCompact',
+  id: 'exst.matchId',
+  ring: 'exst.matchRing',
+  none: 'exst.matchNone',
 };
 
 /** Ключ «тело + постройка» — тем же способом считается на стороне плана. */
@@ -70,6 +71,7 @@ export function structureKey(bodyName: string | null, installationId: string | n
 }
 
 export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply, onSources }: ExistingPanelProps) {
+  const { t } = useI18n();
   const [structures, setStructures] = useState<ExistingStructure[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -103,26 +105,26 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
           status: sources.raven === 'ok' ? 'ok' : 'unavailable',
           count: parsed.filter((item) => item.source === 'raven').length,
           updatedAt: null,
-          note: sources.raven === 'ok' ? null : 'нет ответа',
+          note: sources.raven === 'ok' ? null : t('exst.noAnswer'),
         },
         {
           id: 'edsm-stations',
-          label: 'EDSM: станции',
+          label: t('exst.edsmStations'),
           status: sources.edsm === 'ok' ? 'ok' : 'unavailable',
           count: parsed.filter((item) => item.source === 'edsm').length,
           updatedAt: null,
-          note: sources.edsm === 'ok' ? null : 'нет ответа',
+          note: sources.edsm === 'ok' ? null : t('exst.noAnswer'),
         },
       ]);
     } catch (err) {
       setStructures([]);
       setFetched(false);
-      setError(err instanceof Error ? err.message : 'Не удалось получить застройку системы');
+      setError(err instanceof Error ? err.message : t('exst.loadFailed'));
       onSources?.([]);
     } finally {
       setLoading(false);
     }
-  }, [bodies, onSources]);
+  }, [bodies, onSources, t]);
 
   // Смена системы обнуляет список: чужая застройка в плане недопустима.
   useEffect(() => {
@@ -152,19 +154,18 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
   return (
     <section style={cardStyle}>
       <div style={rowStyle}>
-        <h3 style={sectionTitle}>Уже построено в системе</h3>
+        <h3 style={sectionTitle}>{t('exst.title')}</h3>
         <button
           type="button"
           onClick={() => void load(systemName)}
           disabled={loading || !systemName}
           style={ghostButton}
         >
-          {loading ? 'Загрузка…' : fetched ? 'Обновить' : 'Проверить'}
+          {loading ? t('exst.loading') : fetched ? t('exst.refresh') : t('exst.check')}
         </button>
       </div>
       <div style={{ ...mutedText, marginTop: 4 }}>
-        Постройки, которые в системе уже стоят: Raven Colonial и станции EDSM. Перенесите их в план, чтобы
-        очки тиров, «первый порт бесплатно» и налог на порты считались от реального состояния системы.
+        {t('exst.intro')}
       </div>
 
       {error && <div style={{ ...errorText, marginTop: 8 }}>{error}</div>}
@@ -174,7 +175,7 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
 
       {fetched && structures.length === 0 && !error && (
         <div style={{ ...mutedText, marginTop: 8 }}>
-          Построек не найдено: система ещё не застроена или источники о ней не знают.
+          {t('exst.none')}
         </div>
       )}
 
@@ -204,11 +205,11 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
                     <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {item.name}</span>
                   </span>
                   <span style={{ display: 'block', fontSize: 11, color: 'var(--muted)' }}>
-                    {item.bodyName || item.rawBodyName || 'тело не указано'} · {item.source === 'raven' ? 'Raven' : 'EDSM'}
+                    {item.bodyName || item.rawBodyName || t('exst.noBody')} · {item.source === 'raven' ? 'Raven' : 'EDSM'}
                     {' · '}
-                    <span style={{ color: STATUS_COLORS[item.status] }}>{STATUS_LABELS[item.status]}</span>
-                    {item.primary ? <span style={{ color: 'var(--orange)' }}> · ★ основной порт</span> : null}
-                    {already ? ' · уже в плане' : ''}
+                    <span style={{ color: STATUS_COLORS[item.status] }}>{t(STATUS_LABELS[item.status])}</span>
+                    {item.primary ? <span style={{ color: 'var(--orange)' }}>{t('exst.primaryPort')}</span> : null}
+                    {already ? t('exst.alreadyPlanned') : ''}
                   </span>
                   {MATCH_LABELS[item.bodyMatch] && (
                     <span
@@ -217,7 +218,7 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
                         color: item.bodyMatch === 'none' ? 'var(--orange)' : 'var(--cyan)',
                       }}
                     >
-                      {MATCH_LABELS[item.bodyMatch]}
+                      {t(MATCH_LABELS[item.bodyMatch])}
                       {item.bodyMatch !== 'none' && item.rawBodyName && item.rawBodyName !== item.bodyName
                         ? `: «${item.rawBodyName}» → «${item.bodyName}»`
                         : ''}
@@ -233,7 +234,7 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
       {unknown.length > 0 && (
         <div style={{ marginTop: 10 }}>
           <div style={{ ...mutedText, textTransform: 'uppercase', letterSpacing: 1, fontSize: 11 }}>
-            Тип не опознан — в план не переносится
+            {t('exst.unknownHead')}
           </div>
           {unknown.map((item) => (
             <div key={item.key} style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
@@ -251,25 +252,25 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
             disabled={selectedList.length === 0}
             onClick={() => onApply(selectedList)}
           >
-            Применить к плану ({selectedList.length})
+            {t('exst.applyToPlan', { count: selectedList.length })}
           </button>
           <button
             type="button"
             style={ghostButton}
             onClick={() => setSelected(new Set(known.map((item) => item.key)))}
           >
-            Отметить всё
+            {t('exst.selectAll')}
           </button>
           <button type="button" style={ghostButton} onClick={() => setSelected(new Set())}>
-            Снять отметки
+            {t('exst.clearSel')}
           </button>
         </div>
       )}
 
       {fetched && known.length > 0 && (
         <div style={{ ...goodText, marginTop: 6 }}>
-          Найдено построек: {known.length}
-          {unknown.length > 0 ? ` · не опознано: ${unknown.length}` : ''}
+          {t('exst.found', { count: known.length })}
+          {unknown.length > 0 ? t('exst.unrecognized', { count: unknown.length }) : ''}
         </div>
       )}
     </section>
