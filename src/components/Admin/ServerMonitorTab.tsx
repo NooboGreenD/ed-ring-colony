@@ -127,51 +127,51 @@ interface EnvKeysResponse {
 // Известные ключи .env.production — подсказка для «Добавить ключ».
 // Значения не привязаны: это только словарь имён с пояснением.
 const KNOWN_ENV_KEYS: Array<{ name: string; hint: string }> = [
-  { name: 'NEXT_PUBLIC_SUPABASE_URL', hint: 'Адрес Supabase (REST)' },
-  { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', hint: 'Публичный ключ Supabase (anon)' },
-  { name: 'SUPABASE_SERVICE_ROLE_KEY', hint: 'Ключ Supabase service_role' },
-  { name: 'SUPABASE_PROJECT_REF', hint: 'Референс проекта Supabase' },
-  { name: 'SUPABASE_ACCESS_TOKEN', hint: 'Токен Supabase CLI' },
-  { name: 'SUPABASE_DB_PASSWORD', hint: 'Пароль Postgres (Supabase)' },
-  { name: 'SUPABASE_DB_URL', hint: 'Прямой Postgres (альтернатива DATABASE_URL)' },
-  { name: 'DATABASE_URL', hint: 'Прямой Postgres: импорт Spansh, размер БД' },
-  { name: 'MONITOR_DB_URL', hint: 'Postgres для замера размера БД со стороны monitor-agent' },
-  { name: 'NEXT_PUBLIC_SITE_URL', hint: 'Публичный адрес сайта (https)' },
-  { name: 'NEXT_PUBLIC_VAPID_PUBLIC_KEY', hint: 'VAPID публичный ключ (push)' },
-  { name: 'VAPID_PRIVATE_KEY', hint: 'VAPID приватный ключ (push)' },
-  { name: 'VAPID_SUBJECT', hint: 'Контакт VAPID (mailto:)' },
-  { name: 'CRON_SECRET', hint: 'Секрет планировщика jobs' },
-  { name: 'JOBS_ENABLED', hint: 'Список задач планировщика' },
-  { name: 'JOBS_TRANSLATE_PASSES', hint: 'Проходов перевода за синхронизацию' },
-  { name: 'MONITOR_AGENT_TOKEN', hint: 'Токен web → monitor-agent' },
-  { name: 'UPDATE_AGENT_TOKEN', hint: 'Токен web → update-agent' },
-  { name: 'UPDATE_AGENT_URL', hint: 'Адрес update-agent' },
-  { name: 'PROJECT_REPOSITORY', hint: 'Репозиторий GitHub (owner/repo)' },
-  { name: 'PROJECT_UPDATE_BRANCH', hint: 'Ветка для обновлений' },
-  { name: 'PROJECT_DEPLOY_MODE', hint: 'auto | compose | systemd' },
-  { name: 'PROJECT_HOST_DIR', hint: 'Путь к клону на хосте (Docker)' },
-  { name: 'UPDATE_BACKUP_DIR', hint: 'Каталог дампов БД' },
-  { name: 'UPDATE_BACKUP_KEEP', hint: 'Сколько копий держать' },
-  { name: 'AUTH_OAUTH_PROVIDERS', hint: 'Провайдеры входа (discord, vk, yandex…)' },
-  { name: 'AUTH_EMAIL_ENABLED', hint: 'Вход по почте (true/false)' },
-  { name: 'YANDEX_TRANSLATE_API_KEY', hint: 'Ключ Yandex Translate API' },
-  { name: 'YANDEX_TRANSLATE_IAM_TOKEN', hint: 'IAM-токен Yandex (альтернатива ключу)' },
-  { name: 'YANDEX_TRANSLATE_FOLDER_ID', hint: 'Каталог Yandex Cloud' },
-  { name: 'FRONTIER_REDIRECT_URI', hint: 'Колбэк Frontier CAPI' },
-  { name: 'FRONTIER_CLIENT_ID', hint: 'Client ID Frontier CAPI' },
-  { name: 'FRONTIER_CLIENT_SECRET', hint: 'Секрет Frontier CAPI (опционально)' },
-  { name: 'INARA_API_KEY', hint: 'Ключ Inara API' },
-  { name: 'DISCORD_WEBHOOK_URL', hint: 'Discord-вебхук уведомлений' },
-  { name: 'RAVEN_API_BASE', hint: 'Адрес Raven Colonial API' },
-  { name: 'EDDN_INGEST_SECRET', hint: 'Секрет EDDN-воркера' },
-  { name: 'EDDN_INGEST_URL', hint: 'Адрес приёма EDDN' },
-  { name: 'GALNET_FEED_LIMIT', hint: 'Galnet: статей за запуск' },
-  { name: 'GALNET_TRANSLATE_LIMIT', hint: 'Переводов статей за проход' },
-  { name: 'BILLING_STORAGE', hint: 'Хранилище биллинга (supabase/file)' },
-  { name: 'VK_ID_CLIENT_ID', hint: 'VK ID: client ID' },
-  { name: 'VK_ID_CLIENT_SECRET', hint: 'VK ID: секрет' },
-  { name: 'YANDEX_ID_CLIENT_ID', hint: 'Яндекс ID: ClientID' },
-  { name: 'YANDEX_ID_CLIENT_SECRET', hint: 'Яндекс ID: client secret' },
+  { name: 'NEXT_PUBLIC_SUPABASE_URL', hint: 'mon.envHint.nextPublicSupabaseUrl' },
+  { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', hint: 'mon.envHint.nextPublicSupabaseAnonKey' },
+  { name: 'SUPABASE_SERVICE_ROLE_KEY', hint: 'mon.envHint.supabaseServiceRoleKey' },
+  { name: 'SUPABASE_PROJECT_REF', hint: 'mon.envHint.supabaseProjectRef' },
+  { name: 'SUPABASE_ACCESS_TOKEN', hint: 'mon.envHint.supabaseAccessToken' },
+  { name: 'SUPABASE_DB_PASSWORD', hint: 'mon.envHint.supabaseDbPassword' },
+  { name: 'SUPABASE_DB_URL', hint: 'mon.envHint.supabaseDbUrl' },
+  { name: 'DATABASE_URL', hint: 'mon.envHint.databaseUrl' },
+  { name: 'MONITOR_DB_URL', hint: 'mon.envHint.monitorDbUrl' },
+  { name: 'NEXT_PUBLIC_SITE_URL', hint: 'mon.envHint.nextPublicSiteUrl' },
+  { name: 'NEXT_PUBLIC_VAPID_PUBLIC_KEY', hint: 'mon.envHint.nextPublicVapidPublicKey' },
+  { name: 'VAPID_PRIVATE_KEY', hint: 'mon.envHint.vapidPrivateKey' },
+  { name: 'VAPID_SUBJECT', hint: 'mon.envHint.vapidSubject' },
+  { name: 'CRON_SECRET', hint: 'mon.envHint.cronSecret' },
+  { name: 'JOBS_ENABLED', hint: 'mon.envHint.jobsEnabled' },
+  { name: 'JOBS_TRANSLATE_PASSES', hint: 'mon.envHint.jobsTranslatePasses' },
+  { name: 'MONITOR_AGENT_TOKEN', hint: 'mon.envHint.monitorAgentToken' },
+  { name: 'UPDATE_AGENT_TOKEN', hint: 'mon.envHint.updateAgentToken' },
+  { name: 'UPDATE_AGENT_URL', hint: 'mon.envHint.updateAgentUrl' },
+  { name: 'PROJECT_REPOSITORY', hint: 'mon.envHint.projectRepository' },
+  { name: 'PROJECT_UPDATE_BRANCH', hint: 'mon.envHint.projectUpdateBranch' },
+  { name: 'PROJECT_DEPLOY_MODE', hint: 'mon.envHint.projectDeployMode' },
+  { name: 'PROJECT_HOST_DIR', hint: 'mon.envHint.projectHostDir' },
+  { name: 'UPDATE_BACKUP_DIR', hint: 'mon.envHint.updateBackupDir' },
+  { name: 'UPDATE_BACKUP_KEEP', hint: 'mon.envHint.updateBackupKeep' },
+  { name: 'AUTH_OAUTH_PROVIDERS', hint: 'mon.envHint.authOauthProviders' },
+  { name: 'AUTH_EMAIL_ENABLED', hint: 'mon.envHint.authEmailEnabled' },
+  { name: 'YANDEX_TRANSLATE_API_KEY', hint: 'mon.envHint.yandexTranslateApiKey' },
+  { name: 'YANDEX_TRANSLATE_IAM_TOKEN', hint: 'mon.envHint.yandexTranslateIamToken' },
+  { name: 'YANDEX_TRANSLATE_FOLDER_ID', hint: 'mon.envHint.yandexTranslateFolderId' },
+  { name: 'FRONTIER_REDIRECT_URI', hint: 'mon.envHint.frontierRedirectUri' },
+  { name: 'FRONTIER_CLIENT_ID', hint: 'mon.envHint.frontierClientId' },
+  { name: 'FRONTIER_CLIENT_SECRET', hint: 'mon.envHint.frontierClientSecret' },
+  { name: 'INARA_API_KEY', hint: 'mon.envHint.inaraApiKey' },
+  { name: 'DISCORD_WEBHOOK_URL', hint: 'mon.envHint.discordWebhookUrl' },
+  { name: 'RAVEN_API_BASE', hint: 'mon.envHint.ravenApiBase' },
+  { name: 'EDDN_INGEST_SECRET', hint: 'mon.envHint.eddnIngestSecret' },
+  { name: 'EDDN_INGEST_URL', hint: 'mon.envHint.eddnIngestUrl' },
+  { name: 'GALNET_FEED_LIMIT', hint: 'mon.envHint.galnetFeedLimit' },
+  { name: 'GALNET_TRANSLATE_LIMIT', hint: 'mon.envHint.galnetTranslateLimit' },
+  { name: 'BILLING_STORAGE', hint: 'mon.envHint.billingStorage' },
+  { name: 'VK_ID_CLIENT_ID', hint: 'mon.envHint.vkIdClientId' },
+  { name: 'VK_ID_CLIENT_SECRET', hint: 'mon.envHint.vkIdClientSecret' },
+  { name: 'YANDEX_ID_CLIENT_ID', hint: 'mon.envHint.yandexIdClientId' },
+  { name: 'YANDEX_ID_CLIENT_SECRET', hint: 'mon.envHint.yandexIdClientSecret' },
 ];
 
 
@@ -992,38 +992,38 @@ export default function ServerMonitorTab() {
       <section className="ops-panel">
         <div className="ops-panel-head">
           <div>
-            <h3>Контент и переводы</h3>
-            <p>Результат последней синхронизации Galnet и размер очереди переводов. Кнопки выполняют те же шаги, что и планировщик, но сразу.</p>
+            <h3>{t('mon.contentTitle')}</h3>
+            <p>{t('mon.contentNote')}</p>
           </div>
           <StatusPill
             level={!snapshot.content.available ? 'unknown' : snapshot.content.lastSync?.status === 'error' ? 'critical' : (snapshot.content.pendingTotal ?? 0) > 0 ? 'warning' : 'healthy'}
-            label={snapshot.content.available ? undefined : 'Нет данных'}
+            label={snapshot.content.available ? undefined : t('mon.levelUnknown')}
           />
         </div>
         {!snapshot.content.available && (
-          <div className="ops-notice ops-notice-info"><IconAlert size={16} /> {snapshot.content.note ?? 'Очередь переводов недоступна.'}</div>
+          <div className="ops-notice ops-notice-info"><IconAlert size={16} /> {snapshot.content.note ?? t('mon.queueUnavailable')}</div>
         )}
         {snapshot.content.available && (
           <>
             <div className="ops-disk-grid">
               <div className="ops-disk-fact">
-                <span>Последняя синхронизация</span>
+                <span>{t('mon.lastSync')}</span>
                 <strong>{formatDate(snapshot.content.lastSync?.at, locale)}</strong>
-                <small>{snapshot.content.lastSync ? `${snapshot.content.lastSync.status ?? '—'} · статей ${snapshot.content.lastSync.articlesCount ?? 0}, новых ${snapshot.content.lastSync.newCount ?? 0}` : 'записей нет'}</small>
+                <small>{snapshot.content.lastSync ? t('mon.syncDetail', { status: snapshot.content.lastSync.status ?? '—', articles: snapshot.content.lastSync.articlesCount ?? 0, new: snapshot.content.lastSync.newCount ?? 0 }) : t('mon.noRecords')}</small>
               </div>
               <div className="ops-disk-fact">
-                <span>Galnet ждёт перевода</span>
+                <span>{t('mon.galnetPending')}</span>
                 <strong>{formatCount(snapshot.content.queue.find((item) => item.table === 'galnet_news')?.pending, locale)}</strong>
                 <small>pending / failed / partial</small>
               </div>
               <div className="ops-disk-fact">
-                <span>Новости ждут перевода</span>
+                <span>{t('mon.newsPending')}</span>
                 <strong>{formatCount(snapshot.content.queue.find((item) => item.table === 'news')?.pending, locale)}</strong>
-                <small>таблица news</small>
+                <small>{t('mon.newsTable')}</small>
               </div>
               <div className="ops-disk-fact">
                 <span>Yandex Translate</span>
-                <strong>{snapshot.content.translateConfigured ? 'настроен' : 'не задан'}</strong>
+                <strong>{snapshot.content.translateConfigured ? t('mon.configured') : t('mon.notSetLabel')}</strong>
                 <small>YANDEX_TRANSLATE_API_KEY</small>
               </div>
             </div>
@@ -1032,7 +1032,7 @@ export default function ServerMonitorTab() {
             )}
             {!snapshot.content.translateConfigured && (
               <div className="ops-notice ops-notice-critical">
-                <IconXCircle size={16} /> Без <code>YANDEX_TRANSLATE_API_KEY</code> статьи собираются, но не переводятся — они и останутся в статусе pending.
+                <IconXCircle size={16} /> {t('mon.translateMissing')}
               </div>
             )}
             {snapshot.content.note && (
@@ -1040,10 +1040,10 @@ export default function ServerMonitorTab() {
             )}
             <div className="ops-update-actions">
               <button type="button" className="ops-refresh-button" disabled={contentBusy !== ''} onClick={() => void runContent('sync')}>
-                <IconSync size={14} /> {contentBusy === 'sync' ? 'Синхронизация…' : 'Синхронизировать Galnet'}
+                <IconSync size={14} /> {contentBusy === 'sync' ? t('mon.syncShort') : t('mon.syncGalnet')}
               </button>
               <button type="button" className="ops-refresh-button" disabled={contentBusy !== ''} onClick={() => void runContent('translate')}>
-                <IconRefresh size={14} /> {contentBusy === 'translate' ? 'Перевод…' : 'Догнать переводы'}
+                <IconRefresh size={14} /> {contentBusy === 'translate' ? t('mon.translateShort') : t('mon.translateCatchUp')}
               </button>
               {contentMessage && <span className="ops-inline-note">{contentMessage}</span>}
             </div>
@@ -1055,34 +1055,34 @@ export default function ServerMonitorTab() {
         <section className="ops-panel ops-project-panel">
           <div className="ops-panel-head">
             <div>
-              <h3>Версия проекта</h3>
-              <p>Сверка текущей сборки с веткой <code>{snapshot.project.upstreamBranch}</code> на GitHub выполняется не чаще раза в 5 минут.</p>
+              <h3>{t('mon.projectVersion')}</h3>
+              <p>{t('mon.projectVersionNote', { branch: snapshot.project.upstreamBranch })}</p>
             </div>
             <StatusPill level={projectLevel(snapshot)} />
           </div>
           <div className="ops-project-grid">
-            <div className="ops-project-item"><span>Текущий commit</span><strong><code>{shortSha(snapshot.project.currentSha, t)}</code></strong></div>
-            <div className="ops-project-item"><span>Ветка сборки</span><strong>{snapshot.project.currentRef ?? '—'}</strong></div>
-            <div className="ops-project-item"><span>Собрано</span><strong>{formatDate(snapshot.project.builtAt, locale)}</strong></div>
+            <div className="ops-project-item"><span>{t('mon.currentCommit')}</span><strong><code>{shortSha(snapshot.project.currentSha, t)}</code></strong></div>
+            <div className="ops-project-item"><span>{t('mon.buildBranch')}</span><strong>{snapshot.project.currentRef ?? '—'}</strong></div>
+            <div className="ops-project-item"><span>{t('mon.builtAt')}</span><strong>{formatDate(snapshot.project.builtAt, locale)}</strong></div>
             <div className="ops-project-item"><span>GitHub {snapshot.project.upstreamBranch}</span><strong><code>{shortSha(snapshot.project.upstreamSha, t)}</code></strong></div>
-            <div className="ops-project-item"><span>Свежих коммитов</span><strong>{snapshot.project.aheadBy == null ? '—' : snapshot.project.aheadBy}</strong></div>
+            <div className="ops-project-item"><span>{t('mon.freshCommitsCount')}</span><strong>{snapshot.project.aheadBy == null ? '—' : snapshot.project.aheadBy}</strong></div>
           </div>
           {snapshot.project.updateStatus === 'current' && (
-            <div className="ops-notice ops-notice-healthy"><IconCheckCircle size={16} /> Сборка совпадает с последней ревизией main, проверенной {formatDate(snapshot.project.upstreamCheckedAt, locale)}.</div>
+            <div className="ops-notice ops-notice-healthy"><IconCheckCircle size={16} /> {t('mon.upToDate', { when: formatDate(snapshot.project.upstreamCheckedAt, locale) })}</div>
           )}
           {snapshot.project.updateStatus === 'different' && (
-            <div className="ops-notice ops-notice-warning"><IconAlert size={16} /> Ревизия main отличается от развёрнутой. Обновите проект кнопкой справа — планировщик пересборки ждать не нужно.</div>
+            <div className="ops-notice ops-notice-warning"><IconAlert size={16} /> {t('mon.upstreamDifferent')}</div>
           )}
           {snapshot.project.updateStatus === 'unknown' && (
-            <div className="ops-notice ops-notice-info"><IconAlert size={16} /> Точную сверку нельзя выполнить. Перед сборкой передайте <code>APP_GIT_SHA</code>, <code>APP_GIT_REF</code> и <code>APP_BUILD_TIME</code>.</div>
+            <div className="ops-notice ops-notice-info"><IconAlert size={16} /> {t('mon.exactCheck')}</div>
           )}
         </section>
 
         <section className="ops-panel">
           <div className="ops-panel-head">
             <div>
-              <h3>Обновление проекта</h3>
-              <p>Ручная пересборка: git pull → бэкап БД → миграции → сборка → перезапуск сервисов → проверка живости. Флажки ниже выбирают, что войдёт в прогон; кнопка «Применить только миграции» обновляет базу без сборки.</p>
+              <h3>{t('mon.updateTitle')}</h3>
+              <p>{t('mon.updateNote')}</p>
             </div>
             <StatusPill
               level={updateConnected ? (update ? stateMetaFor(update).level : 'unknown') : updateConfigured ? 'critical' : 'unknown'}
@@ -1092,32 +1092,31 @@ export default function ServerMonitorTab() {
 
           {!updateConfigured && (
             <div className="ops-notice ops-notice-info">
-              <IconAlert size={16} /> Кнопка появится, когда на хосте будет запущен приватный update-agent
-              (<code>node scripts/update-agent.mjs</code>), а в <code>.env.production</code> заданы
-              <code> UPDATE_AGENT_URL</code> и <code>UPDATE_AGENT_TOKEN</code>. Запуск одной командой:
+              <IconAlert size={16} /> {t('mon.agentSetupHint')}
               <code> bash deploy/start-update-agent.sh</code>.
             </div>
           )}
           {updateConfigured && !updateConnected && (
             <div className="ops-notice ops-notice-critical">
-              <IconXCircle size={16} /> {updateReason || 'Update-агент недоступен: обновление не запустится, сайт продолжает работать.'}
+              <IconXCircle size={16} /> {updateReason || t('mon.agentUnavailableLong')}
             </div>
           )}
           {updateConnected && agentInfo?.outdated === true && (
             <div className="ops-notice ops-notice-warning">
               <IconAlert size={16} />
               <span>
-                Update-агент работает на коде предыдущей версии
+                {t('mon.agentPrevCode')}
                 {agentInfo.revision && agentInfo.repoRevision && agentInfo.revision !== agentInfo.repoRevision
-                  ? ` (запущен ${agentInfo.revision}, в репозитории ${agentInfo.repoRevision})`
+                  ? t('mon.agentRevision', { revision: agentInfo.revision, repo: agentInfo.repoRevision })
                   : ''}
-                . До безопасной замены контейнера новые флажки прогона
-                {agentInfo.migrationsOnlySupported ? '' : ' и режим «только миграции»'} могут кратко работать на старом коде.
+                {t('mon.agentFlagsNote')}
+                {agentInfo.migrationsOnlySupported ? '' : t('mon.agentMigrationsNote')}
+                {t('mon.agentFlagsTail')}
                 {agentInfo.canRestart
                   ? agentInfo.autoRestart
-                    ? ' Автоперезапуск включён; если он ещё не сработал, перезапустите агент кнопкой.'
-                    : ' Автоперезапуск выключен (UPDATE_AGENT_SELF_RESTART=0), но ручной перезапуск доступен кнопкой.'
-                  : ' Эта запущенная версия ещё не умеет ручной перезапуск: один раз перезапустите контейнер или systemd-сервис вручную. После этого здесь появится кнопка.'}
+                    ? t('mon.agentSelfRestartOn')
+                    : t('mon.agentSelfRestartOff')
+                  : t('mon.agentNoRestartSupport')}
               </span>
               {agentInfo.canRestart && (
                 <button
@@ -1126,7 +1125,7 @@ export default function ServerMonitorTab() {
                   disabled={updateBusy || agentRestarting || update?.active === true}
                   onClick={() => void restartAgent()}
                 >
-                  <IconRefresh size={14} /> {agentRestarting ? 'Перезапускаю…' : 'Перезапустить агент'}
+                  <IconRefresh size={14} /> {agentRestarting ? t('mon.restarting') : t('mon.restartAgent')}
                 </button>
               )}
             </div>
@@ -1146,20 +1145,20 @@ export default function ServerMonitorTab() {
                 ))}
               </ul>
               <dl className="ops-facts">
-                <div><dt>Стадия</dt><dd>{update.stageLabel || update.stage || '—'}</dd></div>
-                <div><dt>Начало</dt><dd>{formatDate(update.startedAt, locale)}</dd></div>
-                <div><dt>Обновлено</dt><dd>{formatDate(update.updatedAt, locale)}</dd></div>
+                <div><dt>{t('mon.stage')}</dt><dd>{update.stageLabel || update.stage || '—'}</dd></div>
+                <div><dt>{t('mon.startLabel')}</dt><dd>{formatDate(update.startedAt, locale)}</dd></div>
+                <div><dt>{t('mon.updatedLabel')}</dt><dd>{formatDate(update.updatedAt, locale)}</dd></div>
                 {update.kind === 'env' ? (
-                  <div><dt>Область</dt><dd>{update.mode === 'all' ? 'web + jobs + monitor-agent' : 'web'}</dd></div>
+                  <div><dt>{t('mon.scope')}</dt><dd>{update.mode === 'all' ? 'web + jobs + monitor-agent' : 'web'}</dd></div>
                 ) : update.kind === 'smtp' ? (
-                  <div><dt>Область</dt><dd>auth (Supabase) + web</dd></div>
+                  <div><dt>{t('mon.scope')}</dt><dd>auth (Supabase) + web</dd></div>
                 ) : update.kind === 'storage' ? (
-                  <div><dt>Область</dt><dd>сервис storage (стек Supabase)</dd></div>
+                  <div><dt>{t('mon.scope')}</dt><dd>{t('mon.storageScope')}</dd></div>
                 ) : (
                   <>
-                    <div><dt>Режим</dt><dd>{update.mode === 'migrations' ? 'только миграции (без сборки)' : update.mode || '—'}</dd></div>
-                    <div><dt>Ревизия</dt><dd>{update.fromSha ? `${update.fromSha.slice(0, 12)} → ${(update.toSha || '').slice(0, 12)}` : '—'}</dd></div>
-                    <div><dt>Миграций применено</dt><dd>{update.migrationsApplied ?? 0}</dd></div>
+                    <div><dt>{t('mon.mode')}</dt><dd>{update.mode === 'migrations' ? t('mon.migrationsOnlyMode') : update.mode || '—'}</dd></div>
+                    <div><dt>{t('mon.revision')}</dt><dd>{update.fromSha ? `${update.fromSha.slice(0, 12)} → ${(update.toSha || '').slice(0, 12)}` : '—'}</dd></div>
+                    <div><dt>{t('mon.migrationsApplied')}</dt><dd>{update.migrationsApplied ?? 0}</dd></div>
                   </>
                 )}
               </dl>
@@ -1170,8 +1169,8 @@ export default function ServerMonitorTab() {
                 <div className={`ops-notice ${update.state === 'failed' ? 'ops-notice-critical' : 'ops-notice-warning'}`}>
                   <IconAlert size={16} />
                   <span>
-                    {update.error || 'Прогон завершился ошибкой — подробности в журнале ниже.'}
-                    {update.exitCode != null ? ` (код ${update.exitCode})` : ''}
+                    {update.error || t('mon.runFailed')}
+                    {update.exitCode != null ? t('mon.exitCodeNote', { code: update.exitCode }) : ''}
                   </span>
                 </div>
               )}
@@ -1179,7 +1178,7 @@ export default function ServerMonitorTab() {
                 <pre className="ops-log" ref={logRef}>
                   {update.log.map((entry, index) => (
                     <div key={`${entry.at ?? ''}-${index}`}>
-                      {entry.at ? <time>{new Date(entry.at).toLocaleTimeString('ru-RU')}</time> : null}
+                      {entry.at ? <time>{new Date(entry.at).toLocaleTimeString(locale)}</time> : null}
                       {entry.line}
                     </div>
                   ))}
@@ -1190,23 +1189,23 @@ export default function ServerMonitorTab() {
 
           {snapshot.project.pendingMigrations.length > 0 && (
             <div className="ops-migrations">
-              <span>Неприменённые миграции (будут применены автоматически, если включено ниже):</span>
+              <span>{t('mon.pendingMigrations')}</span>
               {snapshot.project.pendingMigrations.map((name) => <code key={name}>{name}</code>)}
             </div>
           )}
 
           <div className="ops-update-actions">
-            <label title="npm test во время сборки (RUN_TESTS в образе / npm test в systemd-режиме). Без тестов сборка быстрее.">
+            <label title={t('mon.flagTestsTitle')}>
               <input type="checkbox" checked={runTests} onChange={(event) => setRunTests(event.target.checked)} />
-              с тестами
+              {t('mon.flagWithTests')}
             </label>
-            <label title="pg_dump базы данных перед обновлением (каталог UPDATE_BACKUP_DIR).">
+            <label title={t('mon.flagBackupTitle')}>
               <input type="checkbox" checked={backupBefore} onChange={(event) => setBackupBefore(event.target.checked)} />
-              с бэкапом БД
+              {t('mon.flagWithBackup')}
             </label>
-            <label title="Применить неприменённые supabase/migrations/*.sql перед пересборкой.">
+            <label title={t('mon.flagMigrationsTitle')}>
               <input type="checkbox" checked={applyMigrations} onChange={(event) => setApplyMigrations(event.target.checked)} />
-              с миграциями
+              {t('mon.flagWithMigrations')}
             </label>
           </div>
 
@@ -1218,26 +1217,25 @@ export default function ServerMonitorTab() {
               onClick={() => void startUpdate()}
             >
               <IconRefresh size={14} />
-              {updateBusy ? 'Запускаю…' : update?.active ? 'Идёт обновление…' : 'Обновить сейчас'}
+              {updateBusy ? t('mon.startingApply') : update?.active ? t('mon.updatingNow') : t('mon.updateNow')}
             </button>
             <button
               type="button"
               className="ops-refresh-button"
-              title="Синхронизировать исходники и применить неприменённые миграции — без сборки и перезапуска контейнеров"
+              title={t('mon.applyMigrationsTitle')}
               disabled={!updateConnected || updateBusy || agentRestarting || update?.active === true}
               onClick={() => void startMigrationsOnly()}
             >
-              <IconDatabase size={14} /> Применить только миграции
+              <IconDatabase size={14} /> {t('mon.applyMigrations')}
             </button>
             {update?.active === true && (
               <button type="button" className="ops-refresh-button ops-button-danger" disabled={updateBusy} onClick={() => void abortUpdate()}>
-                <IconXCircle size={14} /> Остановить
+                <IconXCircle size={14} /> {t('mon.stop')}
               </button>
             )}
             {snapshot.project.updateStatus === 'current' && (
               <span className="ops-inline-note">
-                Отставания от {snapshot.project.upstreamBranch} нет — кнопка всё равно применит недостающие миграции
-                и пересоберёт проект (так чинятся сорвавшиеся сборки и пропущенные миграции).
+                {t('mon.noBehind', { branch: snapshot.project.upstreamBranch })}
               </span>
             )}
             {updateMessage && <span className="ops-inline-note">{updateMessage}</span>}
@@ -1256,46 +1254,41 @@ export default function ServerMonitorTab() {
       <section className="ops-panel">
         <div className="ops-panel-head">
           <div>
-            <h3><IconKey size={15} /> API-ключи сайта</h3>
+            <h3><IconKey size={15} /> {t('mon.envTitle')}</h3>
             <p>
-              Ключи окружения (.env.production на сервере): редактирование и добавление прямо с сайта,
-              без SSH. Значения выводятся в маске — сырой ключ в браузер не передаётся, «Изменить»
-              заменяет значение целиком. После правки нажмите «Применить»: сервисы пересоздаются без
-              пересборки. Ключи <code>NEXT_PUBLIC_*</code> вшиваются в бандл при сборке — они требуют
-              «Обновить сейчас».
+              {t('mon.envNote1')} <code>NEXT_PUBLIC_*</code> {t('mon.envNote2')}
             </p>
           </div>
           <StatusPill
             level={!updateConfigured ? 'unknown' : envKeys == null ? 'unknown' : envConfigured ? 'healthy' : 'critical'}
-            label={!updateConfigured ? 'Агент не настроен' : envKeys == null ? 'Нет данных' : envConfigured ? `Ключей: ${envKeys.length}` : 'Файл окружения не найден'}
+            label={!updateConfigured ? t('mon.agentNotConfigured') : envKeys == null ? t('mon.levelUnknown') : envConfigured ? t('mon.keysCount', { count: envKeys.length }) : t('mon.envFileMissing')}
           />
         </div>
 
         {!updateConfigured && (
           <div className="ops-notice ops-notice-info">
-            <IconAlert size={16} /> Управление ключами появляется после запуска приватного update-agent
-            (<code>bash deploy/start-update-agent.sh</code>) — он единственный имеет доступ к файлу окружения на хосте.
+            <IconAlert size={16} /> {t('mon.envManageHint')}
           </div>
         )}
         {updateConfigured && envKeys == null && (
-          <div className="ops-notice ops-notice-info"><IconAlert size={16} /> Update-агент не ответил: проверьте UPDATE_AGENT_URL/TOKEN в .env.production.</div>
+          <div className="ops-notice ops-notice-info"><IconAlert size={16} /> {t('mon.envAgentNoAnswer')}</div>
         )}
         {updateConfigured && envKeys != null && !envConfigured && (
           <div className="ops-notice ops-notice-critical">
-            <IconXCircle size={16} /> Файл окружения не найден на хосте — добавьте ключи ниже, файл будет создан.
+            <IconXCircle size={16} /> {t('mon.envFileWillBeCreated')}
           </div>
         )}
 
         {updateConfigured && envKeys != null && envConfigured && (
           <>
             {envKeys.length === 0 ? (
-              <div className="ops-empty">В файле окружения пока нет ключей.</div>
+              <div className="ops-empty">{t("mon.envNoKeys")}</div>
             ) : (
               <div className="ops-env-list">
                 {envKeys.map((key) => (
                   <div className="ops-env-row" key={key.name}>
                     <code className="ops-env-name">{key.name}</code>
-                    <span className="ops-env-masked" title="Сырое значение не передаётся в браузер">{key.masked}</span>
+                    <span className="ops-env-masked" title={t('mon.envRawHidden')}>{key.masked}</span>
                     <div className="ops-env-actions">
                       {editingKey?.name === key.name ? (
                         <>
@@ -1303,21 +1296,21 @@ export default function ServerMonitorTab() {
                             type="password"
                             className="ops-env-input"
                             value={editingKey.value}
-                            placeholder="новое значение"
+                            placeholder={t('mon.envNewValue')}
                             onChange={(event) => setEditingKey({ ...editingKey, value: event.target.value })}
                           />
                           <button type="button" disabled={envBusy !== '' || !editingKey.value} onClick={() => void saveEnvKeyEdit()}>
-                            {envBusy === 'save' ? 'Сохраняю…' : 'Сохранить'}
+                            {envBusy === 'save' ? t('mon.saving') : t('mon.save')}
                           </button>
-                          <button type="button" disabled={envBusy !== ''} onClick={() => setEditingKey(null)}>Отмена</button>
+                          <button type="button" disabled={envBusy !== ''} onClick={() => setEditingKey(null)}>{t('mon.cancel')}</button>
                         </>
                       ) : (
                         <>
                           <button type="button" disabled={envBusy !== ''} onClick={() => setEditingKey({ name: key.name, value: '' })}>
-                            Изменить
+                            {t('mon.edit')}
                           </button>
                           <button type="button" disabled={envBusy !== ''} onClick={() => void removeEnvKey(key.name)}>
-                            {envBusy === 'delete' ? 'Удаляю…' : 'Удалить'}
+                            {envBusy === 'delete' ? t('mon.deleting') : t('mon.delete')}
                           </button>
                         </>
                       )}
@@ -1328,37 +1321,37 @@ export default function ServerMonitorTab() {
             )}
 
             <div className="ops-env-add">
-              <div className="ops-env-add-title">Добавить / переопределить ключ</div>
+              <div className="ops-env-add-title">{t("mon.envAddTitle")}</div>
               <div className="ops-env-add-row">
                 <select
                   className="ops-env-input"
                   value={newKeyName}
                   onChange={(event) => setNewKeyName(event.target.value)}
                 >
-                  <option value="">— выбрать ключ —</option>
+                  <option value="">{t('mon.envPickKey')}</option>
                   {KNOWN_ENV_KEYS
                     .filter((known) => !envKeys.some((key) => key.name === known.name))
                     .map((known) => (
-                      <option key={known.name} value={known.name} title={known.hint}>
-                        {known.name} — {known.hint}
+                      <option key={known.name} value={known.name} title={t(known.hint)}>
+                        {known.name} — {t(known.hint)}
                       </option>
                     ))}
                 </select>
                 <input
                   className="ops-env-input"
                   value={newKeyName}
-                  placeholder="ИЛИ своё имя: MY_API_KEY"
+                  placeholder={t('mon.envCustomName')}
                   onChange={(event) => setNewKeyName(event.target.value.toUpperCase())}
                 />
                 <input
                   type="password"
                   className="ops-env-input"
                   value={newKeyValue}
-                  placeholder="значение ключа"
+                  placeholder={t('mon.envValue')}
                   onChange={(event) => setNewKeyValue(event.target.value)}
                 />
                 <button type="button" className="ops-refresh-button" disabled={envBusy !== ''} onClick={() => void addEnvKey()}>
-                  <IconPlus size={14} /> {envBusy === 'add' ? 'Добавляю…' : 'Добавить ключ'}
+                  <IconPlus size={14} /> {envBusy === 'add' ? t('mon.adding') : t('mon.addKey')}
                 </button>
               </div>
             </div>
@@ -1369,7 +1362,7 @@ export default function ServerMonitorTab() {
                   <div className="ops-progress-fill" style={{ width: `${Math.max(2, Math.min(100, Math.round(update.percent || 0)))}%` }} />
                 </div>
                 <div className="ops-inline-note">
-                  {update.stageLabel || 'Применение ключей…'} — {Math.round(update.percent || 0)}%
+                  {update.stageLabel || t('mon.applyingKeys')} — {Math.round(update.percent || 0)}%
                   {update.error ? ` · ${update.error}` : ''}
                 </div>
               </div>
@@ -1384,8 +1377,8 @@ export default function ServerMonitorTab() {
               >
                 <IconRefresh size={14} />
                 {envBusy === 'apply' || ((update?.kind === 'env' || update?.kind === 'smtp') && update.active === true)
-                  ? 'Применяю…'
-                  : 'Применить (пересоздать web)'}
+                  ? t('mon.applying')
+                  : t('mon.applyRecreateWeb')}
               </button>
               <label>
                 <input type="checkbox" checked={applyAll} onChange={(event) => setApplyAll(event.target.checked)} />
@@ -1398,14 +1391,14 @@ export default function ServerMonitorTab() {
       </section>
 
       <section className="ops-panel ops-technical-panel">
-        <h3>Технические сведения</h3>
+        <h3>{t('mon.techTitle')}</h3>
         <dl className="ops-facts ops-technical-facts">
-          <div><dt>Старт приложения</dt><dd>{formatDate(snapshot.application.startedAt, locale)}</dd></div>
-          <div><dt>Память процесса</dt><dd>{formatBytes(snapshot.application.memory.rssBytes, t)} RSS · {formatBytes(snapshot.application.memory.heapUsedBytes, t)} heap</dd></div>
-          <div><dt>Проверка БД</dt><dd>{snapshot.database.latencyMs == null ? 'нет ответа' : `${snapshot.database.latencyMs} мс`}</dd></div>
-          <div><dt>Размер БД</dt><dd>{snapshot.database.size.available ? `${formatBytes(snapshot.database.size.databaseBytes, t)} · замер ${formatDate(snapshot.database.size.measuredAt, locale)}` : 'нет прямого подключения'}</dd></div>
-          <div><dt>Диск</dt><dd>{snapshot.disk.available ? `${formatBytes(snapshot.disk.usedBytes, t)} из ${formatBytes(snapshot.disk.totalBytes, t)} · свободно ${formatBytes(snapshot.disk.availableBytes, t)}` : t('mon.noStatfs')}</dd></div>
-          <div><dt>Обновлено</dt><dd>{formatDate(snapshot.checkedAt, locale)}</dd></div>
+          <div><dt>{t('mon.appStarted')}</dt><dd>{formatDate(snapshot.application.startedAt, locale)}</dd></div>
+          <div><dt>{t('mon.processMemory')}</dt><dd>{formatBytes(snapshot.application.memory.rssBytes, t)} RSS · {formatBytes(snapshot.application.memory.heapUsedBytes, t)} heap</dd></div>
+          <div><dt>{t('mon.dbCheck')}</dt><dd>{snapshot.database.latencyMs == null ? t('mon.noAnswer') : t('mon.msValue', { value: snapshot.database.latencyMs })}</dd></div>
+          <div><dt>{t('mon.dbSize')}</dt><dd>{snapshot.database.size.available ? `${formatBytes(snapshot.database.size.databaseBytes, t)} · ${t('mon.measuredShort', { when: formatDate(snapshot.database.size.measuredAt, locale) })}` : t('mon.noDirectConn')}</dd></div>
+          <div><dt>{t('mon.disk')}</dt><dd>{snapshot.disk.available ? t('mon.diskLine', { used: formatBytes(snapshot.disk.usedBytes, t), total: formatBytes(snapshot.disk.totalBytes, t), free: formatBytes(snapshot.disk.availableBytes, t) }) : t('mon.noStatfs')}</dd></div>
+          <div><dt>{t('mon.updatedLabel')}</dt><dd>{formatDate(snapshot.checkedAt, locale)}</dd></div>
         </dl>
       </section>
     </>
@@ -1416,22 +1409,22 @@ export default function ServerMonitorTab() {
       <div className="ops-monitor-header">
         <div>
           <div className="ops-kicker">Operations center</div>
-          <h2>Мониторинг сервера</h2>
-          <p>Состояние сайта, базы данных и диска, Docker, фоновых задач и развёрнутой версии проекта.</p>
+          <h2>{t('mon.title')}</h2>
+          <p>{t('mon.subtitle')}</p>
         </div>
         <div className="ops-header-actions">
           {snapshot && <StatusPill level={snapshot.overall} label={t(LEVEL_META[snapshot.overall].label)} />}
           <label className="ops-auto-refresh">
             <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
-            автообновление 20 с
+            {t('mon.autoRefresh')}
           </label>
           <button type="button" className="ops-refresh-button" disabled={loading} onClick={() => void load()}>
-            <IconRefresh size={14} /> {loading ? 'Обновление…' : 'Обновить'}
+            <IconRefresh size={14} /> {loading ? t('mon.refreshing') : t('mon.refresh')}
           </button>
         </div>
       </div>
       {error && <div className="ops-notice ops-notice-critical"><IconXCircle size={16} /> {error}</div>}
-      {!snapshot && !error && <div className="ops-loading">Собираем безопасный статус сервисов…</div>}
+      {!snapshot && !error && <div className="ops-loading">{t("mon.collecting")}</div>}
       {dashboard}
     </div>
   );
