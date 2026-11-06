@@ -6,6 +6,7 @@ import {
   IconRocket, IconShield, IconTrash, IconX,
 } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { Bulkhead, OutfittingModule, OutfittingShip } from '@/lib/outfitting/types';
 import {
   CATALOG_CATEGORIES, CATALOG_MOUNTS, changeId, groupDeletionReason, type CatalogCommand,
@@ -36,18 +37,20 @@ interface Confirmation {
   commands: CatalogCommand[];
   danger?: boolean;
 }
-const STATUS_LABELS: Record<RowStatus, string> = { source: 'Игровой', modified: 'Изменён', custom: 'Добавлен', deleted: 'Удалён' };
-const ACTION_LABELS = { create: 'Добавление', update: 'Редактирование', delete: 'Удаление', restore: 'Восстановление', reset: 'Сброс к исходному' };
+const STATUS_LABELS: Record<RowStatus, string> = { source: 'ofa.statusSource', modified: 'ofa.statusModified', custom: 'ofa.statusCustom', deleted: 'ofa.statusDeleted' };
+const ACTION_LABELS = { create: 'ofa.actionCreate', update: 'ofa.actionUpdate', delete: 'ofa.actionDeleteCmd', restore: 'ofa.actionRestore', reset: 'ofa.actionReset' };
 
-async function requestSnapshot(init?: RequestInit): Promise<CatalogSnapshot> {
+type Translator = (key: string, params?: Record<string, string | number>) => string;
+
+async function requestSnapshot(t: Translator, init?: RequestInit): Promise<CatalogSnapshot> {
   const response = await authFetch('/api/admin/outfitting', { cache: 'no-store', ...init });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(result.error || `Ошибка API (${response.status})`) as Error & { status: number };
+    const error = new Error(result.error || t('ofa.apiError', { status: response.status })) as Error & { status: number };
     error.status = response.status;
     throw error;
   }
-  if (!result.data?.modules || !result.data?.ships || !Array.isArray(result.changes)) throw new Error('Сервер вернул некорректный каталог');
+  if (!result.data?.modules || !result.data?.ships || !Array.isArray(result.changes)) throw new Error(t('ofa.badCatalog'));
   return result;
 }
 
@@ -75,6 +78,7 @@ function rowsOf(snapshot: CatalogSnapshot, view: CatalogKind): CatalogRow[] {
 }
 
 export default function OutfittingAdmin() {
+  const { t, locale } = useI18n();
   const [snapshot, setSnapshot] = useState<CatalogSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -100,17 +104,17 @@ export default function OutfittingAdmin() {
 
   const refresh = useCallback(async () => {
     setLoading(true); setError('');
-    try { setSnapshot(await requestSnapshot()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось загрузить каталог'); }
+    try { setSnapshot(await requestSnapshot(t)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : t('ofa.loadFailed')); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
   useEffect(() => {
     const controller = new AbortController();
-    requestSnapshot({ signal: controller.signal }).then(setSnapshot).catch((reason: unknown) => {
-      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Не удалось загрузить каталог');
+    requestSnapshot(t, { signal: controller.signal }).then(setSnapshot).catch((reason: unknown) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t('ofa.loadFailed'));
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, []);
+  }, [t]);
   useEffect(() => { setPage(1); setSelected(new Set()); }, [view, category, group, ship, manufacturer, query, level, rating, status, pageSize]);
 
   const data = snapshot?.data;
@@ -157,48 +161,47 @@ export default function OutfittingAdmin() {
   const paged = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   const deletionReason = (row: CatalogRow): string | null => {
-    if (!data) return 'Каталог ещё не загружен';
+    if (!data) return t('ofa.catalogNotLoaded');
     if (row.kind === 'group') return groupDeletionReason(data, row.key);
-    if (row.kind === 'ship' && Object.values(data.ships).filter((entry) => !entry.archived).length <= 1) return 'Нельзя удалить последний доступный корабль';
-    if (row.kind === 'bulkhead' && data.ships[row.owner]?.bulkheads[0]?.id === (row.value as Bulkhead).id) return 'Базовую броню корабля удалять нельзя';
+    if (row.kind === 'ship' && Object.values(data.ships).filter((entry) => !entry.archived).length <= 1) return t('ofa.lastShip');
+    if (row.kind === 'bulkhead' && data.ships[row.owner]?.bulkheads[0]?.id === (row.value as Bulkhead).id) return t('ofa.baseArmour');
     return null;
   };
   const canWrite = !!snapshot && snapshot.storage !== 'source';
   const selectable = paged.filter((row) => row.status !== 'deleted' && !deletionReason(row));
   const allSelected = selectable.length > 0 && selectable.every((row) => selected.has(row.key));
 
-  const mutate = async (commands: CatalogCommand[], message = 'Изменения сохранены и доступны в верфи') => {
-    if (!snapshot) throw new Error('Каталог ещё не загружен');
+  const mutate = async (commands: CatalogCommand[], message = t('ofa.saved')) => {
+    if (!snapshot) throw new Error(t('ofa.catalogNotLoaded'));
     setSaving(true); setError(''); setNotice('');
     try {
-      const next = await requestSnapshot({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: snapshot.revision, commands }) });
+      const next = await requestSnapshot(t, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: snapshot.revision, commands }) });
       setSnapshot(next); setSelected(new Set()); publishOutfittingData(next.data); setNotice(message);
     } catch (reason) {
       if ((reason as Error & { status?: number }).status === 409) {
         // Preserve the form's draft while refreshing the optimistic revision.
-        try { setSnapshot(await requestSnapshot()); } catch { /* Original error remains visible. */ }
+        try { setSnapshot(await requestSnapshot(t)); } catch { /* Original error remains visible. */ }
       }
       throw reason;
     } finally { setSaving(false); }
   };
   const ask = (next: Confirmation) => { setConfirmationError(''); setConfirmation(next); };
-  const remove = (list: CatalogRow[]) => ask({
-    title: list.length === 1 ? `Удалить «${rowName(list[0])}»?` : `Удалить записи (${list.length})?`,
-    text: list.every((row) => row.kind === 'ship')
-      ? 'Корабли исчезнут из выбора новых сборок, но останутся доступны по сохранённым ссылкам вместе с модулями, слотами и бронёй. Их можно вернуть через фильтр «Удалённые».'
-      : 'Записи исчезнут из списка установки в верфи. Они останутся в архиве: их можно восстановить через фильтр «Удалённые». Коды сохранённых сборок не удаляются. У брони сохраняется её индекс и параметры в старых сборках.',
-    label: 'Удалить', danger: true,
-    commands: list.map((row) => ({ action: 'delete', kind: row.kind, key: row.key })),
-  });
-  const restore = (row: CatalogRow, reset = false) => ask({
-    title: reset ? 'Вернуть исходные параметры?' : `Восстановить «${rowName(row)}»?`,
-    text: reset && row.kind === 'ship'
-      ? 'Корпус вернётся к текущему игровому справочнику. Вручную добавленные слоты исчезнут: сборки, использующие их, могут потерять установленное оборудование. Отдельные правки брони сохранятся.'
-      : reset ? 'Ручные правки этой записи будут отменены. Будут использованы параметры из текущего игрового справочника. Правки брони корабля останутся отдельными.'
-        : 'Запись снова станет доступна в верфи с параметрами, которые были у неё перед удалением.',
-    label: reset ? 'Сбросить к исходному' : 'Восстановить',
-    commands: [{ action: reset ? 'reset' : 'restore', kind: row.kind, key: row.key }],
-  });
+    const remove = (list: CatalogRow[]) => ask({
+      title: list.length === 1
+        ? t('ofa.removeTitleOne', { name: rowName(list[0]) })
+        : t('ofa.removeTitleMany', { count: list.length }),
+      text: list.every((row) => row.kind === 'ship') ? t('ofa.removeShipsText') : t('ofa.removeRowsText'),
+      label: t('ofa.deleteDialogLabel'), danger: true,
+      commands: list.map((row) => ({ action: 'delete', kind: row.kind, key: row.key })),
+    });
+    const restore = (row: CatalogRow, reset = false) => ask({
+      title: reset ? t('ofa.resetTitle') : t('ofa.restoreTitle', { name: rowName(row) }),
+      text: reset && row.kind === 'ship'
+        ? t('ofa.resetShipText')
+        : reset ? t('ofa.resetRowText') : t('ofa.restoreText'),
+      label: reset ? t('ofa.resetLabel') : t('ofa.restoreLabel'),
+      commands: [{ action: reset ? 'reset' : 'restore', kind: row.kind, key: row.key }],
+    });
   const create = (copy?: CatalogRow) => {
     if (!data || view === 'history') return;
     const kind = copy?.kind ?? view;
@@ -212,7 +215,7 @@ export default function OutfittingAdmin() {
       if (!template) return;
       const hull = structuredClone(template);
       hull.id = id; delete hull.archived;
-      hull.properties.name = copy ? `${hull.properties.name} — копия` : '';
+      hull.properties.name = copy ? `${hull.properties.name}${t('ofa.copySuffix')}` : '';
       for (const section of ['hardpoints', 'internal'] as const) {
         // A new ship ID has no old build links: omit archived slots and compact
         // the factory modules with them, unlike updates to an existing hull.
@@ -224,7 +227,7 @@ export default function OutfittingAdmin() {
       hull.bulkheads = hull.bulkheads.filter((entry) => !entry.archived).map((entry) => { const next = { ...entry }; delete next.archived; return next; });
       value = hull;
     } else if (copy) {
-      value = { ...structuredClone(copy.value), name: `${rowName(copy)} — копия` };
+      value = { ...structuredClone(copy.value), name: `${rowName(copy)}${t('ofa.copySuffix')}` };
       if (kind === 'group') { key = id; if ((value as CatalogGroup).category === 'core') (value as CatalogGroup).category = 'internal'; }
       else Object.assign(value, { id });
     } else if (kind === 'group') { key = id; value = { name: '', category: category === 'all' || category === 'core' ? 'internal' : category as CatalogGroup['category'] }; }
@@ -248,52 +251,52 @@ export default function OutfittingAdmin() {
   };
 
   const renderActions = (row: CatalogRow) => <div className={styles.rowActions}>
-    {row.status === 'deleted' ? <button type="button" disabled={!canWrite || saving} className={styles.restoreButton} onClick={() => restore(row)} aria-label={`Восстановить ${rowName(row)}`}><IconRefresh size={14} color="currentColor" /> Восстановить</button> : <>
-      <button type="button" className={styles.editButton} disabled={!canWrite || saving} onClick={() => setEditor({ kind: row.kind, key: row.key, value: row.value, mode: 'update', fromSource: row.status === 'source' || row.change?.fromSource })} aria-label={`Редактировать ${rowName(row)}`}><IconEdit size={14} color="currentColor" /><span>Изменить</span></button>
-      <button type="button" className={styles.iconButton} disabled={!canWrite || saving} title="Создать копию" aria-label={`Копировать ${rowName(row)}`} onClick={() => create(row)}><IconCopy size={15} color="currentColor" /></button>
-      <button type="button" className={`${styles.iconButton} ${styles.dangerButton}`} disabled={!canWrite || saving || !!deletionReason(row)} title={deletionReason(row) || 'Удалить запись'} aria-label={`Удалить ${rowName(row)}`} onClick={() => remove([row])}><IconTrash size={15} color="currentColor" /></button>
+    {row.status === 'deleted' ? <button type="button" disabled={!canWrite || saving} className={styles.restoreButton} onClick={() => restore(row)} aria-label={t('ofa.restoreAria', { name: rowName(row) })}><IconRefresh size={14} color="currentColor" /> {t('ofa.restoreLabel')}</button> : <>
+      <button type="button" className={styles.editButton} disabled={!canWrite || saving} onClick={() => setEditor({ kind: row.kind, key: row.key, value: row.value, mode: 'update', fromSource: row.status === 'source' || row.change?.fromSource })} aria-label={t('ofa.editAria', { name: rowName(row) })}><IconEdit size={14} color="currentColor" /><span>{t('ofa.editLabel')}</span></button>
+      <button type="button" className={styles.iconButton} disabled={!canWrite || saving} title={t('ofa.copyTitle')} aria-label={t('ofa.copyAria', { name: rowName(row) })} onClick={() => create(row)}><IconCopy size={15} color="currentColor" /></button>
+      <button type="button" className={`${styles.iconButton} ${styles.dangerButton}`} disabled={!canWrite || saving || !!deletionReason(row)} title={deletionReason(row) || t('ofa.deleteTitle')} aria-label={t('ofa.deleteAria', { name: rowName(row) })} onClick={() => remove([row])}><IconTrash size={15} color="currentColor" /></button>
     </>}
-    {row.change?.fromSource && <button type="button" className={styles.iconButton} disabled={!canWrite || saving} title="Вернуть исходные параметры" aria-label={`Сбросить изменения ${rowName(row)}`} onClick={() => restore(row, true)}><IconRefresh size={14} color="currentColor" /></button>}
+    {row.change?.fromSource && <button type="button" className={styles.iconButton} disabled={!canWrite || saving} title={t('ofa.resetTitleBtn')} aria-label={t('ofa.resetAria', { name: rowName(row) })} onClick={() => restore(row, true)}><IconRefresh size={14} color="currentColor" /></button>}
   </div>;
-  const statusBadge = (row: CatalogRow) => <span className={`${styles.badge} ${styles[row.status]}`}>{STATUS_LABELS[row.status]}</span>;
+  const statusBadge = (row: CatalogRow) => <span className={`${styles.badge} ${styles[row.status]}`}>{t(STATUS_LABELS[row.status])}</span>;
 
-  return <section className={styles.root} aria-label="Управление верфью">
+  return <section className={styles.root} aria-label={t('ofa.sectionLabel')}>
     <header className={styles.header}>
-      <div className={styles.titleBlock}><span className={styles.sectionIcon}><IconAnchor size={24} color="currentColor" /></span><div><span className={styles.eyebrow}>Каталог оборудования / Shipyard</span><h2>Управление верфью</h2><p>Корабли, модули, группы и броня. Все изменения применяются к конструктору сборок.</p></div></div>
-      <a className={styles.secondaryButton} href="/outfitting" target="_blank" rel="noopener noreferrer"><IconExternalLink size={15} color="currentColor" /> Открыть верфь</a>
+      <div className={styles.titleBlock}><span className={styles.sectionIcon}><IconAnchor size={24} color="currentColor" /></span><div><span className={styles.eyebrow}>{t('ofa.eyebrow')}</span><h2>{t('ofa.title')}</h2><p>{t('ofa.subtitle')}</p></div></div>
+      <a className={styles.secondaryButton} href="/outfitting" target="_blank" rel="noopener noreferrer"><IconExternalLink size={15} color="currentColor" /> {t('ofa.openYard')}</a>
     </header>
     {snapshot && <>
       <div className={styles.stats}>
         {[
-          { label: 'Модули', value: Object.values(snapshot.data.modules).reduce((sum, list) => sum + list.length, 0), icon: IconCpu },
-          { label: 'Группы', value: Object.keys(snapshot.data.groups).length, icon: IconLayers },
-          { label: 'Корабли', value: Object.values(snapshot.data.ships).filter((item) => !item.archived).length, icon: IconRocket },
-          { label: 'Броня кораблей', value: Object.values(snapshot.data.ships).reduce((sum, item) => sum + (item.archived ? 0 : item.bulkheads.filter((entry) => !entry.archived).length), 0), icon: IconShield },
-          { label: 'Ручные правки', value: snapshot.changes.length, icon: IconEdit },
-        ].map((stat) => <div key={stat.label} className={styles.stat}><stat.icon size={18} color="currentColor" /><strong>{stat.value.toLocaleString('ru-RU')}</strong><span>{stat.label}</span></div>)}
+          { label: t('ofa.statModules'), value: Object.values(snapshot.data.modules).reduce((sum, list) => sum + list.length, 0), icon: IconCpu },
+          { label: t('ofa.statGroups'), value: Object.keys(snapshot.data.groups).length, icon: IconLayers },
+          { label: t('ofa.statShips'), value: Object.values(snapshot.data.ships).filter((item) => !item.archived).length, icon: IconRocket },
+          { label: t('ofa.statBulkheads'), value: Object.values(snapshot.data.ships).reduce((sum, item) => sum + (item.archived ? 0 : item.bulkheads.filter((entry) => !entry.archived).length), 0), icon: IconShield },
+          { label: t('ofa.statChanges'), value: snapshot.changes.length, icon: IconEdit },
+        ].map((stat) => <div key={stat.label} className={styles.stat}><stat.icon size={18} color="currentColor" /><strong>{stat.value.toLocaleString(locale)}</strong><span>{stat.label}</span></div>)}
       </div>
-      <div className={styles.meta}><span><IconDatabase size={13} color="currentColor" /> {snapshot.storage === 'local' ? 'Локальный режим — изменения только в этом окружении' : snapshot.storage === 'source' ? 'Исходный справочник — сохранение не настроено' : 'Supabase / постоянное хранилище'}</span><span>Ревизия {snapshot.revision} · {snapshot.updatedAt ? new Date(snapshot.updatedAt).toLocaleString('ru-RU') : 'Без ручных изменений'}</span></div>
-      {snapshot.storage === 'source' && <div className={styles.warning}>Для сохранения настройте SUPABASE_SERVICE_ROLE_KEY и примените миграцию 20261010010000_outfitting_catalog.sql. Исходный справочник доступен для просмотра.</div>}
+      <div className={styles.meta}><span><IconDatabase size={13} color="currentColor" /> {snapshot.storage === 'local' ? t('ofa.storageLocal') : snapshot.storage === 'source' ? t('ofa.storageSource') : t('ofa.storageSupabase')}</span><span>{t('ofa.revision', { revision: snapshot.revision, updated: snapshot.updatedAt ? new Date(snapshot.updatedAt).toLocaleString(locale) : t('ofa.noChanges') })}</span></div>
+      {snapshot.storage === 'source' && <div className={styles.warning}>{t('ofa.sourceWarning')}</div>}
     </>}
-    {error && <div role="alert" className={styles.errorBanner}>{error}<button type="button" className={styles.secondaryButton} onClick={() => void refresh()} disabled={loading}>Повторить</button></div>}
-    {notice && <div role="status" className={styles.successBanner}><span>{notice}</span><button type="button" className={styles.iconButton} aria-label="Скрыть уведомление" onClick={() => setNotice('')}><IconX size={14} color="currentColor" /></button></div>}
+    {error && <div role="alert" className={styles.errorBanner}>{error}<button type="button" className={styles.secondaryButton} onClick={() => void refresh()} disabled={loading}>{t('ofa.retry')}</button></div>}
+    {notice && <div role="status" className={styles.successBanner}><span>{notice}</span><button type="button" className={styles.iconButton} aria-label={t('ofa.hideNotice')} onClick={() => setNotice('')}><IconX size={14} color="currentColor" /></button></div>}
     <div className={styles.toolbar}>
-      <div className={styles.viewTabs} role="tablist" aria-label="Каталоги верфи">
-        {([{ key: 'module', label: 'Модули', icon: IconCpu }, { key: 'group', label: 'Группы', icon: IconLayers }, { key: 'ship', label: 'Корабли', icon: IconRocket }, { key: 'bulkhead', label: 'Броня', icon: IconShield }, { key: 'history', label: 'Журнал', icon: IconClock }] as const).map((item) =>
+      <div className={styles.viewTabs} role="tablist" aria-label={t('ofa.tabsLabel')}>
+        {([{ key: 'module', label: t('ofa.statModules'), icon: IconCpu }, { key: 'group', label: t('ofa.statGroups'), icon: IconLayers }, { key: 'ship', label: t('ofa.statShips'), icon: IconRocket }, { key: 'bulkhead', label: t('ofa.tabBulkhead'), icon: IconShield }, { key: 'history', label: t('ofa.tabHistory'), icon: IconClock }] as const).map((item) =>
           <button key={item.key} type="button" role="tab" aria-selected={view === item.key} aria-controls="shipyard-catalog-panel" className={view === item.key ? styles.activeTab : styles.tabButton} onClick={() => changeView(item.key)}><item.icon size={15} color="currentColor" />{item.label}</button>)}
       </div>
       <div className={styles.actions}>
-        <button type="button" className={styles.iconButton} disabled={loading || saving} onClick={() => void refresh()} title="Обновить каталог" aria-label="Обновить каталог"><IconRefresh size={16} color="currentColor" /></button>
-        <button type="button" className={styles.secondaryButton} onClick={exportCatalog} disabled={!snapshot || loading} title="Скачать полный справочник с текущими изменениями"><IconDownload size={15} color="currentColor" /> Экспорт JSON</button>
-        {view !== 'history' && <button type="button" className={styles.primaryButton} disabled={!canWrite || loading || saving} onClick={() => create()}><IconPlus size={16} color="currentColor" />{view === 'module' ? 'Добавить модуль' : view === 'group' ? 'Добавить группу' : view === 'ship' ? 'Добавить корабль' : 'Добавить броню'}</button>}
+        <button type="button" className={styles.iconButton} disabled={loading || saving} onClick={() => void refresh()} title={t('ofa.refresh')} aria-label={t('ofa.refresh')}><IconRefresh size={16} color="currentColor" /></button>
+        <button type="button" className={styles.secondaryButton} onClick={exportCatalog} disabled={!snapshot || loading} title={t('ofa.exportTitle')}><IconDownload size={15} color="currentColor" /> {t('ofa.exportJson')}</button>
+        {view !== 'history' && <button type="button" className={styles.primaryButton} disabled={!canWrite || loading || saving} onClick={() => create()}><IconPlus size={16} color="currentColor" />{view === 'module' ? t('ofa.addModule') : view === 'group' ? t('ofa.addGroup') : view === 'ship' ? t('ofa.addShip') : t('ofa.addBulkhead')}</button>}
       </div>
     </div>
-    {loading && !snapshot ? <div className={styles.empty} role="status">Загрузка каталога верфи…</div> : snapshot && <div id="shipyard-catalog-panel" role="tabpanel" aria-label={view === 'history' ? 'Журнал изменений' : 'Каталог'}>
+    {loading && !snapshot ? <div className={styles.empty} role="status">{t('ofa.loading')}</div> : snapshot && <div id="shipyard-catalog-panel" role="tabpanel" aria-label={view === 'history' ? t('ofa.historyHeading') : t('ofa.catalogLabel')}>
       {view === 'history' ? <>
-        <div className={styles.panelHeading}><h3>Журнал изменений</h3><span>Последние 100 операций</span></div>
-        {snapshot.history.length ? <div className={styles.tableContainer}><table className={styles.table}><thead><tr><th>Дата / администратор</th><th>Действие</th><th>Запись</th></tr></thead><tbody>
-          {snapshot.history.map((entry, index) => <tr key={`${entry.at}-${index}`}><td data-label="Дата / администратор"><span>{new Date(entry.at).toLocaleString('ru-RU')}</span><small>{entry.actor}</small></td><td data-label="Действие">{ACTION_LABELS[entry.action]}</td><td data-label="Запись">{entry.label}<small>{entry.kind} / {entry.key}</small></td></tr>)}
-        </tbody></table></div> : <div className={styles.empty}><IconClock size={28} color="currentColor" /><h3>Журнал пока пуст</h3><p>Добавления, изменения, удаления и восстановления будут показаны здесь.</p></div>}
+        <div className={styles.panelHeading}><h3>{t('ofa.historyHeading')}</h3><span>{t('ofa.historyHint')}</span></div>
+        {snapshot.history.length ? <div className={styles.tableContainer}><table className={styles.table}><thead><tr><th>{t('ofa.colDate')}</th><th>{t('ofa.colAction')}</th><th>{t('ofa.colRecord')}</th></tr></thead><tbody>
+          {snapshot.history.map((entry, index) => <tr key={`${entry.at}-${index}`}><td data-label={t('ofa.colDate')}><span>{new Date(entry.at).toLocaleString(locale)}</span><small>{entry.actor}</small></td><td data-label={t('ofa.colAction')}>{t(ACTION_LABELS[entry.action])}</td><td data-label="Запись">{entry.label}<small>{entry.kind} / {entry.key}</small></td></tr>)}
+        </tbody></table></div> : <div className={styles.empty}><IconClock size={28} color="currentColor" /><h3>{t('ofa.historyEmpty')}</h3><p>{t('ofa.historyEmptyHint')}</p></div>}
       </> : <>
         {(view === 'module' || view === 'group') && <div className={styles.categoryBar} aria-label="Категории модулей">
           <button type="button" aria-pressed={category === 'all'} className={category === 'all' ? styles.activeCategory : styles.categoryButton} onClick={() => { setCategory('all'); setGroup('all'); }}>Все категории<span>{rows.filter((row) => row.status !== 'deleted').length}</span></button>
@@ -309,7 +312,7 @@ export default function OutfittingAdmin() {
           <label className={styles.field}><span>Состояние</span><select aria-label="Фильтр состояния" value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">Доступные</option><option value="all">Все, включая удалённые</option><option value="source">Без изменений</option><option value="modified">Изменённые</option><option value="custom">Добавленные</option><option value="deleted">Удалённые</option></select></label>
         </div>
         <div className={styles.listToolbar}>
-          <span className={styles.resultCount}>Найдено <strong>{filtered.length.toLocaleString('ru-RU')}</strong> / {rows.length.toLocaleString('ru-RU')}</span>
+          <span className={styles.resultCount}>Найдено <strong>{filtered.length.toLocaleString(locale)}</strong> / {rows.length.toLocaleString(locale)}</span>
           {view !== 'group' && <label className={styles.mobileSelectAll}><input type="checkbox" aria-label="Выбрать все записи на странице" checked={allSelected} disabled={!canWrite || selectable.length === 0} onChange={(event) => setSelected((previous) => { const next = new Set(previous); selectable.forEach((row) => event.target.checked ? next.add(row.key) : next.delete(row.key)); return next; })} /> Выбрать страницу</label>}
           <div className={styles.sortActions}><label>Сортировка<select aria-label="Сортировка" value={sort} onChange={(event) => setSort(event.target.value)}><option value="group">{view === 'bulkhead' ? 'По кораблю' : view === 'ship' ? 'По производителю' : 'По группе'}</option><option value="name">По названию</option>{view !== 'group' && <option value="cost">По цене</option>}{(view === 'module' || view === 'ship') && <option value="class">{view === 'ship' ? 'По размеру' : 'По классу'}</option>}</select></label><button type="button" className={styles.iconButton} title={direction === 'asc' ? 'По возрастанию' : 'По убыванию'} aria-label="Изменить направление сортировки" onClick={() => setDirection(direction === 'asc' ? 'desc' : 'asc')}>{direction === 'asc' ? '↑' : '↓'}</button>
             <button type="button" className={styles.quietButton} onClick={clearFilters}>Сбросить фильтры</button></div>
@@ -343,17 +346,17 @@ export default function OutfittingAdmin() {
         </footer>
       </>}
     </div>}
-    <p className={styles.sourceNote}>Источник: {snapshot?.data.source ?? 'EDCD/coriolis-data'}. Правки хранятся отдельно от игровых данных; обновление исходного справочника их не перезаписывает.</p>
+    <p className={styles.sourceNote}>{t('ofa.sourceNote', { source: snapshot?.data.source ?? 'EDCD/coriolis-data' })}</p>
     {editor && data && (editor.kind === 'ship'
       ? <OutfittingShipEditor key={`${editor.kind}/${editor.key}/${editor.mode}`} item={editor} data={data} onClose={() => setEditor(null)} onSave={saveEditor} />
       : <OutfittingEditor key={`${editor.kind}/${editor.key}/${editor.mode}`} item={editor} data={data} onClose={() => setEditor(null)} onSave={saveEditor} />)}
-    {confirmation && <OutfittingDialog title={confirmation.title} eyebrow="Подтверждение действия" compact busy={saving} onClose={() => { if (!saving) setConfirmation(null); }}>
+    {confirmation && <OutfittingDialog title={confirmation.title} eyebrow={t('ofa.confirmEyebrow')} compact busy={saving} onClose={() => { if (!saving) setConfirmation(null); }}>
       <div className={styles.confirmationBody}><p>{confirmation.text}</p>{confirmation.commands.length > 1 && <ul>{confirmation.commands.map((command) => <li key={command.key}>{command.key}</li>)}</ul>}{confirmationError && <div role="alert" className={styles.formError}>{confirmationError}</div>}</div>
-      <footer className={styles.dialogFooter}><div className={styles.actions}><button type="button" disabled={saving} className={styles.secondaryButton} onClick={() => setConfirmation(null)}>Отмена</button><button type="button" disabled={saving} className={confirmation.danger ? styles.dangerButton : styles.primaryButton} onClick={async () => {
+      <footer className={styles.dialogFooter}><div className={styles.actions}><button type="button" disabled={saving} className={styles.secondaryButton} onClick={() => setConfirmation(null)}>{t('ofa.cancel')}</button><button type="button" disabled={saving} className={confirmation.danger ? styles.dangerButton : styles.primaryButton} onClick={async () => {
         setConfirmationError('');
         try { await mutate(confirmation.commands); setConfirmation(null); }
-        catch (reason) { setConfirmationError(reason instanceof Error ? reason.message : 'Операция не выполнена'); }
-      }}>{saving ? 'Выполнение…' : confirmation.label}</button></div></footer>
+        catch (reason) { setConfirmationError(reason instanceof Error ? reason.message : t('ofa.opFailed')); }
+      }}>{saving ? t('ofa.applying') : confirmation.label}</button></div></footer>
     </OutfittingDialog>}
   </section>;
 }
