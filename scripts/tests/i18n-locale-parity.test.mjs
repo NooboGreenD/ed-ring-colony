@@ -36,6 +36,7 @@ const DICTIONARIES = [
   'outfitting.ts',
   'outfittingAnalysis.ts',
   'outfittingSpecials.ts',
+  'orreryTips.ts',
 ];
 
 const LOCALES = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];

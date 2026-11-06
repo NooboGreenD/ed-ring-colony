@@ -38,6 +38,7 @@ import {
   type PickInfo,
 } from './scene';
 import { formatGravity, formatLightSeconds, formatNumber, formatPeriod, formatRadius, formatTons } from './palette';
+import { discoveredByLabel, orreryTipTranslations } from '../i18n/orreryTips';
 import type { OrreryViewBody, OrreryViewPayload, OrreryViewStructure } from './types';
 
 /** Объект сцены и его позиция из скана (в координатах пакета). */
@@ -55,6 +56,28 @@ interface MotionNode {
 export type FilterMode = 'all' | 'bodies' | 'landable' | 'bio' | 'signals' | 'sites' | 'rings' | 'unscanned';
 export type LabelsMode = 'auto' | 'all' | 'none' | 'focus';
 
+/**
+ * Переводчик подписей вьюера. В React-обвязке сюда приходит `t` из
+ * `useI18n()`; вне React (тесты, экспорт) остаётся русский оригинал ключа.
+ */
+export type ViewerTranslate = (key: string, params?: Record<string, string | number>) => string;
+
+/** Подстановка `{name}` в текст шаблона. */
+function fillPlaceholders(template: string, params?: Record<string, string | number>): string {
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => (
+    name in params ? String(params[name]) : match
+  ));
+}
+
+/**
+ * Русский текст по умолчанию: вьюер можно поднять без React (тесты, экспорт),
+ * и тогда подсказки должны читаться, а не показывать ключи `orrery.tip*`.
+ */
+const sourceTranslate: ViewerTranslate = (key, params) => (
+  fillPlaceholders(orreryTipTranslations.ru?.[key] ?? key, params)
+);
+
 export interface OrreryViewerOptions {
   focus?: string;
   zoom?: ZoomLevel;
@@ -68,6 +91,8 @@ export interface OrreryViewerOptions {
   autoRotate?: boolean;
   /** Тема подписей и подсказок. */
   theme?: 'dark' | 'light';
+  /** Переводчик подсказок: ключи `orrery.tip*` (см. `i18n/orreryTips.ts`). */
+  translate?: ViewerTranslate;
   onSelect?: (pick: PickInfo | null) => void;
   onHover?: (pick: PickInfo | null) => void;
   onState?: (state: OrreryViewerState) => void;
@@ -104,6 +129,8 @@ export interface OrreryViewer {
   setFilter: (filter: FilterMode) => void;
   setLabels: (mode: LabelsMode) => void;
   setMotion: (playing: boolean, speed?: number) => void;
+  /** Сменить переводчик подсказок при переключении языка. */
+  setTranslate(translate?: ViewerTranslate): void;
   /** Сбросить время к моменту скана. */
   resetTime: () => void;
   fit: () => void;
@@ -166,24 +193,27 @@ function esc(value: unknown): string {
 }
 
 /** Подсказка по телу: факты, обитаемая зона, кольца, постройки. */
-export function bodyTooltipHtml(body: OrreryViewBody, structures: OrreryViewStructure[]): string {
+export function bodyTooltipHtml(body: OrreryViewBody, structures: OrreryViewStructure[],
+                                 t: ViewerTranslate = sourceTranslate): string {
   const rows: [string, string][] = [];
-  const kindLabel = body.kind === 'star' ? 'звезда' : body.kind === 'moon' ? 'луна' : 'планета';
-  if (body.cls) rows.push(['Класс', body.cls]);
-  if (body.distanceLs > 0) rows.push(['От входа', formatLightSeconds(body.distanceLs)]);
-  if (body.orbitLs > 0 && body.kind !== 'star') rows.push(['Полуось', formatLightSeconds(body.orbitLs)]);
-  if (body.radiusM > 0) rows.push(['Радиус', formatRadius(body.radiusM)]);
-  if (body.gravity > 0) rows.push(['Гравитация', formatGravity(body.gravity)]);
-  if (body.tempK > 0) rows.push(['Температура', `${formatNumber(body.tempK, 0)} K`]);
-  if (body.atmosphere) rows.push(['Атмосфера', body.atmosphere]);
-  if (body.volcanism) rows.push(['Вулканизм', body.volcanism]);
-  if (body.elements.real && body.elements.periodDays > 0) rows.push(['Период', formatPeriod(body.elements.periodDays)]);
-  if (body.habitableBand === 'habitable') rows.push(['Зона', 'в обитаемой зоне ★']);
-  else if (body.habitableBand === 'inner') rows.push(['Зона', 'ближе обитаемой зоны']);
-  else if (body.habitableBand === 'outer') rows.push(['Зона', 'дальше обитаемой зоны']);
+  const kindKey = body.kind === 'star' ? 'orrery.tipKindStar'
+    : body.kind === 'moon' ? 'orrery.tipKindMoon' : 'orrery.tipKindPlanet';
+  const kindLabel = t(kindKey);
+  if (body.cls) rows.push([t('orrery.tipClass'), body.cls]);
+  if (body.distanceLs > 0) rows.push([t('orrery.tipDistance'), formatLightSeconds(body.distanceLs)]);
+  if (body.orbitLs > 0 && body.kind !== 'star') rows.push([t('orrery.tipSemiMajor'), formatLightSeconds(body.orbitLs)]);
+  if (body.radiusM > 0) rows.push([t('orrery.tipRadius'), formatRadius(body.radiusM)]);
+  if (body.gravity > 0) rows.push([t('orrery.tipGravity'), formatGravity(body.gravity)]);
+  if (body.tempK > 0) rows.push([t('orrery.tipTemperature'), `${formatNumber(body.tempK, 0)} K`]);
+  if (body.atmosphere) rows.push([t('orrery.tipAtmosphere'), body.atmosphere]);
+  if (body.volcanism) rows.push([t('orrery.tipVolcanism'), body.volcanism]);
+  if (body.elements.real && body.elements.periodDays > 0) rows.push([t('orrery.tipPeriod'), formatPeriod(body.elements.periodDays)]);
+  if (body.habitableBand === 'habitable') rows.push([t('orrery.tipZone'), t('orrery.tipZoneHabitable')]);
+  else if (body.habitableBand === 'inner') rows.push([t('orrery.tipZone'), t('orrery.tipZoneInner')]);
+  else if (body.habitableBand === 'outer') rows.push([t('orrery.tipZone'), t('orrery.tipZoneOuter')]);
 
   const tags: string[] = [];
-  if (body.landable) tags.push('🛬 посадка');
+  if (body.landable) tags.push(t('orrery.tipLandable'));
   // Сигналы тела — по видам: биология, геология, следы людей, стражи,
   // таргоиды. Раньше в подсказке была только биология, и остальные находки
   // приходилось искать в игре вручную.
@@ -191,12 +221,12 @@ export function bodyTooltipHtml(body: OrreryViewBody, structures: OrreryViewStru
     const meta = SIGNAL_META[kind];
     tags.push(`${meta.icon} ${meta.short}: ${body.signals[kind]}`);
   }
-  if (body.signals.genuses.length) rows.push(['Роды', body.signals.genuses.slice(0, 4).join(', ')]);
-  if (body.rings.length) tags.push(`💍 колец: ${body.rings.length}`);
-  if (body.mapped) tags.push('🗺 карта');
-  if (!body.scanned) tags.push('❔ нет подробного скана');
-  if (body.firstDiscoveredBy) tags.push(`🧭 ${body.firstDiscoveredBy}`);
-  if (body.firstFootfallBy) tags.push(`👣 ${body.firstFootfallBy}`);
+  if (body.signals.genuses.length) rows.push([t('orrery.tipGenuses'), body.signals.genuses.slice(0, 4).join(', ')]);
+  if (body.rings.length) tags.push(t('orrery.tipRings', { count: body.rings.length }));
+  if (body.mapped) tags.push(t('orrery.tipMapped'));
+  if (!body.scanned) tags.push(t('orrery.tipNoScan'));
+  if (body.firstDiscoveredBy) tags.push(`🧭 ${discoveredByLabel(body.firstDiscoveredBy, t)}`);
+  if (body.firstFootfallBy) tags.push(`👣 ${discoveredByLabel(body.firstFootfallBy, t)}`);
 
   const structuresHtml = structures.length
     ? `<div style="margin-top:6px">${structures.map((structure) => {
@@ -205,10 +235,10 @@ export function bodyTooltipHtml(body: OrreryViewBody, structures: OrreryViewStru
       return `<div style="margin-top:4px">
         <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px">
           <span>${esc(structure.name)}</span>
-          <b style="color:${color}">${structure.complete ? 'готово' : `${percent}%`}</b>
+          <b style="color:${color}">${structure.complete ? esc(t('orrery.tipReady')) : `${percent}%`}</b>
         </div>
         <div class="orrery3d-bar"><i style="width:${percent}%;background:${color}"></i></div>
-        ${structure.remainingTons > 0 ? `<div style="font-size:10px;color:#8fa3bf">осталось ${formatTons(structure.remainingTons)}</div>` : ''}
+        ${structure.remainingTons > 0 ? `<div style="font-size:10px;color:#8fa3bf">${esc(t('orrery.tipLeftInline', { tons: formatTons(structure.remainingTons) }))}</div>` : ''}
       </div>`;
     }).join('')}</div>`
     : '';
@@ -223,7 +253,8 @@ export function bodyTooltipHtml(body: OrreryViewBody, structures: OrreryViewStru
 }
 
 /** Подсказка по постройке: тип, прогресс, остаток груза и ресурсы. */
-export function structureTooltipHtml(structure: OrreryViewStructure): string {
+export function structureTooltipHtml(structure: OrreryViewStructure,
+                                     t: ViewerTranslate = sourceTranslate): string {
   const color = structureColor(structure);
   const percent = Math.round(structure.progress);
   const resources = structure.resources
@@ -233,12 +264,12 @@ export function structureTooltipHtml(structure: OrreryViewStructure): string {
     .join('');
   return `
     <h4>${esc(structure.name)}</h4>
-    <div class="orrery3d-tip-sub">${esc(structure.type || 'постройка')}${structure.body ? ` · ${esc(structure.body)}` : ''}</div>
+    <div class="orrery3d-tip-sub">${esc(structure.type || t('orrery.tipStructure'))}${structure.body ? ` · ${esc(structure.body)}` : ''}</div>
     <div class="orrery3d-bar"><i style="width:${percent}%;background:${color}"></i></div>
     <dl>
-      <dt>Готовность</dt><dd>${structure.complete ? 'завершено' : `${percent}%`}</dd>
-      ${structure.requiredTons > 0 ? `<dt>Доставлено</dt><dd>${formatTons(structure.providedTons)} из ${formatTons(structure.requiredTons)}</dd>` : ''}
-      ${structure.remainingTons > 0 ? `<dt>Осталось</dt><dd>${formatTons(structure.remainingTons)}</dd>` : ''}
+      <dt>${esc(t('orrery.tipProgress'))}</dt><dd>${structure.complete ? esc(t('orrery.tipDone')) : `${percent}%`}</dd>
+      ${structure.requiredTons > 0 ? `<dt>${esc(t('orrery.tipDelivered'))}</dt><dd>${esc(t('orrery.tipDeliveredOf', { provided: formatTons(structure.providedTons), required: formatTons(structure.requiredTons) }))}</dd>` : ''}
+      ${structure.remainingTons > 0 ? `<dt>${esc(t('orrery.tipLeft'))}</dt><dd>${formatTons(structure.remainingTons)}</dd>` : ''}
       ${resources}
     </dl>
   `;
@@ -259,6 +290,9 @@ export function createOrreryViewer(
   container.classList.add('orrery3d-root');
 
   let currentPayload = payload;
+  // Переводчик подписей: приходит из React-обвязки (`t` из `useI18n()`),
+  // меняется на месте при переключении языка — вьюер не пересоздаётся.
+  let translate = options.translate ?? sourceTranslate;
   let scene: OrrerySceneModel | null = null;
   const listeners: Record<'select' | 'hover' | 'state', Set<(payload: any) => void>> = {
     select: new Set(),
@@ -304,7 +338,7 @@ export function createOrreryViewer(
     renderer = null;
     const fallback = container.ownerDocument.createElement('div');
     fallback.className = 'orrery3d-fallback';
-    fallback.textContent = '3D-карта недоступна: браузер не дал WebGL. Список тел и построек работает ниже.';
+    fallback.textContent = translate('orrery.webglUnavailable');
     container.appendChild(fallback);
   }
 
@@ -327,6 +361,9 @@ export function createOrreryViewer(
   const clock = new THREE.Clock();
   const tempVector = new THREE.Vector3();
   let hover: PickInfo | null = null;
+  // Последняя позиция курсора: по ней перерисовывается открытая подсказка,
+  // когда меняется язык (см. `setTranslate`).
+  let lastPointer = { x: 0, y: 0 };
   let pointerInside = false;
   /**
    * Модель движения: что и вокруг чего ходит.
@@ -372,7 +409,7 @@ export function createOrreryViewer(
     // Сцена собрана по позициям из скана: если время уже идёт, тела нужно
     // сразу поставить туда, где они на текущий момент.
     if (state.timeDays !== 0) applyMotion();
-    setToast(currentPayload.bodies.length ? '' : 'Сканов этого тела/системы пока нет — карта пустая.');
+    setToast(currentPayload.bodies.length ? '' : translate('orrery.emptyScans'));
     if (previousFocus && !currentPayload.bodies.some((body) => body.name === previousFocus)) {
       state.focus = '';
       state.zoom = 0;
@@ -677,6 +714,7 @@ export function createOrreryViewer(
       tooltip.innerHTML = bodyTooltipHtml(
         body,
         currentPayload.structures.filter((structure) => structure.body === body.name),
+        translate,
       );
     } else {
       const structure = currentPayload.structures.find((candidate) => candidate.id === info.name);
@@ -684,7 +722,7 @@ export function createOrreryViewer(
         tooltip.hidden = true;
         return;
       }
-      tooltip.innerHTML = structureTooltipHtml(structure);
+      tooltip.innerHTML = structureTooltipHtml(structure, translate);
     }
     tooltip.hidden = false;
     const box = container.getBoundingClientRect();
@@ -697,6 +735,7 @@ export function createOrreryViewer(
   }
 
   function setHover(info: PickInfo | null, clientX = 0, clientY = 0) {
+    lastPointer = { x: clientX, y: clientY };
     const same = (hover?.kind === info?.kind) && (hover?.name === info?.name);
     if (!same) {
       hover = info;
@@ -862,6 +901,11 @@ export function createOrreryViewer(
 
   return {
     setPayload,
+    setTranslate(next?: ViewerTranslate) {
+      translate = next ?? sourceTranslate;
+      // Подсказка уже открыта на экране: перерисовываем её на новом языке.
+      if (hover) showTooltip(hover, lastPointer.x, lastPointer.y);
+    },
     focus(target: string, zoom?: ZoomLevel) {
       const exists = currentPayload.bodies.some((body) => body.name === target);
       state.focus = exists ? target : '';

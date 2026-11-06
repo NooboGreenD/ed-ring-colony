@@ -24,6 +24,7 @@ import { SCENE_COLORS, STRUCTURE_COLORS, formatLightSeconds, formatTons } from '
 import type { LayerName } from '@/lib/orrery3d/scene';
 import type { FilterMode, LabelsMode, OrreryViewer, OrreryViewerState } from '@/lib/orrery3d/viewer';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { discoveredByLabel } from '@/lib/i18n/orreryTips';
 import type { OrreryViewBody, OrreryViewPayload } from '@/lib/orrery3d/types';
 import SystemBodyRail from './SystemBodyRail';
 
@@ -191,6 +192,9 @@ export default function SystemOrrery3D({
           focus: focusTarget ?? '',
           zoom: focusTarget ? 2 : 0,
           tooltips: true,
+          // Подсказки вьюера (`orrery.tip*`) собираются вне React: переводчик
+          // передаём функцией, иначе на других языках они оставались русскими.
+          translate: t,
           onSelect: (pick) => {
             const name = pick ? (pick.kind === 'body' ? pick.name : pick.body ?? '') : '';
             setState((previous) => ({ ...previous, focus: name, zoom: name ? (previous.zoom || 2) : 0 }));
@@ -218,6 +222,12 @@ export default function SystemOrrery3D({
     // Пересоздаём вьюер только при смене системы: остальное — setPayload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemName]);
+
+  // Язык переключили — вьюер получает новый переводчик. Пересоздавать его
+  // нельзя: потеряются камера, время и выбранное тело.
+  useEffect(() => {
+    viewerRef.current?.setTranslate(t);
+  }, [t]);
 
   // Данные обновились (новые сканы, изменившиеся постройки) — сцена
   // пересобирается, но камера остаётся там, куда её поставил пользователь.
@@ -624,8 +634,8 @@ function FocusCard({
         {body.signals.genuses.length > 0 && <Chip color="#22c55e">{t('orrery.chipGenuses', { list: body.signals.genuses.slice(0, 3).join(', ') })}</Chip>}
         {body.rings.length > 0 && <Chip color="#9fd8ef">{t('orrery.chipRingsShort', { count: body.rings.length })}</Chip>}
         {body.mapped && <Chip color="#ffd166">{t('orrery.chipMapped')}</Chip>}
-        {body.firstDiscoveredBy && <Chip>🧭 {body.firstDiscoveredBy}</Chip>}
-        {body.firstFootfallBy && <Chip>👣 {body.firstFootfallBy}</Chip>}
+        {body.firstDiscoveredBy && <Chip>🧭 {discoveredByLabel(body.firstDiscoveredBy, t)}</Chip>}
+        {body.firstFootfallBy && <Chip>👣 {discoveredByLabel(body.firstFootfallBy, t)}</Chip>}
       </div>
 
       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: structures.length ? 8 : 0 }}>
