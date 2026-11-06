@@ -38,10 +38,10 @@ export async function POST(req: Request) {
       if (!profile) return NextResponse.json({ error: t('adm.pilotNotFound') }, { status: 404 });
       const sub = await billingRepo.grantSubscription({
         userId: profile.id,
-        cmdrName: profile.cmdr_name || body.cmdrName || 'Командир',
+        cmdrName: profile.cmdr_name || body.cmdrName || t('cmdr.default'),
         planId,
         durationDays: Number(durationDays) || 30,
-        notes: notes ? `${notes} (${auth.actor.cmdrName})` : `Назначено администратором ${auth.actor.cmdrName}`,
+        notes: notes ? `${notes} (${auth.actor.cmdrName})` : t('billing.assignedByAdmin', { name: auth.actor.cmdrName }),
         autoRenew: autoRenew ?? false,
       });
       return NextResponse.json({ success: true, subscription: sub });

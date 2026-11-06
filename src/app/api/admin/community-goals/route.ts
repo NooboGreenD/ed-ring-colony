@@ -169,10 +169,10 @@ export async function POST(req: Request) {
   let body: Record<string, unknown>;
   try {
     const value = await req.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest('Ожидается JSON-объект');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest(t('cg.jsonObjectExpected'));
     body = value as Record<string, unknown>;
   } catch {
-    return badRequest('Некорректный JSON');
+    return badRequest(t('api.jsonInvalid'));
   }
 
   const svc = createServiceClient();
@@ -319,13 +319,13 @@ export async function POST(req: Request) {
     }
   }
 
-  if (body.action !== 'create') return badRequest('Неизвестное действие');
+  if (body.action !== 'create') return badRequest(t('adm.unknownAction'));
   const parsed = normalizeEditableFields(body, t);
   if (!parsed.fields) return badRequest(parsed.error || t('adm.cgFieldsInvalid'));
   const fields = parsed.fields;
-  if (typeof fields.title !== 'string' || !fields.title) return badRequest('Название CG обязательно');
+  if (typeof fields.title !== 'string' || !fields.title) return badRequest(t('adm.cgTitleRequired'));
   if (typeof body.moderation_status === 'string' && body.moderation_status !== 'approved') {
-    return badRequest('Создаваемая CG должна быть опубликована администратором');
+    return badRequest(t('cg.mustBeApproved'));
   }
 
   let cgId = 0;
@@ -365,14 +365,14 @@ export async function PATCH(req: Request) {
   let body: Record<string, unknown>;
   try {
     const value = await req.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest('Ожидается JSON-объект');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest(t('cg.jsonObjectExpected'));
     body = value as Record<string, unknown>;
   } catch {
-    return badRequest('Некорректный JSON');
+    return badRequest(t('api.jsonInvalid'));
   }
 
   const id = Number(body.id);
-  if (!Number.isSafeInteger(id) || id < 1) return badRequest('Некорректный ID CG');
+  if (!Number.isSafeInteger(id) || id < 1) return badRequest(t('cg.idInvalid'));
   const svc = createServiceClient();
   const { data: existing, error: readError } = await svc.from('community_goals').select('*').eq('id', id).maybeSingle();
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500, headers });
@@ -384,7 +384,7 @@ export async function PATCH(req: Request) {
   };
   const hasEditableValues = COMMUNITY_GOAL_EDITABLE_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(body, field));
   if (body.resetOverrides === true) {
-    if (existing.source === 'manual') return badRequest('Для локальной CG нечего сбрасывать');
+    if (existing.source === 'manual') return badRequest(t('cg.localNothingToReset'));
     update.manual_overrides = {};
   } else if (hasEditableValues) {
     const parsed = normalizeEditableFields(body, t);
@@ -400,14 +400,14 @@ export async function PATCH(req: Request) {
   }
 
   if (body.moderation_status !== undefined) {
-    if (!isCommunityGoalModerationStatus(body.moderation_status)) return badRequest('Некорректный статус модерации');
+    if (!isCommunityGoalModerationStatus(body.moderation_status)) return badRequest(t('cg.moderationStatusInvalid'));
     update.moderation_status = body.moderation_status;
   }
   if (body.admin_note !== undefined) {
-    if (body.admin_note !== null && typeof body.admin_note !== 'string') return badRequest('Комментарий модератора должен быть текстом');
+    if (body.admin_note !== null && typeof body.admin_note !== 'string') return badRequest(t('cg.adminNoteText'));
     update.admin_note = typeof body.admin_note === 'string' ? body.admin_note.trim().slice(0, 2_000) || null : null;
   }
-  if (Object.keys(update).length <= 2) return badRequest('Нет изменений для сохранения');
+  if (Object.keys(update).length <= 2) return badRequest(t('cg.noChanges'));
 
   const { data, error } = await svc.from('community_goals').update(update).eq('id', id).select('*').single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500, headers });
@@ -421,13 +421,13 @@ export async function DELETE(req: Request) {
   let body: Record<string, unknown>;
   try {
     const value = await req.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest('Ожидается JSON-объект');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return badRequest(t('cg.jsonObjectExpected'));
     body = value as Record<string, unknown>;
   } catch {
-    return badRequest('Некорректный JSON');
+    return badRequest(t('api.jsonInvalid'));
   }
   const id = Number(body.id);
-  if (!Number.isSafeInteger(id) || id < 1) return badRequest('Некорректный ID CG');
+  if (!Number.isSafeInteger(id) || id < 1) return badRequest(t('cg.idInvalid'));
   const svc = createServiceClient();
   const { data: existing, error: readError } = await svc.from('community_goals').select('id,source').eq('id', id).maybeSingle();
   if (readError) return NextResponse.json({ error: readError.message }, { status: 500, headers });

@@ -119,7 +119,7 @@ export async function PUT(req: Request) {
       // уже авторизован и его роль только что была успешно проверена.
       const metadataName = validSystemName(user.user_metadata?.cmdr_name)
         || validSystemName(user.user_metadata?.full_name);
-      candidate = { id: user.id, cmdr_name: caller.cmdrName || metadataName || architectName || 'Администратор' };
+      candidate = { id: user.id, cmdr_name: caller.cmdrName || metadataName || architectName || t('cmdr.administrator') };
     } else {
       // Позывной ищем без учёта регистра: командир введёт его как помнит.
       const { data: matches, error: findError } = await supabase
@@ -144,7 +144,7 @@ export async function PUT(req: Request) {
       candidate = candidates[0];
     }
     const candidateId = String(candidate.id ?? '');
-    const candidateName = String(candidate.cmdr_name ?? '').trim() || 'Командир';
+    const candidateName = String(candidate.cmdr_name ?? '').trim() || t('cmdr.default');
     if (!candidateId) {
       return NextResponse.json({ error: t('api.profileWithoutId') }, { status: 500 });
     }
@@ -157,7 +157,7 @@ export async function PUT(req: Request) {
         user_id: candidateId,
         architect_name: candidateName,
         assigned_by: user.id,
-        assigned_by_name: caller.cmdrName || 'Командир',
+        assigned_by_name: caller.cmdrName || t('cmdr.default'),
       }, { onConflict: 'system_name_lc' });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 

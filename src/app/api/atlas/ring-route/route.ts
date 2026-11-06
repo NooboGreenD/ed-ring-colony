@@ -57,7 +57,7 @@ function sessionEnvelope(plan: RingPlan) {
   };
 }
 
-function stepEnvelope(step: RingStepResult) {
+function stepEnvelope(step: RingStepResult, t: (key: string, params?: Record<string, string | number>) => string) {
   const percent = step.sectors > 0 ? Math.min(99, Math.round((step.sectorsDone / step.sectors) * 98)) : 0;
   return {
     session_id: step.sessionId,
@@ -69,8 +69,8 @@ function stepEnvelope(step: RingStepResult) {
       percent,
       stage: step.done ? 'route' : 'scan',
       message: step.done
-        ? 'Сегменты пройдены — собираем замкнутый маршрут'
-        : `Перебор сегмента ${step.sectorsDone} из ${step.sectors}`,
+        ? t('atlas.ringSegmentsDone')
+        : t('atlas.ringSegmentProgress', { done: step.sectorsDone, total: step.sectors }),
     },
     anchors: step.anchors,
     found: step.found,
@@ -123,7 +123,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       completed: false,
       session: { ...sessionEnvelope(plan), sectors_done: step.sectorsDone },
-      step: stepEnvelope(step),
+      step: stepEnvelope(step, t),
       totals: {
         real_anchors: step.stats.realAnchors,
         triangulated_anchors: step.stats.triangulatedAnchors,

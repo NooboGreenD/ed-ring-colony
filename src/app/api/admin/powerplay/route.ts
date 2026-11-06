@@ -57,12 +57,12 @@ const RUN_ACTIONS: Record<string, PowerplaySyncMode> = {
   import: 'import',
 };
 
-const RUN_STARTED: Record<PowerplaySyncMode, string> = {
-  full: 'Загрузка запущена',
-  download: 'Скачивание архива запущено',
-  split: 'Разбивка архива на куски запущена',
-  import: 'Загрузка кусков в базу запущена',
-};
+function runStarted(mode: PowerplaySyncMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (mode === 'download') return t('sync.startedDownload');
+  if (mode === 'split') return t('sync.startedSplit');
+  if (mode === 'import') return t('sync.startedImport');
+  return t('sync.startedFull');
+}
 
 /**
  * Админка → Игровые данные → PowerPlay: управление загрузкой систем держав
@@ -256,7 +256,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, started: false, reason: result.reason }, { status: 409, headers });
     }
     return NextResponse.json(
-      { success: true, started: true, force, mode, ...(segments ? { segments } : {}), message: RUN_STARTED[mode] },
+      { success: true, started: true, force, mode, ...(segments ? { segments } : {}), message: runStarted(mode, t) },
       { headers },
     );
   }
@@ -279,7 +279,7 @@ export async function POST(req: Request) {
     try {
       const svc = createServiceClient();
       await setEddnEnabled(svc, enable, auth.actor.userId);
-      const snapshot = enable ? startEddnListener(svc) : await stopEddnListener('остановлен: выключен в админке');
+      const snapshot = enable ? startEddnListener(svc) : await stopEddnListener(t('sync.eddnStoppedInAdmin'));
       return NextResponse.json({ success: true, enabled: enable, eddn: snapshot }, { headers });
     } catch (error) {
       const message = String((error as Error)?.message ?? error);

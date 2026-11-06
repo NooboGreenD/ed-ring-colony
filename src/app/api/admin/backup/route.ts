@@ -86,8 +86,8 @@ export async function POST(request: Request) {
         {
           success: false,
           error: running.update.kind === 'backup'
-            ? 'Резервное копирование уже выполняется'
-            : 'Сейчас идёт обновление проекта — дождитесь его окончания',
+            ? t('backup.alreadyRunning')
+            : t('backup.updateInProgress'),
           update: running.update,
         },
         { status: 409, ...NO_STORE },
@@ -97,8 +97,8 @@ export async function POST(request: Request) {
     // Сначала заглушка, потом дамп: посетитель не должен увидеть сайт
     // в момент, когда база уже копируется.
     await beginMaintenance(full
-      ? 'Резервное копирование базы данных (полный дамп, включая каталог систем)'
-      : 'Резервное копирование базы данных');
+      ? t('backup.maintenanceFull')
+      : t('backup.maintenance'));
 
     const result = await callUpdateAgent('backup', { full });
     if (!result.ok) {

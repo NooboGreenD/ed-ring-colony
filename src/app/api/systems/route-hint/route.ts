@@ -4,6 +4,7 @@ import { loadSystemsProgress } from '@/lib/systemOverview';
 import { findSystemByName } from '@/lib/galaxySystemsDb';
 import { buildRouteHint, type RouteHintRow } from '@/lib/routeHint';
 import { cleanSystemName } from '@/lib/systemIdentity.ts';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 20;
@@ -100,9 +101,10 @@ const SCAN_COLUMNS =
  * равно false, и оверлей честно пишет «ещё не исследована», а не выдумывает имя.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const url = new URL(request.url);
   const name = cleanSystemName(url.searchParams.get('name') ?? '');
-  if (!name) return fail('name обязателен', 400);
+  if (!name) return fail(t('api.nameRequired'), 400);
 
   const memoKey = name.toLowerCase();
   const cached = fromMemo(memoKey);
@@ -210,8 +212,8 @@ export async function GET(request: Request) {
     const missing = /system_progress_sources|schema cache|does not exist/i.test(message);
     return fail(
       missing
-        ? 'Подсказка ждёт миграцию 20261020120000_unified_system_data.sql'
-        : 'Не удалось собрать подсказку по системе',
+        ? t('api.routeHintMigrationPending')
+        : t('api.routeHintFailed'),
     );
   }
 }

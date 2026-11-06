@@ -88,12 +88,12 @@ const RUN_ACTIONS: Record<string, BgsSyncMode> = {
   import: 'import',
 };
 
-const RUN_STARTED: Record<BgsSyncMode, string> = {
-  full: 'Загрузка запущена',
-  download: 'Скачивание архива запущено',
-  split: 'Разбивка архива на куски запущена',
-  import: 'Загрузка кусков в базу запущена',
-};
+function runStarted(mode: BgsSyncMode, t: (key: string, params?: Record<string, string | number>) => string): string {
+  if (mode === 'download') return t('sync.startedDownload');
+  if (mode === 'split') return t('sync.startedSplit');
+  if (mode === 'import') return t('sync.startedImport');
+  return t('sync.startedFull');
+}
 
 /**
  * Админка → Игровые данные → Фракции: управление данными о минорных фракциях.
@@ -248,7 +248,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, started: false, reason: result.reason }, { status: 409, headers });
     }
     return NextResponse.json(
-      { success: true, started: true, force, mode, ...(segments ? { segments } : {}), message: RUN_STARTED[mode] },
+      { success: true, started: true, force, mode, ...(segments ? { segments } : {}), message: runStarted(mode, t) },
       { headers },
     );
   }
