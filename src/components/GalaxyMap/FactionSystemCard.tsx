@@ -16,12 +16,10 @@ import {
   BGS_MAX_SELECTED,
   BGS_SOURCE_LABEL,
   allegianceLabel,
-  bgsAge,
   decodeSystemDetail,
   economyLabel,
   formatBgsDate,
   formatInfluence,
-  formatPopulation,
   governmentLabel,
   happinessLabel,
   securityLabel,
@@ -29,6 +27,16 @@ import {
   type BgsMapPoint,
   type BgsSystemDetail,
 } from '@/lib/bgs';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import { ALLEGIANCE_KEYS, GOVERNMENT_KEYS, STATE_KEYS, gameLabel } from '@/lib/i18n/gameLabels';
+import {
+  bgsAgeText,
+  bgsEconomyText,
+  bgsHappinessText,
+  bgsSecurityText,
+  bgsSourceText,
+  formatPopulationText,
+} from '@/lib/i18n/bgsLabels';
 
 const MUTED = '#9ca3af';
 const DIM = '#6b7280';
@@ -47,6 +55,7 @@ export interface FactionSystemCardProps {
 }
 
 function StateChips({ title, states, color }: { title: string; states: string[]; color: string }) {
+  const { t } = useI18n();
   if (states.length === 0) return null;
   return (
     <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3, alignItems: 'center' }}>
@@ -59,7 +68,7 @@ function StateChips({ title, states, color }: { title: string; states: string[];
             color: BGS_CONFLICT_STATES.has(state) ? '#f87171' : color,
           }}
         >
-          {stateLabel(state)}
+          {gameLabel(t, STATE_KEYS, state, stateLabel(state))}
         </span>
       ))}
     </span>
@@ -67,6 +76,13 @@ function StateChips({ title, states, color }: { title: string; states: string[];
 }
 
 export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction, onRemoveFaction, now = Date.now() }: FactionSystemCardProps) {
+  const { t, locale } = useI18n();
+  const allegianceText = (value: string | null | undefined) => gameLabel(t, ALLEGIANCE_KEYS, value, allegianceLabel(value));
+  const governmentText = (value: string | null | undefined) => gameLabel(t, GOVERNMENT_KEYS, value, governmentLabel(value));
+  const stateText = (value: string | null | undefined) => gameLabel(t, STATE_KEYS, value, stateLabel(value));
+  const economyText = (value: string | null | undefined) => bgsEconomyText(t, value, economyLabel(value));
+  const securityText = (value: string | null | undefined) => bgsSecurityText(t, value, securityLabel(value));
+  const happinessText = (value: string | null | undefined) => bgsHappinessText(t, value, happinessLabel(value));
   const [detail, setDetail] = useState<BgsSystemDetail | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -74,7 +90,7 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
   useEffect(() => {
     if (!point.id64) {
       setDetail(null);
-      setError('У системы нет id64 — подробностей нет');
+      setError(t('card.noId64'));
       return;
     }
     let cancelled = false;
@@ -85,13 +101,13 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
         const body = await response.json().catch(() => null);
         if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
         const parsed = decodeSystemDetail(body);
-        if (!parsed) throw new Error('Пустой ответ сервера');
+        if (!parsed) throw new Error(t('card.emptyResponse'));
         if (!cancelled) setDetail(parsed);
       })
       .catch((err) => {
         if (!cancelled) {
           setDetail(null);
-          setError(err instanceof Error ? err.message : 'Не удалось загрузить систему');
+          setError(err instanceof Error ? err.message : t('card.loadFailed'));
         }
       })
       .finally(() => {
@@ -113,7 +129,7 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
     <div
       className="bgs-system-card"
       role="dialog"
-      aria-label={`Фракции: система ${point.name}`}
+      aria-label={t('card.ariaFactions', { name: point.name })}
       data-bgs-system={point.id64 || point.name}
       style={{
         position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.93)', backdropFilter: 'blur(8px)',
@@ -131,8 +147,8 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
         <button
           type="button"
           onClick={onClose}
-          title="Закрыть"
-          aria-label="Закрыть карточку"
+          title={t('atlas.ui.close')}
+          aria-label={t('card.closeAria')}
           style={{ background: 'transparent', border: 'none', color: DIM, cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
         >
           ✕
@@ -142,35 +158,41 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
       <div style={{ marginTop: 6, fontSize: 12, color: TEXT, lineHeight: 1.5 }}>
         {controlling ? (
           <div data-bgs-controlling={controlling}>
-            У власти: <strong style={{ color: TEXT }}>{controlling}</strong>
-            {detail?.state && detail.state !== 'None' ? <span style={{ color: MUTED }}> · {stateLabel(detail.state)}</span> : null}
+            {t('card.controlling')} <strong style={{ color: TEXT }}>{controlling}</strong>
+            {detail?.state && detail.state !== 'None' ? <span style={{ color: MUTED }}> · {stateText(detail.state)}</span> : null}
           </div>
         ) : (
-          <div style={{ color: MUTED }}>Контролирующая фракция неизвестна</div>
+          <div style={{ color: MUTED }}>{t('card.controllingUnknown')}</div>
         )}
         <div style={{ color: MUTED }}>
-          <span style={{ color: BGS_ALLEGIANCE_COLOR[allegiance] }}>{allegianceLabel(allegiance)}</span>
-          {(detail?.government ?? point.system?.government) ? ` · ${governmentLabel(detail?.government ?? point.system?.government)}` : ''}
-          {detail?.security ? ` · безопасность ${securityLabel(detail.security).toLowerCase()}` : ''}
+          <span style={{ color: BGS_ALLEGIANCE_COLOR[allegiance] }}>{allegianceText(allegiance)}</span>
+          {(detail?.government ?? point.system?.government) ? ` · ${governmentText(detail?.government ?? point.system?.government)}` : ''}
+          {detail?.security ? t('card.security', { level: securityText(detail.security).toLocaleLowerCase(locale) }) : ''}
         </div>
         {(detail?.economy || detail?.population || point.system?.population) && (
           <div style={{ color: MUTED }}>
-            {detail?.economy ? `Экономика: ${economyLabel(detail.economy)}${detail.secondEconomy ? ` / ${economyLabel(detail.secondEconomy)}` : ''}` : ''}
+            {detail?.economy
+              ? t('card.economy', {
+                value: `${economyText(detail.economy)}${detail.secondEconomy ? ` / ${economyText(detail.secondEconomy)}` : ''}`,
+              })
+              : ''}
             {detail?.economy && (detail?.population ?? point.system?.population) ? ' · ' : ''}
-            {(detail?.population ?? point.system?.population) ? `население ${formatPopulation(detail?.population ?? point.system?.population)}` : ''}
+            {(detail?.population ?? point.system?.population)
+              ? t('card.population', { value: formatPopulationText(t, locale, detail?.population ?? point.system?.population) })
+              : ''}
           </div>
         )}
       </div>
 
       <div style={{ marginTop: 10, borderTop: '1px solid #2d2f33', paddingTop: 8 }}>
         <div style={{ fontSize: 10, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
-          Фракции системы{detail ? ` (${detail.factions.length})` : ''}
+          {t('card.factionsTitle')}{detail ? ` (${detail.factions.length})` : ''}
         </div>
-        {loading && !detail && <div style={{ fontSize: 11, color: DIM }}>Загружаю фракции…</div>}
+        {loading && !detail && <div style={{ fontSize: 11, color: DIM }}>{t('card.loadingFactions')}</div>}
         {error && <div style={{ fontSize: 11, color: '#f87171' }}>{error}</div>}
-        {detail && detail.factions.length === 0 && <div style={{ fontSize: 11, color: DIM }}>Список фракций пуст.</div>}
+        {detail && detail.factions.length === 0 && <div style={{ fontSize: 11, color: DIM }}>{t('card.noFactions')}</div>}
         {detail && detail.factions.length > 0 && (
-          <ul aria-label="Фракции системы" style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <ul aria-label={t('card.factionsTitle')} style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
             {detail.factions.map((faction) => {
               const selectedColor = selectedColors.get(faction.id) ?? null;
               const color = selectedColor ?? BGS_ALLEGIANCE_COLOR[faction.allegiance];
@@ -186,7 +208,7 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
                     />
                     <span style={{ color: TEXT, fontWeight: controls ? 700 : 500, minWidth: 0, overflowWrap: 'anywhere', flex: 1 }}>
                       {faction.name}
-                      {faction.isPlayer && <span title="Фракция игроков" style={{ color: '#fbbf24', fontWeight: 400 }}> · PMF</span>}
+                      {faction.isPlayer && <span title={t('card.pmfTitle')} style={{ color: '#fbbf24', fontWeight: 400 }}> · PMF</span>}
                     </span>
                     <span style={{ fontFamily: MONO, color: TEXT, fontVariantNumeric: 'tabular-nums' }}>{formatInfluence(faction.influence)}</span>
                     {selectedColor ? (
@@ -194,8 +216,8 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
                         <button
                           type="button"
                           className="bgs-card-btn"
-                          title="Убрать фракцию с карты"
-                          aria-label={`Убрать ${faction.name} с карты`}
+                          title={t('card.removeTitle')}
+                          aria-label={t('card.removeAria', { name: faction.name })}
                           onClick={() => onRemoveFaction(faction.id)}
                           style={{ color: selectedColor, borderColor: `${selectedColor}77` }}
                         >
@@ -207,8 +229,8 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
                         <button
                           type="button"
                           className="bgs-card-btn"
-                          title={canAdd ? 'Показать все системы этой фракции на карте' : `Не больше ${BGS_MAX_SELECTED} фракций за раз`}
-                          aria-label={`Показать ${faction.name} на карте`}
+                          title={canAdd ? t('card.showAllTitle') : t('card.maxSelected', { count: BGS_MAX_SELECTED })}
+                          aria-label={t('card.showAria', { name: faction.name })}
                           disabled={!canAdd}
                           onClick={() => onAddFaction({ id: faction.id, name: faction.name, allegiance: faction.allegiance })}
                         >
@@ -222,14 +244,14 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
                   </div>
                   <div style={{ marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: '2px 8px' }}>
                     <span>
-                      {allegianceLabel(faction.allegiance)} · {governmentLabel(faction.government)}
-                      {controls ? <span style={{ color: TEXT }}> · у власти</span> : null}
-                      {faction.happiness ? ` · ${happinessLabel(faction.happiness).toLowerCase()}` : ''}
-                      {faction.systemsCount > 1 ? ` · систем: ${faction.systemsCount}` : ''}
+                      {allegianceText(faction.allegiance)} · {governmentText(faction.government)}
+                      {controls ? <span style={{ color: TEXT }}> · {t('atlas.ui.bgsInControl')}</span> : null}
+                      {faction.happiness ? ` · ${happinessText(faction.happiness).toLocaleLowerCase(locale)}` : ''}
+                      {faction.systemsCount > 1 ? t('card.systemsCount', { count: faction.systemsCount }) : ''}
                     </span>
-                    <StateChips title="состояние" states={faction.activeStates} color={color} />
-                    <StateChips title="ожидается" states={faction.pendingStates} color={DIM} />
-                    <StateChips title="затухает" states={faction.recoveringStates} color={DIM} />
+                    <StateChips title={t('card.chipActive')} states={faction.activeStates} color={color} />
+                    <StateChips title={t('card.chipPending')} states={faction.pendingStates} color={DIM} />
+                    <StateChips title={t('card.chipRecovering')} states={faction.recoveringStates} color={DIM} />
                   </div>
                 </li>
               );
@@ -239,8 +261,8 @@ export function FactionSystemCard({ point, selectedColors, onClose, onAddFaction
       </div>
 
       <div style={{ marginTop: 8, fontSize: 11, color: DIM }}>
-        Данные: {observed ? `${formatBgsDate(observed)} (${bgsAge(observed, now)})` : 'дата неизвестна'}
-        {source ? ` · ${BGS_SOURCE_LABEL[source]}` : ''}
+        {t('card.data')} {observed ? `${formatBgsDate(observed)} (${bgsAgeText(t, observed, now)})` : t('card.dateUnknown')}
+        {source ? ` · ${bgsSourceText(t, source, BGS_SOURCE_LABEL[source])}` : ''}
       </div>
       <div style={{ marginTop: 2, fontSize: 11, color: DIM }}>
         <IconMapPin size={11} /> {point.x.toFixed(1)}, {point.y.toFixed(1)}, {point.z.toFixed(1)}

@@ -93,6 +93,19 @@ export const POWER_STATE_HINT_KEYS: Record<string, string> = {
   Exploited: 'pp.hintExploited',
 };
 
+export const POWER_STATE_ZONE_KEYS: Record<string, string> = {
+  Stronghold: 'pp.zoneStronghold',
+  Fortified: 'pp.zoneFortified',
+  Exploited: 'pp.zoneExploited',
+};
+
+export const POWER_BASIS_KEYS: Record<string, string> = {
+  journal: 'pp.basisJournal',
+  sole: 'pp.basisSole',
+  kept: 'pp.basisKept',
+  unknown: 'pp.basisUnknown',
+};
+
 /** Подпись по каноническому ключу; неизвестное значение — как в справочнике. */
 export function gameLabel(
   t: TFn,
