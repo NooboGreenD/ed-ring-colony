@@ -6,6 +6,7 @@ import { useFriends } from "@/hooks/useFriends";
 import { supabase } from "@/lib/supabaseClient";
 import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 import Avatar from "@/components/Avatar";
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   IconSearch,
   IconCheck,
@@ -18,6 +19,7 @@ import {
 type Props = { userId: string; myName: string; myAvatar: string | null };
 
 export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
+  const { t } = useI18n();
   const {
     friends, pendingIncoming, pendingOutgoing,
     loading, error, sendRequest, acceptRequest, rejectRequest, removeFriend
@@ -57,16 +59,16 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
       <div style={{ flex: "0 0 280px", minWidth: 240 }}>
         <div className="tabs" style={{ marginBottom: 12 }}>
           <button className={tab === "friends" ? "tab tab-active" : "tab"} onClick={() => setTab("friends")}>
-            Друзья ({friends.length})
+            {t('frnd.tabFriends', { count: friends.length })}
           </button>
           <button className={tab === "requests" ? "tab tab-active" : "tab"} onClick={() => setTab("requests")}>
-            Запросы {pendingIncoming.length > 0 && `(${pendingIncoming.length})`}
+            {t('frnd.tabRequests')} {pendingIncoming.length > 0 && `(${pendingIncoming.length})`}
           </button>
         </div>
 
         {error && (
           <p role="alert" style={{ color: "#f59e0b", fontSize: 12, margin: "0 0 10px" }}>
-            {error}. Показаны последние успешно загруженные данные.
+            {t('frnd.staleData', { error })}
           </p>
         )}
 
@@ -77,7 +79,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Найти пилота..."
+                placeholder={t('frnd.searchPlaceholder')}
                 onKeyDown={(e) => e.key === "Enter" && doSearch()}
                 style={{ flex: 1, fontSize: 13 }}
               />
@@ -90,7 +92,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
             {searchResults.length > 0 && (
               <div style={{ marginBottom: 16, background: "#1a1c1e", border: "1px solid #2d3033", borderRadius: 6, padding: 8 }}>
                 <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 6, fontFamily: "ui-monospace, monospace" }}>
-                  Результаты поиска
+                  {t('frnd.searchResults')}
                 </div>
                 {searchResults.map((u) => (
                   <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #25282b" }}>
@@ -103,7 +105,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
                       className="btn btn-cyan"
                       style={{ fontSize: 11, padding: "4px 10px" }}
                     >
-                      Добавить
+                      {t('frnd.add')}
                     </button>
                   </div>
                 ))}
@@ -113,8 +115,8 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
             {/* Список друзей */}
             {friends.length === 0 && !loading && (
               <p style={{ color: "#9ca3af", fontSize: 13 }}>
-                У вас пока нет друзей. Найдите пилотов через поиск выше или на странице{" "}
-                <Link href="/cmdrs" style={{ color: "#e67e22" }}>Командиры</Link>.
+                {t('frnd.noFriends')}{" "}
+                <Link href="/cmdrs" style={{ color: "#e67e22" }}>{t('frnd.commanders')}</Link>.
               </p>
             )}
             {friends.map((f) => (
@@ -128,7 +130,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
                 <button
                   onClick={(e) => { e.stopPropagation(); removeFriend(f.id); }}
                   style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.4, padding: 2 }}
-                  title="Удалить из друзей"
+                  title={t('frnd.removeFriend')}
                 >
                   <IconTrash size={12} color="#e74c3c" />
                 </button>
@@ -143,7 +145,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
             {pendingIncoming.length > 0 && (
               <div style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 11, color: "#e67e22", marginBottom: 8, fontFamily: "ui-monospace, monospace" }}>
-                  Входящие запросы
+                  {t('frnd.incoming')}
                 </div>
                 {pendingIncoming.map((f) => (
                   <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px", background: "#1a1c1e", borderRadius: 6, marginBottom: 6 }}>
@@ -164,15 +166,15 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
             {pendingOutgoing.length > 0 && (
               <div>
                 <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8, fontFamily: "ui-monospace, monospace" }}>
-                  Ожидают ответа
+                  {t('frnd.outgoing')}
                 </div>
                 {pendingOutgoing.map((f) => (
                   <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px", background: "#1a1c1e", borderRadius: 6, marginBottom: 6, opacity: 0.7 }}>
                     <Avatar url={f.friend_avatar} name={f.friend_name} size={34} className="avatar-sm" />
                     <span style={{ flex: 1, fontSize: 13 }}>{f.friend_name}</span>
-                    <span style={{ fontSize: 11, color: "#9ca3af" }}>Ожидание...</span>
+                    <span style={{ fontSize: 11, color: "#9ca3af" }}>{t('frnd.waiting')}</span>
                     <button onClick={() => rejectRequest(f.id)} className="btn" style={{ fontSize: 11, padding: "4px 8px", borderColor: "#e74c3c", color: "#e74c3c" }}>
-                      Отменить
+                      {t('frnd.cancelRequest')}
                     </button>
                   </div>
                 ))}
@@ -180,7 +182,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
             )}
 
             {pendingIncoming.length === 0 && pendingOutgoing.length === 0 && (
-              <p style={{ color: "#9ca3af", fontSize: 13 }}>Нет активных запросов.</p>
+              <p style={{ color: "#9ca3af", fontSize: 13 }}>{t('frnd.noRequests')}</p>
             )}
           </>
         )}
@@ -191,7 +193,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
         {!chatPeer && (
           <div style={{ textAlign: "center", padding: "60px 20px", color: "#9ca3af" }}>
             <div style={{ fontSize: 48, marginBottom: 16, display: "flex", justifyContent: "center" }}><IconMessage size={48} color="#9ca3af" /></div>
-            <p>Выберите друга слева, чтобы открыть переписку.</p>
+            <p>{t('frnd.pickFriend')}</p>
           </div>
         )}
         {chatPeer && (
@@ -225,6 +227,7 @@ function DirectChat({
   myName: string;
   myAvatar: string | null;
 }) {
+  const { t, locale } = useI18n();
   const [messages, setMessages] = useState<any[]>([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -318,7 +321,7 @@ function DirectChat({
   };
 
   const formatTime = (date: string) => {
-    return new Date(date).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    return new Date(date).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   };
 
   return (
@@ -328,7 +331,7 @@ function DirectChat({
         <Avatar url={peerAvatar} name={peerName} size={32} />
         <span style={{ fontWeight: 600, fontSize: 14 }}>{peerName}</span>
         <Link href={`/cmdr/${encodeURIComponent(peerName)}`} style={{ marginLeft: "auto", fontSize: 11, color: "#e67e22" }}>
-          Профиль
+          {t('frnd.profile')}
         </Link>
       </div>
 
@@ -343,12 +346,12 @@ function DirectChat({
       >
         {loading && messages.length === 0 && (
           <div style={{ textAlign: "center", color: "#9ca3af", padding: 40, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-            Загрузка...
+            {t('frnd.loading')}
           </div>
         )}
         {messages.length === 0 && !loading && (
           <div style={{ textAlign: "center", color: "#9ca3af", padding: 40, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-            Переписка пуста. Отправьте первое сообщение.
+            {t('frnd.emptyChat')}
           </div>
         )}
         {messages.map((m) => {
@@ -362,7 +365,7 @@ function DirectChat({
                     {formatTime(m.created_at)}
                   </span>
                   {isMe && (
-                    <button onClick={() => remove(m.id)} style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.3, padding: 0 }} title="Удалить">
+                    <button onClick={() => remove(m.id)} style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.3, padding: 0 }} title={t('frnd.deleteMessage')}>
                       <IconTrash size={10} color="#e74c3c" />
                     </button>
                   )}
@@ -386,7 +389,7 @@ function DirectChat({
         <input
           value={text}
           maxLength={1000}
-          placeholder="Сообщение..."
+          placeholder={t('frnd.messagePlaceholder')}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
           style={{ flex: 1, fontSize: 13, padding: "10px 14px" }}
