@@ -21,7 +21,7 @@ export interface CapiReasonText {
   retryAuth: boolean;
 }
 
-const REASONS: Record<CapiLinkReason, CapiReasonText> = {
+export const REASONS: Record<CapiLinkReason, CapiReasonText> = {
   not_logged_in: {
     title: 'Сессия сайта не найдена',
     hint: 'Привязка выполняется для вошедшего пилота. Войдите на сайт и начните подключение заново — из этой же вкладки.',
@@ -119,7 +119,14 @@ const REASONS: Record<CapiLinkReason, CapiReasonText> = {
   },
 };
 
-/** Ключи каталога для интерфейса: русский текст ниже остаётся для сервера и тестов. */
+/**
+ * Ключи каталога для интерфейса.
+ *
+ * `REASONS` выше — русский оригинал: на него опираются ответы сервера и
+ * тесты, а страница `/account/capi` берёт текст из каталога по этим ключам.
+ * Наборы идентификаторов обязаны совпадать — это проверяет
+ * `scripts/tests/capi-binding.test.mjs`.
+ */
 export const CAPI_REASON_KEYS: Record<string, { titleKey: string; hintKey: string }> = {
   not_logged_in: { titleKey: 'capi.reason.not_logged_in.title', hintKey: 'capi.reason.not_logged_in.hint' },
   invalid_state: { titleKey: 'capi.reason.invalid_state.title', hintKey: 'capi.reason.invalid_state.hint' },
@@ -162,21 +169,4 @@ export function capiJournalKey(status: string | null | undefined): string {
 export function capiReasonText(reason: string | null | undefined): CapiReasonText {
   if (!reason) return REASONS.unknown;
   return REASONS[reason as CapiLinkReason] ?? REASONS.unknown;
-}
-
-/** Итог синхронизации одной строкой — для тоста на странице. */
-export function describeJournalStatus(status: string | null | undefined): string {
-  switch (status) {
-    case 'ok':
-      return 'журнал получен';
-    case 'empty':
-      return 'журнал за сегодня пуст — командир ещё не играл';
-    case 'partial':
-      return 'Frontier отдал журнал частично, повторите позже';
-    case 'skipped':
-      return 'журнал не запрашивался';
-    case 'error':
-    default:
-      return 'журнал получить не удалось';
-  }
 }
