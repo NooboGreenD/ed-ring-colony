@@ -6,6 +6,7 @@ import { IconAlert, IconCheckCircle, IconRefresh, IconXCircle } from '@/componen
 import type { HelperReleaseJob } from '@/types/helperRelease';
 import { uploadLauncherInChunks } from '@/lib/launcherChunkUpload';
 import { uploadSetupInChunks, type SetupInfo } from '@/lib/setupChunkUpload';
+import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
 import { authFetch } from '@/lib/supabaseClient';
 
 /**
@@ -60,36 +61,46 @@ interface VersionsResponse {
   job?: HelperReleaseJob | null;
 }
 
+/** Подписи каналов: в значении лежит ключ словаря, а не готовый текст. */
 const CHANNEL_LABELS: Record<string, string> = {
-  stable: 'Стабильный',
-  beta: 'Бета (сервер проекта)',
+  stable: 'helper.channelStable',
+  beta: 'helper.channelBeta',
 };
 
-function formatDate(value: string): string {
+/** Подпись функции перевода: словари модуля не видят контекст React. */
+type TFn = (key: string, params?: TranslationParams) => string;
+
+function channelLabel(channel: string | null | undefined, t: TFn): string {
+  if (!channel) return t('helper.channelFallback');
+  const key = CHANNEL_LABELS[channel];
+  return key ? t(key) : channel;
+}
+
+function formatDate(value: string, locale: string): string {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return '—';
-  return new Date(time).toLocaleString('ru-RU', { dateStyle: 'medium', timeStyle: 'short' });
+  return new Date(time).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number, t: TFn): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '—';
-  if (bytes < 1024) return `${bytes} Б`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+  if (bytes < 1024) return `${bytes} ${t('mon.unitB')}`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} ${t('mon.unitKB')}`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} ${t('mon.unitMB')}`;
 }
 
-function formatDuration(milliseconds: number): string {
+function formatDuration(milliseconds: number, t: TFn): string {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '—';
   const seconds = Math.floor(milliseconds / 1000);
-  if (seconds < 60) return `${seconds} с`;
+  if (seconds < 60) return `${seconds} ${t('mon.unitSecond')}`;
   const minutes = Math.floor(seconds / 60);
-  return `${minutes} мин ${String(seconds % 60).padStart(2, '0')} с`;
+  return `${minutes} ${t('mon.unitMinute')} ${String(seconds % 60).padStart(2, '0')} ${t('mon.unitSecond')}`;
 }
 
-function jobKindLabel(kind: HelperReleaseJob['kind']): string {
-  if (kind === 'launcher') return 'Базовая сборка EXE';
-  if (kind === 'promote') return 'Переключение канала';
-  return 'Публикация модулей Helper';
+function jobKindLabel(kind: HelperReleaseJob['kind'], t: TFn): string {
+  if (kind === 'launcher') return t('helper.kindLauncher');
+  if (kind === 'promote') return t('helper.kindPromote');
+  return t('helper.kindPublish');
 }
 
 /**
@@ -97,23 +108,23 @@ function jobKindLabel(kind: HelperReleaseJob['kind']): string {
  * версии пилоты примут. Для ключей из config.json сверяется и публичный
  * ключ — ID может совпадать, а пара быть другой (ротация с тем же именем).
  */
-function clientTrustBadge(store: StoreInfo, id: string, publicKey = ''): ReactElement {
+function clientTrustBadge(store: StoreInfo, id: string, t: TFn, publicKey = ''): ReactElement {
   const known = Object.keys(store.clientTrustedKeys ?? {}).length > 0;
   const trusted = publicKey
     ? store.clientTrustedKeys?.[id] === publicKey
     : Boolean(store.clientTrustedKeys?.[id]);
-  if (trusted) return <span style={{ color: '#2ecc71' }}>принимают</span>;
-  if (!known) return <span style={{ color: '#9ca3af' }}>неизвестно</span>;
-  return <span style={{ color: '#fca5a5' }}>отвергнут</span>;
+  if (trusted) return <span style={{ color: '#2ecc71' }}>{t('helper.trustAccepted')}</span>;
+  if (!known) return <span style={{ color: '#9ca3af' }}>{t('helper.trustUnknown')}</span>;
+  return <span style={{ color: '#fca5a5' }}>{t('helper.trustRejected')}</span>;
 }
 
 /**
  * Прокси отвечает на слишком большой запрос HTML-страницей 413 — JSON там
  * нет, поэтому объясняем причину сами, иначе админ видит голый «HTTP 413».
  */
-function describeUploadHttpError(status: number): string {
+function describeUploadHttpError(status: number, t: TFn): string {
   if (status === 413) {
-    return 'HTTP 413 — прокси отклонил тело запроса до приложения.';
+    return t('helper.upload413');
   }
   return `HTTP ${status}`;
 }
@@ -128,6 +139,7 @@ function compareVersions(left: string, right: string): number {
 }
 
 export default function HelperUpdatesTab() {
+  const { t, locale } = useI18n();
   const [store, setStore] = useState<StoreInfo | null>(null);
   const [channels, setChannels] = useState<Record<string, { version: string; released_at: string }>>({});
   const [versions, setVersions] = useState<VersionRow[]>([]);
@@ -194,7 +206,7 @@ export default function HelperUpdatesTab() {
       }
       setError('');
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось получить список версий');
+      setError(exc instanceof Error ? exc.message : t('helper.errVersions'));
     }
   }, []);
 
@@ -210,7 +222,7 @@ export default function HelperUpdatesTab() {
       }
       return data.job ?? null;
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось получить журнал процесса');
+      setError(exc instanceof Error ? exc.message : t('helper.errProcessLog'));
       return null;
     }
   }, []);
@@ -231,10 +243,18 @@ export default function HelperUpdatesTab() {
     if (releaseJob.state === 'succeeded') {
       setError('');
       setMessage(releaseJob.kind === 'launcher'
-        ? `ColonialHelper.exe ${releaseJob.version ?? ''} опубликован на сервере`
+        ? t('helper.launcherPublished', { version: releaseJob.version ?? '' })
         : releaseJob.kind === 'promote'
-          ? `Канал «${CHANNEL_LABELS[releaseJob.channel ?? ''] ?? releaseJob.channel ?? 'Helper'}» переведён на ${releaseJob.version ?? 'версию'}`
-          : `Версия ${releaseJob.version ?? ''} опубликована${releaseJob.channel ? ` в канал «${CHANNEL_LABELS[releaseJob.channel] ?? releaseJob.channel}»` : ''}`);
+          ? t('helper.channelPromoted', {
+            channel: channelLabel(releaseJob.channel, t),
+            version: releaseJob.version ?? '',
+          })
+          : releaseJob.channel
+            ? t('helper.versionPublishedChannel', {
+              version: releaseJob.version ?? '',
+              channel: channelLabel(releaseJob.channel, t),
+            })
+            : t('helper.versionPublished', { version: releaseJob.version ?? '' }));
       void refresh();
     } else if (releaseJob.error) {
       setMessage('');
@@ -244,14 +264,14 @@ export default function HelperUpdatesTab() {
 
   const cancelRelease = useCallback(async () => {
     if (!releaseJob?.active) return;
-    if (!window.confirm('Остановить текущий процесс? Уже записанные данные останутся в хранилище, канал не будет переключён.')) return;
+    if (!window.confirm(t('helper.confirmStop'))) return;
     try {
       const response = await authFetch(`/api/admin/uploader/release?job=${encodeURIComponent(releaseJob.id)}`, { method: 'DELETE' });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
       if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
       if (data.job) setReleaseJob(data.job);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось остановить процесс');
+      setError(exc instanceof Error ? exc.message : t('helper.errStopProcess'));
     }
   }, [releaseJob]);
 
@@ -270,23 +290,22 @@ export default function HelperUpdatesTab() {
         if (!document.execCommand('copy')) throw new Error('copy failed');
         input.remove();
       }
-      setMessage('Скопировано в буфер обмена');
+      setMessage(t('helper.copied'));
     } catch {
-      setError('Браузер не разрешил доступ к буферу. Скопируйте значение вручную.');
+      setError(t('helper.clipboardDenied'));
     }
   }, [secret]);
 
   const promote = useCallback(async (channel: string, version: string) => {
     if (releaseJob?.active) {
-      setError('Дождитесь завершения текущей операции Helper');
+      setError(t('helper.busyWait'));
       return;
     }
     const current = channels[channel]?.version ?? '';
     const back = Boolean(current && compareVersions(current, version) > 0);
     const question = back
-      ? `Вернуть канал «${CHANNEL_LABELS[channel] ?? channel}» с ${current} на ${version}?\n\n`
-        + 'Пилоты получат её при следующей проверке обновлений как обычное обновление.'
-      : `Перевести канал «${CHANNEL_LABELS[channel] ?? channel}» на версию ${version}?`;
+      ? t('helper.confirmRollback', { channel: channelLabel(channel, t), current, version })
+      : t('helper.confirmSwitch', { channel: channelLabel(channel, t), version });
     if (!window.confirm(question)) return;
     setBusy(true);
     setMessage('');
@@ -301,9 +320,9 @@ export default function HelperUpdatesTab() {
       if (!response.ok || !data.ok || !data.job) throw new Error(data.error || `HTTP ${response.status}`);
       setReleaseJob(data.job);
       setProcessLogOpen(true);
-      setMessage(`Перевод канала «${CHANNEL_LABELS[channel] ?? channel}» запущен — журнал ниже`);
+      setMessage(t('helper.switchStarted', { channel: channelLabel(channel, t) }));
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось перевести канал');
+      setError(exc instanceof Error ? exc.message : t('helper.errSwitch'));
     } finally {
       setBusy(false);
     }
@@ -311,10 +330,10 @@ export default function HelperUpdatesTab() {
 
   const removeVersion = useCallback(async (version: string) => {
     if (releaseJob?.active) {
-      setError('Дождитесь завершения текущей операции Helper');
+      setError(t('helper.busyWait'));
       return;
     }
-    if (!window.confirm(`Удалить версию ${version} с сервера?\n\nКанал на неё указывать не должен. Файлы манифеста и ZIP будут стёрты.`)) return;
+    if (!window.confirm(t('helper.confirmDeleteVersion', { version }))) return;
     setBusy(true);
     setMessage('');
     setError('');
@@ -326,10 +345,10 @@ export default function HelperUpdatesTab() {
       });
       const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setMessage(`Версия ${version} удалена`);
+      setMessage(t('helper.versionDeleted', { version }));
       await refresh();
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось удалить версию');
+      setError(exc instanceof Error ? exc.message : t('helper.errDeleteVersion'));
     } finally {
       setBusy(false);
     }
@@ -363,7 +382,7 @@ export default function HelperUpdatesTab() {
       setMessage(okMessage);
       return data;
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось сохранить настройки');
+      setError(exc instanceof Error ? exc.message : t('helper.errSaveSettings'));
       return null;
     } finally {
       setBusy(false);
@@ -373,7 +392,7 @@ export default function HelperUpdatesTab() {
   const addKey = useCallback(async () => {
     const data = await configAction(
       { action: 'addKey', id: keyId.trim(), publicKey: keyPublic.trim() },
-      `Ключ «${keyId.trim()}» добавлен`,
+      t('helper.keyAdded', { key: keyId.trim() }),
     );
     if (data?.ok) {
       setKeyId('');
@@ -384,49 +403,45 @@ export default function HelperUpdatesTab() {
   const generateKey = useCallback(async () => {
     const data = await configAction(
       { action: 'generateKey', id: keyId.trim() || undefined },
-      'Пара ключей сгенерирована. Сохраните приватный ключ — он больше не покажется.',
+      t('helper.keyGenerated'),
     );
     if (data?.generated) {
       setKeyId('');
       setKeyPublic('');
       setSecret({
-        title: `Приватный ключ «${data.generated.id}»`,
+        title: t('helper.privateKeyTitle', { id: data.generated.id }),
         value: data.generated.privateKey,
-        note: 'Сохраните резервную копию в защищённом месте. Пара уже записана в закрытом '
-          + 'хранилище сервера и будет использоваться для автономной подписи релизов. '
-          + 'Важно: базовая сборка Helper должна доверять этому публичному ключу.',
+        note: t('helper.privateKeyNote'),
       });
     }
   }, [configAction, keyId]);
 
   const removeKey = useCallback(async (id: string) => {
-    if (!window.confirm(`Удалить ключ подписи «${id}»?\n\nЕсли им подписаны опубликованные версии, сервер перестанет их проверять.`)) return;
-    await configAction({ action: 'removeKey', id }, `Ключ «${id}» удалён`);
+    if (!window.confirm(t('helper.confirmDeleteKey', { id }))) return;
+    await configAction({ action: 'removeKey', id }, t('helper.keyDeleted', { id }));
   }, [configAction]);
 
   const resignChannels = useCallback(async () => {
-    if (!window.confirm(
-      'Переподписать текущие версии каналов ключом, доверенным установленными программами?\n\n'
-      + 'Состав версий не меняется — заменяется только подпись в манифесте. '
-      + 'Пилоты смогут обновляться сразу после переподписи.',
-    )) return;
-    const data = await configAction({ action: 'resignChannel' }, 'Каналы переподписаны');
+    if (!window.confirm(t('helper.confirmResign'))) return;
+    const data = await configAction({ action: 'resignChannel' }, t('helper.resigned'));
     const outcomes = data?.resign ?? [];
     if (outcomes.length) {
-      setMessage('Переподписано: ' + outcomes
-        .map((item) => item.action === 'signed'
-          ? `${item.channel} → ${item.version} (ключ ${item.keyId})`
-          : item.action === 'kept'
-            ? `${item.channel} → ${item.version} (уже верна)`
-            : `${item.channel}: версии нет`)
-        .join('; '));
+      setMessage(t('helper.resignedSummary', {
+        list: outcomes
+          .map((item) => (item.action === 'signed'
+            ? t('helper.outcomeKey', { channel: item.channel, version: item.version, key: item.keyId })
+            : item.action === 'kept'
+              ? t('helper.outcomeUpToDate', { channel: item.channel, version: item.version })
+              : t('helper.outcomeMissing', { channel: item.channel })))
+          .join('; '),
+      }));
     }
   }, [configAction]);
 
   const saveToken = useCallback(async () => {
     const data = await configAction(
       { action: 'setPublishToken', token: tokenInput.trim() },
-      'Токен публикации сохранён',
+      t('helper.tokenSaved'),
     );
     if (data?.ok) setTokenInput('');
   }, [configAction, tokenInput]);
@@ -434,27 +449,27 @@ export default function HelperUpdatesTab() {
   const generateToken = useCallback(async () => {
     const data = await configAction(
       { action: 'generatePublishToken' },
-      'Токен публикации сгенерирован. Скопируйте его — он больше не покажется.',
+      t('helper.tokenGenerated'),
     );
     if (data?.generatedToken) {
       setTokenInput('');
       setSecret({
-        title: 'Токен публикации',
+        title: t('helper.tokenTitle'),
         value: data.generatedToken,
-        note: 'Нужен только старым внешним скриптам. Публикация из панели использует админскую сессию.',
+        note: t('helper.tokenNote'),
       });
     }
   }, [configAction]);
 
   const clearToken = useCallback(async () => {
-    if (!window.confirm('Очистить токен внешней публикации?')) return;
-    await configAction({ action: 'clearPublishToken' }, 'Токен публикации очищен');
+    if (!window.confirm(t('helper.confirmClearToken'))) return;
+    await configAction({ action: 'clearPublishToken' }, t('helper.tokenCleared'));
   }, [configAction]);
 
   const importPrivateKey = useCallback(async () => {
     const data = await configAction(
       { action: 'importPrivateKey', id: keyId.trim(), privateKey: privateKeyInput.trim() },
-      `Приватный ключ «${keyId.trim()}» сохранён на сервере`,
+      t('helper.privateKeySaved', { key: keyId.trim() }),
     );
     if (data?.ok) {
       setKeyId('');
@@ -464,16 +479,18 @@ export default function HelperUpdatesTab() {
 
   const publishRelease = useCallback(async () => {
     if (releaseJob?.active) {
-      setError('Дождитесь завершения текущей операции Helper');
+      setError(t('helper.busyWait'));
       return;
     }
     if (!releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)) return;
     if (untrustedSigning && !allowUntrustedRelease) return;
-    const action = releasePromote ? 'подготовить и сразу включить' : 'только подготовить';
-    if (!window.confirm(`${action} версию ${releaseVersion} для канала «${CHANNEL_LABELS[releaseChannel]}»?`)) return;
+    const confirmText = releasePromote
+      ? t('helper.confirmPublishSwitch', { version: releaseVersion, channel: channelLabel(releaseChannel, t) })
+      : t('helper.confirmPublishOnly', { version: releaseVersion, channel: channelLabel(releaseChannel, t) });
+    if (!window.confirm(confirmText)) return;
     setBusy(true);
     setError('');
-    setMessage('Сервер считает хеши, подписывает и собирает пакет…');
+    setMessage(t('helper.hashingStarted'));
     try {
       const form = new FormData();
       form.set('kind', 'bundle');
@@ -493,15 +510,15 @@ export default function HelperUpdatesTab() {
       form.set('paths', JSON.stringify(paths));
       const response = await authFetch('/api/admin/uploader/release', { method: 'POST', body: form });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
-      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || describeUploadHttpError(response.status));
+      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || describeUploadHttpError(response.status, t));
       setReleaseJob(data.job);
       setProcessLogOpen(true);
-      setMessage(`Процесс подготовки версии ${releaseVersion} запущен — прогресс и лог ниже`);
+      setMessage(t('helper.prepStarted', { version: releaseVersion }));
       setReleaseVersion('');
       setReleaseNotes('');
       setReleaseFiles([]);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось опубликовать версию');
+      setError(exc instanceof Error ? exc.message : t('helper.errPublish'));
       setMessage('');
     } finally {
       setBusy(false);
@@ -512,7 +529,7 @@ export default function HelperUpdatesTab() {
     if (!launcherVersion.trim()) return;
     setBusy(true);
     setError('');
-    setMessage('Подготавливаю комплект первой Windows-сборки…');
+    setMessage(t('helper.kitPreparing'));
     try {
       const response = await authFetch(`/api/admin/uploader/build-kit?version=${encodeURIComponent(launcherVersion.trim())}`, { cache: 'no-store' });
       if (!response.ok) {
@@ -527,9 +544,9 @@ export default function HelperUpdatesTab() {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(link.href), 1_000);
-      setMessage('Комплект скачан. BUILD-WINDOWS.bat соберёт ColonialHelperSetup.exe для первичной установки и ColonialHelper.exe для канала обновлений.');
+      setMessage(t('helper.kitDownloaded'));
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось подготовить комплект сборки');
+      setError(exc instanceof Error ? exc.message : t('helper.errKit'));
       setMessage('');
     } finally {
       setBusy(false);
@@ -538,17 +555,17 @@ export default function HelperUpdatesTab() {
 
   const publishLauncher = useCallback(async () => {
     if (releaseJob?.active) {
-      setError('Дождитесь завершения текущей операции Helper');
+      setError(t('helper.busyWait'));
       return;
     }
     if (!launcherFile || !launcherVersion.trim()) return;
     if (launcherFile.name !== 'ColonialHelper.exe') {
-      setError('Загрузите dist\\ColonialHelper.exe — это лаунчер для обновлений. ColonialHelperSetup.exe предназначен для первичной установки и сюда не подходит.');
+      setError(t('helper.wrongLauncherFile'));
       return;
     }
     setBusy(true);
     setError('');
-    setMessage('Подготавливаю фрагменты ColonialHelper.exe…');
+    setMessage(t('helper.launcherChunksPreparing'));
     try {
       const job = await uploadLauncherInChunks({
         file: launcherFile,
@@ -557,18 +574,24 @@ export default function HelperUpdatesTab() {
         fetcher: authFetch,
         onProgress: (uploadedBytes, totalBytes, completedChunks, totalChunks) => {
           const percent = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
-          setMessage(`Загрузка ColonialHelper.exe: ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)} (${percent}%, часть ${completedChunks}/${totalChunks})`);
+          setMessage(t('helper.launcherUploadProgress', {
+            done: formatBytes(uploadedBytes, t),
+            total: formatBytes(totalBytes, t),
+            percent,
+            part: completedChunks,
+            parts: totalChunks,
+          }));
         },
         onRetry: (nextChunkSize) => {
-          setMessage(`Прокси отклонил крупную часть; автоматически уменьшаю размер до ${formatBytes(nextChunkSize)} и продолжаю…`);
+          setMessage(t('helper.launcherChunkShrink', { size: formatBytes(nextChunkSize, t) }));
         },
       });
       setReleaseJob(job);
       setProcessLogOpen(true);
-      setMessage(`Загрузка ColonialHelper.exe ${launcherVersion} принята сервером — журнал ниже`);
+      setMessage(t('helper.launcherUploadAccepted', { version: launcherVersion }));
       setLauncherFile(null);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось загрузить exe');
+      setError(exc instanceof Error ? exc.message : t('helper.errUploadExe'));
       setMessage('');
     } finally {
       setBusy(false);
@@ -578,12 +601,12 @@ export default function HelperUpdatesTab() {
   const publishSetup = useCallback(async () => {
     if (!setupFile || !setupVersion.trim()) return;
     if (setupFile.name !== 'ColonialHelperSetup.exe') {
-      setError('Нужен файл ColonialHelperSetup.exe — это установщик для первичной установки. Базовая сборка ColonialHelper.exe публикуется выше, в канал обновлений.');
+      setError(t('helper.wrongSetupFile'));
       return;
     }
     setSetupBusy(true);
     setError('');
-    setMessage('Загружаю установщик частями…');
+    setMessage(t('helper.setupUploadPreparing'));
     try {
       const result = await uploadSetupInChunks({
         file: setupFile,
@@ -592,15 +615,21 @@ export default function HelperUpdatesTab() {
         fetcher: authFetch,
         onProgress: (uploadedBytes, totalBytes, completedChunks, totalChunks) => {
           const percent = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
-          setMessage(`Загрузка ColonialHelperSetup.exe: ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)} (${percent}%, часть ${completedChunks}/${totalChunks})`);
+          setMessage(t('helper.setupUploadProgress', {
+            done: formatBytes(uploadedBytes, t),
+            total: formatBytes(totalBytes, t),
+            percent,
+            part: completedChunks,
+            parts: totalChunks,
+          }));
         },
       });
       setSetupInfo(result.setup);
       setSetupDownloadUrl(result.downloadUrl);
       setSetupFile(null);
-      setMessage(`Установщик ${result.setup?.version ?? setupVersion} опубликован — ссылки в профиле и меню профиля уже ведут на него.`);
+      setMessage(t('helper.setupPublished', { version: result.setup?.version ?? setupVersion }));
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось загрузить установщик');
+      setError(exc instanceof Error ? exc.message : t('helper.errSetupUpload'));
       setMessage('');
     } finally {
       setSetupBusy(false);
@@ -608,7 +637,7 @@ export default function HelperUpdatesTab() {
   }, [setupFile, setupVersion]);
 
   const removeSetupFile = useCallback(async () => {
-    if (!confirm('Убрать установщик с раздачи? Ссылки в профиле и меню профиля перестанут отдавать файл.')) return;
+    if (!confirm(t('helper.confirmRemoveSetup'))) return;
     setSetupBusy(true);
     setError('');
     try {
@@ -617,9 +646,9 @@ export default function HelperUpdatesTab() {
       if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
       setSetupInfo(null);
       setSetupDownloadUrl('');
-      setMessage('Установщик убран с раздачи.');
+      setMessage(t('helper.setupRemoved'));
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : 'Не удалось убрать установщик');
+      setError(exc instanceof Error ? exc.message : t('helper.errSetupRemove'));
     } finally {
       setSetupBusy(false);
     }
@@ -630,15 +659,13 @@ export default function HelperUpdatesTab() {
   return (
     <div>
       <h2 style={{ marginTop: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-        Обновления Colonial Helper
+        {t('helper.title')}
         <button className="btn btn-cyan" style={{ fontSize: 12 }} onClick={() => void refresh()}>
-          <IconRefresh size={12} /> Обновить
+          <IconRefresh size={12} /> {t('mon.refresh')}
         </button>
       </h2>
       <p style={{ color: '#9ca3af', fontSize: 14, lineHeight: 1.6, maxWidth: 780 }}>
-        Автономный канал на этом сервере: пилот скачивает только изменившиеся модули
-        (обычно десятки килобайт), а базовый exe меняется редко. Сборка, подпись,
-        публикация и откат управляются здесь — GitHub и Actions не участвуют.
+        {t('helper.intro')}
       </p>
 
       {error && (
@@ -662,41 +689,41 @@ export default function HelperUpdatesTab() {
               ? '#f1c40f'
               : '#38bdf8';
         return (
-          <section style={{ background: '#101820', border: `1px solid ${stateColor}`, borderRadius: 10, padding: 16, marginBottom: 16, boxShadow: '0 10px 30px rgba(0,0,0,.16)' }} aria-label="Прогресс и журнал процесса Helper">
+          <section style={{ background: '#101820', border: `1px solid ${stateColor}`, borderRadius: 10, padding: 16, marginBottom: 16, boxShadow: '0 10px 30px rgba(0,0,0,.16)' }} aria-label={t('helper.processAria')}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
               <div>
-                <div style={{ color: '#9ca3af', fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase' }}>Журнал процесса</div>
-                <h3 style={{ margin: '4px 0 3px', color: '#f3f4f6', fontSize: 16 }}>{jobKindLabel(releaseJob.kind)}</h3>
+                <div style={{ color: '#9ca3af', fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t('helper.processLog')}</div>
+                <h3 style={{ margin: '4px 0 3px', color: '#f3f4f6', fontSize: 16 }}>{jobKindLabel(releaseJob.kind, t)}</h3>
                 <div style={{ color: '#9ca3af', fontSize: 12 }}>
-                  {releaseJob.version ? `Версия ${releaseJob.version}` : 'Операция Helper'}
-                  {releaseJob.channel ? ` · ${CHANNEL_LABELS[releaseJob.channel] ?? releaseJob.channel}` : ''}
+                  {releaseJob.version ? t('helper.versionLine', { version: releaseJob.version }) : t('helper.jobOperation')}
+                  {releaseJob.channel ? ` · ${channelLabel(releaseJob.channel, t)}` : ''}
                   {' · '}ID <code>{releaseJob.id.slice(0, 8)}</code>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
                 <span style={{ color: stateColor, fontWeight: 700, fontSize: 12 }}>
-                  {releaseJob.state === 'queued' ? 'в очереди' : releaseJob.state === 'running' ? 'выполняется' : releaseJob.state === 'succeeded' ? 'завершено' : releaseJob.state === 'aborted' ? 'остановлено' : 'ошибка'}
+                  {releaseJob.state === 'queued' ? t('helper.stateQueued') : releaseJob.state === 'running' ? t('helper.stateRunning') : releaseJob.state === 'succeeded' ? t('helper.stateSucceeded') : releaseJob.state === 'aborted' ? t('helper.stateAborted') : t('helper.stateFailed')}
                 </span>
                 {releaseJob.active && (
                   <button className="btn" style={{ fontSize: 11, borderColor: '#e74c3c', color: '#fca5a5' }} onClick={() => void cancelRelease()}>
-                    <IconXCircle size={12} /> Остановить
+                    <IconXCircle size={12} /> {t('mon.stop')}
                   </button>
                 )}
                 <button className="btn" style={{ fontSize: 11 }} onClick={() => void loadReleaseJob(releaseJob.id)}>
-                  <IconRefresh size={11} /> Обновить лог
+                  <IconRefresh size={11} /> {t('helper.refreshLog')}
                 </button>
                 <button className="btn" style={{ fontSize: 11 }} onClick={() => setProcessLogOpen((open) => !open)}>
-                  {processLogOpen ? 'Скрыть журнал' : 'Показать журнал'}
+                  {processLogOpen ? t('helper.hideLog') : t('helper.showLog')}
                 </button>
               </div>
             </div>
 
             <div style={{ marginTop: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: '#d1d5db', fontSize: 12, marginBottom: 5 }}>
-                <span>{releaseJob.stageLabel} · {releaseJob.message || 'обработка…'}</span>
+                <span>{releaseJob.stageLabel} · {releaseJob.message || t('helper.processing')}</span>
                 <strong style={{ color: stateColor }}>{Math.round(releaseJob.percent)}%</strong>
               </div>
-              <div role="progressbar" aria-label="Прогресс операции Helper" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(releaseJob.percent)} style={{ height: 10, borderRadius: 999, background: '#26323c', overflow: 'hidden' }}>
+              <div role="progressbar" aria-label={t('helper.progressAria')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(releaseJob.percent)} style={{ height: 10, borderRadius: 999, background: '#26323c', overflow: 'hidden' }}>
                 <div style={{ width: `${Math.max(0, Math.min(100, releaseJob.percent))}%`, height: '100%', background: stateColor, borderRadius: 999, transition: 'width .35s ease' }} />
               </div>
             </div>
@@ -709,12 +736,12 @@ export default function HelperUpdatesTab() {
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(115px, 1fr))', gap: 8, marginTop: 12 }}>
               {[
-                ['Файлов', releaseJob.stats.files || '—'],
-                ['Хешировано', releaseJob.stats.hashedFiles ? `${releaseJob.stats.hashedFiles}/${releaseJob.stats.files}` : '—'],
-                ['Объём', formatBytes(releaseJob.stats.totalBytes)],
-                ['Новых blobs', releaseJob.stats.storedBlobs || 0],
-                ['ZIP', formatBytes(releaseJob.stats.archiveBytes)],
-                ['Время', formatDuration(duration)],
+                [t('helper.statFiles'), releaseJob.stats.files || '—'],
+                [t('helper.statHashed'), releaseJob.stats.hashedFiles ? `${releaseJob.stats.hashedFiles}/${releaseJob.stats.files}` : '—'],
+                [t('helper.statSize'), formatBytes(releaseJob.stats.totalBytes, t)],
+                [t('helper.statNewBlobs'), releaseJob.stats.storedBlobs || 0],
+                ['ZIP', formatBytes(releaseJob.stats.archiveBytes, t)],
+                [t('helper.statTime'), formatDuration(duration, t)],
               ].map(([label, value]) => (
                 <div key={label} style={{ background: '#17232d', border: '1px solid #26323c', borderRadius: 7, padding: '8px 9px' }}>
                   <div style={{ color: '#7f8b96', fontSize: 10, textTransform: 'uppercase' }}>{label}</div>
@@ -726,10 +753,10 @@ export default function HelperUpdatesTab() {
             {processLogOpen && (
               <div style={{ marginTop: 12, background: '#081016', border: '1px solid #26323c', borderRadius: 7, overflow: 'hidden' }}>
                 <div style={{ padding: '7px 10px', color: '#7f8b96', fontSize: 11, borderBottom: '1px solid #26323c' }}>
-                  Последние события · {releaseJob.log.length} строк
+                  {t('helper.recentEvents', { count: releaseJob.log.length })}
                 </div>
                 <div role="log" aria-live="polite" style={{ maxHeight: 210, overflowY: 'auto', padding: '6px 10px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11, lineHeight: 1.65 }}>
-                  {releaseJob.log.length === 0 && <div style={{ color: '#7f8b96' }}>Журнал пока пуст.</div>}
+                  {releaseJob.log.length === 0 && <div style={{ color: '#7f8b96' }}>{t('helper.logEmpty')}</div>}
                   {releaseJob.log.map((entry, index) => (
                     <div key={`${entry.at}-${index}`} style={{ color: entry.level === 'error' ? '#fca5a5' : entry.level === 'success' ? '#86efac' : entry.level === 'warning' ? '#fde68a' : '#b7c6d1' }}>
                       <span style={{ color: '#53616d' }}>{new Date(entry.at).toLocaleTimeString('ru-RU')}</span>{' '}{entry.line}
@@ -746,23 +773,23 @@ export default function HelperUpdatesTab() {
         <div style={{ background: '#1e2124', border: '1px solid #2d3033', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
             <div>
-              <div style={{ color: '#9ca3af' }}>Хранилище: <code>{store.root}</code> — {store.ready ? 'готово' : 'каталога ещё нет (появится при первой публикации)'}</div>
+              <div style={{ color: '#9ca3af' }}>{t('helper.store')}: <code>{store.root}</code> — {store.ready ? t('helper.storeReady') : t('helper.storeMissing')}</div>
               <div style={{ color: store.serverSigningConfigured ? '#2ecc71' : '#f1c40f' }}>
-                Серверная подпись: {store.serverSigningConfigured
-                  ? `готова — следующий релиз подпишет ключ «${store.serverSigningKeyId}»`
-                  : 'НЕ настроена — создайте или импортируйте приватный ключ'}
+                {t('helper.serverSigning')}: {store.serverSigningConfigured
+                  ? t('helper.signingReady', { key: store.serverSigningKeyId })
+                  : t('helper.signingMissing')}
               </div>
               {store.serverSigningConfigured && (
                 <div style={{ color: store.serverSigningClientTrusted ? '#2ecc71' : '#fca5a5' }}>
                   {store.serverSigningClientTrusted
-                    ? 'Ключ входит в TRUSTED_KEYS установленных программ — пилоты примут подпись.'
-                    : 'Ключа НЕТ в TRUSTED_KEYS установленных программ: пилоты увидят «канал недоступен: подпись сделана неизвестным ключом» и не смогут обновиться.'}
+                    ? t('helper.trustKeyInList')
+                    : t('helper.trustKeyOut')}
                 </div>
               )}
               <div style={{ color: store.keyIds.length ? '#9ca3af' : '#f1c40f' }}>
-                Ключи подписи: {store.keyIds.length ? store.keyIds.join(', ') : 'не настроены'}
+                {t('helper.signKeys', { list: store.keyIds.length ? store.keyIds.join(', ') : t('helper.notConfigured') })}
                 {Object.keys(store.clientTrustedKeys ?? {}).length > 0
-                  && ` · зашитые в программы: ${Object.keys(store.clientTrustedKeys).join(', ')}`}
+                  && t('helper.bakedKeys', { list: Object.keys(store.clientTrustedKeys).join(', ') })}
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
@@ -771,7 +798,7 @@ export default function HelperUpdatesTab() {
                 style={{ fontSize: 12, whiteSpace: 'nowrap' }}
                 onClick={() => setShowConfig((value) => !value)}
               >
-                {showConfig ? 'Скрыть настройку' : 'Настроить'}
+                {showConfig ? t('helper.hideConfig') : t('helper.configure')}
               </button>
               {store.serverSigningConfigured && !store.serverSigningClientTrusted && (
                 <button
@@ -779,9 +806,9 @@ export default function HelperUpdatesTab() {
                   style={{ fontSize: 12, whiteSpace: 'nowrap', borderColor: '#e67e22', color: '#e67e22' }}
                   disabled={busy}
                   onClick={() => void resignChannels()}
-                  title="Переподписать текущие версии каналов доверенным ключом — обновления заработают без новой публикации"
+                  title={t('helper.resignTitle')}
                 >
-                  Починить канал: переподписать
+                  {t('helper.resignButton')}
                 </button>
               )}
             </div>
@@ -792,8 +819,8 @@ export default function HelperUpdatesTab() {
       {secret && (
         <div style={{ background: '#20140a', border: '1px solid #e67e22', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <strong style={{ color: '#e67e22' }}><IconAlert size={12} /> {secret.title} — показывается один раз</strong>
-            <button className="btn" style={{ fontSize: 12 }} onClick={() => setSecret(null)}>Скрыть</button>
+            <strong style={{ color: '#e67e22' }}><IconAlert size={12} /> {secret.title} — {t('helper.secretOnce')}</strong>
+            <button className="btn" style={{ fontSize: 12 }} onClick={() => setSecret(null)}>{t('helper.hide')}</button>
           </div>
           <code style={{ display: 'block', wordBreak: 'break-all', background: '#0c0c0c', padding: '8px 10px', borderRadius: 6, marginBottom: 8 }}>
             {secret.value}
@@ -804,7 +831,7 @@ export default function HelperUpdatesTab() {
               style={{ fontSize: 12 }}
               onClick={() => void copySecret()}
             >
-              Копировать
+              {t('helper.copy')}
             </button>
             <span style={{ color: '#9ca3af', fontSize: 12 }}>{secret.note}</span>
           </div>
@@ -813,32 +840,28 @@ export default function HelperUpdatesTab() {
 
       {store && showConfig && (
         <div style={{ background: '#1a1c1f', border: '1px solid #2d3033', borderRadius: 8, padding: 16, marginBottom: 16, fontSize: 13 }}>
-          <h3 style={{ marginTop: 0, marginBottom: 6 }}>Настройка канала обновлений</h3>
+          <h3 style={{ marginTop: 0, marginBottom: 6 }}>{t('helper.configTitle')}</h3>
           <p style={{ color: '#9ca3af', fontSize: 12, lineHeight: 1.6, marginTop: 0 }}>
-            Настройки сохраняются в <code>config.json</code> внутри хранилища и складываются с переменными
-            окружения. Значения, заданные в окружении сервера, отсюда изменить нельзя — они помечены
-            как «из окружения».
+            {t('helper.configNote1')} <code>config.json</code> {t('helper.configNote2')}
           </p>
 
           {/* --- Ключи подписи --- */}
           <div style={{ borderTop: '1px solid #2d3033', paddingTop: 12, marginTop: 8 }}>
-            <strong>Ключи подписи (ed25519)</strong>
+            <strong>{t('helper.signKeysTitle')}</strong>
             <p style={{ color: '#9ca3af', fontSize: 12, marginTop: 4, lineHeight: 1.6 }}>
-              Сервер проверяет этими ключами манифесты. Для автономной публикации у одного ключа
-              должна быть приватная часть. Она хранится в <code>config.json</code> тома с правами 0600
-              и никогда не возвращается через API.
+              {t('helper.signKeysNote1')} <code>config.json</code> {t('helper.signKeysNote2')}
             </p>
 
             {store.keyIds.length === 0 ? (
-              <p style={{ color: '#f1c40f', fontSize: 12 }}>Ключей пока нет — сервер принимает подпись «как есть».</p>
+              <p style={{ color: '#f1c40f', fontSize: 12 }}>{t('helper.noKeysYet')}</p>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 10 }}>
                 <thead>
                   <tr style={{ color: '#9ca3af', textAlign: 'left' }}>
                     <th style={{ padding: '4px 6px' }}>ID</th>
-                    <th style={{ padding: '4px 6px' }}>Публичный ключ</th>
-                    <th style={{ padding: '4px 6px' }}>Источник</th>
-                    <th style={{ padding: '4px 6px' }}>Клиенты</th>
+                    <th style={{ padding: '4px 6px' }}>{t('helper.colPublicKey')}</th>
+                    <th style={{ padding: '4px 6px' }}>{t('helper.colSource')}</th>
+                    <th style={{ padding: '4px 6px' }}>{t('helper.colClients')}</th>
                     <th style={{ padding: '4px 6px' }} />
                   </tr>
                 </thead>
@@ -846,9 +869,9 @@ export default function HelperUpdatesTab() {
                   {store.envKeyIds.map((id) => (
                     <tr key={`env-${id}`} style={{ borderTop: '1px solid #2d3033' }}>
                       <td style={{ padding: '4px 6px', fontFamily: 'ui-monospace, monospace' }}>{id}</td>
-                      <td style={{ padding: '4px 6px', color: '#6b7280' }}>скрыт (в окружении)</td>
-                      <td style={{ padding: '4px 6px' }}>из окружения</td>
-                      <td style={{ padding: '4px 6px' }}>{clientTrustBadge(store, id)}</td>
+                      <td style={{ padding: '4px 6px', color: '#6b7280' }}>{t('helper.hiddenInEnv')}</td>
+                      <td style={{ padding: '4px 6px' }}>{t('helper.fromEnv')}</td>
+                      <td style={{ padding: '4px 6px' }}>{clientTrustBadge(store, id, t)}</td>
                       <td style={{ padding: '4px 6px' }} />
                     </tr>
                   ))}
@@ -859,12 +882,12 @@ export default function HelperUpdatesTab() {
                         {key.publicKey.slice(0, 12)}…{key.publicKey.slice(-6)}
                       </td>
                       <td style={{ padding: '4px 6px' }}>
-                        {key.hasPrivate ? <span style={{ color: '#2ecc71' }}>серверная пара</span> : 'только публичный'}
+                        {key.hasPrivate ? <span style={{ color: '#2ecc71' }}>{t('helper.serverPair')}</span> : t('helper.publicOnly')}
                       </td>
-                      <td style={{ padding: '4px 6px' }}>{clientTrustBadge(store, key.id, key.publicKey)}</td>
+                      <td style={{ padding: '4px 6px' }}>{clientTrustBadge(store, key.id, t, key.publicKey)}</td>
                       <td style={{ padding: '4px 6px' }}>
                         <button className="btn" style={{ fontSize: 11 }} disabled={busy} onClick={() => void removeKey(key.id)}>
-                          Удалить
+                          {t('helper.delete')}
                         </button>
                       </td>
                     </tr>
@@ -877,65 +900,64 @@ export default function HelperUpdatesTab() {
               <input
                 value={keyId}
                 onChange={(event) => setKeyId(event.target.value)}
-                placeholder="ID (напр. k202609)"
+                placeholder={t('helper.keyIdPlaceholder')}
                 style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '6px 8px', color: '#e5e7eb', width: 160 }}
               />
               <input
                 value={keyPublic}
                 onChange={(event) => setKeyPublic(event.target.value)}
-                placeholder="Публичный ключ (base64, 32 байта)"
+                placeholder={t('helper.publicKeyPlaceholder')}
                 style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '6px 8px', color: '#e5e7eb', flex: 1, minWidth: 220, fontFamily: 'ui-monospace, monospace' }}
               />
               <button className="btn btn-cyan" style={{ fontSize: 12 }} disabled={busy || !keyId.trim() || !keyPublic.trim()} onClick={() => void addKey()}>
-                Добавить
+                {t('helper.add')}
               </button>
-              <button className="btn" style={{ fontSize: 12 }} disabled={busy} onClick={() => void generateKey()} title="Сервер сохранит пару и покажет приватный ключ для резервной копии">
-                Создать серверную пару
+              <button className="btn" style={{ fontSize: 12 }} disabled={busy} onClick={() => void generateKey()} title={t('helper.generatePairTitle')}>
+                {t('helper.generatePair')}
               </button>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
               <input
                 value={privateKeyInput}
                 onChange={(event) => setPrivateKeyInput(event.target.value)}
-                placeholder="Приватный seed существующего ключа (base64)"
+                placeholder={t('helper.privateSeedPlaceholder')}
                 type="password"
                 autoComplete="off"
                 style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '6px 8px', color: '#e5e7eb', flex: 1, minWidth: 280, fontFamily: 'ui-monospace, monospace' }}
               />
               <button className="btn" style={{ fontSize: 12 }} disabled={busy || !keyId.trim() || !privateKeyInput.trim()} onClick={() => void importPrivateKey()}>
-                Импортировать приватный ключ для указанного ID
+                {t('helper.importPrivate')}
               </button>
             </div>
           </div>
 
           {/* --- Токен публикации (необязательная совместимость) --- */}
           <div style={{ borderTop: '1px solid #2d3033', paddingTop: 12, marginTop: 16 }}>
-            <strong>Внешняя публикация (необязательно)</strong>
+            <strong>{t('helper.externalPublish')}</strong>
             <p style={{ color: '#9ca3af', fontSize: 12, marginTop: 4, lineHeight: 1.6 }}>
-              Токен нужен только для совместимости с внешним скриптом через
-              <code> /api/admin/uploader/publish</code>. Публикация из этой панели работает по
-              админской сессии и токена не требует. Текущий статус:{' '}
-              {store.publishTokenSource === 'env' && <span>задан в окружении (здесь не меняется).</span>}
-              {store.publishTokenSource === 'config' && <span style={{ color: '#2ecc71' }}>задан в настройках.</span>}
-              {store.publishTokenSource === 'none' && <span style={{ color: '#f1c40f' }}>не задан.</span>}
+              {t('helper.tokenNote1')}
+              <code> /api/admin/uploader/publish</code>{t('helper.tokenNote2')}{' '}
+              {store.publishTokenSource === 'env' && <span>{t('helper.tokenEnv')}</span>}
+              {store.publishTokenSource === 'config' && <span style={{ color: '#2ecc71' }}>{t('helper.tokenConfig')}</span>}
+              {store.publishTokenSource === 'none' && <span style={{ color: '#f1c40f' }}>{t('helper.tokenNone')}</span>}
             </p>
             {store.publishTokenSource !== 'env' && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <input
                   value={tokenInput}
                   onChange={(event) => setTokenInput(event.target.value)}
-                  placeholder="Свой токен (минимум 16 символов)"
+                  placeholder={t('helper.tokenPlaceholder')}
                   style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '6px 8px', color: '#e5e7eb', flex: 1, minWidth: 220, fontFamily: 'ui-monospace, monospace' }}
                 />
                 <button className="btn btn-cyan" style={{ fontSize: 12 }} disabled={busy || tokenInput.trim().length < 16} onClick={() => void saveToken()}>
-                  Сохранить
+                  {t('helper.save')}
                 </button>
                 <button className="btn" style={{ fontSize: 12 }} disabled={busy} onClick={() => void generateToken()}>
-                  Сгенерировать
+                  {t('helper.generate')}
                 </button>
                 {store.publishTokenSource === 'config' && (
                   <button className="btn" style={{ fontSize: 12 }} disabled={busy} onClick={() => void clearToken()}>
-                    Очистить
+                    {t('helper.clear')}
                   </button>
                 )}
               </div>
@@ -945,22 +967,19 @@ export default function HelperUpdatesTab() {
       )}
 
       <div style={{ background: '#1a1c1f', border: '1px solid #e67e22', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-        <h3 style={{ margin: '0 0 6px', color: '#e67e22' }}>Опубликовать новую версию на сервере</h3>
+        <h3 style={{ margin: '0 0 6px', color: '#e67e22' }}>{t('helper.publishTitle')}</h3>
         <p style={{ color: '#9ca3af', fontSize: 12, lineHeight: 1.6, marginTop: 0 }}>
-          В обычном режиме сервер сам берёт актуальный Helper из своей установки, подставляет номер
-          версии, считает SHA-256, подписывает манифест каноническим ключом канала (тот же, что зашит
-          в программу) и формирует готовый ZIP. Генерировать ключи вручную не нужно. Версию можно
-          удалить из таблицы, если она не стоит в канале.
+          {t('helper.publishNote')}
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: '140px 190px minmax(240px, 1fr)', gap: 8, marginBottom: 8 }}>
           <input value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} placeholder="2.13.1" style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
           <select value={releaseChannel} onChange={(event) => setReleaseChannel(event.target.value)} style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }}>
-            <option value="stable">Стабильный</option>
-            <option value="beta">Тестовый</option>
+            <option value="stable">{t('helper.channelStable')}</option>
+            <option value="beta">{t('helper.channelTest')}</option>
           </select>
           <select value={releaseSource} onChange={(event) => setReleaseSource(event.target.value as 'server' | 'upload')} style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }}>
-            <option value="server">Исходники с этого сервера (рекомендуется)</option>
-            <option value="upload">Загрузить другой каталог uploader</option>
+            <option value="server">{t('helper.sourceServer')}</option>
+            <option value="upload">{t('helper.sourceUpload')}</option>
           </select>
         </div>
         {releaseSource === 'upload' && (
@@ -981,13 +1000,13 @@ export default function HelperUpdatesTab() {
               }}
               style={{ color: '#9ca3af', fontSize: 12 }}
             />
-            <span style={{ color: '#9ca3af', fontSize: 12, marginLeft: 8 }}>выбрано файлов: {releaseFiles.length}</span>
+            <span style={{ color: '#9ca3af', fontSize: 12, marginLeft: 8 }}>{t('helper.filesChosen', { count: releaseFiles.length })}</span>
           </div>
         )}
-        <textarea value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} placeholder="Что изменилось в этой версии" style={{ width: '100%', minHeight: 68, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb', resize: 'vertical', marginBottom: 8 }} />
+        <textarea value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} placeholder={t('helper.notesPlaceholder')} style={{ width: '100%', minHeight: 68, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb', resize: 'vertical', marginBottom: 8 }} />
         <label style={{ display: 'flex', gap: 7, alignItems: 'center', color: '#d1d5db', fontSize: 12, marginBottom: 10 }}>
           <input type="checkbox" checked={releasePromote} onChange={(event) => setReleasePromote(event.target.checked)} />
-          Сразу переключить выбранный канал на новую версию
+          {t('helper.promoteNow')}
         </label>
         {busy && <progress style={{ width: '100%', height: 8, marginBottom: 8 }} />}
         <button
@@ -995,9 +1014,9 @@ export default function HelperUpdatesTab() {
           disabled={releaseBusy || (untrustedSigning && !allowUntrustedRelease) || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
           onClick={() => void publishRelease()}
         >
-          {releasePromote ? 'Сформировать ZIP и выпустить обновление' : 'Сформировать ZIP без публикации в канал'}
+          {releasePromote ? t('helper.zipPublish') : t('helper.zipOnly')}
         </button>
-        {!store?.serverSigningConfigured && <span style={{ color: '#9ca3af', fontSize: 12, marginLeft: 10 }}>Ключ канала подставится автоматически при публикации.</span>}
+        {!store?.serverSigningConfigured && <span style={{ color: '#9ca3af', fontSize: 12, marginLeft: 10 }}>{t('helper.keyAuto')}</span>}
         {untrustedSigning && (
           <div style={{ borderTop: '1px dashed #e67e22', marginTop: 12, paddingTop: 10, color: '#fca5a5', fontSize: 12, lineHeight: 1.6 }}>
             <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer' }}>
@@ -1008,51 +1027,46 @@ export default function HelperUpdatesTab() {
                 style={{ marginTop: 2 }}
               />
               <span>
-                Подписать ключом «{store?.serverSigningKeyId}», которого нет в TRUSTED_KEYS установленных программ.
-                Пилоты не смогут обновиться, пока не получат базовую сборку с зашитым публичным ключом.
-                Отметьте, только если именно это и планируется (ротация ключа).
+                {t('helper.untrustedNote', { key: store?.serverSigningKeyId ?? '' })}
               </span>
             </label>
           </div>
         )}
 
         <div style={{ borderTop: '1px solid #2d3033', marginTop: 16, paddingTop: 12 }}>
-          <strong>Первая сборка Windows: Setup + лаунчер</strong>
+          <strong>{t('helper.firstBuild')}</strong>
           <p style={{ color: '#9ca3af', fontSize: 12, margin: '4px 0 8px' }}>
-            BUILD-WINDOWS.bat теперь собирает оба артефакта: ColonialHelperSetup.exe для первичной установки пользователям и ColonialHelper.exe — лаунчер/payload, который нужен существующему каналу обновлений.
-            Setup распространяйте как установщик. Ниже загружается только ColonialHelper.exe; не загружайте туда Setup, иначе он заменит базовый лаунчер для обновлений.
-            Сборка выполняется на доверенной Windows-машине; при загрузке лаунчер передаётся частями до 4 МиБ.
+            {t('helper.firstBuildNote')}
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 9 }}>
-            <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" aria-label="Версия базовой сборки" style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
+            <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" aria-label={t('helper.launcherVersionAria')} style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
             <button className="btn btn-cyan" disabled={releaseBusy || !launcherVersion.trim()} onClick={() => void downloadLauncherBuildKit()}>
-              Скачать комплект сборки Setup + EXE
+              {t('helper.downloadKit')}
             </button>
-            <span style={{ color: '#6b7280', fontSize: 11 }}>В ZIP: сборка Setup и payload лаунчера</span>
+            <span style={{ color: '#6b7280', fontSize: 11 }}>{t('helper.kitContents')}</span>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingTop: 9, borderTop: '1px dashed #2d3033' }}>
             <input type="file" accept=".exe,application/vnd.microsoft.portable-executable" onChange={(event) => setLauncherFile(event.target.files?.[0] ?? null)} style={{ color: '#9ca3af', fontSize: 12 }} />
-            {launcherFile && <span style={{ color: launcherFile.name === 'ColonialHelper.exe' ? '#9ca3af' : '#fca5a5', fontSize: 11 }}>{launcherFile.name} — требуется файл ColonialHelper.exe</span>}
-            <button className="btn" disabled={releaseBusy || !launcherFile || launcherFile.name !== 'ColonialHelper.exe' || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить ColonialHelper.exe для обновлений</button>
+            {launcherFile && <span style={{ color: launcherFile.name === 'ColonialHelper.exe' ? '#9ca3af' : '#fca5a5', fontSize: 11 }}>{t('helper.launcherFileWrong', { name: launcherFile.name })}</span>}
+            <button className="btn" disabled={releaseBusy || !launcherFile || launcherFile.name !== 'ColonialHelper.exe' || !launcherVersion.trim()} onClick={() => void publishLauncher()}>{t('helper.uploadLauncher')}</button>
           </div>
         </div>
 
         <div style={{ borderTop: '1px solid #2d3033', marginTop: 16, paddingTop: 12 }}>
-          <strong>Установщик для пилотов: ColonialHelperSetup.exe</strong>
+          <strong>{t('helper.setupForPilots')}</strong>
           <p style={{ color: '#9ca3af', fontSize: 12, margin: '4px 0 8px', maxWidth: 760, lineHeight: 1.6 }}>
-            Именно этот файл скачивают с сайта: постоянная ссылка{' '}
+            {t('helper.setupNote1')}{' '}
             <code style={{ color: '#38bdf8' }}>/api/uploader/download?platform=win64</code>{' '}
-            стоит в меню профиля и в профиле пилота. Загруженный установщик заменяет прежний,
-            канал обновлений при этом не меняется — он живёт выше, в базовой сборке.
+            {t('helper.setupNote2')}
           </p>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
             <div style={{ background: '#1e2124', border: '1px solid #2d3033', borderRadius: 8, padding: '8px 12px', minWidth: 250 }}>
               {setupInfo ? (
                 <>
-                  <div style={{ fontSize: 12, color: '#9ca3af' }}>Опубликован установщик</div>
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>{t('helper.setupPublishedLabel')}</div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: '#38bdf8' }}>v{setupInfo.version}</div>
                   <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                    {formatBytes(setupInfo.size)} · {formatDate(setupInfo.updated_at ?? '')}
+                    {formatBytes(setupInfo.size, t)} · {formatDate(setupInfo.updated_at ?? '', locale)}
                   </div>
                   <div style={{ fontSize: 11, color: '#6b7280', fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
                     {setupInfo.sha256.slice(0, 24)}…
@@ -1060,18 +1074,18 @@ export default function HelperUpdatesTab() {
                 </>
               ) : (
                 <div style={{ fontSize: 12, color: '#f1c40f' }}>
-                  Установщик не загружен: ссылки «Скачать Colonial Helper» на сайте пока отвечают 404.
+                  {t('helper.setupMissing')}
                 </div>
               )}
             </div>
             {setupDownloadUrl && (
               <a className="btn btn-cyan" style={{ fontSize: 12 }} href={setupDownloadUrl} download>
-                Скачать текущий установщик
+                {t('helper.downloadSetup')}
               </a>
             )}
             {setupInfo && (
               <button className="btn" disabled={setupBusy} onClick={() => void removeSetupFile()}>
-                Убрать с раздачи
+                {t('helper.removeFromDistribution')}
               </button>
             )}
           </div>
@@ -1080,7 +1094,7 @@ export default function HelperUpdatesTab() {
               value={setupVersion}
               onChange={(event) => setSetupVersion(event.target.value)}
               placeholder="2.18.36"
-              aria-label="Версия установщика"
+              aria-label={t('helper.setupVersionAria')}
               style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }}
             />
             <input
@@ -1091,7 +1105,7 @@ export default function HelperUpdatesTab() {
             />
             {setupFile && (
               <span style={{ color: setupFile.name === 'ColonialHelperSetup.exe' ? '#9ca3af' : '#fca5a5', fontSize: 11 }}>
-                {setupFile.name} — требуется файл ColonialHelperSetup.exe
+                {t('helper.setupFileWrong', { name: setupFile.name })}
               </span>
             )}
             <button
@@ -1099,7 +1113,7 @@ export default function HelperUpdatesTab() {
               disabled={setupBusy || !setupFile || setupFile.name !== 'ColonialHelperSetup.exe' || !setupVersion.trim()}
               onClick={() => void publishSetup()}
             >
-              {setupBusy ? 'Загрузка…' : 'Загрузить установщик для сайта'}
+              {setupBusy ? t('helper.uploading') : t('helper.uploadSetup')}
             </button>
           </div>
         </div>
@@ -1108,30 +1122,30 @@ export default function HelperUpdatesTab() {
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         {Object.entries(channels).map(([channel, info]) => (
           <div key={channel} style={{ background: '#1e2124', border: '1px solid #2d3033', borderRadius: 8, padding: 14, minWidth: 240 }}>
-            <div style={{ fontSize: 12, color: '#9ca3af' }}>{CHANNEL_LABELS[channel] ?? channel}</div>
+            <div style={{ fontSize: 12, color: '#9ca3af' }}>{channelLabel(channel, t)}</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: '#e67e22' }}>{info.version || '—'}</div>
-            <div style={{ fontSize: 12, color: '#9ca3af' }}>{info.version ? formatDate(info.released_at) : 'ничего не опубликовано'}</div>
+            <div style={{ fontSize: 12, color: '#9ca3af' }}>{info.version ? formatDate(info.released_at, locale) : t('helper.nothingPublished')}</div>
           </div>
         ))}
       </div>
 
       {versions.length === 0 ? (
         <p style={{ color: '#9ca3af', fontSize: 13 }}>
-          Версий пока нет. Настройте серверную пару ключей и опубликуйте первую версию формой выше.
+          {t('helper.noVersions')}
         </p>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ color: '#9ca3af', textAlign: 'left' }}>
-                <th style={{ padding: '6px 8px' }}>Версия</th>
-                <th style={{ padding: '6px 8px' }}>Канал</th>
-                <th style={{ padding: '6px 8px' }}>Опубликована</th>
-                <th style={{ padding: '6px 8px' }}>Файлов</th>
-                <th style={{ padding: '6px 8px' }}>Размер</th>
-                <th style={{ padding: '6px 8px' }}>Подпись</th>
-                <th style={{ padding: '6px 8px' }}>Файл скачивания</th>
-                <th style={{ padding: '6px 8px' }}>Перевести канал</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.colVersion')}</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.colChannel')}</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.colPublished')}</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.statFiles')}</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.colSize')}</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.colSignature')}</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.colDownload')}</th>
+                <th style={{ padding: '6px 8px' }}>{t('helper.colSwitch')}</th>
                 <th style={{ padding: '6px 8px' }} />
               </tr>
             </thead>
@@ -1143,13 +1157,13 @@ export default function HelperUpdatesTab() {
                 return (
                   <tr key={row.version} style={{ borderTop: '1px solid #2d3033' }}>
                     <td style={{ padding: '6px 8px', fontFamily: 'ui-monospace, monospace' }}>{row.version}</td>
-                    <td style={{ padding: '6px 8px' }}>{CHANNEL_LABELS[row.channel] ?? row.channel}</td>
-                    <td style={{ padding: '6px 8px', color: '#9ca3af' }}>{formatDate(row.released_at)}</td>
+                    <td style={{ padding: '6px 8px' }}>{channelLabel(row.channel, t)}</td>
+                    <td style={{ padding: '6px 8px', color: '#9ca3af' }}>{formatDate(row.released_at, locale)}</td>
                     <td style={{ padding: '6px 8px' }}>{row.files}</td>
-                    <td style={{ padding: '6px 8px' }}>{formatBytes(row.bytes)}</td>
+                    <td style={{ padding: '6px 8px' }}>{formatBytes(row.bytes, t)}</td>
                     <td style={{ padding: '6px 8px', color: row.signed ? (keyTrusted ? '#2ecc71' : '#e67e22') : '#e74c3c' }}
-                      title={row.signed ? `подпись: ${row.signed_key || '?'}` : 'манифест без подписи'}>
-                      {row.signed ? (row.signed_key || 'есть') : 'нет'}
+                      title={row.signed ? t('helper.signatureTitle', { key: row.signed_key || '?' }) : t('helper.noSignature')}>
+                      {row.signed ? (row.signed_key || t('helper.yes')) : t('helper.no')}
                     </td>
                     <td style={{ padding: '6px 8px' }}>
                       <a
@@ -1158,7 +1172,7 @@ export default function HelperUpdatesTab() {
                         href={`/api/uploader/bundle/${encodeURIComponent(row.version)}.zip`}
                         download
                       >
-                        Скачать ZIP
+                        {t('helper.downloadZip')}
                       </a>
                     </td>
                     <td style={{ padding: '6px 8px', display: 'flex', gap: 6 }}>
@@ -1168,7 +1182,7 @@ export default function HelperUpdatesTab() {
                         disabled={releaseBusy || inStable}
                         onClick={() => void promote('stable', row.version)}
                       >
-                        {inStable ? 'в стабильном' : 'в стабильный'}
+                        {inStable ? t('helper.inStable') : t('helper.toStable')}
                       </button>
                       <button
                         className="btn btn-cyan"
@@ -1176,7 +1190,7 @@ export default function HelperUpdatesTab() {
                         disabled={releaseBusy || inBeta}
                         onClick={() => void promote('beta', row.version)}
                       >
-                        {inBeta ? 'в тестовом' : 'в тестовый'}
+                        {inBeta ? t('helper.inTest') : t('helper.toTest')}
                       </button>
                     </td>
                     <td style={{ padding: '6px 8px' }}>
@@ -1184,10 +1198,10 @@ export default function HelperUpdatesTab() {
                         className="btn"
                         style={{ fontSize: 11, color: '#fca5a5' }}
                         disabled={releaseBusy || inStable || inBeta}
-                        title={inStable || inBeta ? 'Сначала уберите версию из канала' : 'Удалить версию'}
+                        title={inStable || inBeta ? t('helper.removeFromChannelFirst') : t('helper.deleteVersion')}
                         onClick={() => void removeVersion(row.version)}
                       >
-                        Удалить
+                        {t('helper.delete')}
                       </button>
                     </td>
                   </tr>
