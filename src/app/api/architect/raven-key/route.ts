@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { encryptRavenKey, maskRavenKey } from '@/lib/raven/keyVault';
 import { ravenWhoAmI } from '@/lib/raven/client';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,20 +28,21 @@ export async function GET(req: Request) {
 
 /** Сохранить ключ: сначала проверяем его в Raven, потом шифруем и кладём в базу. */
 export async function PUT(req: Request) {
+  const t = await apiTranslate();
   const { user } = await authFromRequest(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (!secret()) {
-    return NextResponse.json({ error: 'На сервере не задан RAVEN_KEY_SECRET — сохранить ключ нельзя.' }, { status: 503 });
+    return NextResponse.json({ error: t('api.ravenSecretMissing') }, { status: 503 });
   }
   let body: { key?: unknown };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Ожидался JSON' }, { status: 400 });
+    return NextResponse.json({ error: t('api.jsonExpected') }, { status: 400 });
   }
   const key = typeof body.key === 'string' ? body.key.trim() : '';
   if (key.length < 8 || key.length > 200) {
-    return NextResponse.json({ error: 'Ключ RCC выглядит неверно' }, { status: 400 });
+    return NextResponse.json({ error: t('api.ravenKeyInvalid') }, { status: 400 });
   }
   const who = await ravenWhoAmI(key);
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: 400 });

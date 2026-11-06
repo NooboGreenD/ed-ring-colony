@@ -4,6 +4,7 @@ import { fetchRavenSystemV2 } from '@/lib/ravenColonial';
 import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
 import { persistRavenSystemProgress, statusFromProgress } from '@/lib/systemProgress';
 import { loadSystemsProgress } from '@/lib/systemOverview';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -14,10 +15,11 @@ export const maxDuration = 60;
  * из журналов пилотов). Проекты эскадрилий публичны — как и их системы.
  */
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const { id } = await params;
   const projectId = Number.parseInt(id, 10);
   if (!Number.isSafeInteger(projectId) || projectId <= 0) {
-    return NextResponse.json({ error: 'Неверный проект' }, { status: 400 });
+    return NextResponse.json({ error: t('api.invalidProject') }, { status: 400 });
   }
   try {
     const svc = createServiceClient();

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { ravenBase } from '@/lib/ravenColonial';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,8 +47,9 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   const system = new URL(req.url).searchParams.get('system')?.trim() ?? '';
-  if (!system) return NextResponse.json({ error: 'Не указана система' }, { status: 400 });
+  if (!system) return NextResponse.json({ error: t('api.systemNotSpecified') }, { status: 400 });
 
   const warnings: string[] = [];
 

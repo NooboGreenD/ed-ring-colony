@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { createAdminClient } from '@/lib/supabaseAdmin';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const projectId = parseInt(resolvedParams.id);
@@ -53,7 +55,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         .eq('user_id', user_id)
         .single();
       if (!sqMember) {
-        return NextResponse.json({ error: 'Пилот не состоит в эскадрильи проекта' }, { status: 403 });
+        return NextResponse.json({ error: t('api.pilotNotInSquadron') }, { status: 403 });
       }
     }
 
@@ -64,7 +66,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       .eq('user_id', user_id)
       .single();
     if (existing) {
-      return NextResponse.json({ error: 'Пилот уже в проекте' }, { status: 409 });
+      return NextResponse.json({ error: t('api.pilotAlreadyInProject') }, { status: 409 });
     }
 
     const { data, error } = await supabase
@@ -81,6 +83,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 }
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const projectId = parseInt(resolvedParams.id);
@@ -123,7 +126,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     }
 
     if (user_id === project?.created_by) {
-      return NextResponse.json({ error: 'Нельзя удалить создателя проекта' }, { status: 403 });
+      return NextResponse.json({ error: t('api.cannotRemoveCreator') }, { status: 403 });
     }
 
     await supabase

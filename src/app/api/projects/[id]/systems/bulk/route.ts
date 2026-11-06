@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { createAdminClient } from '@/lib/supabaseAdmin';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 function parseSystemNames(raw: string): string[] {
@@ -17,6 +18,7 @@ function parseSystemNames(raw: string): string[] {
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const projectId = parseInt(resolvedParams.id);
@@ -74,7 +76,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     if (!toAdd.length) {
       return NextResponse.json({
-        error: `Нечего добавлять. Хабов: ${skippedHub}, дубликатов: ${skippedDup}, не в маршруте: ${skippedNoRoute}.`
+        error: t('api.nothingToAdd', { hubs: skippedHub, dups: skippedDup, noRoute: skippedNoRoute })
       }, { status: 400 });
     }
 

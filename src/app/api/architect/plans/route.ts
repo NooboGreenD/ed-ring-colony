@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { parsePlan } from '@/lib/architect/planner';
 import { checkPlanEditRights, lockReasonRu } from '@/lib/architect/governance';
+import { apiTranslate } from '@/lib/i18n/apiT';
 import {
   PLAN_TABLE,
   buildPlanInsert,
@@ -69,6 +70,7 @@ export async function GET(req: Request) {
  * POST /api/architect/plans { system, plan, title?, visibility? }
  */
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -88,10 +90,10 @@ export async function POST(req: Request) {
     const plan = parsed.plan;
     const system = requestedSystem || plan.system;
     if (!system) {
-      return NextResponse.json({ error: 'Не указано название системы' }, { status: 400 });
+      return NextResponse.json({ error: t('api.systemNameRequired') }, { status: 400 });
     }
     if (plan.sites.length > MAX_SITES) {
-      return NextResponse.json({ error: `Слишком большой план: максимум ${MAX_SITES} построек` }, { status: 400 });
+      return NextResponse.json({ error: t('api.planTooLarge', { max: MAX_SITES }) }, { status: 400 });
     }
 
     // Назначенный архитектор системы: после назначения новые планы системы

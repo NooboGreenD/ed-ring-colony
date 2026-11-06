@@ -9,6 +9,7 @@ import {
 } from '@/lib/architect/projects';
 import { PROJECT_COLUMNS, loadIsAdmin, projectSummaries, type ProjectRow } from '@/lib/architect/projectStore';
 import { currentUserId, errorResponse, jsonError, readJson } from '@/lib/architect/projectRouteKit';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,9 +25,10 @@ export const dynamic = 'force-dynamic';
  */
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const userId = await currentUserId(req);
-    if (!userId) return NextResponse.json({ error: 'Войдите, чтобы видеть проекты систем' }, { status: 401 });
+    if (!userId) return NextResponse.json({ error: t('api.projectsSignIn') }, { status: 401 });
     const svc = createServiceClient();
     const url = new URL(req.url);
 
@@ -111,9 +113,10 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     const userId = await currentUserId(req);
-    if (!userId) return NextResponse.json({ error: 'Войдите, чтобы создать проект' }, { status: 401 });
+    if (!userId) return NextResponse.json({ error: t('api.projectsCreateSignIn') }, { status: 401 });
     const parsed = await readJson(req);
     if (!parsed.ok) return parsed.response;
     const { value, error: invalid } = validateNewProject(parsed.body);
@@ -128,7 +131,7 @@ export async function POST(req: Request) {
     if (ownedError) throw new Error(ownedError.message);
     if ((owned ?? []).length >= PROJECT_LIMITS.ownedProjects) {
       return NextResponse.json({
-        error: `Можно вести не больше ${PROJECT_LIMITS.ownedProjects} проектов — передайте или удалите старые`,
+        error: t('api.projectsLimit', { max: PROJECT_LIMITS.ownedProjects }),
       }, { status: 400 });
     }
 
