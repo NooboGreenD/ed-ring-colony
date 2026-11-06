@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import { RangeNumberField } from './RangeNumberField';
 import { downloadCsv } from '@/lib/atlas';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   type NearbyResult,
   type NearbyShape,
@@ -16,17 +17,17 @@ import {
 } from '@/lib/atlasSearchProgress';
 
 const SOURCE_NAMES: Record<NearbySourceId, string> = {
-  catalog: 'Каталог Spansh',
-  cache: 'Кэш Atlas',
-  'edsm-sphere': 'EDSM: сфера',
-  'edsm-cube': 'EDSM: куб',
+  catalog: 'atlas.ui.sourceCatalog',
+  cache: 'atlas.ui.sourceCache',
+  'edsm-sphere': 'atlas.ui.sourceEdsmSphere',
+  'edsm-cube': 'atlas.ui.sourceEdsmCube',
   spansh: 'Spansh API',
 };
 const STATUS_NAMES = {
-  ok: 'прочитан',
-  empty: 'нет записей',
-  partial: 'частичные данные',
-  unavailable: 'недоступен',
+  ok: 'atlas.ui.sourceOk',
+  empty: 'atlas.ui.sourceEmpty',
+  partial: 'atlas.ui.sourcePartial',
+  unavailable: 'atlas.ui.sourceUnavailable',
 };
 
 export default function AtlasNearbySearch({
@@ -34,6 +35,7 @@ export default function AtlasNearbySearch({
 }: {
   initialSystem?: string;
 }) {
+  const { t, locale } = useI18n();
   const [system, setSystem] = useState(initialSystem || 'Sol');
   const [shape, setShape] = useState<NearbyShape>('sphere');
   const [radius, setRadius] = useState(10);
@@ -76,7 +78,7 @@ export default function AtlasNearbySearch({
     setLoading(false);
     finishAtlasSearchProgress({
       stage: 'done',
-      message: 'Поиск ближайших систем остановлен',
+      message: t('atlas.ui.nearbyStopped'),
     });
   };
   const search = async () => {
@@ -91,9 +93,9 @@ export default function AtlasNearbySearch({
     setFilter('');
     startAtlasSearchProgress({
       kind: 'nearby',
-      title: 'БЛИЖАЙШИЕ СИСТЕМЫ',
+      title: t('atlas.ui.nearbyOverlayTitle'),
       stage: 'coords',
-      message: `Сверяем источники вокруг ${system.trim()}`,
+      message: t('atlas.ui.nearbyComparing', { system: system.trim() }),
     });
     try {
       const response = await fetch('/api/atlas/nearby', {
@@ -110,10 +112,10 @@ export default function AtlasNearbySearch({
       if (activeGeneration !== generation.current) return;
       if (!response.ok)
         throw new Error(
-          data.error || `Ошибка поиска (HTTP ${response.status})`
+          data.error || t('atlas.ui.errSearchHttp', { status: response.status })
         );
       if (!Array.isArray(data.systems) || !Array.isArray(data.sources))
-        throw new Error('Источник не вернул список систем.');
+        throw new Error(t('atlas.ui.errNoSystemList'));
       setResult(data);
       // The overlay is capped independently of the complete result table/CSV.
       publishAtlasSearchPoints(
@@ -129,9 +131,8 @@ export default function AtlasNearbySearch({
       finishAtlasSearchProgress({
         stage: 'done',
         percent: 100,
-        message: `Найдено ${data.systems.length} систем`,
-        summary:
-          'Полный полученный список доступен в панели; статусы источников и ограничения указаны отдельно.',
+        message: t('atlas.ui.nearbyFound', { count: data.systems.length }),
+        summary: t('atlas.ui.nearbyFullList'),
         beam: {
           x: data.reference.x,
           y: data.reference.y,
@@ -142,7 +143,7 @@ export default function AtlasNearbySearch({
     } catch (caught) {
       if (activeGeneration !== generation.current) return;
       const message =
-        caught instanceof Error ? caught.message : 'Не удалось найти системы';
+        caught instanceof Error ? caught.message : t('atlas.ui.errFindSystems');
       setError(message);
       finishAtlasSearchProgress({ stage: 'failed', message });
     } finally {
@@ -173,15 +174,15 @@ export default function AtlasNearbySearch({
       `nearby-${result.reference.name}-${result.shape}-${result.radius}`,
       [
         [
-          'Система',
-          'Расстояние, св.л.',
+          t('atlas.csvSystem'),
+          t('atlas.ui.csvDistanceLy'),
           'X',
           'Y',
           'Z',
           'ID64',
-          'Источники',
-          'Альтернативные имена',
-          'Расхождение координат',
+          t('atlas.ui.csvSources'),
+          t('atlas.ui.csvAltNames'),
+          t('atlas.ui.csvCoordConflict'),
         ],
         ...rows.map((row) => [
           row.name,
@@ -190,22 +191,19 @@ export default function AtlasNearbySearch({
           row.y,
           row.z,
           row.id64 || '',
-          row.sources.map((id) => SOURCE_NAMES[id]).join('; '),
+          row.sources.map((id) => t(SOURCE_NAMES[id])).join('; '),
           row.aliases.join('; '),
-          row.coordinate_conflict ? 'Да' : 'Нет',
+          row.coordinate_conflict ? t('atlas.ui.yes') : t('atlas.ui.no'),
         ]),
       ]
     );
   };
   return (
     <div className="atlas-section">
-      <h4>Все системы поблизости</h4>
-      <p className="atlas-muted">
-        Поиск известных систем без фильтров по мирам, населению или товарам.
-        Сверяем локальный каталог, кэш Atlas, EDSM и Spansh API.
-      </p>
+      <h4>{t('atlas.ui.nearbyTitle')}</h4>
+      <p className="atlas-muted">{t('atlas.ui.nearbyIntro')}</p>
       <SystemSearchInput
-        label="Система отсчёта"
+        label={t('atlas.ui.refSystem')}
         value={system}
         onChange={setSystem}
         disabled={loading}
@@ -214,20 +212,20 @@ export default function AtlasNearbySearch({
         }}
       />
       <div className="atlas-search-field">
-        <label htmlFor="atlas-nearby-shape">Форма области</label>
+        <label htmlFor="atlas-nearby-shape">{t('atlas.ui.shapeLabel')}</label>
         <select
           id="atlas-nearby-shape"
           value={shape}
           disabled={loading}
           onChange={(event) => setShape(event.target.value as NearbyShape)}
         >
-          <option value="sphere">Сфера</option>
-          <option value="cube">Куб</option>
+          <option value="sphere">{t('atlas.ui.shapeSphere')}</option>
+          <option value="cube">{t('atlas.ui.shapeCube')}</option>
         </select>
       </div>
       <RangeNumberField
         id="atlas-nearby-radius"
-        label={shape === 'sphere' ? 'Радиус сферы' : 'От центра до грани куба'}
+        label={shape === 'sphere' ? t('atlas.ui.radiusSphere') : t('atlas.ui.radiusCube')}
         min={1}
         max={50}
         step={1}
@@ -236,8 +234,8 @@ export default function AtlasNearbySearch({
         disabled={loading}
         hint={
           shape === 'sphere'
-            ? 'Все системы на расстоянии не больше указанного радиуса.'
-            : `Куб ±${radius} св.л. по каждой оси; сторона ${radius * 2} св.л. Углы дальше радиуса сферы.`
+            ? t('atlas.ui.sphereHint')
+            : t('atlas.ui.cubeHint', { radius, side: radius * 2 })
         }
       />
       <div className="atlas-button-row">
@@ -247,19 +245,16 @@ export default function AtlasNearbySearch({
           disabled={loading || !system.trim()}
           onClick={() => void search()}
         >
-          {loading ? 'Сверка источников…' : 'Найти все системы'}
+          {loading ? t('atlas.ui.nearbyComparingShort') : t('atlas.ui.findAllSystems')}
         </button>
         {loading && (
           <button type="button" className="atlas-stop-btn" onClick={stop}>
-            Стоп
+            {t('atlas.ui.stop')}
           </button>
         )}
       </div>
       {loading && (
-        <p role="status" className="atlas-muted">
-          Читаем все страницы локальных данных и Spansh, сверяем сферу и куб
-          EDSM. Ожидание до одной минуты.
-        </p>
+        <p role="status" className="atlas-muted">{t('atlas.ui.nearbyReading')}</p>
       )}
       {error && (
         <p className="atlas-inline-error" role="alert">
@@ -269,20 +264,22 @@ export default function AtlasNearbySearch({
       {result && (
         <>
           <h4>
-            Систем найдено: {result.systems.length.toLocaleString('ru-RU')}
+            {t('atlas.ui.systemsFound', { count: result.systems.length.toLocaleString(locale) })}
           </h4>
           <p className="atlas-muted">
             {result.reference.name} ·{' '}
-            {result.shape === 'sphere' ? 'сфера' : 'куб'} · {result.radius}{' '}
-            св.л.
+            {t('atlas.ui.shapeRadius', {
+              shape: result.shape === 'sphere' ? t('atlas.ui.shapeSphereLower') : t('atlas.ui.shapeCubeLower'),
+              radius: result.radius,
+            })}
           </p>
           <details open>
-            <summary>Проверенные источники</summary>
+            <summary>{t('atlas.ui.sourcesChecked')}</summary>
             <ul>
               {result.sources.map((source) => (
                 <li key={source.id}>
-                  {SOURCE_NAMES[source.id]} — {STATUS_NAMES[source.status]} (
-                  {source.count.toLocaleString('ru-RU')})
+                  {t(SOURCE_NAMES[source.id])} — {t(STATUS_NAMES[source.status])} (
+                  {source.count.toLocaleString(locale)})
                   {source.message && `: ${source.message}`}
                 </li>
               ))}
@@ -290,7 +287,7 @@ export default function AtlasNearbySearch({
           </details>
           {result.warnings.length > 0 && (
             <details open className="atlas-muted">
-              <summary>Ограничения и предупреждения</summary>
+              <summary>{t('atlas.ui.limitsWarnings')}</summary>
               <ul>
                 {result.warnings.map((warning, index) => (
                   <li key={index}>{warning}</li>
@@ -299,13 +296,10 @@ export default function AtlasNearbySearch({
             </details>
           )}
           {result.systems.length > 4000 && (
-            <p className="atlas-muted">
-              На карте показаны ближайшие 4 000 систем; список и CSV содержат
-              все полученные записи.
-            </p>
+            <p className="atlas-muted">{t('atlas.ui.nearbyMapLimit')}</p>
           )}
           <div className="atlas-search-field">
-            <label htmlFor="atlas-nearby-filter">Поиск по всему списку</label>
+            <label htmlFor="atlas-nearby-filter">{t('atlas.ui.searchWholeList')}</label>
             <input
               id="atlas-nearby-filter"
               type="search"
@@ -314,7 +308,7 @@ export default function AtlasNearbySearch({
                 setFilter(event.target.value);
                 setPage(1);
               }}
-              placeholder="Название системы"
+              placeholder={t('atlas.ui.systemNamePlaceholder')}
             />
           </div>
           <button
@@ -323,17 +317,19 @@ export default function AtlasNearbySearch({
             onClick={exportResults}
             disabled={!rows.length}
           >
-            CSV: весь {filter.trim() ? 'отфильтрованный ' : ''}список (
-            {rows.length})
+            {t('atlas.ui.csvWholeList', {
+              scope: filter.trim() ? t('atlas.ui.csvScopeFiltered') : '',
+              count: rows.length,
+            })}
           </button>
           <nav
             className="atlas-nearby-pagination"
-            aria-label="Страницы ближайших систем"
+            aria-label={t('atlas.ui.paginationAria')}
           >
             <label>
-              Строк на странице{' '}
+              {t('atlas.ui.rowsPerPage')}{' '}
               <select
-                aria-label="Строк на странице"
+                aria-label={t('atlas.ui.rowsPerPage')}
                 value={size}
                 onChange={(event) => {
                   setSize(Number(event.target.value));
@@ -351,7 +347,7 @@ export default function AtlasNearbySearch({
               type="button"
               disabled={currentPage === 1}
               onClick={() => setPage(1)}
-              aria-label="Первая страница"
+              aria-label={t('atlas.ui.firstPage')}
             >
               «
             </button>
@@ -359,14 +355,14 @@ export default function AtlasNearbySearch({
               type="button"
               disabled={currentPage === 1}
               onClick={() => setPage(currentPage - 1)}
-              aria-label="Предыдущая страница"
+              aria-label={t('atlas.ui.prevPage')}
             >
               ‹
             </button>
             <label>
-              Страница{' '}
+              {t('atlas.ui.pageLabel')}{' '}
               <select
-                aria-label="Страница"
+                aria-label={t('atlas.ui.pageLabel')}
                 value={currentPage}
                 onChange={(event) => setPage(Number(event.target.value))}
               >
@@ -382,7 +378,7 @@ export default function AtlasNearbySearch({
               type="button"
               disabled={currentPage === pages}
               onClick={() => setPage(currentPage + 1)}
-              aria-label="Следующая страница"
+              aria-label={t('atlas.ui.nextPage')}
             >
               ›
             </button>
@@ -390,24 +386,26 @@ export default function AtlasNearbySearch({
               type="button"
               disabled={currentPage === pages}
               onClick={() => setPage(pages)}
-              aria-label="Последняя страница"
+              aria-label={t('atlas.ui.lastPage')}
             >
               »
             </button>
           </nav>
           <p className="atlas-list-counter">
-            Показано {rows.length ? (currentPage - 1) * size + 1 : 0}–
-            {Math.min(currentPage * size, rows.length)} из {rows.length}. Список
-            отсортирован по расстоянию.
+            {t('atlas.ui.pageRange', {
+              from: rows.length ? (currentPage - 1) * size + 1 : 0,
+              to: Math.min(currentPage * size, rows.length),
+              total: rows.length,
+            })}
           </p>
           <div className="table-scroll">
             <table>
               <thead>
                 <tr>
-                  <th>Система</th>
-                  <th>Св.л.</th>
-                  <th>Координаты</th>
-                  <th>Источники</th>
+                  <th>{t('atlas.csvSystem')}</th>
+                  <th>{t('atlas.ui.colLy')}</th>
+                  <th>{t('atlas.ui.colCoords')}</th>
+                  <th>{t('atlas.ui.csvSources')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -417,34 +415,34 @@ export default function AtlasNearbySearch({
                       <button
                         type="button"
                         className="atlas-link-btn"
-                        title="Показать на карте"
+                        title={t('atlas.showOnMap')}
                         onClick={() => focusSystem(row)}
                       >
                         {row.name}
                       </button>
                       {row.coordinate_conflict && (
-                        <span title="Источники расходятся в координатах">
+                        <span title={t('atlas.ui.sourcesConflict')}>
                           {' '}
                           ⚠
                         </span>
                       )}
                     </td>
                     <td>
-                      {row.distance.toLocaleString('ru-RU', {
+                      {row.distance.toLocaleString(locale, {
                         maximumFractionDigits: 2,
                       })}
                     </td>
                     <td>
                       {[row.x, row.y, row.z]
                         .map((value) =>
-                          value.toLocaleString('ru-RU', {
+                          value.toLocaleString(locale, {
                             maximumFractionDigits: 3,
                           })
                         )
                         .join(' / ')}
                     </td>
                     <td>
-                      {row.sources.map((id) => SOURCE_NAMES[id]).join(', ')}
+                      {row.sources.map((id) => t(SOURCE_NAMES[id])).join(', ')}
                     </td>
                   </tr>
                 ))}
@@ -452,7 +450,7 @@ export default function AtlasNearbySearch({
             </table>
           </div>
           {!rows.length && (
-            <p className="atlas-muted">Систем по этим условиям не найдено.</p>
+            <p className="atlas-muted">{t('atlas.ui.nearbyNone')}</p>
           )}
         </>
       )}
