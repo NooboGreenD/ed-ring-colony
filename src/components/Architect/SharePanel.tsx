@@ -15,6 +15,7 @@
  * плану, поэтому подделать «красивый» план через запрос не получится.
  */
 
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   PLAN_VISIBILITIES,
@@ -58,10 +59,10 @@ interface SharePanelProps {
   onNotice: (message: string) => void;
 }
 
-function formatDate(value: string | null): string {
+function formatDate(value: string | null, locale: string): string {
   if (!value) return '—';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
 }
 
 export default function SharePanel({
@@ -83,6 +84,7 @@ export default function SharePanel({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   /** JSON сохранённого плана: сравнение с текущим показывает «есть правки». */
+  const { t, locale } = useI18n();
   const [savedSignature, setSavedSignature] = useState('');
 
   const dirty = useMemo(
@@ -154,9 +156,9 @@ export default function SharePanel({
       const data = await response.json().catch(() => null);
       if (!response.ok) {
         if (response.status === 401) {
-          setError('Планы сохраняются после входа в аккаунт — черновик при этом остаётся в браузере.');
+          setError(t('shr.loginRequired'));
         } else {
-          setError(String(data?.error || `Ошибка сервера (${response.status})`));
+          setError(String(data?.error || t('shr.serverError', { status: response.status })));
         }
         return;
       }
@@ -167,61 +169,61 @@ export default function SharePanel({
         setTitle(view.title || '');
         onSaved(view);
         onNotice(visibility === 'private'
-          ? 'План сохранён на сервере (виден только вам)'
-          : 'План сохранён на сервере');
+          ? t('shr.savedPrivate')
+          : t('shr.saved'));
       } else {
-        setError('Сервер не вернул сохранённый план');
+        setError(t('shr.noPlanReturned'));
       }
       void refreshList(systemName);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось сохранить план');
+      setError(err instanceof Error ? err.message : t('shr.saveFailed'));
     } finally {
       setBusy(false);
     }
-  }, [plan, remoteId, systemName, title, visibility, onSaved, onNotice, refreshList]);
+  }, [plan, remoteId, systemName, title, visibility, onSaved, onNotice, refreshList, t]);
 
   const remove = useCallback(async () => {
     if (!remoteId) return;
-    if (!window.confirm('Удалить план с сервера? Черновик в браузере останется.')) return;
+    if (!window.confirm(t('shr.confirmRemove'))) return;
     setBusy(true);
     setError('');
     try {
       const response = await fetch(`/api/architect/plans/${encodeURIComponent(remoteId)}`, { method: 'DELETE' });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(String(data?.error || `Не удалось удалить (${response.status})`));
+        setError(String(data?.error || t('shr.deleteFailedStatus', { status: response.status })));
         return;
       }
       onDeleted();
       void refreshList(systemName);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось удалить план');
+      setError(err instanceof Error ? err.message : t('shr.deleteFailed'));
     } finally {
       setBusy(false);
     }
-  }, [remoteId, onDeleted, refreshList, systemName]);
+  }, [remoteId, onDeleted, refreshList, systemName, t]);
 
   const removeFromList = useCallback(async (item: PlanView) => {
     if (!item.own || deletingId) return;
-    if (!window.confirm(`Удалить сохранённый план «${item.title || 'Без названия'}»?`)) return;
+    if (!window.confirm(t('shr.confirmRemoveSaved', { title: item.title || t('shr.untitled') }))) return;
     setDeletingId(item.id);
     setError('');
     try {
       const response = await fetch(`/api/architect/plans/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(String(data?.error || `Не удалось удалить (${response.status})`));
+        setError(String(data?.error || t('shr.deleteFailedStatus', { status: response.status })));
         return;
       }
       setList((current) => current.filter((planItem) => planItem.id !== item.id));
       if (item.id === remoteId) onDeleted();
-      onNotice('Сохранённый план удалён');
+      onNotice(t('shr.savedPlanDeleted'));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось удалить план');
+      setError(err instanceof Error ? err.message : t('shr.deleteFailed'));
     } finally {
       setDeletingId(null);
     }
-  }, [deletingId, remoteId, onDeleted, onNotice]);
+  }, [deletingId, remoteId, onDeleted, onNotice, t]);
 
   const copyLink = useCallback(async () => {
     if (!shareUrl) return;
@@ -229,16 +231,16 @@ export default function SharePanel({
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
     } catch {
-      onNotice('Браузер не дал доступ к буферу обмена — скопируйте ссылку вручную');
+      onNotice(t('shr.clipboardDenied'));
     }
-  }, [shareUrl, onNotice]);
+  }, [shareUrl, onNotice, t]);
 
   return (
     <section style={cardStyle}>
       <div style={rowStyle}>
-        <h3 style={sectionTitle}>Сохранение и публикация</h3>
+        <h3 style={sectionTitle}>{t('shr.sectionTitle')}</h3>
         <span style={mutedText}>
-          {remoteId ? `план ${remoteId.slice(0, 8)}…` : 'на сервере ещё не сохранён'}
+          {remoteId ? t('shr.planId', { id: remoteId.slice(0, 8) }) : t('shr.notSavedYet')}
         </span>
       </div>
 
@@ -246,7 +248,7 @@ export default function SharePanel({
         <input
           value={title}
           onChange={(event) => setTitle(event.target.value)}
-          placeholder="Название плана, например «Первая очередь»"
+          placeholder={t('shr.titlePlaceholder')}
           style={{ ...inputStyle, flex: '1 1 220px' }}
         />
       </div>
@@ -259,56 +261,55 @@ export default function SharePanel({
             onClick={() => setVisibility(item)}
             style={{ ...chipStyle, ...(item === visibility ? chipActive : {}) }}
           >
-            {VISIBILITY_LABELS_RU[item]}
+            {t(VISIBILITY_LABELS_RU[item])}
           </button>
         ))}
       </div>
-      <div style={{ ...mutedText, marginTop: 6 }}>{VISIBILITY_HINTS_RU[visibility]}</div>
+      <div style={{ ...mutedText, marginTop: 6 }}>{t(VISIBILITY_HINTS_RU[visibility])}</div>
 
       {lockReason && (
         <div style={{ ...mutedText, marginTop: 8, color: 'var(--cyan)' }}>
-          🔒 {lockReason} Черновик в браузере можно вести дальше, но на сервер его положит
-          только назначенный архитектор.
+          🔒 {lockReason} {t('shr.lockNote')}
         </div>
       )}
 
       <div style={{ ...rowStyle, marginTop: 10 }}>
         <button type="button" onClick={() => void save()} disabled={busy || Boolean(lockReason)} style={primaryButton}>
-          {busy ? 'Сохранение…' : remoteId ? 'Сохранить изменения' : 'Сохранить на сервере'}
+          {busy ? t('shr.saving') : remoteId ? t('shr.saveChanges') : t('shr.saveToServer')}
         </button>
         {remoteId && (
           <>
             <button type="button" onClick={() => void copyLink()} disabled={!shareUrl} style={ghostButton}>
-              Скопировать ссылку
+              {t('shr.copyLink')}
             </button>
             <button type="button" onClick={() => void remove()} disabled={busy} style={{ ...ghostButton, color: 'var(--red)' }}>
-              Удалить
+              {t('shr.delete')}
             </button>
           </>
         )}
       </div>
 
-      {dirty && <div style={{ ...mutedText, marginTop: 8, color: 'var(--orange)' }}>В плане есть несохранённые правки.</div>}
-      {copied && <div style={{ ...goodText, marginTop: 8 }}>Ссылка скопирована.</div>}
+      {dirty && <div style={{ ...mutedText, marginTop: 8, color: 'var(--orange)' }}>{t('shr.dirty')}</div>}
+      {copied && <div style={{ ...goodText, marginTop: 8 }}>{t('shr.copied')}</div>}
       {error && <div style={{ ...errorText, marginTop: 8 }}>{error}</div>}
 
       {shareUrl && (
         <div style={{ ...mutedText, marginTop: 8, wordBreak: 'break-all' }}>
-          Ссылка: <span style={{ color: 'var(--cyan)' }}>{shareUrl}</span>
+          {t('shr.shareLink')} <span style={{ color: 'var(--cyan)' }}>{shareUrl}</span>
         </div>
       )}
 
       <div style={{ marginTop: 12 }}>
         <div style={rowStyle}>
           <span style={{ ...mutedText, textTransform: 'uppercase', letterSpacing: 1, fontSize: 11 }}>
-            Планы системы {systemName}
+            {t('shr.systemPlans', { name: systemName })}
           </span>
-          <button type="button" onClick={() => void refreshList(systemName)} style={ghostButton}>Обновить список</button>
+          <button type="button" onClick={() => void refreshList(systemName)} style={ghostButton}>{t('shr.refreshList')}</button>
         </div>
-        {listLoading && <div style={mutedText}>Загрузка…</div>}
+        {listLoading && <div style={mutedText}>{t('shr.loading')}</div>}
         {!listLoading && list.length === 0 && (
           <div style={{ ...mutedText, marginTop: 6 }}>
-            Сохранённых планов в этой системе пока нет — свои приватные и «по ссылке» здесь увидите только вы.
+            {t('shr.emptyList')}
           </div>
         )}
         {list.length > 0 && (
@@ -324,26 +325,26 @@ export default function SharePanel({
               >
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: 'var(--text)' }}>
-                    {item.title || 'Без названия'}
-                    {item.own ? <span style={mutedText}> · ваш</span> : <span style={mutedText}> · {item.authorName}</span>}
-                    {item.stale ? <span style={{ color: 'var(--orange)', fontSize: 11 }}> · каталог обновился</span> : null}
+                    {item.title || t('shr.untitled')}
+                    {item.own ? <span style={mutedText}>{t('shr.yours')}</span> : <span style={mutedText}> · {item.authorName}</span>}
+                    {item.stale ? <span style={{ color: 'var(--orange)', fontSize: 11 }}>{t('shr.staleCatalog')}</span> : null}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    {VISIBILITY_LABELS_RU[item.visibility]} · {item.siteCount} постр. · {formatTons(item.haulTons)}
-                    {' · '}обновлён {formatDate(item.updatedAt)}
+                    {t(VISIBILITY_LABELS_RU[item.visibility])} · {t('shr.sitesCount', { count: item.siteCount })} · {formatTons(item.haulTons)}
+                    {' · '}{t('shr.updated', { date: formatDate(item.updatedAt, locale) })}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  <button type="button" onClick={() => onOpen(item.id)} style={ghostButton}>Открыть</button>
+                  <button type="button" onClick={() => onOpen(item.id)} style={ghostButton}>{t('shr.open')}</button>
                   {item.own && (
                     <button
                       type="button"
                       onClick={() => void removeFromList(item)}
                       disabled={Boolean(deletingId)}
                       style={{ ...ghostButton, color: 'var(--red)' }}
-                      aria-label={`Удалить план ${item.title || 'Без названия'}`}
+                      aria-label={t('shr.removeAria', { title: item.title || t('shr.untitled') })}
                     >
-                      {deletingId === item.id ? 'Удаление…' : 'Удалить'}
+                      {deletingId === item.id ? t('shr.deleting') : t('shr.delete')}
                     </button>
                   )}
                 </div>

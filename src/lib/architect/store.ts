@@ -22,15 +22,15 @@ export type PlanVisibility = 'private' | 'unlisted' | 'public';
 export const PLAN_VISIBILITIES: PlanVisibility[] = ['private', 'unlisted', 'public'];
 
 export const VISIBILITY_LABELS_RU: Record<PlanVisibility, string> = {
-  private: 'только я',
-  unlisted: 'по ссылке',
-  public: 'публичный',
+  private: 'shr.visPrivate',
+  unlisted: 'shr.visUnlisted',
+  public: 'shr.visPublic',
 };
 
 export const VISIBILITY_HINTS_RU: Record<PlanVisibility, string> = {
-  private: 'Видите только вы. В общем списке системы план не появляется.',
-  unlisted: 'Открывается по прямой ссылке, в списке системы не показывается.',
-  public: 'Виден всем в списке планов этой системы.',
+  private: 'shr.hintPrivate',
+  unlisted: 'shr.hintUnlisted',
+  public: 'shr.hintPublic',
 };
 
 export function isPlanVisibility(value: unknown): value is PlanVisibility {
