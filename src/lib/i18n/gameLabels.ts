@@ -68,6 +68,31 @@ export const STATE_KEYS: Record<string, string> = {
   Revolution: 'bgs.stateRevolution',
 };
 
+export const POWER_ALLEGIANCE_KEYS: Record<string, string> = {
+  Empire: 'pp.allegianceEmpire',
+  Federation: 'pp.allegianceFederation',
+  Alliance: 'pp.allegianceAlliance',
+  Independent: 'pp.allegianceIndependent',
+};
+
+export const POWER_STATE_KEYS: Record<string, string> = {
+  Stronghold: 'pp.stateStronghold',
+  Fortified: 'pp.stateFortified',
+  Exploited: 'pp.stateExploited',
+};
+
+export const POWER_STATE_PLURAL_KEYS: Record<string, string> = {
+  Stronghold: 'pp.statePluralStronghold',
+  Fortified: 'pp.statePluralFortified',
+  Exploited: 'pp.statePluralExploited',
+};
+
+export const POWER_STATE_HINT_KEYS: Record<string, string> = {
+  Stronghold: 'pp.hintStronghold',
+  Fortified: 'pp.hintFortified',
+  Exploited: 'pp.hintExploited',
+};
+
 /** Подпись по каноническому ключу; неизвестное значение — как в справочнике. */
 export function gameLabel(
   t: TFn,
