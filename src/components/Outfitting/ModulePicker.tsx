@@ -671,7 +671,7 @@ export default function ModulePicker({
               style={{ ...button(favoritesOnly), justifyContent: 'flex-start', gap: 6, color: favoritesOnly ? '#fbbf24' : 'var(--muted)' }}
             >
               <IconStar size={13} color={favoritesOnly ? '#fbbf24' : 'var(--muted)'} />
-              Избранные модули ({favorites.length})
+              {t('outfitting.picker.favorites', { count: favorites.length })}
             </button>
 
             {/* Фильтр по классу */}
@@ -1297,7 +1297,7 @@ export default function ModulePicker({
                                   fontWeight: delta.massDelta !== 0 ? 700 : 400,
                                 }}
                               >
-                                {delta.massDelta > 0 ? '+' : ''}{delta.massDelta.toFixed(1)} т
+                                {delta.massDelta > 0 ? '+' : ''}{delta.massDelta.toFixed(1)} {t('outfitting.unitTons')}
                               </span>
                             </div>
 
@@ -1310,7 +1310,7 @@ export default function ModulePicker({
                                   fontWeight: delta.jumpRangeDelta !== 0 ? 700 : 400,
                                 }}
                               >
-                                {delta.jumpRangeDelta > 0 ? '+' : ''}{delta.jumpRangeDelta.toFixed(2)} св.л
+                                {delta.jumpRangeDelta > 0 ? '+' : ''}{delta.jumpRangeDelta.toFixed(2)} {t('outfitting.unitLightSeconds')}
                               </span>
                             </div>
 
@@ -1323,7 +1323,7 @@ export default function ModulePicker({
                                   fontWeight: delta.speedDelta !== 0 ? 700 : 400,
                                 }}
                               >
-                                {delta.speedDelta > 0 ? '+' : ''}{delta.speedDelta.toFixed(0)} м/с
+                                {delta.speedDelta > 0 ? '+' : ''}{delta.speedDelta.toFixed(0)} {t('outfitting.unitSpeed')}
                               </span>
                             </div>
 
@@ -1337,7 +1337,7 @@ export default function ModulePicker({
                                     fontWeight: 700,
                                   }}
                                 >
-                                  {delta.shieldDelta > 0 ? '+' : ''}{delta.shieldDelta.toFixed(0)} МДж
+                                  {delta.shieldDelta > 0 ? '+' : ''}{delta.shieldDelta.toFixed(0)} {t('outfitting.unitShield')}
                                 </span>
                               </div>
                             )}
@@ -1367,7 +1367,7 @@ export default function ModulePicker({
                                     fontWeight: 700,
                                   }}
                                 >
-                                  {delta.powerDeployedDelta > 0 ? '+' : ''}{delta.powerDeployedDelta.toFixed(2)} МВт
+                                  {delta.powerDeployedDelta > 0 ? '+' : ''}{delta.powerDeployedDelta.toFixed(2)} {t('outfitting.unitPower')}
                                 </span>
                               </div>
                             )}
@@ -1389,7 +1389,7 @@ export default function ModulePicker({
                         style={{ ...button(false), justifyContent: 'center', gap: 6, color: favorites.includes(moduleRef(inspectedModule)) ? '#fbbf24' : 'var(--muted)' }}
                       >
                         <IconStar size={14} color={favorites.includes(moduleRef(inspectedModule)) ? '#fbbf24' : 'var(--muted)'} />
-                        {favorites.includes(moduleRef(inspectedModule)) ? 'В избранном' : 'Добавить в избранное'}
+                        {favorites.includes(moduleRef(inspectedModule)) ? t('outfitting.picker.inFavorites') : t('outfitting.picker.addFavorite')}
                       </button>
 
                       {/* Кнопка установки модуля */}
@@ -1552,7 +1552,7 @@ export default function ModulePicker({
                           {/* Выбор уровня (G1..G5) */}
                           <div>
                             <div style={{ ...LABEL, fontSize: 10.5, marginBottom: 4 }}>
-                              Уровень (Grade)
+                              {t('outfitting.picker.grade')}
                             </div>
                             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                               {Array.from({ length: activeBlueprint.maxGrade }, (_, i) => i + 1).map((grade) => (
