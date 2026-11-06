@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { authFetch } from '@/lib/supabaseClient';
 
 type ModerationStatus = 'pending' | 'approved' | 'hidden' | 'rejected';
@@ -117,22 +118,23 @@ async function readResponse(response: Response) {
   return data;
 }
 
-function statusLabel(status: ModerationStatus) {
-  if (status === 'pending') return 'На модерации';
-  if (status === 'hidden') return 'Скрыта';
-  if (status === 'rejected') return 'Отклонена';
-  return 'Опубликована';
+function statusLabel(status: ModerationStatus, t: (key: string) => string) {
+  if (status === 'pending') return t('cgAdmin.statusPending');
+  if (status === 'hidden') return t('cgAdmin.statusHidden');
+  if (status === 'rejected') return t('cgAdmin.statusRejected');
+  return t('cgAdmin.statusApproved');
 }
 
-function sourceLabel(source: CommunityGoalRow['source']) {
-  if (source === 'manual') return 'Локальная';
-  if (source === 'frontier') return 'Frontier (публичный список)';
+function sourceLabel(source: CommunityGoalRow['source'], t: (key: string) => string) {
+  if (source === 'manual') return t('cgAdmin.sourceManual');
+  if (source === 'frontier') return t('cgAdmin.sourceFrontier');
   if (source === 'capi') return 'Frontier CAPI';
-  if (source === 'journal') return 'Игровой журнал';
+  if (source === 'journal') return t('cgAdmin.sourceJournal');
   return 'Inara';
 }
 
 export default function CommunityGoalsAdminTab() {
+  const { t, locale } = useI18n();
   const [goals, setGoals] = useState<CommunityGoalRow[]>([]);
   const [sources, setSources] = useState<CommunityGoalSources | null>(null);
   const [loading, setLoading] = useState(true);
@@ -153,7 +155,7 @@ export default function CommunityGoalsAdminTab() {
       setGoals(Array.isArray(data.goals) ? data.goals : []);
       setSources(data.sources && typeof data.sources === 'object' ? data.sources : null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось загрузить Community Goals');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errLoad'));
     } finally {
       setLoading(false);
     }
@@ -195,18 +197,18 @@ export default function CommunityGoalsAdminTab() {
     rejected: goals.filter((goal) => goal.moderation_status === 'rejected').length,
   }), [goals]);
   const sourceStatusItems = [
-    { key: 'frontier', label: 'Frontier (публичный список)', stats: sources?.catalog.frontier },
+    { key: 'frontier', label: t('cgAdmin.sourceFrontier'), stats: sources?.catalog.frontier },
     { key: 'inara', label: 'Inara', stats: sources?.catalog.inara },
     { key: 'capi', label: 'Frontier CAPI', stats: sources?.catalog.capi },
-    { key: 'journal', label: 'Каталог из журналов', stats: sources?.catalog.journal },
-    { key: 'manual', label: 'Ручные записи', stats: sources?.catalog.manual },
+    { key: 'journal', label: t('cgAdmin.sourceCatalogJournal'), stats: sources?.catalog.journal },
+    { key: 'manual', label: t('cgAdmin.sourceCatalogManual'), stats: sources?.catalog.manual },
   ];
-  const sourceDate = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : 'нет данных';
+  const sourceDate = (value: string | null | undefined) => (value ? new Date(value).toLocaleString(locale) : t('cgAdmin.noData'));
 
   async function syncNow() {
     setWorking(true);
     setError('');
-    setMessage('Запрашиваем публичный список Frontier и данные Inara…');
+    setMessage(t('cgAdmin.requesting'));
     try {
       const data = await readResponse(await authFetch('/api/admin/community-goals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'sync' }),
@@ -214,17 +216,17 @@ export default function CommunityGoalsAdminTab() {
       const frontier = data.sources?.frontier;
       const inara = data.sources?.inara;
       const frontierStatus = frontier?.error
-        ? `Frontier: ошибка (${frontier.error})`
-        : `Frontier: получено ${frontier?.received ?? 0}, обновлено ${frontier?.synced ?? 0}`;
+        ? t('cgAdmin.frontierError', { error: frontier.error })
+        : t('cgAdmin.frontierDone', { received: frontier?.received ?? 0, synced: frontier?.synced ?? 0 });
       const inaraStatus = inara?.skipped
-        ? 'Inara пропущена (не задан INARA_API_KEY)'
+        ? t('cgAdmin.inaraSkipped')
         : inara?.error
-          ? `Inara: ошибка (${inara.error})`
-          : `Inara: получено ${inara?.received ?? 0}, обновлено ${inara?.synced ?? 0}`;
-      setMessage(`Синхронизация завершена. ${frontierStatus}; ${inaraStatus}. Ранее загруженные CG не удаляются.`);
+          ? t('cgAdmin.inaraError', { error: inara.error })
+          : t('cgAdmin.inaraDone', { received: inara?.received ?? 0, synced: inara?.synced ?? 0 });
+      setMessage(t('cgAdmin.syncDone', { frontier: frontierStatus, inara: inaraStatus }));
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Синхронизация Community Goals не удалась');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errSync'));
       setMessage('');
     } finally {
       setWorking(false);
@@ -232,22 +234,20 @@ export default function CommunityGoalsAdminTab() {
   }
 
   async function approveActiveJournalBatch() {
-    const confirmed = window.confirm(
-      'Опубликовать одним действием все активные и незавершённые CG, которые Helper обнаружил по игровым журналам и которые ждут модерации? Истёкшие, завершённые, скрытые и уже отклонённые записи не затрагиваются.',
-    );
+    const confirmed = window.confirm(t('cgAdmin.confirmApproveActive'));
     if (!confirmed) return;
     setWorking(true);
     setError('');
-    setMessage('Публикуем подтверждённые активные CG из очереди журналов…');
+    setMessage(t('cgAdmin.approving'));
     try {
       const data = await readResponse(await authFetch('/api/admin/community-goals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'bulk-approve-current-journal' }),
       }));
-      setMessage(`Опубликовано активных CG из журналов: ${Number(data.updated || 0)}. Новые находки с данными CAPI/Inara публикуются автоматически.`);
+      setMessage(t('cgAdmin.approvedCount', { count: Number(data.updated || 0) }));
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось обработать очередь CG');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errQueue'));
       setMessage('');
     } finally {
       setWorking(false);
@@ -255,22 +255,20 @@ export default function CommunityGoalsAdminTab() {
   }
 
   async function archiveStaleJournalBatch() {
-    const confirmed = window.confirm(
-      'Скрыть все ожидающие журнальные CG, которые уже завершены, просрочены или не имеют срока окончания? Записи не удаляются и их можно вернуть в публикацию вручную.',
-    );
+    const confirmed = window.confirm(t('cgAdmin.confirmArchiveStale'));
     if (!confirmed) return;
     setWorking(true);
     setError('');
-    setMessage('Убираем неактуальные журнальные CG из очереди…');
+    setMessage(t('cgAdmin.archiving'));
     try {
       const data = await readResponse(await authFetch('/api/admin/community-goals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'bulk-archive-stale-journal' }),
       }));
-      setMessage(`Скрыто из очереди неактуальных CG: ${Number(data.updated || 0)}. Записи сохранены и могут быть восстановлены вручную.`);
+      setMessage(t('cgAdmin.archivedCount', { count: Number(data.updated || 0) }));
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось очистить устаревшую очередь CG');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errStale'));
       setMessage('');
     } finally {
       setWorking(false);
@@ -280,15 +278,15 @@ export default function CommunityGoalsAdminTab() {
   async function syncCapiNow() {
     setWorking(true);
     setError('');
-    setMessage('Запрашиваем Community Goals через сохранённую привязку сайта…');
+    setMessage(t('cgAdmin.requestingCapi'));
     try {
       const data = await readResponse(await authFetch('/api/admin/community-goals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'sync-capi' }),
       }));
-      setMessage(`Frontier CAPI: получено ${data.received}, синхронизировано ${data.synced}. Этот запрос не получает профиль командира и не создаёт отдельную OAuth-привязку.`);
+      setMessage(t('cgAdmin.capiDone', { received: data.received, synced: data.synced }));
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Синхронизация Frontier CAPI не удалась');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errCapi'));
       setMessage('');
     } finally {
       setWorking(false);
@@ -317,18 +315,18 @@ export default function CommunityGoalsAdminTab() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'create', ...payload }),
         }));
-        setMessage('Локальная колонизационная CG создана и опубликована.');
+        setMessage(t('cgAdmin.created'));
       } else if (editor) {
         await readResponse(await authFetch('/api/admin/community-goals', {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: editor.id, ...payload }),
         }));
-        setMessage(editor.source !== 'manual' ? 'Изменения модератора сохранены отдельно и сохранятся после синхронизации источника.' : 'Изменения CG сохранены.');
+        setMessage(editor.source !== 'manual' ? t('cgAdmin.savedModerated') : t('cgAdmin.saved'));
       }
       setEditor(null);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось сохранить CG');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errSave'));
     } finally {
       setWorking(false);
     }
@@ -342,17 +340,17 @@ export default function CommunityGoalsAdminTab() {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: goal.id, moderation_status: nextStatus }),
       }));
-      setMessage(`${goal.title}: ${statusLabel(nextStatus).toLowerCase()}.`);
+      setMessage(`${goal.title}: ${statusLabel(nextStatus, t)}.`);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось применить решение модерации');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errModerate'));
     } finally {
       setWorking(false);
     }
   }
 
   async function resetSourceEdits(goal: CommunityGoalRow) {
-    if (!window.confirm(`Сбросить локальные правки и восстановить исходные данные (${sourceLabel(goal.source)}) для «${goal.title}»?`)) return;
+    if (!window.confirm(t('cgAdmin.confirmReset', { source: sourceLabel(goal.source, t), title: goal.title }))) return;
     setWorking(true);
     setError('');
     try {
@@ -360,17 +358,17 @@ export default function CommunityGoalsAdminTab() {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: goal.id, resetOverrides: true }),
       }));
-      setMessage('Локальные правки удалены; отображаются исходные данные источника.');
+      setMessage(t('cgAdmin.resetDone'));
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось сбросить правки');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errReset'));
     } finally {
       setWorking(false);
     }
   }
 
   async function deleteManualGoal(goal: CommunityGoalRow) {
-    if (!window.confirm(`Безвозвратно удалить локальную CG «${goal.title}»?`)) return;
+    if (!window.confirm(t('cgAdmin.confirmDelete', { title: goal.title }))) return;
     setWorking(true);
     setError('');
     try {
@@ -378,10 +376,10 @@ export default function CommunityGoalsAdminTab() {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: goal.id }),
       }));
-      setMessage('Локальная CG удалена.');
+      setMessage(t('cgAdmin.deleted'));
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось удалить CG');
+      setError(err instanceof Error ? err.message : t('cgAdmin.errDelete'));
     } finally {
       setWorking(false);
     }
@@ -415,49 +413,49 @@ export default function CommunityGoalsAdminTab() {
     <section>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
         <div>
-          <h2 style={{ marginBottom: 6 }}>Community Goals — синхронизация и модерация</h2>
+          <h2 style={{ marginBottom: 6 }}>{t('cgAdmin.title')}</h2>
           <p style={{ color: 'var(--muted)', maxWidth: 900, fontSize: 13, marginTop: 0 }}>
-            Каталог сводит независимый публичный список Frontier, Inara, Frontier CAPI и игровые журналы, сопоставляя источники по ID CG и затем по нормализованным полям. CAPI использует только принадлежащую сайту Frontier-привязку; Helper отправляет журнал и личные снимки отдельно и не создаёт отдельный OAuth. Истёкшая история не попадает в очередь, а активные находки из журналов можно обработать одним подтверждённым пакетным действием. Когда источники дают описание/цель/награду, каталог сохраняет их при неполных обновлениях; выдуманный текст не подставляется.
+            {t('cgAdmin.intro')}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-cyan" disabled={working} onClick={() => void syncNow()}>
-            {working ? 'Обработка…' : 'Синхронизировать источники'}
+            {working ? t('cgAdmin.working') : t('cgAdmin.syncSources')}
           </button>
           <button type="button" className="btn" disabled={working} onClick={() => void syncCapiNow()}>
-            {working ? 'Обработка…' : 'Запросить Frontier CAPI'}
+            {working ? t('cgAdmin.working') : t('cgAdmin.requestCapi')}
           </button>
-          <button type="button" className="btn" disabled={working} onClick={() => void load()}>Обновить список</button>
-          <button type="button" className="btn btn-cyan" disabled={working || counts.pendingJournalActive === 0} onClick={() => void approveActiveJournalBatch()} title="Только незавершённые журнальные CG с будущим сроком окончания; скрытые, отклонённые и истёкшие не затрагиваются.">Опубликовать активные журнальные CG ({counts.pendingJournalActive})</button>
-          <button type="button" className="btn" disabled={working || counts.pendingJournalStale === 0} onClick={() => void archiveStaleJournalBatch()} title="Скрыть завершённые, просроченные и CG без срока из очереди. Записи сохраняются.">Скрыть неактуальные ({counts.pendingJournalStale})</button>
-          <button type="button" className="btn btn-orange" disabled={working} onClick={openCreate}>Создать колонизационную CG</button>
+          <button type="button" className="btn" disabled={working} onClick={() => void load()}>{t('cgAdmin.refreshList')}</button>
+          <button type="button" className="btn btn-cyan" disabled={working || counts.pendingJournalActive === 0} onClick={() => void approveActiveJournalBatch()} title={t('cgAdmin.approveActiveTitle')}>{t('cgAdmin.approveActive', { count: counts.pendingJournalActive })}</button>
+          <button type="button" className="btn" disabled={working || counts.pendingJournalStale === 0} onClick={() => void archiveStaleJournalBatch()} title={t('cgAdmin.archiveStaleTitle')}>{t('cgAdmin.archiveStale', { count: counts.pendingJournalStale })}</button>
+          <button type="button" className="btn btn-orange" disabled={working} onClick={openCreate}>{t('cgAdmin.create')}</button>
         </div>
       </div>
 
       <div style={{ ...cardStyle, display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--muted)', fontSize: 13 }}>
-        <span>Всего: <strong>{counts.all}</strong></span>
-        <span>Активных: <strong>{counts.active}</strong></span>
-        <span>Завершённых: <strong>{counts.completed}</strong></span>
-        <span>Ожидают модерации: <strong>{counts.pending}</strong></span>
-        <span>Активных журнальных к публикации: <strong>{counts.pendingJournalActive}</strong></span>
-        <span>Неактуальных в очереди: <strong>{counts.pendingJournalStale}</strong></span>
-        <span>Без цели / описания / награды: <strong>{counts.missingGoalText}</strong></span>
-        <span>Скрытых: <strong>{counts.hidden}</strong></span>
-        <span>Отклонённых: <strong>{counts.rejected}</strong></span>
+        <span>{t('cgAdmin.statAll')}: <strong>{counts.all}</strong></span>
+        <span>{t('cgAdmin.statActive')}: <strong>{counts.active}</strong></span>
+        <span>{t('cgAdmin.statCompleted')}: <strong>{counts.completed}</strong></span>
+        <span>{t('cgAdmin.statPending')}: <strong>{counts.pending}</strong></span>
+        <span>{t('cgAdmin.statPendingJournalActive')}: <strong>{counts.pendingJournalActive}</strong></span>
+        <span>{t('cgAdmin.statPendingJournalStale')}: <strong>{counts.pendingJournalStale}</strong></span>
+        <span>{t('cgAdmin.statMissingText')}: <strong>{counts.missingGoalText}</strong></span>
+        <span>{t('cgAdmin.statHidden')}: <strong>{counts.hidden}</strong></span>
+        <span>{t('cgAdmin.statRejected')}: <strong>{counts.rejected}</strong></span>
       </div>
 
       <div style={{ ...cardStyle, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
         {sourceStatusItems.map(({ key, label, stats }) => (
           <div key={key} style={{ minWidth: 0, padding: 10, border: '1px solid var(--line)', borderRadius: 4 }}>
             <strong>{label}</strong>
-            <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 5 }}>Записей в каталоге: {stats?.records ?? 0}</div>
-            <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>Последние данные: {sourceDate(stats?.latestAt)}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 5 }}>{t('cgAdmin.catalogRecords', { count: stats?.records ?? 0 })}</div>
+            <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>{t('cgAdmin.catalogLatest', { when: sourceDate(stats?.latestAt) })}</div>
           </div>
         ))}
         <div style={{ minWidth: 0, padding: 10, border: '1px solid var(--line)', borderRadius: 4 }}>
-          <strong>Отчёты Helper</strong>
-          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 5 }}>Последний Journal-снимок: {sourceDate(sources?.helperReports.latestAt)}</div>
-          <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>Отправка идёт при загрузке журналов; личный вклад не публикуется в каталоге.</div>
+          <strong>{t('cgAdmin.helperReports')}</strong>
+          <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 5 }}>{t('cgAdmin.helperLatest', { when: sourceDate(sources?.helperReports.latestAt) })}</div>
+          <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 3 }}>{t('cgAdmin.helperNote')}</div>
         </div>
       </div>
 
@@ -465,52 +463,57 @@ export default function CommunityGoalsAdminTab() {
       {error && <p role="alert" style={{ color: 'var(--red, #ef6464)' }}>{error}</p>}
 
       <div style={{ ...cardStyle, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-        <label style={labelStyle}>Показать
+        <label style={labelStyle}>{t('cgAdmin.filterShow')}
           <select style={inputStyle} value={view} onChange={(event) => setView(event.target.value as ViewFilter)}>
-            <option value="all">Все состояния</option><option value="active">Активные</option><option value="completed">Завершённые</option>
+            <option value="all">{t('cgAdmin.optAllStates')}</option><option value="active">{t('cgAdmin.optActive')}</option><option value="completed">{t('cgAdmin.optCompleted')}</option>
           </select>
         </label>
-        <label style={labelStyle}>Модерация
+        <label style={labelStyle}>{t('cgAdmin.filterModeration')}
           <select style={inputStyle} value={status} onChange={(event) => setStatus(event.target.value as typeof status)}>
-            <option value="all">Любой статус</option><option value="pending">На модерации</option><option value="approved">Опубликована</option><option value="hidden">Скрыта</option><option value="rejected">Отклонена</option>
+            <option value="all">{t('cgAdmin.optAnyStatus')}</option><option value="pending">{t('cgAdmin.statusPending')}</option><option value="approved">{t('cgAdmin.statusApproved')}</option><option value="hidden">{t('cgAdmin.statusHidden')}</option><option value="rejected">{t('cgAdmin.statusRejected')}</option>
           </select>
         </label>
-        <label style={labelStyle}>Поиск по названию / системе / станции
-          <input style={inputStyle} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Название, система или станция" />
+        <label style={labelStyle}>{t('cgAdmin.filterSearch')}
+          <input style={inputStyle} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('cgAdmin.placeholderSearch')} />
         </label>
       </div>
 
-      {loading ? <p role="status">Загружаем каталог CG…</p> : filtered.length === 0 ? <p style={{ color: 'var(--muted)' }}>По выбранным фильтрам CG не найдены.</p> : (
+      {loading ? <p role="status">{t('cgAdmin.loading')}</p> : filtered.length === 0 ? <p style={{ color: 'var(--muted)' }}>{t('cgAdmin.emptyFiltered')}</p> : (
         <div aria-live="polite">
-          <p style={{ color: 'var(--muted)', fontSize: 12 }}>Показано {filtered.length} из {goals.length} CG</p>
+          <p style={{ color: 'var(--muted)', fontSize: 12 }}>{t('cgAdmin.shown', { shown: filtered.length, total: goals.length })}</p>
           {filtered.map((goal) => (
             <article key={goal.id} style={cardStyle}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <div style={{ minWidth: 240, flex: '1 1 360px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <strong>{goal.title}</strong>
-                    <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10, color: 'var(--muted)' }}>{sourceLabel(goal.source)}</span>
-                    <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10, color: goal.moderation_status === 'approved' ? 'var(--green, #6fcf97)' : 'var(--orange)' }}>{statusLabel(goal.moderation_status)}</span>
-                    {goal.is_complete && <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10 }}>Завершена</span>}
-                    {goal.is_colonisation_related && <span style={{ border: '1px solid var(--orange)', padding: '2px 6px', fontSize: 10, color: 'var(--orange)' }}>Колонизация</span>}
-                    {Object.keys(goal.manual_overrides || {}).length > 0 && <span style={{ fontSize: 10, color: 'var(--cyan)' }}>Есть локальные правки</span>}
+                    <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10, color: 'var(--muted)' }}>{sourceLabel(goal.source, t)}</span>
+                    <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10, color: goal.moderation_status === 'approved' ? 'var(--green, #6fcf97)' : 'var(--orange)' }}>{statusLabel(goal.moderation_status, t)}</span>
+                    {goal.is_complete && <span style={{ border: '1px solid var(--line)', padding: '2px 6px', fontSize: 10 }}>{t('cgAdmin.badgeComplete')}</span>}
+                    {goal.is_colonisation_related && <span style={{ border: '1px solid var(--orange)', padding: '2px 6px', fontSize: 10, color: 'var(--orange)' }}>{t('cgAdmin.badgeColonisation')}</span>}
+                    {Object.keys(goal.manual_overrides || {}).length > 0 && <span style={{ fontSize: 10, color: 'var(--cyan)' }}>{t('cgAdmin.badgeOverrides')}</span>}
                   </div>
                   <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 6 }}>
-                    {[goal.system_name, goal.station_name].filter(Boolean).join(' · ') || 'Место не указано'}
-                    {goal.expiry_date && ` · до ${new Date(goal.expiry_date).toLocaleString()}`}
+                    {[goal.system_name, goal.station_name].filter(Boolean).join(' · ') || t('cgAdmin.placeUnknown')}
+                    {goal.expiry_date && t('cgAdmin.until', { when: new Date(goal.expiry_date).toLocaleString(locale) })}
                   </div>
                   <div style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4 }}>
-                    Тир: {goal.tier_current ?? '—'} / {goal.tier_max ?? '—'} · Участников: {goal.contributors ?? '—'} · Вклад: {goal.contributions_total == null ? '—' : Number(goal.contributions_total).toLocaleString()}
+                    {t('cgAdmin.tierLine', {
+                      tier: goal.tier_current ?? '—',
+                      max: goal.tier_max ?? '—',
+                      contributors: goal.contributors ?? '—',
+                      total: goal.contributions_total == null ? '—' : Number(goal.contributions_total).toLocaleString(locale),
+                    })}
                   </div>
-                  {goal.admin_note && <div style={{ fontSize: 12, marginTop: 6 }}>Заметка модератора: {goal.admin_note}</div>}
+                  {goal.admin_note && <div style={{ fontSize: 12, marginTop: 6 }}>{t('cgAdmin.adminNote', { note: goal.admin_note })}</div>}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7, flexWrap: 'wrap' }}>
-                  <button type="button" className="btn" disabled={working} onClick={() => openEdit(goal)}>Редактировать</button>
-                  {goal.moderation_status !== 'approved' && <button type="button" className="btn btn-cyan" disabled={working} onClick={() => void moderate(goal, 'approved')}>Опубликовать</button>}
-                  {goal.moderation_status !== 'hidden' && <button type="button" className="btn" disabled={working} onClick={() => void moderate(goal, 'hidden')}>Скрыть</button>}
-                  {goal.moderation_status !== 'rejected' && <button type="button" className="btn" disabled={working} onClick={() => void moderate(goal, 'rejected')}>Отклонить</button>}
-                  {goal.source !== 'manual' && Object.keys(goal.manual_overrides || {}).length > 0 && <button type="button" className="btn" disabled={working} onClick={() => void resetSourceEdits(goal)}>Сбросить правки</button>}
-                  {goal.source === 'manual' && <button type="button" className="btn btn-danger" disabled={working} onClick={() => void deleteManualGoal(goal)}>Удалить</button>}
+                  <button type="button" className="btn" disabled={working} onClick={() => openEdit(goal)}>{t('cgAdmin.edit')}</button>
+                  {goal.moderation_status !== 'approved' && <button type="button" className="btn btn-cyan" disabled={working} onClick={() => void moderate(goal, 'approved')}>{t('cgAdmin.publish')}</button>}
+                  {goal.moderation_status !== 'hidden' && <button type="button" className="btn" disabled={working} onClick={() => void moderate(goal, 'hidden')}>{t('cgAdmin.hide')}</button>}
+                  {goal.moderation_status !== 'rejected' && <button type="button" className="btn" disabled={working} onClick={() => void moderate(goal, 'rejected')}>{t('cgAdmin.reject')}</button>}
+                  {goal.source !== 'manual' && Object.keys(goal.manual_overrides || {}).length > 0 && <button type="button" className="btn" disabled={working} onClick={() => void resetSourceEdits(goal)}>{t('cgAdmin.resetEdits')}</button>}
+                  {goal.source === 'manual' && <button type="button" className="btn btn-danger" disabled={working} onClick={() => void deleteManualGoal(goal)}>{t('cgAdmin.delete')}</button>}
                 </div>
               </div>
             </article>
@@ -522,42 +525,42 @@ export default function CommunityGoalsAdminTab() {
         <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !working) setEditor(null); }} style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.72)', overflowY: 'auto', padding: 18, display: 'grid', placeItems: 'start center' }}>
           <form onSubmit={(event) => void saveDraft(event)} role="dialog" aria-modal="true" aria-labelledby="cg-editor-title" style={{ ...cardStyle, width: 'min(900px, 100%)', margin: '4vh 0', background: 'var(--bg, #111315)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-              <h3 id="cg-editor-title" style={{ marginTop: 0 }}>{editor === 'new' ? 'Новая колонизационная CG' : `Редактирование: ${editor.title}`}</h3>
-              <button type="button" className="btn" disabled={working} onClick={() => setEditor(null)}>Закрыть</button>
+              <h3 id="cg-editor-title" style={{ marginTop: 0 }}>{editor === 'new' ? t('cgAdmin.newTitle') : t('cgAdmin.editTitle', { title: editor.title })}</h3>
+              <button type="button" className="btn" disabled={working} onClick={() => setEditor(null)}>{t('cgAdmin.close')}</button>
             </div>
-            {editor !== 'new' && editor.source !== 'manual' && <p style={{ color: 'var(--muted)', fontSize: 12 }}>Изменения будут сохранены отдельно от данных источника и не затрутся при следующей синхронизации.</p>}
+            {editor !== 'new' && editor.source !== 'manual' && <p style={{ color: 'var(--muted)', fontSize: 12 }}>{t('cgAdmin.overrideNote')}</p>}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
-              {input('title', 'Название CG *')}
-              {input('system_name', 'Звёздная система')}
-              {input('station_name', 'Станция / порт')}
-              {input('expiry_date', 'Срок завершения', 'datetime-local')}
-              {input('tier_current', 'Текущий тир', 'number')}
-              {input('tier_max', 'Максимальный тир', 'number')}
-              {input('contributors', 'Участники', 'number')}
-              {input('contributions_total', 'Общий вклад', 'number')}
-              {input('inara_url', 'Ссылка Inara')}
-              {editor !== 'new' && <label style={labelStyle}>Модерация
+              {input('title', t('cgAdmin.fieldTitle'))}
+              {input('system_name', t('cgAdmin.fieldSystem'))}
+              {input('station_name', t('cgAdmin.fieldStation'))}
+              {input('expiry_date', t('cgAdmin.fieldExpiry'), 'datetime-local')}
+              {input('tier_current', t('cgAdmin.fieldTierCurrent'), 'number')}
+              {input('tier_max', t('cgAdmin.fieldTierMax'), 'number')}
+              {input('contributors', t('cgAdmin.fieldContributors'), 'number')}
+              {input('contributions_total', t('cgAdmin.fieldTotal'), 'number')}
+              {input('inara_url', t('cgAdmin.fieldInara'))}
+              {editor !== 'new' && <label style={labelStyle}>{t('cgAdmin.filterModeration')}
                 <select style={inputStyle} value={draft.moderation_status} onChange={(event) => setDraft((current) => ({ ...current, moderation_status: event.target.value as ModerationStatus }))}>
-                  <option value="pending">На модерации</option><option value="approved">Опубликована</option><option value="hidden">Скрыта</option><option value="rejected">Отклонена</option>
+                  <option value="pending">{t('cgAdmin.statusPending')}</option><option value="approved">{t('cgAdmin.statusApproved')}</option><option value="hidden">{t('cgAdmin.statusHidden')}</option><option value="rejected">{t('cgAdmin.statusRejected')}</option>
                 </select>
               </label>}
-              <label style={labelStyle}>Объект колонизации
+              <label style={labelStyle}>{t('cgAdmin.fieldColonisation')}
                 <input type="checkbox" checked={draft.is_colonisation_related} onChange={(event) => setDraft((current) => ({ ...current, is_colonisation_related: event.target.checked }))} />
               </label>
-              <label style={labelStyle}>CG завершена
+              <label style={labelStyle}>{t('cgAdmin.fieldComplete')}
                 <input type="checkbox" checked={draft.is_complete} onChange={(event) => setDraft((current) => ({ ...current, is_complete: event.target.checked }))} />
               </label>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginTop: 12 }}>
-              <label style={labelStyle}>Цель / условия<textarea rows={4} style={inputStyle} value={draft.objective} onChange={(event) => setDraft((current) => ({ ...current, objective: event.target.value }))} /></label>
-              <label style={labelStyle}>Описание<textarea rows={4} style={inputStyle} value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} /></label>
-              <label style={labelStyle}>Награда<textarea rows={4} style={inputStyle} value={draft.reward} onChange={(event) => setDraft((current) => ({ ...current, reward: event.target.value }))} /></label>
-              <label style={labelStyle}>Заметка модератора<textarea rows={4} style={inputStyle} value={draft.admin_note} onChange={(event) => setDraft((current) => ({ ...current, admin_note: event.target.value }))} /></label>
+              <label style={labelStyle}>{t('cgAdmin.fieldObjective')}<textarea rows={4} style={inputStyle} value={draft.objective} onChange={(event) => setDraft((current) => ({ ...current, objective: event.target.value }))} /></label>
+              <label style={labelStyle}>{t('cgAdmin.fieldDescription')}<textarea rows={4} style={inputStyle} value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+              <label style={labelStyle}>{t('cgAdmin.fieldReward')}<textarea rows={4} style={inputStyle} value={draft.reward} onChange={(event) => setDraft((current) => ({ ...current, reward: event.target.value }))} /></label>
+              <label style={labelStyle}>{t('cgAdmin.fieldAdminNote')}<textarea rows={4} style={inputStyle} value={draft.admin_note} onChange={(event) => setDraft((current) => ({ ...current, admin_note: event.target.value }))} /></label>
             </div>
             {error && <p role="alert" style={{ color: 'var(--red, #ef6464)' }}>{error}</p>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-              <button type="button" className="btn" disabled={working} onClick={() => setEditor(null)}>Отмена</button>
-              <button type="submit" className="btn btn-cyan" disabled={working}>{working ? 'Сохраняем…' : 'Сохранить'}</button>
+              <button type="button" className="btn" disabled={working} onClick={() => setEditor(null)}>{t('cgAdmin.cancel')}</button>
+              <button type="submit" className="btn btn-cyan" disabled={working}>{working ? t('cgAdmin.saving') : t('cgAdmin.save')}</button>
             </div>
           </form>
         </div>

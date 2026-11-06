@@ -11,6 +11,7 @@ import {
   IconXCircle,
 } from '@/components/Icons';
 import { BACKUP_STAGES } from '../../../scripts/lib/update-state.mjs';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { authFetch } from '@/lib/supabaseClient';
 import type { MonitorLevel } from '@/types/monitor';
 
@@ -83,51 +84,53 @@ interface BackupResponse {
 }
 
 const LEVEL_META: Record<MonitorLevel, { label: string; className: string }> = {
-  healthy: { label: 'В норме', className: 'healthy' },
-  warning: { label: 'Требует внимания', className: 'warning' },
-  critical: { label: 'Недоступно', className: 'critical' },
-  unknown: { label: 'Нет данных', className: 'unknown' },
+  healthy: { label: 'bak.levelHealthy', className: 'healthy' },
+  warning: { label: 'bak.levelWarning', className: 'warning' },
+  critical: { label: 'bak.levelCritical', className: 'critical' },
+  unknown: { label: 'bak.levelUnknown', className: 'unknown' },
 };
 
 const STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
-  idle: { label: 'Копирование не выполняется', level: 'unknown' },
-  running: { label: 'Идёт резервное копирование', level: 'warning' },
-  succeeded: { label: 'Копия готова', level: 'healthy' },
-  failed: { label: 'Копирование завершилось с ошибкой', level: 'critical' },
-  aborted: { label: 'Копирование остановлено', level: 'warning' },
+  idle: { label: 'bak.stateIdle', level: 'unknown' },
+  running: { label: 'bak.stateRunning', level: 'warning' },
+  succeeded: { label: 'bak.stateSucceeded', level: 'healthy' },
+  failed: { label: 'bak.stateFailed', level: 'critical' },
+  aborted: { label: 'bak.stateAborted', level: 'warning' },
 };
 
-function formatDate(value: string | null | undefined): string {
+function formatDate(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return '—';
-  return new Date(time).toLocaleString('ru-RU', { dateStyle: 'medium', timeStyle: 'short' });
+  return new Date(time).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-function formatBytes(bytes: number | null | undefined): string {
+function formatBytes(bytes: number | null | undefined, t: (key: string) => string): string {
   const value = Number(bytes);
   if (!Number.isFinite(value) || value <= 0) return '—';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  const units = ['mon.unitB', 'mon.unitKB', 'mon.unitMB', 'mon.unitGB', 'mon.unitTB'];
   let size = value;
   let index = 0;
   while (size >= 1024 && index < units.length - 1) {
     size /= 1024;
     index += 1;
   }
-  return `${size.toFixed(size >= 100 || index === 0 ? 0 : 1)} ${units[index]}`;
+  return `${size.toFixed(size >= 100 || index === 0 ? 0 : 1)} ${t(units[index])}`;
 }
 
 function StatusPill({ level, label }: { level: MonitorLevel; label?: string }) {
+  const { t } = useI18n();
   const meta = LEVEL_META[level];
   return (
     <span className={`ops-status ops-status-${meta.className}`}>
       <span className="ops-status-dot" />
-      {label ?? meta.label}
+      {label ?? t(meta.label)}
     </span>
   );
 }
 
 export default function BackupTab() {
+  const { t, locale } = useI18n();
   const [configured, setConfigured] = useState(false);
   const [connected, setConnected] = useState(false);
   const [reason, setReason] = useState<string | null>(null);
@@ -191,11 +194,11 @@ export default function BackupTab() {
       applyPayload(data);
       setMessage(
         full
-          ? 'Полный дамп запущен: сайт под заглушкой, окно техработ будет длинным.'
-          : 'Копирование запущено: сайт показывает заглушку «Ведутся технические работы».',
+          ? t('bak.startFull')
+          : t('bak.startNormal'),
       );
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Не удалось запустить резервное копирование');
+      setMessage(cause instanceof Error ? cause.message : t('bak.startFailed'));
     } finally {
       setBusy(false);
     }
@@ -208,9 +211,9 @@ export default function BackupTab() {
       const data = (await response.json().catch(() => ({}))) as BackupResponse;
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
       applyPayload(data);
-      setMessage('Копирование остановлено, заглушка снята.');
+      setMessage(t('bak.aborted'));
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : 'Не удалось остановить копирование');
+      setMessage(cause instanceof Error ? cause.message : t('bak.abortFailed'));
     } finally {
       setBusy(false);
     }
@@ -233,32 +236,30 @@ export default function BackupTab() {
       ? 'critical'
       : STATE_META[update?.state ?? 'idle']?.level ?? 'unknown';
   const label = !configured
-    ? 'Агент не настроен'
+    ? t('bak.agentNotConfigured')
     : !connected
-      ? 'Update-агент не отвечает'
-      : STATE_META[update?.state ?? 'idle']?.label;
+      ? t('bak.agentNoAnswer')
+      : t(STATE_META[update?.state ?? 'idle']?.label ?? 'bak.stateIdle');
 
   return (
     <div className="ops-grid">
       <section className="ops-panel">
         <div className="ops-panel-head">
           <div>
-            <h3>Резервная копия базы данных</h3>
-            <p>Раз в неделю, вручную. Пока идёт дамп, посетители видят заглушку «Ведутся технические работы».</p>
+            <h3>{t('bak.title')}</h3>
+            <p>{t('bak.subtitle')}</p>
           </div>
           <StatusPill level={level} label={label} />
         </div>
 
         {!configured && (
           <div className="ops-notice ops-notice-info">
-            <IconAlert size={16} /> Кнопка появится, когда на хосте запущен приватный update-agent
-            (<code>bash deploy/start-update-agent.sh</code>), а в <code>.env.production</code> заданы
-            <code> UPDATE_AGENT_URL</code> и <code>UPDATE_AGENT_TOKEN</code>.
+            <IconAlert size={16} /> {t('bak.setupHint')}
           </div>
         )}
         {configured && !connected && (
           <div className="ops-notice ops-notice-critical">
-            <IconXCircle size={16} /> {reason || 'Update-агент недоступен: копию сделать нельзя.'}
+            <IconXCircle size={16} /> {reason || t('bak.agentUnavailable')}
           </div>
         )}
 
@@ -266,30 +267,32 @@ export default function BackupTab() {
           <div className="ops-notice ops-notice-warning">
             <IconAlert size={16} />
             {due.lastAt
-              ? `Прошла неделя с последней копии (${formatDate(due.lastAt)}) — пора сделать новую.`
-              : 'Успешной копии ещё не было — сделайте первую.'}
+              ? t('bak.dueSince', { when: formatDate(due.lastAt, locale) })
+              : t('bak.dueNever')}
           </div>
         )}
         {backup?.lastResult && backup.lastResult !== 'succeeded' && (
           <div className="ops-notice ops-notice-critical">
-            <IconXCircle size={16} /> Последняя попытка: {backup.lastResult === 'aborted' ? 'остановлена' : 'с ошибкой'}
+            <IconXCircle size={16} /> {t('bak.lastAttempt', {
+              state: backup.lastResult === 'aborted' ? t('bak.attemptAborted') : t('bak.attemptFailed'),
+            })}
             {backup.error ? ` — ${backup.error}` : ''}
           </div>
         )}
         {maintenance?.active && !active && (
           <div className="ops-notice ops-notice-warning">
-            <IconAlert size={16} /> Заглушка техработ активна, но агент свободен — снимите её повторным опросом
-            или дождитесь <code>{formatDate(maintenance.expiresAt)}</code> (флаг отпустит сайт сам).
+            <IconAlert size={16} /> {t('bak.stuck1')}{' '}
+            <code>{formatDate(maintenance.expiresAt, locale)}</code> {t('bak.stuck2')}
           </div>
         )}
 
         <dl className="ops-facts">
-          <div><dt>Последняя копия</dt><dd>{formatDate(backup?.lastAt)}</dd></div>
-          <div><dt>Файл</dt><dd>{backup?.file || '—'}</dd></div>
-          <div><dt>Размер</dt><dd>{formatBytes(backup?.bytes)}</dd></div>
-          <div><dt>Режим</dt><dd>{backup?.full ? 'полный (с каталогом систем)' : 'без каталога систем'}</dd></div>
-          <div><dt>Прошло</dt><dd>{due?.daysSince != null ? `${due.daysSince} дн.` : '—'}</dd></div>
-          <div><dt>Следующая по плану</dt><dd>{nextDueAt ? formatDate(nextDueAt.toISOString()) : '—'}</dd></div>
+          <div><dt>{t('bak.lastCopy')}</dt><dd>{formatDate(backup?.lastAt, locale)}</dd></div>
+          <div><dt>{t('bak.file')}</dt><dd>{backup?.file || '—'}</dd></div>
+          <div><dt>{t('bak.size')}</dt><dd>{formatBytes(backup?.bytes, t)}</dd></div>
+          <div><dt>{t('bak.mode')}</dt><dd>{backup?.full ? t('bak.modeFull') : t('bak.modeShort')}</dd></div>
+          <div><dt>{t('bak.elapsed')}</dt><dd>{due?.daysSince != null ? t('bak.days', { count: due.daysSince }) : '—'}</dd></div>
+          <div><dt>{t('bak.nextDue')}</dt><dd>{nextDueAt ? formatDate(nextDueAt.toISOString(), locale) : '—'}</dd></div>
         </dl>
 
         {active && update && (
@@ -301,7 +304,7 @@ export default function BackupTab() {
               {BACKUP_STAGES.map((stage, index) => (
                 <li className="ops-update-stage" key={stage.id} data-state={stageState(index)}>
                   {stageState(index) === 'done' ? <IconCheckCircle size={11} /> : <IconClock size={11} />}
-                  {stage.label}
+                  {t(stage.labelKey)}
                 </li>
               ))}
             </ul>
@@ -310,7 +313,7 @@ export default function BackupTab() {
               <pre className="ops-log" ref={logRef}>
                 {update.log.map((entry, index) => (
                   <div key={`${entry.at ?? ''}-${index}`}>
-                    {entry.at ? <time>{new Date(entry.at).toLocaleTimeString('ru-RU')}</time> : null}
+                    {entry.at ? <time>{new Date(entry.at).toLocaleTimeString(locale)}</time> : null}
                     {entry.line}
                   </div>
                 ))}
@@ -321,8 +324,8 @@ export default function BackupTab() {
 
         {!active && update?.state === 'succeeded' && (
           <div className="ops-inline-note">
-            <IconCheckCircle size={14} /> Копия {update.backupFile || 'готова'}
-            {update.backupBytes ? `, ${formatBytes(update.backupBytes)}` : ''} — {formatDate(update.finishedAt)}
+            <IconCheckCircle size={14} /> {update.backupFile ? t('bak.copyFile', { file: update.backupFile }) : t('bak.copyDone')}
+            {update.backupBytes ? `, ${formatBytes(update.backupBytes, t)}` : ''} — {formatDate(update.finishedAt, locale)}
           </div>
         )}
 
@@ -334,28 +337,28 @@ export default function BackupTab() {
             onClick={() => void start(false)}
           >
             <IconDatabase size={14} />
-            {busy ? 'Запускаю…' : active ? 'Идёт копирование…' : 'Сделать бэкап'}
+            {busy ? t('bak.starting') : active ? t('bak.running') : t('bak.makeBackup')}
           </button>
           <button
             type="button"
             className="ops-refresh-button"
             disabled={!connected || busy || active === true || !confirmFull}
             onClick={() => void start(true)}
-            title="Включает в дамп public.galaxy_systems: десятки гигабайт и долгое окно техработ"
+            title={t('bak.fullTitle')}
           >
-            <IconRefresh size={14} /> Полный дамп
+            <IconRefresh size={14} /> {t('bak.fullDump')}
           </button>
           {active && (
             <button type="button" className="ops-refresh-button ops-button-danger" disabled={busy} onClick={() => void abort()}>
-              <IconXCircle size={14} /> Остановить
+              <IconXCircle size={14} /> {t('bak.stop')}
             </button>
           )}
-          <label title="Полный дамп включает каталог систем: это десятки гигабайт и часы под заглушкой">
+          <label title={t('bak.allowFullTitle')}>
             <input type="checkbox" checked={confirmFull} onChange={(event) => setConfirmFull(event.target.checked)} />
-            разрешить полный дамп (с каталогом систем)
+            {t('bak.allowFull')}
           </label>
           <span className="ops-inline-note">
-            На время копии посетители видят заглушку «Ведутся технические работы»; админка и API остаются доступными.
+            {t('bak.maintenanceNote')}
           </span>
           {message && <span className="ops-inline-note">{message}</span>}
         </div>
@@ -364,17 +367,17 @@ export default function BackupTab() {
       <section className="ops-panel">
         <div className="ops-panel-head">
           <div>
-            <h3>Как это устроено</h3>
-            <p>Что именно копируется, где лежит и как восстанавливать.</p>
+            <h3>{t('bak.howTitle')}</h3>
+            <p>{t('bak.howSubtitle')}</p>
           </div>
         </div>
         <ul className="ops-migrations" style={{ display: 'grid', gap: 6 }}>
-          <li><strong>Обычная копия</strong> — <code>pg_dump -Fc</code> без <code>public.galaxy_systems</code>: каталог весит десятки гигабайт и полностью восстанавливается импортом дампа Spansh, поэтому окно техработ короткое.</li>
-          <li><strong>Полный дамп</strong> — та же команда без исключения: нужен перед переносом сервера или крупными миграциями.</li>
-          <li><strong>Хранение</strong> — 4 последние копии в <code>UPDATE_BACKUP_DIR</code> (по умолчанию <code>/opt/ed-ring-colony/backups</code>), старые удаляет сам скрипт.</li>
-          <li><strong>Проверка</strong> — каждая копия проверяется через <code>pg_restore --list</code>: нечитаемый архив не засчитывается.</li>
-          <li><strong>Восстановление</strong> — <code>docker exec -i supabase-db pg_restore -U postgres -d postgres --clean --if-exists &lt; КОПИЯ.dump</code>; каталог систем после этого импортируется заново.</li>
-          <li><strong>Никакого cron</strong>: расписания на сервере нет, ритм держит эта панель (подсветка «пора» через неделю).</li>
+          <li><strong>{t('bak.howNormalTitle')}</strong> — <code>pg_dump -Fc</code> {t('bak.howNormalText')}</li>
+          <li><strong>{t('bak.howFullTitle')}</strong> — {t('bak.howFullText')}</li>
+          <li><strong>{t('bak.howStorageTitle')}</strong> — {t('bak.howStorageText')}</li>
+          <li><strong>{t('bak.howCheckTitle')}</strong> — {t('bak.howCheckText')}</li>
+          <li><strong>{t('bak.howRestoreTitle')}</strong> — {t('bak.howRestoreText')}</li>
+          <li><strong>{t('bak.howCronTitle')}</strong>: {t('bak.howCronText')}</li>
         </ul>
       </section>
     </div>

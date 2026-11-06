@@ -541,6 +541,19 @@ class TranslationTests(unittest.TestCase):
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "пакет и установщик: " + "; ".join(missing))
 
+    def test_settings_sync_errors_are_in_the_catalog(self):
+        """Ошибки обмена настройками: их читает командир, а не журнал.
+
+        `settings_sync` поднимает ``SyncError`` с готовым текстом, и лаунчер
+        показывает его в окне привязки. Пока строки стояли прямо в коде, на
+        английском, немецком и остальных языках причина отказа приходила
+        по-русски.
+        """
+        missing = [f"settings_sync.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "settings_sync.py")
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "обмен настройками: " + "; ".join(missing))
+
     def test_ship_tracker_notes_are_in_the_catalog(self):
         """Лента событий корабля в блоке SHIP."""
         import ship_tracker

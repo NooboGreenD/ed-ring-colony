@@ -486,7 +486,7 @@ export default function AdminPage() {
     try {
       const res = await fetch('/api/hubs/resolve?name=' + encodeURIComponent(system));
       const coords = await res.json();
-      if (!res.ok) throw new Error(coords.error || t('admin.system'));
+      if (!res.ok) throw new Error(coords.error || t('admin.systemResolveFailed'));
       const { error } = await supabase.from('hubs').insert({ name, system_name: coords.system_name, x: coords.x, y: coords.y, z: coords.z, segment_order: order });
       if (error) throw new Error(error.message);
       setName(''); setSystem('');
