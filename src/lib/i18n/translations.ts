@@ -6943,6 +6943,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'cd.leaderboardRank': 'Место в лидерборде: #{rank}',
     'cd.withUsSince': 'С нами с {date}',
     'map.engineInit': 'Инициализация 3D-движка...',
+    'ub.messages': 'Сообщения: {count}',
   },
 
   en: {
@@ -13882,6 +13883,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'cd.leaderboardRank': 'Leaderboard place: #{rank}',
     'cd.withUsSince': 'With us since {date}',
     'map.engineInit': 'Initialising the 3D engine...',
+    'ub.messages': 'Messages: {count}',
   },
 
   de: {
@@ -20821,6 +20823,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'cd.leaderboardRank': 'Platz im Leaderboard: #{rank}',
     'cd.withUsSince': 'Dabei seit {date}',
     'map.engineInit': '3D-Engine wird initialisiert...',
+    'ub.messages': 'Nachrichten: {count}',
   },
   it: {
     'nav.home': 'Home',
@@ -27759,6 +27762,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'cd.leaderboardRank': 'Posizione in classifica: #{rank}',
     'cd.withUsSince': 'Con noi dal {date}',
     'map.engineInit': 'Inizializzazione del motore 3D...',
+    'ub.messages': 'Messaggi: {count}',
   },
   ko: {
     'nav.home': '홈',
@@ -34697,6 +34701,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'cd.leaderboardRank': '리더보드 순위: #{rank}',
     'cd.withUsSince': '{date}부터 함께합니다',
     'map.engineInit': '3D 엔진 초기화 중...',
+    'ub.messages': '메시지: {count}',
   },
   zh: {
     'nav.home': '首页',
@@ -41635,6 +41640,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'cd.leaderboardRank': '排行榜名次：#{rank}',
     'cd.withUsSince': '加入于 {date}',
     'map.engineInit': '正在初始化 3D 引擎...',
+    'ub.messages': '消息：{count}',
   },
   ja: {
     'nav.home': 'ホーム',
@@ -48572,6 +48578,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
     'cd.leaderboardRank': 'リーダーボード順位: #{rank}',
     'cd.withUsSince': '{date} から参加',
     'map.engineInit': '3D エンジンを初期化中...',
+    'ub.messages': 'メッセージ: {count}',
   },
 };
 

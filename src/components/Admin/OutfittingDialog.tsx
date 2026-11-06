@@ -1,4 +1,5 @@
 'use client';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { IconX } from '@/components/Icons';
@@ -13,6 +14,7 @@ export default function OutfittingDialog({ title, eyebrow, children, onClose, bu
   busy?: boolean;
   compact?: boolean;
 }) {
+  const { t } = useI18n();
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
@@ -42,7 +44,7 @@ export default function OutfittingDialog({ title, eyebrow, children, onClose, bu
       }}>
       <header className={styles.dialogHeader}>
         <div>{eyebrow && <span className={styles.eyebrow}>{eyebrow}</span>}<h2 id={titleId}>{title}</h2></div>
-        <button type="button" className={styles.iconButton} aria-label="Закрыть окно" disabled={busy} onClick={onClose}><IconX size={18} color="currentColor" /></button>
+        <button type="button" className={styles.iconButton} aria-label={t('atlas.ui.closeWindow')} disabled={busy} onClick={onClose}><IconX size={18} color="currentColor" /></button>
       </header>
       {children}
     </dialog>, document.body,
