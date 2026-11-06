@@ -2,6 +2,8 @@
 
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import type { TFn } from '@/lib/i18n/gameLabels';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ArchitectNav from '@/components/Architect/ArchitectNav';
 import DataQualityPanel from '@/components/Architect/DataQualityPanel';
@@ -69,9 +71,9 @@ const SystemOrrery3D = dynamic(() => import('@/components/SystemMap/SystemOrrery
 const PLAN_PREFIX = 'ed-architect:plan:';
 const RECENT_KEY = 'ed-architect:recent';
 const STATUS_ORDER: PlannedSiteStatus[] = ['plan', 'building', 'complete'];
-const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'план', building: 'строится', complete: 'готово' };
+const STATUS_LABELS: Record<PlannedSiteStatus, string> = { plan: 'arch.statusPlan', building: 'arch.statusBuilding', complete: 'arch.statusComplete' };
 const STATUS_TONES: Record<PlannedSiteStatus, string> = { plan: 'var(--muted)', building: 'var(--cyan)', complete: 'var(--green)' };
-const KIND_LABELS: Record<ArchitectBody['kind'], string> = { star: 'звезда', planet: 'планета', moon: 'луна' };
+const KIND_LABELS: Record<ArchitectBody['kind'], string> = { star: 'arch.kindStar', planet: 'arch.kindPlanet', moon: 'arch.kindMoon' };
 
 type BodySort = 'distance' | 'slots' | 'structures';
 type BodyFilter = 'all' | 'planned' | 'slots' | 'issues';
@@ -79,9 +81,9 @@ type PickerLocation = 'any' | 'surface' | 'orbital';
 /** Как смотреть на план: карточки тел, плоская таблица или инфографика. */
 type WorkspaceView = 'bodies' | 'table' | 'insights';
 
-const BODY_SORT_LABELS: Record<BodySort, string> = { distance: 'по расстоянию', slots: 'по свободным слотам', structures: 'по постройкам' };
-const BODY_FILTER_LABELS: Record<BodyFilter, string> = { all: 'все', planned: 'с постройками', slots: 'есть слоты', issues: 'с ошибками' };
-const VIEW_LABELS: Record<WorkspaceView, string> = { bodies: 'Тела', table: 'Таблица', insights: 'Аналитика' };
+const BODY_SORT_LABELS: Record<BodySort, string> = { distance: 'arch.sortDistance', slots: 'arch.sortSlots', structures: 'arch.sortStructures' };
+const BODY_FILTER_LABELS: Record<BodyFilter, string> = { all: 'arch.filterAll', planned: 'arch.filterPlanned', slots: 'arch.filterSlots', issues: 'arch.filterIssues' };
+const VIEW_LABELS: Record<WorkspaceView, string> = { bodies: 'arch.viewBodies', table: 'arch.viewTable', insights: 'arch.viewInsights' };
 
 function readRecent(): string[] {
   if (typeof window === 'undefined') return [];
@@ -99,16 +101,17 @@ function readRecent(): string[] {
  * показывает разбивку база/EDSM/уточнено, иначе — старую короткую подпись.
  */
 function describeSourceStats(
+  t: TFn,
   source: string,
   stats: { database: number; edsm: number; spansh?: number; merged: number; total: number } | null,
 ): string {
   if (!stats || stats.total === 0) return source || '—';
   const parts: string[] = [];
-  if (stats.database > 0) parts.push(`база: ${stats.database}`);
+  if (stats.database > 0) parts.push(t('arch.srcDb', { count: stats.database }));
   if (stats.edsm > 0) parts.push(`EDSM: ${stats.edsm}`);
   if ((stats.spansh ?? 0) > 0) parts.push(`Spansh: ${stats.spansh}`);
-  if (stats.merged > 0) parts.push(`уточнено: ${stats.merged}`);
-  return `сверка источников (${parts.join(', ')})`;
+  if (stats.merged > 0) parts.push(t('arch.srcMerged', { count: stats.merged }));
+  return t('arch.srcCompare', { parts: parts.join(', ') });
 }
 
 function writeRecent(system: string) {
@@ -122,6 +125,7 @@ function writeRecent(system: string) {
 }
 
 export default function ArchitectWorkspace() {
+  const { t } = useI18n();
   const [systemInput, setSystemInput] = useState('');
   const [systemName, setSystemName] = useState('');
   const [rawRows, setRawRows] = useState<Record<string, unknown>[]>([]);
@@ -257,13 +261,14 @@ export default function ArchitectWorkspace() {
    */
   const progressSourceState = useMemo<SyncSourceState[]>(() => {
     if (!systemName) return [];
-    const label = progressSource === 'raven' ? 'Стройплощадки: Raven'
-      : progressSource ? `Стройплощадки: ${progressSource}` : 'Стройплощадки';
+    const label = progressSource
+      ? t('arch.progressSitesSource', { source: progressSource === 'raven' ? 'Raven' : progressSource })
+      : t('arch.progressSites');
     if (progressError) {
       return [{ id: 'progress', label, status: 'unavailable', count: 0, updatedAt: null, note: progressError }];
     }
     if (!progressFetched) {
-      return [{ id: 'progress', label, status: 'skipped', count: 0, updatedAt: null, note: 'не запрошено' }];
+      return [{ id: 'progress', label, status: 'skipped', count: 0, updatedAt: null, note: t('arch.progressNotRequested') }];
     }
     return [{
       id: 'progress',
@@ -271,14 +276,14 @@ export default function ArchitectWorkspace() {
       status: actualSites.length > 0 ? 'ok' : 'empty',
       count: actualSites.length,
       updatedAt: progressTelemetry?.latestAt ?? null,
-      note: progressTelemetry?.available === false ? 'снимков Uploader нет' : null,
+      note: progressTelemetry?.available === false ? t('arch.progressNoSnapshots') : null,
     }];
   }, [systemName, progressSource, progressError, progressFetched, actualSites, progressTelemetry]);
 
   /** Аудит загруженных данных: дубли, пустые поля, невозможные значения. */
   const dataReport = useMemo(() => auditBodyRows(rawRows, { system: systemName }), [rawRows, systemName]);
   const planReport = useMemo(
-    () => auditPlanData(plan ?? createPlan(systemName || 'Без системы'), bodies),
+    () => auditPlanData(plan ?? createPlan(systemName || t('arch.planFallbackSystem')), bodies),
     [plan, bodies, systemName],
   );
 
@@ -337,7 +342,7 @@ export default function ArchitectWorkspace() {
         setProgressFetched(false);
         setProgressSource('');
         setProgressTelemetry(null);
-        setProgressError(String(data?.error || `Прогресс недоступен (HTTP ${response.status})`));
+        setProgressError(String(data?.error || t('arch.progressUnavailable', { status: response.status })));
         return;
       }
       setActualSites(parseActualSites(data));
@@ -349,7 +354,7 @@ export default function ArchitectWorkspace() {
       setProgressFetched(false);
       setProgressSource('');
       setProgressTelemetry(null);
-      setProgressError(error instanceof Error ? error.message : 'Не удалось получить прогресс');
+      setProgressError(error instanceof Error ? error.message : t('arch.progressFailed'));
     } finally {
       setProgressLoading(false);
     }
@@ -390,7 +395,7 @@ export default function ArchitectWorkspace() {
         setSystemName(target);
         setSource('');
         setSourceStats(stats);
-        setLoadError('Тел в системе не найдено: проверьте название или загрузите сканы через Colonial Helper.');
+        setLoadError(t('arch.bodiesNotFound'));
         setPlan(overridePlan ?? createPlan(target));
         void loadProgress(target);
         return;
@@ -421,7 +426,7 @@ export default function ArchitectWorkspace() {
       setPlan(restored ?? createPlan(target));
       void loadProgress(target);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : 'Не удалось загрузить систему');
+      setLoadError(error instanceof Error ? error.message : t('arch.systemLoadFailed'));
     } finally {
       setLoading(false);
     }
@@ -437,16 +442,16 @@ export default function ArchitectWorkspace() {
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(String(data?.error || `HTTP ${response.status}`));
       const view = data?.plan as PlanView | undefined;
-      if (!view || typeof view.system !== 'string') throw new Error('Сервер не вернул описание плана');
+      if (!view || typeof view.system !== 'string') throw new Error(t('arch.planNoDescription'));
       const parsed = parsePlan(data?.draft);
-      if (!parsed.plan) throw new Error(parsed.error || 'Сохранённый план повреждён');
+      if (!parsed.plan) throw new Error(parsed.error || t('arch.planCorrupted'));
       setRemoteId(view.id);
       setSystemInput(view.system);
       await loadSystem(view.system, parsed.plan);
-      const opened = `Открыт план «${view.title || 'без названия'}» автора ${view.authorName}`;
+      const opened = t('arch.planOpened', { title: view.title || t('arch.planNoTitle'), author: view.authorName });
       setNotice(parsed.warning ? `${parsed.warning}. ${opened}` : opened);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : 'Не удалось открыть план по ссылке');
+      setLoadError(error instanceof Error ? error.message : t('arch.planOpenFailed'));
     } finally {
       setLoading(false);
     }
@@ -528,17 +533,17 @@ export default function ArchitectWorkspace() {
     }
 
     const parts: string[] = [];
-    if (result.added.length > 0) parts.push(`добавлено ${result.added.length}`);
-    if (result.updated.length > 0) parts.push(`обновлён статус у ${result.updated.length}`);
+    if (result.added.length > 0) parts.push(t('arch.factAdded', { count: result.added.length }));
+    if (result.updated.length > 0) parts.push(t('arch.factUpdated', { count: result.updated.length }));
     if (result.unmatchedBodies.length > 0) {
       const names = result.unmatchedBodies
         .map((item) => item.rawBodyName || item.name)
         .slice(0, 3)
         .join(', ');
-      parts.push(`тело не опознано у ${result.unmatchedBodies.length} (${names}) — записи в конце списка`);
+      parts.push(t('arch.factUnmatched', { count: result.unmatchedBodies.length, names }));
     }
-    if (result.unknown.length > 0) parts.push(`тип не опознан у ${result.unknown.length}`);
-    setNotice(parts.length > 0 ? `Факт применён к плану: ${parts.join(', ')}.` : 'Переносить нечего: всё уже в плане.');
+    if (result.unknown.length > 0) parts.push(t('arch.factUnknown', { count: result.unknown.length }));
+    setNotice(parts.length > 0 ? t('arch.factApplied', { parts: parts.join(', ') }) : t('arch.factNothing'));
   }, [plan, bodies, bodyIndex, systemName]);
 
   const exportPlan = useCallback(() => {
@@ -556,22 +561,22 @@ export default function ArchitectWorkspace() {
     const text = await file.text();
     const parsed = parsePlan(text);
     if (!parsed.plan) {
-      setNotice(parsed.error || 'Не удалось прочитать файл');
+      setNotice(parsed.error || t('arch.fileReadFailed'));
       return;
     }
     setPlan(parsed.plan);
     setSystemName(parsed.plan.system);
     setSystemInput(parsed.plan.system);
-    setNotice(parsed.warning ? parsed.warning : `Импортирован план: ${parsed.plan.sites.length} построек`);
+    setNotice(parsed.warning ? parsed.warning : t('arch.planImported', { count: parsed.plan.sites.length }));
   }, []);
 
   const copySummary = useCallback(async () => {
     if (!plan || !evaluation) return;
     try {
       await navigator.clipboard.writeText(summarizePlan(plan, evaluation));
-      setNotice('Сводка скопирована в буфер обмена');
+      setNotice(t('arch.summaryCopied'));
     } catch {
-      setNotice('Браузер не дал доступ к буферу обмена — используйте экспорт файла');
+      setNotice(t('arch.clipboardDenied'));
     }
   }, [plan, evaluation]);
 
@@ -580,7 +585,7 @@ export default function ArchitectWorkspace() {
     setPlan(updateSite(plan, siteId, patch));
     setCollapsedBodies((list) => (patch.bodyName ? list.filter((name) => name !== patch.bodyName) : list));
     setEditingSiteId(null);
-    setNotice('Постройка обновлена');
+    setNotice(t('arch.siteUpdated'));
   }, [plan]);
 
   const togglePrimary = useCallback((siteId: string) => {
@@ -602,18 +607,15 @@ export default function ArchitectWorkspace() {
       <header style={{ ...cardStyle, marginBottom: 12 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'baseline', justifyContent: 'space-between' }}>
           <div>
-            <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text)' }}>Архитектор системы</h1>
+            <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text)' }}>{t('arch.title')}</h1>
             <p style={{ margin: '6px 0 0', color: 'var(--muted)', fontSize: 13, maxWidth: 860 }}>
-              Планировщик застройки под колонизацию: выберите систему, распределите постройки по телам —
-              инструмент посчитает наземные слоты, очки системы (T2/T3), порядок стройки, товары и тоннаж,
-              которые надо привезти. Наземные и орбитальные постройки — в отдельных разделах у каждого тела,
-              любую запись можно отредактировать, а порт — назначить основным.
+              {t('arch.lead')}
             </p>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-            <span style={betaBadge}>тестовый режим · v{PLAN_FORMAT_VERSION}</span>
+            <span style={betaBadge}>{t('arch.betaBadge', { version: PLAN_FORMAT_VERSION })}</span>
             <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'ui-monospace, monospace' }}>
-              каталог построек v{CATALOGUE_VERSION} · черновик в браузере, планы сохраняются на сервере
+              {t('arch.catalogueLine', { version: CATALOGUE_VERSION })}
             </span>
           </div>
         </div>
@@ -625,19 +627,19 @@ export default function ArchitectWorkspace() {
             onKeyDown={(event) => {
               if (event.key === 'Enter') void loadSystem(systemInput);
             }}
-            placeholder="Название системы, например HIP 90297"
+            placeholder={t('arch.systemPlaceholder')}
             style={{ ...inputStyle, flex: '1 1 260px' }}
           />
           <button type="button" onClick={() => void loadSystem(systemInput)} disabled={loading} style={primaryButton}>
-            {loading ? 'Загрузка…' : 'Загрузить систему'}
+            {loading ? t('lb.loading') : t('arch.loadSystem')}
           </button>
           {systemName && (
             <>
               <Link href={`/system/${encodeURIComponent(systemName)}`} style={ghostButton}>
-                Страница системы
+                {t('arch.systemPage')}
               </Link>
               <button type="button" onClick={() => setShowMap((value) => !value)} style={ghostButton}>
-                {showMap ? 'Скрыть карту' : 'Показать на карте'}
+                {showMap ? t('arch.hideMap') : t('arch.showMap')}
               </button>
             </>
           )}
@@ -645,7 +647,7 @@ export default function ArchitectWorkspace() {
 
         {recent.length > 0 && (
           <div style={{ marginTop: 10, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Недавние:</span>
+            <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 1 }}>{t('arch.recent')}</span>
             {recent.map((item) => (
               <button
                 key={item}
@@ -663,10 +665,10 @@ export default function ArchitectWorkspace() {
         {notice && <div style={{ marginTop: 10, color: 'var(--orange)', fontSize: 13 }}>{notice}</div>}
         {!loadError && systemName && (
           <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12 }}>
-            Тел: {bodies.length} · источник: {describeSourceStats(source, sourceStats)}
-            {plan && plan.sites.length > 0 ? ` · в плане: ${plan.sites.length}` : ''}
-            {plan?.architect ? ` · архитектор: ${plan.architect}` : ''}
-            {primaryName ? ` · основной порт: ${primaryName}` : ''}
+            {t('arch.bodiesLine', { count: bodies.length, source: describeSourceStats(t, source, sourceStats) })}
+            {plan && plan.sites.length > 0 ? t('arch.planSitesLine', { count: plan.sites.length }) : ''}
+            {plan?.architect ? t('arch.architectLine', { name: plan.architect }) : ''}
+            {primaryName ? t('arch.primaryPortLine', { name: primaryName }) : ''}
           </div>
         )}
       </header>
@@ -680,22 +682,21 @@ export default function ArchitectWorkspace() {
       {!systemName && (
         <section style={{ ...cardStyle, color: 'var(--muted)', fontSize: 13 }}>
           <p style={{ marginTop: 0 }}>
-            Как это работает:
+            {t('arch.howItWorks')}
           </p>
           <ol style={{ paddingLeft: 18, lineHeight: 1.7 }}>
-            <li>Загрузите систему — тела возьмутся из каталога проекта, а при их отсутствии из EDSM.</li>
-            <li>Нажмите «+ постройка» у тела: список сразу покажет, что на это тело поставить нельзя и почему.</li>
-            <li>Наземные и орбитальные постройки лежат в отдельных разделах карточки тела, а занятые слоты видны на полосе.</li>
-            <li>Любую постройку в плане можно отредактировать: тип, тело, статус, заметка и роль основного порта.</li>
-            <li>Отметьте основной порт: он строится с колониального корабля, не тратит очки системы, но везёт больше материалов.</li>
-            <li>Следите за очками системы: основной порт бесплатный, а каждый следующий порт дороже.</li>
-            <li>Экспортируйте план в JSON или скопируйте сводку — её можно отдать эскадрилье и перевозчикам.</li>
-            <li>Сохраните план на сервере и опубликуйте: получите ссылку, по которой его откроют другие.</li>
-            <li>Сверьте план со стройплощадками и посчитайте «где купить» по рынкам EDDN.</li>
+            <li>{t('arch.how1')}</li>
+            <li>{t('arch.how2')}</li>
+            <li>{t('arch.how3')}</li>
+            <li>{t('arch.how4')}</li>
+            <li>{t('arch.how5')}</li>
+            <li>{t('arch.how6')}</li>
+            <li>{t('arch.how7')}</li>
+            <li>{t('arch.how8')}</li>
+            <li>{t('arch.how9')}</li>
           </ol>
           <p style={{ marginBottom: 0 }}>
-            Это тестовый режим: черновик живёт в вашем браузере, а сохранённые планы и ссылки — уже на сервере.
-            Совместное редактирование появится позже.
+            {t('arch.testModeNote')}
           </p>
         </section>
       )}
@@ -704,17 +705,17 @@ export default function ArchitectWorkspace() {
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(320px, 0.65fr)', gap: 12 }} className="architect-grid">
           <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button type="button" onClick={exportPlan} style={ghostButton}>Экспорт JSON</button>
-              <button type="button" onClick={() => fileInput.current?.click()} style={ghostButton}>Импорт JSON</button>
-              <button type="button" onClick={() => void copySummary()} style={ghostButton}>Копировать сводку</button>
+              <button type="button" onClick={exportPlan} style={ghostButton}>{t('arch.exportJson')}</button>
+              <button type="button" onClick={() => fileInput.current?.click()} style={ghostButton}>{t('arch.importJson')}</button>
+              <button type="button" onClick={() => void copySummary()} style={ghostButton}>{t('arch.copySummary')}</button>
               <button
                 type="button"
                 style={{ ...ghostButton, color: 'var(--red)' }}
                 onClick={() => {
-                  if (window.confirm('Очистить план системы?')) setPlan(createPlan(systemName, plan.architect));
+                  if (window.confirm(t('arch.clearConfirm'))) setPlan(createPlan(systemName, plan.architect));
                 }}
               >
-                Очистить план
+                {t('arch.clearPlan')}
               </button>
               <input
                 ref={fileInput}
@@ -731,43 +732,43 @@ export default function ArchitectWorkspace() {
 
             <div style={{ ...cardStyle, padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <label htmlFor="architect-name" style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>
-                Архитектор системы
+                {t('arch.title')}
               </label>
               <input
                 id="architect-name"
-                aria-label="Архитектор системы"
+                aria-label={t('arch.title')}
                 value={plan.architect}
                 maxLength={120}
                 onChange={(event) => setPlan(setPlanArchitect(plan, event.target.value))}
-                placeholder="CMDR или позывной ответственного"
+                placeholder={t('arch.architectPlaceholder')}
                 style={{ ...inputStyle, flex: '1 1 240px', margin: 0 }}
               />
               <span style={{ color: 'var(--muted)', fontSize: 11 }}>
-                Отметка попадёт в план, экспорт и текстовую сводку.
+                {t('arch.architectNote')}
               </span>
             </div>
 
             {bodies.length > 0 && (
               <>
                 <div className="architect-kpi-grid">
-                  <Kpi label="Тел в каталоге" value={bodies.length} tone="var(--cyan)" />
+                  <Kpi label={t('arch.kpiBodies')} value={bodies.length} tone="var(--cyan)" />
                   <Kpi
-                    label="Построек в плане"
+                    label={t('arch.kpiSites')}
                     value={plan.sites.length}
                     tone="var(--orange)"
                     active={bodyFilter === 'planned'}
                     onClick={() => setBodyFilter(bodyFilter === 'planned' ? 'all' : 'planned')}
                   />
-                  <Kpi label="Тоннаж" value={formatTons(evaluation.haulTons)} tone="var(--green)" />
+                  <Kpi label={t('arch.kpiTons')} value={formatTons(evaluation.haulTons)} tone="var(--green)" />
                   <Kpi
-                    label="Основной порт"
+                    label={t('arch.kpiPrimary')}
                     value={primaryName ?? '—'}
                     tone={primaryName ? 'var(--orange)' : 'var(--muted)'}
                     clickable={Boolean(primarySite)}
                     onClick={primarySite ? () => setEditingSiteId(primarySite.id) : undefined}
                   />
                   <Kpi
-                    label="Оценка системы"
+                    label={t('arch.kpiScore')}
                     value={evaluation.score}
                     tone="var(--orange)"
                     active={bodyFilter === 'issues'}
@@ -778,27 +779,27 @@ export default function ArchitectWorkspace() {
                     а не только в сводке: отрицательное значение сразу красное.
                   */}
                   <Kpi
-                    label="Очки T2"
+                    label={t('arch.kpiTier2')}
                     value={evaluation.tierPoints.tier2}
                     tone={evaluation.tierPoints.tier2 < 0 ? 'var(--red)' : 'var(--cyan)'}
-                    hint={`потрачено ${evaluation.tierSpent.tier2} из ${evaluation.tierGiven.tier2}`}
+                    hint={t('arch.tierHint', { spent: evaluation.tierSpent.tier2, given: evaluation.tierGiven.tier2 })}
                   />
                   <Kpi
-                    label="Очки T3"
+                    label={t('arch.kpiTier3')}
                     value={evaluation.tierPoints.tier3}
                     tone={evaluation.tierPoints.tier3 < 0 ? 'var(--red)' : 'var(--cyan)'}
-                    hint={`потрачено ${evaluation.tierSpent.tier3} из ${evaluation.tierGiven.tier3}`}
+                    hint={t('arch.tierHint', { spent: evaluation.tierSpent.tier3, given: evaluation.tierGiven.tier3 })}
                   />
                   <Kpi
-                    label="Качество данных"
+                    label={t('arch.kpiQuality')}
                     value={dataReport.score}
                     tone={dataReport.score >= 80 ? 'var(--green)' : dataReport.score >= 50 ? 'var(--orange)' : 'var(--red)'}
-                    hint={dataReport.issues.length > 0 ? `замечаний: ${dataReport.issues.length}` : 'замечаний нет'}
+                    hint={dataReport.issues.length > 0 ? t('arch.issuesCount', { count: dataReport.issues.length }) : t('arch.issuesNone')}
                   />
                 </div>
                 {/* Переключатель вида: карточки тел ↔ таблица плана ↔ инфографика. */}
                 <div style={{ ...cardStyle, padding: '8px 12px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>Вид</span>
+                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>{t('arch.viewLabel')}</span>
                   {(Object.keys(VIEW_LABELS) as WorkspaceView[]).map((value) => (
                     <button
                       key={value}
@@ -807,24 +808,24 @@ export default function ArchitectWorkspace() {
                       aria-pressed={view === value}
                       style={{ ...chipStyle, ...(view === value ? chipActive : {}) }}
                     >
-                      {VIEW_LABELS[value]}
+                      {t(VIEW_LABELS[value])}
                     </button>
                   ))}
                   <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)' }}>
-                    {view === 'bodies' ? 'постройки по телам системы'
-                      : view === 'table' ? 'весь план одним списком'
-                        : 'очки, тоннаж, экономики и эффекты'}
+                    {view === 'bodies' ? t('arch.viewHintBodies')
+                      : view === 'table' ? t('arch.viewHintTable')
+                        : t('arch.viewHintInsights')}
                   </span>
                 </div>
 
                 {view === 'bodies' && (
                 <div style={{ ...cardStyle, padding: '9px 12px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>Фильтр тел</span>
+                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>{t('arch.filterLabel')}</span>
                   <input
                     value={bodyQuery}
                     onChange={(event) => setBodyQuery(event.target.value)}
-                    placeholder="Название или класс тела"
-                    aria-label="Фильтр тел"
+                    placeholder={t('arch.filterPlaceholder')}
+                    aria-label={t('arch.filterLabel')}
                     style={{ ...inputStyle, flex: '1 1 220px', margin: 0 }}
                   />
                   {(Object.keys(BODY_FILTER_LABELS) as BodyFilter[]).map((value) => (
@@ -834,10 +835,10 @@ export default function ArchitectWorkspace() {
                       onClick={() => setBodyFilter(value)}
                       style={{ ...chipStyle, ...(bodyFilter === value ? chipActive : {}) }}
                     >
-                      {BODY_FILTER_LABELS[value]}
+                      {t(BODY_FILTER_LABELS[value])}
                     </button>
                   ))}
-                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, marginLeft: 6 }}>Сортировка</span>
+                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, marginLeft: 6 }}>{t('arch.sortLabel')}</span>
                   {(Object.keys(BODY_SORT_LABELS) as BodySort[]).map((value) => (
                     <button
                       key={value}
@@ -845,7 +846,7 @@ export default function ArchitectWorkspace() {
                       onClick={() => setBodySort(value)}
                       style={{ ...chipStyle, ...(bodySort === value ? chipActive : {}) }}
                     >
-                      {BODY_SORT_LABELS[value]}
+                      {t(BODY_SORT_LABELS[value])}
                     </button>
                   ))}
                   <button
@@ -853,9 +854,9 @@ export default function ArchitectWorkspace() {
                     onClick={() => setCollapsedBodies(bodies.filter((body) => (sitesCountByBody.get(body.name) ?? 0) === 0).map((body) => body.name))}
                     style={ghostButton}
                   >
-                    Свернуть пустые
+                    {t('arch.collapseEmpty')}
                   </button>
-                  <span style={{ color: 'var(--muted)', fontSize: 11 }}>{visibleBodies.length} из {bodies.length}</span>
+                  <span style={{ color: 'var(--muted)', fontSize: 11 }}>{t('arch.shownOf', { shown: visibleBodies.length, total: bodies.length })}</span>
                 </div>
                 )}
               </>
@@ -863,7 +864,7 @@ export default function ArchitectWorkspace() {
 
             {bodies.length === 0 && (
               <div style={{ ...cardStyle, color: 'var(--muted)', fontSize: 13 }}>
-                Тела не загружены — планировать можно только по названию тела, проверка слотов будет недоступна.
+                {t('arch.bodiesNotLoaded')}
               </div>
             )}
 
@@ -871,7 +872,7 @@ export default function ArchitectWorkspace() {
               <>
                 {visibleBodies.length === 0 && bodies.length > 0 && (
                   <div style={{ ...cardStyle, color: 'var(--muted)', fontSize: 13 }}>
-                    Под фильтр не подошло ни одного тела.
+                    {t('arch.noBodiesMatch')}
                   </div>
                 )}
 
@@ -907,14 +908,13 @@ export default function ArchitectWorkspace() {
                 {unassignedSites.length > 0 && (
                   <div className="architect-body" style={{ ...cardStyle, borderColor: 'var(--orange)' }}>
                     <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-                      <div style={{ fontSize: 16, color: 'var(--orange)' }}>Постройки вне каталога тел</div>
+                      <div style={{ fontSize: 16, color: 'var(--orange)' }}>{t('arch.unassignedTitle')}</div>
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                        {unassignedSites.length} шт. · тело не найдено в данных системы
+                        {t('arch.unassignedCount', { count: unassignedSites.length })}
                       </span>
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
-                      Такое бывает, когда источник называет тело иначе, чем каталог, или данных о теле нет вовсе.
-                      Откройте запись и выберите тело — проверка слотов и экономик заработает.
+                      {t('arch.unassignedHint')}
                     </div>
                     <div style={{ marginTop: 8 }}>
                       {unassignedSites.map((site) => (
@@ -1171,6 +1171,7 @@ function BodyCard({
   onEdit: (siteId: string) => void;
   onTogglePrimary: (siteId: string) => void;
 }) {
+  const { t } = useI18n();
   const surfaceLimit = predictSurfaceSlots(body);
   const surfaceSites = sites.filter((site) => getInstallation(site.installationId)?.location === 'surface');
   const orbitalSites = sites.filter((site) => getInstallation(site.installationId)?.location !== 'surface');
@@ -1224,7 +1225,7 @@ function BodyCard({
               {body.subType && body.subType !== 'Неизвестно'
                 ? body.subType
                 : <span style={{ color: 'var(--orange)' }}>класс тела неизвестен</span>}
-              {' · '}{KIND_LABELS[body.kind]} · {formatNumber(body.distanceLs)} св. с
+              {' · '}{t(KIND_LABELS[body.kind])} · {formatNumber(body.distanceLs)} св. с
               {body.radiusKm > 0 ? ` · R ${formatNumber(body.radiusKm)} км` : ''}
               {body.tempK > 0 ? ` · ${formatNumber(body.tempK)} K` : ''}
               {body.gravity > 0 ? ` · ${formatNumber(body.gravity)} g` : ''}
@@ -1457,6 +1458,7 @@ function SiteRow({
   onEdit: (siteId: string) => void;
   onTogglePrimary: (siteId: string) => void;
 }) {
+  const { t } = useI18n();
   const installation = getInstallation(site.installationId);
   if (!installation) {
     return (
@@ -1563,7 +1565,7 @@ function SiteRow({
           onClick={() => onCycle(site.id, nextStatus)}
           style={{ ...ghostButton, color: STATUS_TONES[site.status], borderColor: STATUS_TONES[site.status] }}
         >
-          {STATUS_LABELS[site.status]}
+          {t(STATUS_LABELS[site.status])}
         </button>
         <button type="button" style={ghostButton} onClick={() => onEdit(site.id)}>
           изменить
