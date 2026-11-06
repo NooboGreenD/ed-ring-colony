@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import { toast } from '@/components/ui/Toaster';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { BUILD_COMMODITIES, resolveCommodity } from '@/lib/commodities';
 import { downloadCsv } from '@/lib/atlas';
 import { IconAlert, IconDownload, IconSearch, IconX } from '@/components/Icons';
@@ -24,6 +25,7 @@ interface MarketPrice {
 type SortKey = 'sell' | 'buy' | 'stock' | 'system';
 
 export default function MarketPage() {
+  const { t, locale } = useI18n();
   const [commodity, setCommodity] = useState('');
   const [system, setSystem] = useState('');
   const [prices, setPrices] = useState<MarketPrice[]>([]);
@@ -36,7 +38,7 @@ export default function MarketPage() {
   const search = useCallback(async (rawCommodity = commodity) => {
     const query = resolveCommodity(rawCommodity);
     if (!query) {
-      setError('Укажите товар — например, Steel');
+      setError(t('amk.enterCommodity'));
       return;
     }
     setCommodity(query);
@@ -46,18 +48,18 @@ export default function MarketPage() {
       const params = new URLSearchParams({ commodity: query, ...(system.trim() ? { system: system.trim() } : {}) });
       const res = await fetch(`/api/market/search?${params.toString()}`);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Не удалось получить цены (HTTP ${res.status})`);
+      if (!res.ok) throw new Error(data.error || t('amk.fetchFailed', { status: res.status }));
       setPrices(Array.isArray(data.prices) ? data.prices : []);
       setSearched(true);
     } catch (err: any) {
       setPrices([]);
       setSearched(true);
-      setError(err.message || 'Ошибка поиска цен');
-      toast(err.message || 'Ошибка поиска цен', 'error');
+      setError(err.message || t('amk.searchError'));
+      toast(err.message || t('amk.searchError'), 'error');
     } finally {
       setLoading(false);
     }
-  }, [commodity, system]);
+  }, [commodity, system, t]);
 
   const visible = useMemo(() => {
     const query = filter.trim().toLowerCase();
@@ -78,27 +80,26 @@ export default function MarketPage() {
   const exportCsv = () => {
     if (visible.length === 0) return;
     downloadCsv(`market-${commodity}-${system || 'all'}`, [
-      ['Система', 'Станция', 'Товар', 'Покупка, CR', 'Продажа, CR', 'Запас', 'Спрос', 'Обновлено'],
+      [t('amk.csvSystem'), t('amk.csvStation'), t('amk.csvCommodity'), t('amk.csvBuy'), t('amk.csvSell'), t('amk.csvStock'), t('amk.csvDemand'), t('amk.csvUpdated')],
       ...visible.map((row) => [
         row.system_name, row.station_name, row.commodity_name,
         row.buy_price ?? '', row.sell_price ?? '', row.stock ?? '', row.demand ?? '',
-        row.reported_at ? new Date(row.reported_at).toLocaleString('ru-RU') : '',
+        row.reported_at ? new Date(row.reported_at).toLocaleString(locale) : '',
       ]),
     ]);
   };
 
   return (
     <div className="market-page-wrap">
-      <nav className="atlas-nav-links" aria-label="Навигация Atlas">
+      <nav className="atlas-nav-links" aria-label={t('amk.navAria')}>
         <Link href="/atlas">← Atlas</Link>
         <span className="sep">//</span>
-        <span className="current">РЫНОК РЕСУРСОВ</span>
+        <span className="current">{t('amk.current')}</span>
       </nav>
 
-      <h2 className="market-title">Рынок ресурсов</h2>
+      <h2 className="market-title">{t('amk.title')}</h2>
       <p className="atlas-muted">
-        Отчёты Colonial Helper, EDSM, Spansh и EDDN: цены, запас и спрос по станциям. Для поиска конкретного
-        товара на маршруте используйте вкладку «Рынок» в Atlas.
+        {t('amk.intro')}
       </p>
 
       <form
@@ -109,12 +110,12 @@ export default function MarketPage() {
         }}
       >
         <div className="market-field">
-          <label htmlFor="market-commodity">Товар</label>
+          <label htmlFor="market-commodity">{t('amk.commodity')}</label>
           <input
             id="market-commodity"
             className="input"
             list="market-commodities"
-            placeholder="Например, Steel"
+            placeholder={t('amk.commodityPlaceholder')}
             value={commodity}
             onChange={(event) => setCommodity(event.target.value)}
           />
@@ -124,17 +125,17 @@ export default function MarketPage() {
         </div>
 
         <SystemSearchInput
-          label="Система (необязательно)"
+          label={t('amk.systemOptional')}
           value={system}
           onChange={setSystem}
           onSubmit={() => { void search(); }}
-          placeholder="Все системы"
+          placeholder={t('amk.allSystems')}
           compact
         />
 
         <div className="market-search-actions">
           <button type="submit" className="btn btn-orange" disabled={loading}>
-            {loading ? 'Поиск…' : 'Найти'}
+            {loading ? t('amk.searching') : t('amk.find')}
           </button>
           {(commodity || system) && (
             <button
@@ -148,7 +149,7 @@ export default function MarketPage() {
                 setSearched(false);
               }}
             >
-              Сбросить
+              {t('amk.reset')}
             </button>
           )}
         </div>
@@ -169,34 +170,34 @@ export default function MarketPage() {
                 type="search"
                 value={filter}
                 onChange={(event) => setFilter(event.target.value)}
-                placeholder="Фильтр: система или станция"
-                aria-label="Фильтр цен"
+                placeholder={t('amk.filterPlaceholder')}
+                aria-label={t('amk.filterAria')}
               />
               {filter && (
-                <button type="button" onClick={() => setFilter('')} aria-label="Очистить фильтр">
+                <button type="button" onClick={() => setFilter('')} aria-label={t('amk.clearFilter')}>
                   <IconX size={11} />
                 </button>
               )}
             </div>
-            <select value={sort} onChange={(event) => setSort(event.target.value as SortKey)} aria-label="Сортировка цен">
-              <option value="sell">Выгодная продажа</option>
-              <option value="buy">Выгодная покупка</option>
-              <option value="stock">Больше запаса</option>
-              <option value="system">По системе</option>
+            <select value={sort} onChange={(event) => setSort(event.target.value as SortKey)} aria-label={t('amk.sortAria')}>
+              <option value="sell">{t('amk.sortSell')}</option>
+              <option value="buy">{t('amk.sortBuy')}</option>
+              <option value="stock">{t('amk.sortStock')}</option>
+              <option value="system">{t('amk.sortSystem')}</option>
             </select>
-            <button type="button" className="btn" onClick={exportCsv} title="Экспорт в CSV">
+            <button type="button" className="btn" onClick={exportCsv} title={t('amk.exportCsv')}>
               <IconDownload size={12} /> CSV
             </button>
           </div>
 
-          <p className="atlas-list-counter">Строк: {visible.length} из {prices.length}</p>
+          <p className="atlas-list-counter">{t('amk.rows', { visible: visible.length, total: prices.length })}</p>
 
           <div className="table-scroll">
             <table>
               <thead>
                 <tr>
-                  <th>Система</th><th>Станция</th><th>Товар</th>
-                  <th>Покупка</th><th>Продажа</th><th>Запас</th><th>Спрос</th><th>Обновлено</th>
+                  <th>{t('amk.csvSystem')}</th><th>{t('amk.csvStation')}</th><th>{t('amk.csvCommodity')}</th>
+                  <th>{t('amk.colBuy')}</th><th>{t('amk.colSell')}</th><th>{t('amk.csvStock')}</th><th>{t('amk.csvDemand')}</th><th>{t('amk.csvUpdated')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -205,33 +206,32 @@ export default function MarketPage() {
                     <td>{row.system_name}</td>
                     <td>{row.station_name}</td>
                     <td>{row.commodity_name}</td>
-                    <td className="num">{row.buy_price?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="num green">{row.sell_price?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="num">{row.stock?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="num">{row.demand?.toLocaleString('ru-RU') ?? '—'}</td>
+                    <td className="num">{row.buy_price?.toLocaleString(locale) ?? '—'}</td>
+                    <td className="num green">{row.sell_price?.toLocaleString(locale) ?? '—'}</td>
+                    <td className="num">{row.stock?.toLocaleString(locale) ?? '—'}</td>
+                    <td className="num">{row.demand?.toLocaleString(locale) ?? '—'}</td>
                     <td className="muted">
-                      {Date.parse(row.reported_at) > 0 ? new Date(row.reported_at).toLocaleString('ru-RU') : 'Время неизвестно'}
-                      {row.source ? ` · ${row.source}` : ''}{row.stale ? ' · устарел' : ''}
+                      {Date.parse(row.reported_at) > 0 ? new Date(row.reported_at).toLocaleString(locale) : t('amk.timeUnknown')}
+                      {row.source ? ` · ${row.source}` : ''}{row.stale ? t('amk.stale') : ''}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {visible.length === 0 && <p className="atlas-muted">По фильтру строк нет.</p>}
+          {visible.length === 0 && <p className="atlas-muted">{t('amk.noRows')}</p>}
         </>
       )}
 
       {!loading && searched && prices.length === 0 && !error && (
         <p className="atlas-muted">
-          Цены не найдены. Попробуйте другой товар, снимите фильтр по системе или проверьте чуть позже —
-          отчётность EDDN приходит с задержкой.
+          {t('amk.notFound')}
         </p>
       )}
 
       {!searched && !loading && (
         <p className="atlas-muted">
-          Введите товар и нажмите «Найти». Поле системы необязательно: без него поиск идёт по всей галактике.
+          {t('amk.introPrompt')}
         </p>
       )}
     </div>
