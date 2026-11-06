@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { createLinkCode, LINK_CODE_TTL_SECONDS } from '@/lib/helperDevices';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { authFromRequest } from '@/lib/supabaseServer';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,13 +17,14 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store, no-cache, must-revalid
  * переносят в лаунчер. Пароль при этом никуда не уезжает.
  */
 export async function POST(request: Request) {
+  const t = await apiTranslate();
   const { user } = await authFromRequest(request);
   if (!user) {
-    return NextResponse.json({ ok: false, error: 'Нужно войти в учётную запись.' }, { status: 401, ...NO_STORE });
+    return NextResponse.json({ ok: false, error: t('api.accountRequired') }, { status: 401, ...NO_STORE });
   }
   if (!checkRateLimit(`helper-link-code:${user.id}`, 6)) {
     return NextResponse.json(
-      { ok: false, error: 'Слишком много кодов подряд. Подождите минуту.' },
+      { ok: false, error: t('api.tooManyCodes') },
       { status: 429, ...NO_STORE },
     );
   }

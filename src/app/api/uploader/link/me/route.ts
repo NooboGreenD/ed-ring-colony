@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { profileForDevice, resolveDeviceToken, revokeDevice } from '@/lib/helperDevices';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,10 +16,11 @@ const NO_STORE = { headers: { 'Cache-Control': 'no-store, no-cache, must-revalid
  * хранит ни почту, ни пароль.
  */
 export async function GET(request: Request) {
+  const t = await apiTranslate();
   const device = await resolveDeviceToken(request);
   if (!device) {
     return NextResponse.json(
-      { ok: false, error: 'Устройство не привязано или привязка отозвана.' },
+      { ok: false, error: t('api.deviceNotLinked') },
       { status: 401, ...NO_STORE },
     );
   }
