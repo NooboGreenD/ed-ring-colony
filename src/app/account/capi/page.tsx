@@ -580,10 +580,12 @@ export default function CapiPage() {
               </strong>
               <div className="capi-notice-hint">
                 {syncReport.cmdrName ? `CMDR ${syncReport.cmdrName}. ` : ''}
-                Событий колонизации добавлено: {syncReport.eventsImported}
-                {syncReport.eventsDuplicate ? `, повторов пропущено: ${syncReport.eventsDuplicate}` : ''}
+                {t('capi.eventsImported', { count: syncReport.eventsImported })}
+                {syncReport.eventsDuplicate ? t('capi.eventsDuplicates', { count: syncReport.eventsDuplicate }) : ''}
                 {' · '}{describeJournalStatus(syncReport.journalStatus)}
-                {syncReport.durationMs != null ? ` · ${Math.round(syncReport.durationMs / 100) / 10} с` : ''}
+                {syncReport.durationMs != null
+                  ? t('capi.durationSeconds', { seconds: Math.round(syncReport.durationMs / 100) / 10 })
+                  : ''}
               </div>
               {syncReport.warnings.length > 0 && (
                 <ul className="capi-warnings">
@@ -592,32 +594,58 @@ export default function CapiPage() {
               )}
               {syncReport.jobId && (
                 <details style={{ marginTop: 8 }}>
-                  <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>Диагностика этапов · задание {syncReport.jobId}</summary>
+                  <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
+                    {t('capi.stagesDetails', { id: syncReport.jobId })}
+                  </summary>
                   {(syncReport.endpoint || syncReport.errorKind || syncReport.detail) && (
                     <div className="capi-notice-hint" style={{ marginTop: 8 }}>
                       {syncReport.endpoint && <div>CAPI endpoint: <code>{syncReport.endpoint}</code>{syncReport.host ? ` · ${syncReport.host}` : ''}</div>}
-                      {syncReport.errorKind && <div>Тип ошибки: {syncReport.errorKind}{syncReport.reason ? ` · ${syncReport.reason}` : ''}{syncReport.platform ? ` · платформа ${syncReport.platform}` : ''}</div>}
-                      {syncReport.transportPhase && <div>Транспорт: {syncReport.transportPhase === 'response_headers' ? 'ожидание HTTP-заголовков' : 'чтение тела HTTP-ответа'}</div>}
-                      {syncReport.httpStatus !== undefined && syncReport.httpStatus !== null && (
-                        <div>HTTP: {syncReport.httpStatus === 0 ? 'ответ не получен' : syncReport.httpStatus}</div>
+                      {syncReport.errorKind && (
+                        <div>
+                          {t('capi.errorKind', { kind: syncReport.errorKind })}
+                          {syncReport.reason ? ` · ${syncReport.reason}` : ''}
+                          {syncReport.platform ? t('capi.errorPlatform', { platform: syncReport.platform }) : ''}
+                        </div>
                       )}
-                      {syncReport.detail && <div>Деталь: {syncReport.detail}</div>}
+                      {syncReport.transportPhase && (
+                        <div>
+                          {t('capi.transport', {
+                            phase: syncReport.transportPhase === 'response_headers'
+                              ? t('capi.transportHeaders')
+                              : t('capi.transportBody'),
+                          })}
+                        </div>
+                      )}
+                      {syncReport.httpStatus !== undefined && syncReport.httpStatus !== null && (
+                        <div>
+                          {t('capi.httpStatus', {
+                            status: syncReport.httpStatus === 0 ? t('capi.httpNoResponse') : syncReport.httpStatus,
+                          })}
+                        </div>
+                      )}
+                      {syncReport.detail && <div>{t('capi.detail', { detail: syncReport.detail })}</div>}
                     </div>
                   )}
                   {syncReport.stageTimings?.length ? (
                     <ul className="capi-warnings">
                       {syncReport.stageTimings.map((timing, index) => (
-                        <li key={`${timing.stage}-${index}`}>{syncStageLabel(t, timing.stage)}{timing.attempt ? ` (попытка ${timing.attempt})` : ''}: {Math.round(timing.durationMs / 10) / 100} с</li>
+                        <li key={`${timing.stage}-${index}`}>
+                          {t('capi.stageTiming', {
+                            label: syncStageLabel(t, timing.stage),
+                            attempt: timing.attempt ? t('capi.stageAttempt', { attempt: timing.attempt }) : '',
+                            seconds: Math.round(timing.durationMs / 10) / 100,
+                          })}
+                        </li>
                       ))}
                     </ul>
-                  ) : <div className="capi-notice-hint">Измерения этапов недоступны для этого завершения.</div>}
+                  ) : <div className="capi-notice-hint">{t('capi.stageTimingsUnavailable')}</div>}
                 </details>
               )}
             </div>
           )}
 
           <div className="card">
-            <h3 className="capi-section-title">Ранги</h3>
+            <h3 className="capi-section-title">{t('capi.ranks')}</h3>
             <div className="capi-rank-grid">
               {[
                 { name: 'Combat', value: rankLabel(RANK_NAMES, profile?.combat_rank) },
@@ -636,43 +664,41 @@ export default function CapiPage() {
           </div>
 
           <div className="card" style={{ marginTop: 20 }}>
-            <h3 className="capi-section-title">Текущее состояние</h3>
+            <h3 className="capi-section-title">{t('capi.currentState')}</h3>
             <div className="stat-grid">
               <div className="stat-box">
                 <div className="num" style={{ fontSize: 16 }}>{profile?.current_system || '—'}</div>
-                <div className="lbl">Система</div>
+                <div className="lbl">{t('capi.system')}</div>
               </div>
               <div className="stat-box">
                 <div className="num" style={{ fontSize: 16 }}>{profile?.current_station || '—'}</div>
-                <div className="lbl">Станция</div>
+                <div className="lbl">{t('capi.station')}</div>
               </div>
               <div className="stat-box">
                 <div className="num" style={{ fontSize: 16 }}>{profile?.current_ship || '—'}</div>
-                <div className="lbl">Корабль</div>
+                <div className="lbl">{t('capi.ship')}</div>
               </div>
               <div className="stat-box">
-                <div className="num">{profile?.credits?.toLocaleString('ru-RU') ?? '—'}</div>
+                <div className="num">{profile?.credits?.toLocaleString(locale) ?? '—'}</div>
                 <div className="lbl">CR</div>
               </div>
               <div className="stat-box">
                 <div className="num">{Array.isArray(profile?.ships) ? profile.ships.length : '—'}</div>
-                <div className="lbl">Кораблей</div>
+                <div className="lbl">{t('capi.ships')}</div>
               </div>
             </div>
           </div>
 
           {networkError && (
             <div className="capi-notice capi-notice-error" style={{ marginTop: 16 }} role="alert">
-              Проверка связи сервера с Frontier не выполнена: {networkError}
+              {t('capi.networkNotChecked', { error: networkError })}
             </div>
           )}
 
           {networkCheck && (
             <div className="card" style={{ marginTop: 20 }}>
-              <h3 className="capi-section-title">Исходящая сеть сайта → Frontier CAPI</h3>
-              <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.6 }}>
-                Проверка выполняется с веб-сервера без CAPI-токена пользователя. Ответ HTTP 401/403 здесь ожидаем и означает, что DNS, HTTPS и узел Frontier доступны.
-              </p>
+              <h3 className="capi-section-title">{t('capi.networkTitle')}</h3>
+              <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.6 }}>{t('capi.networkLead')}</p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
                 {networkCheck.probes.map((probe) => {
                   const passed = probe.reachable && probe.https.ok;
@@ -682,12 +708,30 @@ export default function CapiPage() {
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                         <strong>{title}</strong>
                         <span style={{ color: passed ? 'var(--green)' : 'var(--red)', fontSize: 11, fontWeight: 700 }}>
-                          {passed ? 'ДОСТУПЕН' : probe.dns.ok ? 'HTTPS НЕДОСТУПЕН' : 'DNS ОШИБКА'}
+                          {passed
+                            ? t('capi.probeReachable')
+                            : probe.dns.ok
+                              ? t('capi.probeHttpsDown')
+                              : t('capi.probeDnsError')}
                         </span>
                       </div>
                       <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 8, lineHeight: 1.7 }}>
-                        <div>DNS: {probe.dns.ok ? `OK · ${probe.dns.addressCount ?? 0} адрес(а) · ${probe.dns.durationMs} мс` : `${probe.dns.code || 'ошибка'} · ${probe.dns.error || 'не удалось разрешить имя'}`}</div>
-                        <div>HTTPS: {probe.https.status ? `HTTP ${probe.https.status} · ${probe.https.durationMs} мс` : `${probe.https.code || 'ошибка'} · ${probe.https.error || 'ответ не получен'}`}</div>
+                        <div>
+                          DNS: {probe.dns.ok
+                            ? t('capi.dnsOk', { count: probe.dns.addressCount ?? 0, ms: probe.dns.durationMs })
+                            : t('capi.dnsFail', {
+                              code: probe.dns.code || t('capi.dnsErrorFallback'),
+                              error: probe.dns.error || t('capi.dnsResolveFail'),
+                            })}
+                        </div>
+                        <div>
+                          HTTPS: {probe.https.status
+                            ? t('capi.httpsOk', { status: probe.https.status, ms: probe.https.durationMs })
+                            : t('capi.dnsFail', {
+                              code: probe.https.code || t('capi.dnsErrorFallback'),
+                              error: probe.https.error || t('capi.httpsNoResponse'),
+                            })}
+                        </div>
                         <div style={{ overflowWrap: 'anywhere' }}>{probe.host}</div>
                       </div>
                     </div>
@@ -695,21 +739,25 @@ export default function CapiPage() {
                 })}
               </div>
               <p style={{ color: 'var(--muted)', fontSize: 10, marginBottom: 0 }}>
-                Проверено: {new Date(networkCheck.checkedAt).toLocaleString('ru-RU')} · лимит: DNS {networkCheck.timeoutMs.dns} мс, HTTPS {networkCheck.timeoutMs.https} мс.
+                {t('capi.checkedAt', {
+                  time: new Date(networkCheck.checkedAt).toLocaleString(locale),
+                  dns: networkCheck.timeoutMs.dns,
+                  https: networkCheck.timeoutMs.https,
+                })}
               </p>
             </div>
           )}
 
           {diagnostics && (
             <div className="card" style={{ marginTop: 20 }}>
-              <h3 className="capi-section-title">Диагностика привязки</h3>
+              <h3 className="capi-section-title">{t('capi.diagTitle')}</h3>
               <pre className="capi-diagnostics">{JSON.stringify(diagnostics, null, 2)}</pre>
               <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 8 }}>
-                `config.redirectMatchesSite: false` — адрес возврата не совпадает с сайтом;
-                `live.kind: maintenance` — Companion API временно недоступен;
-                `live.reason: entitlement_unavailable` — OAuth сохранён, CAPI не подтвердил права на игру;
-                `live.platform` — подтверждённая платформа, `live.detail` — ответ Frontier;
-                `stored.looksEmpty: true` — профиль сохранён пустым, нужна синхронизация после входа в игру.
+                {t('capi.diagRedirect')}{' '}
+                {t('capi.diagMaintenance')}{' '}
+                {t('capi.diagEntitlement')}{' '}
+                {t('capi.diagPlatform')}{' '}
+                {t('capi.diagStored')}
               </p>
             </div>
           )}
