@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { ShopItem, ProjectBillingStats } from "@/types/billing";
 import { IconStore, IconExternalLink, IconDiamond, IconCrown, IconSearch } from "@/components/Icons";
 import { authFetch } from "@/lib/supabaseClient";
+import { useI18n } from '@/lib/i18n/I18nContext';
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
 import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
 import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export default function StoreAnalytics({ stats }: Props) {
+  const { t, locale } = useI18n();
   const [items, setItems] = useState<ShopItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -67,11 +69,11 @@ export default function StoreAnalytics({ stats }: Props) {
               WIP // CLOSED BETA
             </span>
             <h3 style={{ margin: 0, color: "var(--text, #eeeeee)", fontSize: 16 }}>
-              МОДУЛЬ ПРЕМИУМ-МАГАЗИНА ДЛЯ ПОЛЬЗОВАТЕЛЕЙ
+              {t('sa.moduleTitle')}
             </h3>
           </div>
           <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--muted, #9ca3af)" }}>
-            Страница магазина скрыта от общего меню и находится на этапе разработки и тестирования.
+            {t('sa.moduleNote')}
           </p>
         </div>
 
@@ -94,7 +96,7 @@ export default function StoreAnalytics({ stats }: Props) {
           }}
         >
           <IconStore size={14} color="#e67e22" />
-          <span>Перейти в закрытый магазин (Beta)</span>
+          <span>{t('sa.openShop')}</span>
           <IconExternalLink size={12} />
         </Link>
       </div>
@@ -103,10 +105,10 @@ export default function StoreAnalytics({ stats }: Props) {
       <div className="card" style={{ margin: 0 }}>
         <h3 style={{ margin: "0 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
           <IconCrown size={16} color="#fbbf24" />
-          ТОП МЕЦЕНАТОВ И ПОКУПАТЕЛЕЙ КОЛОНИИ
+          {t('sa.topSpenders')}
         </h3>
         <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-          Пилоты, внесшие наибольший вклад в финансирование инфраструктуры и приобретение модификаций
+          {t('sa.topSpendersNote')}
         </p>
 
         <div
@@ -158,7 +160,7 @@ export default function StoreAnalytics({ stats }: Props) {
                   {spender.cmdrName}
                 </div>
                 <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-                  {spender.purchasesCount} операций · <strong style={{ color: "var(--orange, #e67e22)" }}>{spender.totalSpentRub.toLocaleString("ru-RU")} ₽</strong>
+                  {t('sa.operations', { count: spender.purchasesCount })} · <strong style={{ color: "var(--orange, #e67e22)" }}>{spender.totalSpentRub.toLocaleString(locale)} ₽</strong>
                 </div>
               </div>
 
@@ -184,9 +186,9 @@ export default function StoreAnalytics({ stats }: Props) {
       <div className="card" style={{ margin: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
           <div>
-            <h3 style={{ margin: 0 }}>КАТАЛОГ ПРЕДМЕТОВ И СТАТИСТИКА ПРОДАЖ</h3>
+            <h3 style={{ margin: 0 }}>{t('sa.catalogTitle')}</h3>
             <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-              Популярность и доходность каждой косметической модификации
+              {t('sa.catalogNote')}
             </p>
           </div>
 
@@ -194,7 +196,7 @@ export default function StoreAnalytics({ stats }: Props) {
             <div style={{ position: "relative", minWidth: 200 }}>
               <input
                 type="text"
-                placeholder="Поиск по названию..."
+                placeholder={t('sa.searchPlaceholder')}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 style={{ width: "100%", paddingLeft: 28 }}
@@ -205,12 +207,12 @@ export default function StoreAnalytics({ stats }: Props) {
             </div>
 
             <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-              <option value="all">Все категории</option>
-              <option value="frame">Рамки аватара</option>
-              <option value="badge">Знаки отличия</option>
-              <option value="skin">HUD-темы интерфейса</option>
-              <option value="glow">Свечение ника</option>
-              <option value="title">Почетные титулы</option>
+              <option value="all">{t('sa.catAll')}</option>
+              <option value="frame">{t('sa.catFrame')}</option>
+              <option value="badge">{t('sa.catBadge')}</option>
+              <option value="skin">{t('sa.catSkin')}</option>
+              <option value="glow">{t('sa.catGlow')}</option>
+              <option value="title">{t('sa.catTitle')}</option>
             </select>
           </div>
         </div>
@@ -219,21 +221,21 @@ export default function StoreAnalytics({ stats }: Props) {
           <table>
             <thead>
               <tr>
-                <th style={{ textAlign: "left" }}>ПРЕВЬЮ / НАЗВАНИЕ</th>
-                <th style={{ textAlign: "left" }}>КАТЕГОРИЯ</th>
-                <th style={{ textAlign: "left" }}>РЕДКОСТЬ</th>
-                <th style={{ textAlign: "right" }}>ЦЕНА В КРЕДИТАХ</th>
-                <th style={{ textAlign: "right" }}>ЦЕНА В РУБЛЯХ</th>
-                <th style={{ textAlign: "right" }}>ПРОДАНО ШТУК</th>
-                <th style={{ textAlign: "right" }}>ДОХОД (ОЦЕНКА)</th>
-                <th style={{ textAlign: "center" }}>СТАТУС</th>
+                <th style={{ textAlign: "left" }}>{t('sa.colPreview')}</th>
+                <th style={{ textAlign: "left" }}>{t('sa.colCategory')}</th>
+                <th style={{ textAlign: "left" }}>{t('sa.colRarity')}</th>
+                <th style={{ textAlign: "right" }}>{t('sa.colPriceCredits')}</th>
+                <th style={{ textAlign: "right" }}>{t('sa.colPriceRub')}</th>
+                <th style={{ textAlign: "right" }}>{t('sa.colSold')}</th>
+                <th style={{ textAlign: "right" }}>{t('sa.colRevenue')}</th>
+                <th style={{ textAlign: "center" }}>{t('sa.colStatus')}</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
                   <td colSpan={8} style={{ textAlign: "center", padding: 24, color: "var(--muted, #9ca3af)" }}>
-                    Загрузка каталога...
+                    {t('sa.loadingCatalog')}
                   </td>
                 </tr>
               ) : (
@@ -277,14 +279,14 @@ export default function StoreAnalytics({ stats }: Props) {
 
                       <td style={{ fontSize: 12, color: "var(--muted, #9ca3af)", textTransform: "uppercase" }}>
                         {item.category === "frame"
-                          ? "Рамка"
+                          ? t('sa.itemFrame')
                           : item.category === "badge"
-                          ? "Знак отличия"
+                          ? t('sa.itemBadge')
                           : item.category === "skin"
-                          ? "HUD-тема"
+                          ? t('sa.itemSkin')
                           : item.category === "glow"
-                          ? "Свечение"
-                          : "Титул"}
+                          ? t('sa.itemGlow')
+                          : t('sa.itemTitle')}
                       </td>
 
                       <td>
@@ -319,7 +321,7 @@ export default function StoreAnalytics({ stats }: Props) {
                       </td>
 
                       <td style={{ textAlign: "right", fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>
-                        {item.price_credits.toLocaleString("ru-RU")} Кр.
+                        {t('sa.creditsValue', { value: item.price_credits.toLocaleString(locale) })}
                       </td>
 
                       <td style={{ textAlign: "right", fontFamily: "ui-monospace, monospace", color: "var(--text, #eeeeee)" }}>
@@ -331,12 +333,12 @@ export default function StoreAnalytics({ stats }: Props) {
                       </td>
 
                       <td style={{ textAlign: "right", fontFamily: "ui-monospace, monospace", color: "var(--text, #eeeeee)" }}>
-                        {estRev.toLocaleString("ru-RU")} ₽
+                        {estRev.toLocaleString(locale)} ₽
                       </td>
 
                       <td style={{ textAlign: "center" }}>
                         <span style={{ fontSize: 10, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>
-                          АКТИВЕН
+                          {t('sa.active')}
                         </span>
                       </td>
                     </tr>
