@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { RingBasis3D } from '@/lib/atlasRingGeometry';
 import { useAtlasRingPreview } from '@/hooks/useAtlasRingPreview';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
@@ -192,6 +193,7 @@ const DEFAULT_DEVIATION = 100;
 const DEFAULT_REFINE_RADIUS = 30;
 
 export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSavedToProject }: Props) {
+  const { t, locale } = useI18n();
   const [startSystem, setStartSystem] = useState('Sol');
   const [ringRadius, setRingRadius] = useState(23000);
   const [searchRadius, setSearchRadius] = useState(500);
@@ -247,9 +249,9 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
     setLoading(false);
     setRefining(false);
     setSearchingHubs(false);
-    finishAtlasSearchProgress({ message: 'Поиск остановлен пользователем' });
-    toast('Поиск остановлен', 'info');
-  }, []);
+    finishAtlasSearchProgress({ message: t('atlas.ui.ringStoppedByUser') });
+    toast(t('atlas.ui.ringStopped'), 'info');
+  }, [t]);
 
   /** Публикация прогресса на карту. */
   const publishToMap = useCallback((
@@ -270,7 +272,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       publishAtlasSearchProgress({
         active: true,
         kind: 'ring',
-        title: 'ПОИСК ГАЛАКТИЧЕСКОГО КОЛЬЦА',
+        title: t('atlas.ui.ringOverlaySearch'),
         stage: patch.stage,
         percent: patch.percent,
         message: patch.message,
@@ -286,11 +288,11 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         },
         beam: patch.beam || null,
         counters: {
-          'Сегмент': `${patch.percent > 0 ? session.sectors_done : 0}/${session.sectors}`,
-          'Реальных опор': patch.stats?.realAnchors ?? 0,
-          'Расчётных опор': patch.stats?.triangulatedAnchors ?? 0,
-          'Систем найдено': patch.stats?.systemsFound ?? 0,
-          ...(patch.hubs ? { 'Хабов найдено': patch.hubs.filter(h => h?.hub?.status === 'found').length } : {}),
+          [t('atlas.ui.counterSegment')]: `${patch.percent > 0 ? session.sectors_done : 0}/${session.sectors}`,
+          [t('atlas.ui.counterRealAnchors')]: patch.stats?.realAnchors ?? 0,
+          [t('atlas.ui.counterTriAnchors')]: patch.stats?.triangulatedAnchors ?? 0,
+          [t('atlas.ui.counterSystemsFound')]: patch.stats?.systemsFound ?? 0,
+          ...(patch.hubs ? { [t('atlas.ui.counterHubsFound')]: patch.hubs.filter(h => h?.hub?.status === 'found').length } : {}),
         },
       });
     }
@@ -301,7 +303,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         name: ks.name,
         x: ks.x, y: ks.y, z: ks.z,
         kind: 'key-system',
-        label: 'Ключевая система маршрута',
+        label: t('atlas.ui.ringKeySystemLabel'),
       });
     }
     for (const anchor of patch.anchors || []) {
@@ -311,10 +313,10 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         ? 'triangulated'
         : (hub ? (hub.hub.status === 'found' ? 'hub-found' : hub.hub.status === 'missing' ? 'hub-missing' : 'anchor') : 'anchor');
       const label = hub?.hub?.status === 'found'
-        ? `Хаб: ${hub.hub.systemName} (${hub.hub.distance} св.л)`
+        ? t('atlas.ui.ringHubPointLabel', { system: hub.hub.systemName ?? '', distance: hub.hub.distance ?? '' })
         : hub?.hub?.status === 'missing'
-          ? 'Хаб не найден — требуется разведка'
-          : `Опорная точка (отклонение ${Number(anchor.deviation || 0).toFixed(1)} св.л.)`;
+          ? t('atlas.ui.ringHubMissingPoint')
+          : t('atlas.ui.ringAnchorPointLabel', { value: Number(anchor.deviation || 0).toFixed(1) });
       points.push({ name: anchor.name, x: anchor.x, y: anchor.y, z: anchor.z, kind, label });
     }
     // Хабы — отдельные зелёные точки.
@@ -324,7 +326,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           name: h.hub.systemName || 'Hub',
           x: h.hub.x, y: h.hub.y, z: h.hub.z,
           kind: 'hub-found',
-          label: `Кандидат на хаб: ${h.hub.systemName}`,
+          label: t('atlas.ui.ringHubCandidateLabel', { system: h.hub.systemName ?? '' }),
         });
       }
     }
@@ -333,11 +335,11 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         name: system.name,
         x: system.x, y: system.y, z: system.z,
         kind: 'system',
-        label: `Источник: ${system.source || 'каталог'}`,
+        label: t('atlas.ui.ringSourceLabel', { source: system.source || t('atlas.ui.ringSourceCatalog') }),
       });
     }
     if (points.length > 0) publishAtlasSearchPoints(points);
-  }, []);
+  }, [t]);
 
   const applyResult = useCallback((payload: RingResult) => {
     setResult(payload);
@@ -381,7 +383,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           basis3d: payload.basis3D ?? undefined,
         },
         {
-          percent: 100, stage: 'done', message: 'Кольцо готово',
+          percent: 100, stage: 'done', message: t('atlas.ui.ringDone'),
           anchors: payload.anchors as RingAnchor[],
           keySystems: payload.keySystems,
           hubs: payload.hubs,
@@ -401,9 +403,9 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       if (res.status === 504 || res.status === 502 || res.status === 503) {
-        throw new Error(`Сервер не ответил вовремя (HTTP ${res.status}). Шаг будет повторён`);
+        throw new Error(t('atlas.ui.ringErrTimeout', { status: res.status }));
       }
-      throw new Error(data.error || `Сервер не смог обработать шаг поиска (HTTP ${res.status})`);
+      throw new Error(data.error || t('atlas.ui.ringErrStep', { status: res.status }));
     }
     if (data.session?.session_id) {
       sessionRef.current = data.session.session_id;
@@ -419,16 +421,16 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       completed?: boolean;
       route?: RingPoint[];
     };
-  }, []);
+  }, [t]);
 
   const postRingFinalize = useCallback(async (sessionId: string, controller: AbortController) => {
-    let lastMessage = 'Не удалось собрать маршрут кольца';
+    let lastMessage = t('atlas.ui.ringFinalizeFailed');
     for (let attempt = 1; attempt <= FINALIZE_ATTEMPTS; attempt++) {
       if (attempt > 1) {
         publishAtlasSearchProgress({
           stage: 'route',
           percent: 99,
-          message: `Сборка маршрута не успела, повторяем (${attempt} из ${FINALIZE_ATTEMPTS})`,
+          message: t('atlas.ui.ringFinalizeRetry', { attempt, total: FINALIZE_ATTEMPTS }),
         });
         await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
       }
@@ -442,20 +444,20 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         });
       } catch (error: any) {
         if (controller.signal.aborted) throw error;
-        lastMessage = 'Не удалось собрать маршрут кольца: связь оборвалась. Сегменты сохранены — можно продолжить с этого места.';
+        lastMessage = t('atlas.ui.ringFinalizeNetwork');
         continue;
       }
       const data = await res.json().catch(() => ({}));
       if (res.ok && Array.isArray(data.result?.route) && data.result.route.length > 1) {
         return data as { result: RingResult };
       }
-      const statusHint = res.status ? `HTTP ${res.status}` : 'нет ответа';
+      const statusHint = res.status ? `HTTP ${res.status}` : t('atlas.ui.ringNoResponse');
       lastMessage = data.error
-        || `Не удалось собрать маршрут кольца (${statusHint}). Сегменты сохранены — можно продолжить с этого места.`;
+        || t('atlas.ui.ringFinalizeHttp', { hint: statusHint });
       if (res.status === 400) break;
     }
     throw new Error(lastMessage);
-  }, []);
+  }, [t]);
 
   const runSearch = useCallback(async (resumeSessionId?: string) => {
     if (!resumeSessionId && !startSystem.trim()) return;
@@ -471,13 +473,13 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
     setSaveSummary('');
     setHubs([]);
     setHubProgress({ done: 0, total: 0, found: 0, missing: 0 });
-    setProgress({ ...EMPTY_PROGRESS, stage: 'coords', message: resumeSessionId ? 'Продолжаем поиск с сохранённого места' : 'Получение координат начальной системы и Sagittarius A*' });
+    setProgress({ ...EMPTY_PROGRESS, stage: 'coords', message: resumeSessionId ? t('atlas.ui.ringResumeMessage') : t('atlas.ui.ringCoordsMessage') });
     startAtlasSearchProgress({
       kind: 'ring',
-      title: 'ПОИСК ГАЛАКТИЧЕСКОГО КОЛЬЦА',
+      title: t('atlas.ui.ringOverlaySearch'),
       stage: 'coords',
       percent: 0,
-      message: resumeSessionId ? 'Продолжаем поиск с сохранённого места' : 'Получение координат начальной системы и Sagittarius A*',
+      message: resumeSessionId ? t('atlas.ui.ringResumeMessage') : t('atlas.ui.ringCoordsMessage'),
       counters: {},
     });
     // Ключевые системы с известными координатами — сразу на карту (те, что ещё
@@ -485,7 +487,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
     const knownKeys = keySystems.filter((ks) => Number.isFinite(ks.x) && (ks.x !== 0 || ks.z !== 0 || ks.y !== 0));
     if (knownKeys.length > 0) {
       publishAtlasSearchPoints(knownKeys.map((ks) => ({
-        name: ks.name, x: ks.x, y: ks.y, z: ks.z, kind: 'key-system' as const, label: 'Ключевая система',
+        name: ks.name, x: ks.x, y: ks.y, z: ks.z, kind: 'key-system' as const, label: t('atlas.ui.ringKeySystem'),
       })));
     }
 
@@ -515,7 +517,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         setProgress({
           percent: step.step?.progress?.percent ?? 0,
           stage: step.step?.progress?.stage || 'scan',
-          message: step.step?.progress?.message || 'Перебор сегментов кольца',
+          message: step.step?.progress?.message || t('atlas.ui.ringScanningSegments'),
           sectors: step.session.sectors,
           sectorsDone: step.session.sectors_done,
           realAnchors: stats?.realAnchors ?? 0,
@@ -527,7 +529,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         publishToMap(step.session, {
           percent: step.step?.progress?.percent ?? 0,
           stage: step.step?.progress?.stage || 'scan',
-          message: step.step?.progress?.message || 'Перебор сегментов кольца',
+          message: step.step?.progress?.message || t('atlas.ui.ringScanningSegments'),
           anchors,
           found,
           beam: step.step?.beam || null,
@@ -552,7 +554,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       publishAtlasSearchProgress({
         stage: 'route',
         percent: 99,
-        message: 'Сегменты пройдены: соединение опорных точек реальными системами',
+        message: t('atlas.ui.ringSegmentsDone'),
       });
 
       const finalized = await postRingFinalize(session!.session_id, controller);
@@ -567,35 +569,35 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         ...current,
         percent: 100,
         stage: 'done',
-        message: `Кольцо собрано: ${totals.points} точек, расчётных ${totals.syntheticPoints}`,
+        message: t('atlas.ui.ringAssembled', { points: totals.points, synthetic: totals.syntheticPoints }),
       }));
       finishAtlasSearchProgress({
         stage: 'done',
         percent: 100,
-        message: `Кольцо собрано: ${totals.points} точек`,
-        summary: `Реальных точек ${totals.realPoints.toLocaleString('ru-RU')} · расчётных ${totals.syntheticPoints.toLocaleString('ru-RU')} · в кэш сохранено ${finalized.result.stats.systemsSaved.toLocaleString('ru-RU')} систем`,
+        message: t('atlas.ui.ringAssembledShort', { points: totals.points }),
+        summary: t('atlas.ui.ringSummary', { real: totals.realPoints.toLocaleString(locale), synthetic: totals.syntheticPoints.toLocaleString(locale), saved: finalized.result.stats.systemsSaved.toLocaleString(locale) }),
         counters: {
-          'Точек маршрута': totals.points,
-          'Расчётных точек': totals.syntheticPoints,
-          'Опорных систем': totals.anchors,
+          [t('atlas.ui.counterRoutePoints')]: totals.points,
+          [t('atlas.ui.counterSyntheticPoints')]: totals.syntheticPoints,
+          [t('atlas.ui.counterAnchorSystems')]: totals.anchors,
         },
       });
       toast(
-        `Кольцо построено: ${totals.points} точек, расчётных ${totals.syntheticPoints}`,
+        t('atlas.ui.ringBuiltToast', { points: totals.points, synthetic: totals.syntheticPoints }),
         'success',
       );
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
-      const message = error instanceof Error ? error.message : 'Ошибка поиска кольца';
+      const message = error instanceof Error ? error.message : t('atlas.ui.ringSearchError');
       const last = lastSessionRef.current;
       if (last) setResumable({ sessionId: last.sessionId, sectorsDone: last.sectorsDone, sectors: last.sectors });
-      finishAtlasSearchProgress({ message: `Поиск прерван: ${message}` });
+      finishAtlasSearchProgress({ message: t('atlas.ui.ringInterrupted', { message }) });
       toast(message, 'error');
     } finally {
       abortRef.current = null;
       setLoading(false);
     }
-  }, [applyResult, geometryKey, centerSystem, deviationLimit, heightOffset, keySystems, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem, tiltDegrees, tiltAxisDegrees]);
+  }, [applyResult, geometryKey, centerSystem, deviationLimit, heightOffset, keySystems, locale, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem, t, tiltDegrees, tiltAxisDegrees]);
 
   const search = useCallback(() => {
     sessionRef.current = null;
@@ -636,14 +638,14 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
   const refine = useCallback(async (opts?: { anchors?: boolean; deviation?: number; radius?: number }) => {
     if (!result || refining) return;
     setRefining(true);
-    setRefineLog([`[${new Date().toLocaleTimeString()}] Начинаем уточнение…`]);
+    setRefineLog([`[${new Date().toLocaleTimeString(locale)}] ${t('atlas.ui.refineStartLog')}`]);
     publishAtlasSearchProgress({
       active: true,
       kind: 'ring',
-      title: 'УТОЧНЕНИЕ КОЛЬЦА',
+      title: t('atlas.ui.ringRefineOverlay'),
       stage: 'refine',
       percent: 5,
-      message: 'Ищем реальные системы для расчётных точек',
+      message: t('atlas.ui.refineMessage'),
     });
     try {
       const res = await fetch('/api/atlas/ring-route/refine', {
@@ -661,7 +663,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Не удалось уточнить маршрут');
+      if (!res.ok) throw new Error(data.error || t('atlas.ui.refineFailed'));
       const refined: RingResult = {
         ...result,
         route: data.route,
@@ -674,33 +676,33 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       };
       applyResult(refined);
       setResult(refined);
-      const replacedText = `заменено точек: ${data.replacements}${data.anchor_replacements ? ` (в т.ч. опор: ${data.anchor_replacements})` : ''}`;
-      setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString()}] Уточнение завершено: ${replacedText}, осталось расчётных: ${data.synthetic_points}`]);
+      const replacedText = t('atlas.ui.refineReplaced', { count: data.replacements }) + (data.anchor_replacements ? t('atlas.ui.refineReplacedAnchors', { count: data.anchor_replacements }) : '');
+      setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString(locale)}] ${t('atlas.ui.refineDoneLog', { text: replacedText, left: data.synthetic_points })}`]);
       publishAtlasSearchProgress({ percent: 100, stage: 'done' });
       finishAtlasSearchProgress({
-        message: `Уточнение завершено: ${replacedText}`,
-        summary: `Осталось расчётных точек: ${data.synthetic_points}`,
+        message: t('atlas.ui.refineDoneMessage', { text: replacedText }),
+        summary: t('atlas.ui.refineLeft', { count: data.synthetic_points }),
       });
-      toast(`Маршрут уточнён: ${replacedText}`, 'success');
+      toast(t('atlas.ui.refineToast', { text: replacedText }), 'success');
     } catch (error) {
-      setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString()}] Ошибка: ${error instanceof Error ? error.message : 'неизвестная'}`]);
-      finishAtlasSearchProgress({ message: 'Уточнение прервано' });
-      toast(error instanceof Error ? error.message : 'Ошибка уточнения маршрута', 'error');
+      setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString(locale)}] ${t('atlas.ui.logError', { message: error instanceof Error ? error.message : t('atlas.ui.unknownError') })}`]);
+      finishAtlasSearchProgress({ message: t('atlas.ui.refineAborted') });
+      toast(error instanceof Error ? error.message : t('atlas.ui.refineRunError'), 'error');
     } finally {
       setRefining(false);
     }
-  }, [applyResult, refineDeviation, refineRadius, refining, result]);
+  }, [applyResult, locale, refineDeviation, refineRadius, refining, result, t]);
 
   /** Повторный прогон с новыми параметрами (через replan API). */
   const rerun = useCallback(async () => {
     if (!result || loading) return;
     const sessionId = result.sessionId || sessionRef.current;
     if (!sessionId) {
-      toast('Нет активной сессии для повтора', 'error');
+      toast(t('atlas.ui.noActiveSession'), 'error');
       return;
     }
     setRefining(true);
-    setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString()}] Сброс сессии с новыми параметрами…`]);
+    setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString(locale)}] ${t('atlas.ui.sessionResetLog')}`]);
     try {
       const res = await fetch('/api/atlas/ring-route/replan', {
         method: 'POST',
@@ -713,8 +715,8 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Не удалось сбросить сессию');
-      setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString()}] Сессия сброшена, запускаем перестроение…`]);
+      if (!res.ok) throw new Error(data.error || t('atlas.ui.sessionResetFailed'));
+      setRefineLog((log) => [...log, `[${new Date().toLocaleTimeString(locale)}] ${t('atlas.ui.sessionResetDone')}`]);
       // Добавляем новые ключевые системы в список.
       const addedNames = new Set(keySystems.map((ks) => ks.name.toLowerCase()));
       const newlyAdded = [...keySystems];
@@ -731,16 +733,16 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       void runSearch(sessionId);
     } catch (error) {
       setRefining(false);
-      toast(error instanceof Error ? error.message : 'Ошибка повтора', 'error');
+      toast(error instanceof Error ? error.message : t('atlas.ui.retryError'), 'error');
     }
-  }, [keySystems, loading, refineDeviation, refineExtraKeys, result, runSearch, searchRadius]);
+  }, [keySystems, loading, refineDeviation, refineExtraKeys, result, runSearch, searchRadius, t]);
 
   /** Поиск хабов по опорным точкам (SSE-поток). */
   const searchHubs = useCallback(async () => {
     if (!result || searchingHubs) return;
     const anchors = result.anchors.filter((a) => a.name);
     if (anchors.length === 0) {
-      toast('Нет опорных точек для поиска хабов', 'info');
+      toast(t('atlas.ui.noAnchors'), 'info');
       return;
     }
     hubAbortRef.current?.abort();
@@ -758,7 +760,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         body: JSON.stringify({ anchors: anchors.map((a) => ({ name: a.name, x: a.x, y: a.y, z: a.z })), spansh_budget: 8 }),
         signal: controller.signal,
       });
-      if (!res.ok || !res.body) throw new Error('Не удалось начать поиск хабов');
+      if (!res.ok || !res.body) throw new Error(t('atlas.ui.hubsStartFailed'));
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -822,27 +824,27 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                   center: result.center,
                 },
                 {
-                  percent: 100, stage: 'done', message: 'Хабы просканированы',
+                  percent: 100, stage: 'done', message: t('atlas.ui.hubsScanned'),
                   anchors: result.anchors as RingAnchor[],
                   keySystems: result.keySystems,
                   hubs: msg.results,
                 },
               );
-              toast(`Хабы: найдено ${foundCount}, не найдено ${missingCount}`, missingCount > 0 ? 'info' : 'success');
+              toast(t('atlas.ui.hubsToast', { found: foundCount, missing: missingCount }), missingCount > 0 ? 'info' : 'success');
             } else if (msg.type === 'error') {
-              toast(msg.message || 'Ошибка поиска хабов', 'error');
+              toast(msg.message || t('atlas.ui.hubsError'), 'error');
             }
           } catch {/* ignore parse */}
         }
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
-      toast(error instanceof Error ? error.message : 'Ошибка поиска хабов', 'error');
+      toast(error instanceof Error ? error.message : t('atlas.ui.hubsError'), 'error');
     } finally {
       hubAbortRef.current = null;
       setSearchingHubs(false);
     }
-  }, [publishToMap, result, searchingHubs]);
+  }, [publishToMap, result, searchingHubs, t]);
 
   const stopHubSearch = useCallback(() => {
     hubAbortRef.current?.abort();
@@ -859,14 +861,14 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         source: point.source === 'triangulated' ? 'triangulated' : point.source || 'catalog',
       }))),
     );
-    toast('CSV кольца сохранён в загрузки', 'success');
+    toast(t('atlas.ui.ringCsvSaved'), 'success');
   };
 
   const saveToProject = useCallback(async () => {
     if (!result || saving) return;
     const projectId = Number(saveProjectId);
     if (!Number.isSafeInteger(projectId) || projectId <= 0) {
-      toast('Выберите проект для сохранения кольца', 'info');
+      toast(t('atlas.ui.pickProjectToSave'), 'info');
       return;
     }
     setSaving(true);
@@ -888,27 +890,27 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || 'Не удалось сохранить кольцо в проект');
-      const summary = `В проект добавлено систем: ${data.added.toLocaleString('ru-RU')}`
-        + (data.skipped_duplicate ? `, уже было: ${data.skipped_duplicate.toLocaleString('ru-RU')}` : '')
-        + (data.skipped_synthetic ? `, расчётных точек пропущено: ${data.skipped_synthetic.toLocaleString('ru-RU')}` : '');
+      if (!response.ok) throw new Error(data.error || t('atlas.ui.saveRingFailed'));
+      const summary = t('atlas.ui.saveRingAdded', { count: data.added.toLocaleString(locale) })
+        + (data.skipped_duplicate ? t('atlas.ui.saveRingExisting', { count: data.skipped_duplicate.toLocaleString(locale) }) : '')
+        + (data.skipped_synthetic ? t('atlas.ui.saveRingSynthetic', { count: data.skipped_synthetic.toLocaleString(locale) }) : '');
       setSaveSummary(summary);
       toast(summary, 'success');
       onSavedToProject?.(projectId, Number(data.added) || 0);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Ошибка сохранения кольца';
+      const message = error instanceof Error ? error.message : t('atlas.ui.saveRingError');
       setSaveSummary('');
       toast(message, 'error');
     } finally {
       setSaving(false);
     }
-  }, [includeSynthetic, onSavedToProject, result, saveProjectId, saving]);
+  }, [includeSynthetic, locale, onSavedToProject, result, saveProjectId, saving, t]);
 
   const copyRoute = async () => {
     if (!result) return;
     const text = result.route.map((point, index) => `${index + 1}. ${point.name} (${formatCoordinates(point, 2)})`).join('\n');
     const ok = await copyText(text);
-    toast(ok ? 'Кольцо скопировано в буфер' : 'Буфер обмена недоступен', ok ? 'success' : 'error');
+    toast(ok ? t('atlas.ui.ringCopied') : t('atlas.ui.clipboardUnavailable'), ok ? 'success' : 'error');
   };
 
   const filteredRoute = useMemo(() => {
