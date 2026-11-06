@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { authFetch } from '@/lib/supabaseClient';
 import { IconCheckCircle, IconRefresh, IconXCircle } from '@/components/Icons';
 import type { GalaxyCatalogImport } from '@/lib/galaxyCatalogStatus';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * Админка → «Каталог систем».
@@ -213,43 +214,43 @@ const cardStyle = {
 
 const labelStyle = { fontSize: 11, color: '#9ca3af', textTransform: 'uppercase' as const, marginBottom: 4 };
 
-function formatBytes(value: number | null | undefined): string {
-  const bytes = Number(value ?? 0);
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 Б';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ'];
-  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  const scaled = bytes / 1024 ** index;
-  return `${scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
-}
-
-function formatCount(value: number | null | undefined): string {
-  return Number(value ?? 0).toLocaleString('ru-RU');
-}
-
-function formatTime(value: string | null | undefined): string {
-  if (!value) return '—';
-  const at = Date.parse(value);
-  return Number.isFinite(at) ? new Date(at).toLocaleString('ru-RU') : value;
-}
-
-/** Подпись варианта дампа («за сутки», «полный дамп»), как её отдал сервер. */
-function variantLabel(status: Status | null, variant: string | null | undefined): string {
-  if (!variant) return 'неизвестно';
-  const info = status?.variants?.find((item) => item.variant === variant);
-  return info ? `${info.label} (${info.file})` : variant;
-}
-
-function phaseLabel(status: Status): { text: string; color: string } {
-  const { state, live, interrupted } = status;
-  if (live || (state.phase === 'running' && !interrupted)) return { text: 'идёт импорт', color: '#ffd166' };
-  if (state.phase === 'running' && interrupted) return { text: 'прерван (перезапуск процесса)', color: '#e67e22' };
-  if (state.phase === 'done') return { text: 'завершён', color: '#22c55e' };
-  if (state.phase === 'failed') return { text: 'ошибка', color: '#ef4444' };
-  if (state.phase === 'cancelled') return { text: 'остановлен вручную', color: '#e67e22' };
-  return { text: 'не запускался', color: '#9ca3af' };
-}
 
 export default function GalaxyCatalogTab() {
+  const { t, locale } = useI18n();
+
+  const formatBytes = (value: number | null | undefined): string => {
+    const bytes = Number(value ?? 0);
+    const units = [t('gc.unitB'), t('gc.unitKb'), t('gc.unitMb'), t('gc.unitGb')];
+    if (!Number.isFinite(bytes) || bytes <= 0) return `0 ${units[0]}`;
+    const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    const scaled = bytes / 1024 ** index;
+    return `${scaled >= 100 ? scaled.toFixed(0) : scaled.toLocaleString(locale, { maximumFractionDigits: 1, minimumFractionDigits: 1 })} ${units[index]}`;
+  };
+
+  const formatCount = (value: number | null | undefined): string => Number(value ?? 0).toLocaleString(locale);
+
+  const formatTime = (value: string | null | undefined): string => {
+    if (!value) return '—';
+    const at = Date.parse(value);
+    return Number.isFinite(at) ? new Date(at).toLocaleString(locale) : value;
+  };
+
+  /** Подпись варианта дампа, как её отдал сервер. */
+  const variantLabel = (status: Status | null, variant: string | null | undefined): string => {
+    if (!variant) return t('gc.unknown');
+    const info = status?.variants?.find((item) => item.variant === variant);
+    return info ? `${info.label} (${info.file})` : variant;
+  };
+
+  const phaseLabel = (status: Status): { text: string; color: string } => {
+    const { state, live, interrupted } = status;
+    if (live || (state.phase === 'running' && !interrupted)) return { text: t('gc.phaseRunning'), color: '#ffd166' };
+    if (state.phase === 'running' && interrupted) return { text: t('gc.phaseInterrupted'), color: '#e67e22' };
+    if (state.phase === 'done') return { text: t('gc.phaseDone'), color: '#22c55e' };
+    if (state.phase === 'failed') return { text: t('gc.phaseFailed'), color: '#ef4444' };
+    if (state.phase === 'cancelled') return { text: t('gc.phaseCancelled'), color: '#e67e22' };
+    return { text: t('gc.phaseIdle'), color: '#9ca3af' };
+  };
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState('');
@@ -310,33 +311,33 @@ export default function GalaxyCatalogTab() {
       });
       const payload = await response.json();
       if (!response.ok && response.status !== 409) throw new Error(payload?.error || `HTTP ${response.status}`);
-      if (response.status === 409) setMessage(payload?.reason || 'Импорт уже запущен');
-      else if (action === 'cancel') setMessage(payload?.cancelled ? 'Импорт остановлен' : 'Импорт не выполнялся');
-      else if (action === 'cancel-download') setMessage(payload?.cancelled ? 'Скачивание остановлено' : 'Скачивание не выполнялось');
-      else if (action === 'download') setMessage('Архив скачивается в фоне. Страницу можно закрыть — скачивание продолжится, а при обрыве подхватит с сохранённого байта.');
-      else if (action === 'unpack') setMessage('Распаковка в шарды идёт в фоне. После неё импорт и возобновление читают шарды, а не 6 ГиБ gzip.');
-      else if (action === 'cancel-unpack') setMessage(payload?.cancelled ? 'Распаковка остановлена' : 'Распаковка не выполнялась');
+      if (response.status === 409) setMessage(payload?.reason || t('gc.importRunning'));
+      else if (action === 'cancel') setMessage(payload?.cancelled ? t('gc.importStopped') : t('gc.importIdle'));
+      else if (action === 'cancel-download') setMessage(payload?.cancelled ? t('gc.downloadStopped') : t('gc.downloadIdle'));
+      else if (action === 'download') setMessage(t('gc.downloadStarted'));
+      else if (action === 'unpack') setMessage(t('gc.unpackStarted'));
+      else if (action === 'cancel-unpack') setMessage(payload?.cancelled ? t('gc.unpackStopped') : t('gc.unpackIdle'));
       else if (action === 'build-points')
         setMessage(
           payload?.started
-            ? 'Сборка облака точек идёт в фоне: таблица читается целиком, это может занять несколько минут. Страницу можно закрыть — процесс продолжится.'
-            : payload?.reason || 'Сборка облака уже идёт',
+            ? t('gc.pointsStarted')
+            : payload?.reason || t('gc.pointsRunning'),
         );
       else if (action === 'publish-points')
         setMessage(
           payload?.started
-            ? 'Файл точек из локального кэша загружается в storage — таблицу перечитывать не нужно, это секунды.'
-            : payload?.reason || 'Загрузку сейчас повторить нельзя',
+            ? t('gc.publishStarted')
+            : payload?.reason || t('gc.publishBlocked'),
         );
       else if (action === 'cleanup')
         setMessage(
           payload?.cleaned
             ? payload.freed > 0
-              ? `Освобождено ${formatBytes(payload.freed)} (${(payload.removed ?? []).length} файл(ов))`
-              : 'Удалять нечего — лишних архивов и шардов нет'
-            : payload?.reason || 'Очистка невозможна сейчас',
+              ? t('gc.cleanupFreed', { size: formatBytes(payload.freed), files: (payload.removed ?? []).length })
+              : t('gc.cleanupNothing')
+            : payload?.reason || t('gc.cleanupBlocked'),
         );
-      else setMessage('Импорт запущен в фоне. Страницу можно закрыть — процесс продолжится.');
+      else setMessage(t('gc.importStarted'));
       await load();
     } catch (error) {
       setMessage((error as Error).message);
@@ -372,7 +373,7 @@ export default function GalaxyCatalogTab() {
     }
   };
 
-  const phase = status ? phaseLabel(status) : { text: 'загрузка…', color: '#9ca3af' };
+  const phase = status ? phaseLabel(status) : { text: t('gc.phaseLoading'), color: '#9ca3af' };
   const state = status?.state;
   const percent = status?.percent ?? null;
   const canResume = !!state && state.resume_offset > 0 && !running;
@@ -393,10 +394,10 @@ export default function GalaxyCatalogTab() {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-        <h3 style={{ margin: 0 }}>Каталог всех систем (Spansh)</h3>
+        <h3 style={{ margin: 0 }}>{t('gc.title')}</h3>
         <span style={{ fontSize: 12, color: phase.color }}>● {phase.text}</span>
         <button type="button" className="btn" style={{ fontSize: 12, padding: '3px 8px' }} onClick={() => void load()}>
-          <IconRefresh size={12} color="#9ca3af" /> Обновить
+          <IconRefresh size={12} color="#9ca3af" /> {t('gc.refresh')}
         </button>
       </div>
 
@@ -414,16 +415,11 @@ export default function GalaxyCatalogTab() {
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: 4, color: '#ffd166' }}>
-            Запись идёт через PostgREST — полный каталог так не импортируется
+            {t('gc.postgrestTitle')}
           </div>
-          PostgREST пишет пачками по 200 строк, и на полном дампе (~2×10⁸ систем) база рано или поздно
-          начинает отвечать «canceling statement due to statement timeout» даже на одну строку — импорт
-          падает на несколько процентов (в этой панели это выглядело как «supabase upsert failed: …
-          statement timeout (имя / id64)» на 2.7%). Через PostgREST дамп идёт сутки; кнопка «Продолжить»
-          повторит то же самое.
+          {t('gc.postgrestBody')}
           <div style={{ marginTop: 6 }}>
-            <strong style={{ color: '#e5e7eb' }}>Решение:</strong> задайте веб-процессу прямую ссылку на
-            Postgres и подключите <code>web</code> к docker-сети стека Supabase:
+            <strong style={{ color: '#e5e7eb' }}>{t('gc.solution')}</strong> {t('gc.solutionBody')} <code>web</code> {t('gc.solutionTail')}
           </div>
           <pre
             style={{
@@ -445,10 +441,7 @@ docker compose --env-file .env.production --profile monitoring \\
   -f docker-compose.yml -f deploy/compose.supabase-net.yml up -d`}
           </pre>
           <div style={{ marginTop: 6 }}>
-            Оба значения и сеть проставляет сам <code>deploy/start-monitoring.sh</code> (<code>npm run
-            monitoring:up</code>). После перезапуска нажмите «Проверить подключение к БД» — должно быть
-            «прямой Postgres (db) — подключение работает» и «Режим записи: pg». Уже записанные строки не
-            потеряются: «Продолжить импорт» продолжит с сохранённой точки, архив перескачиваться не будет.
+            {t('gc.afterRestart')}
           </div>
         </div>
       )}
@@ -456,27 +449,26 @@ docker compose --env-file .env.production --profile monitoring \\
       <div style={cardStyle}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           <div>
-            <div style={labelStyle}>Систем в таблице</div>
+            <div style={labelStyle}>{t('gc.systemsInTable')}</div>
             <div style={{ fontSize: 16, color: '#e5e7eb' }}>{formatCount(tableCount)}</div>
             {partialRows > 0 && (
               <div style={{ fontSize: 11, color: '#e67e22', marginTop: 2 }}>
-                счётчик обновляется после успешного импорта; в таблице уже {formatCount(partialRows)} строк
-                из незавершённого прохода
+                {t('gc.partialHint', { count: formatCount(partialRows) })}
               </div>
             )}
           </div>
           <div>
-            <div style={labelStyle}>Импортировано</div>
+            <div style={labelStyle}>{t('gc.imported')}</div>
             <div style={{ fontSize: 13, color: '#e5e7eb' }}>{formatTime(status?.stats?.imported_at)}</div>
           </div>
           <div>
-            <div style={labelStyle}>Источник</div>
+            <div style={labelStyle}>{t('gc.source')}</div>
             <div style={{ fontSize: 12, color: '#9ca3af', wordBreak: 'break-all' }}>
               {status?.stats?.source || status?.dump_url || '—'}
             </div>
           </div>
           <div>
-            <div style={labelStyle}>Облако точек</div>
+            <div style={labelStyle}>{t('gc.pointsCloud')}</div>
             <div
               style={{
                 fontSize: 13,
@@ -484,34 +476,34 @@ docker compose --env-file .env.production --profile monitoring \\
               }}
             >
               {pointsInStorage
-                ? `${formatCount(status?.stats?.points_count)} точек, ${formatBytes(status?.stats?.points_bytes)} в storage`
+                ? t('gc.pointsInStorage', { count: formatCount(status?.stats?.points_count), size: formatBytes(status?.stats?.points_bytes) })
                 : pointsOnDisk
-                  ? `${formatCount(pointsCache?.count ?? null)} точек на диске данных — в storage не залито`
-                  : 'не собрано'}
+                  ? t('gc.pointsOnDisk', { count: formatCount(pointsCache?.count ?? null) })
+                  : t('gc.notBuilt')}
             </div>
           </div>
         </div>
         {status?.stats?.partial && (
           <div style={{ marginTop: 8, fontSize: 12, color: '#e67e22' }}>
-            Последняя загрузка была частичной (--limit): Атлас и поиск маршрута продолжают ходить в EDSM.
+            {t('gc.partialLoad')}
           </div>
         )}
       </div>
 
       <div style={cardStyle}>
-        <div style={labelStyle}>Что качать сейчас</div>
+        <div style={labelStyle}>{t('gc.whatToDownload')}</div>
         {status?.plan ? (
           <>
             <div style={{ fontSize: 14, color: '#e5e7eb', marginBottom: 4 }}>
               {variantLabel(status, status.plan.variant)} — {formatBytes(status.plan.approx_bytes)}
               {status.plan.archive_bytes > 0 && (
-                <span style={{ color: '#9ca3af', fontSize: 12 }}> · на диске уже {formatBytes(status.plan.archive_bytes)}</span>
+                <span style={{ color: '#9ca3af', fontSize: 12 }}> · {t('gc.onDiskAlready', { size: formatBytes(status.plan.archive_bytes) })}</span>
               )}
             </div>
             <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8, lineHeight: 1.6 }}>{status.plan.reason}</div>
           </>
         ) : (
-          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>План обновления рассчитывается…</div>
+          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>{t('gc.planCalc')}</div>
         )}
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -520,9 +512,9 @@ docker compose --env-file .env.production --profile monitoring \\
             className="btn btn-cyan"
             disabled={busy !== null || running || downloadRunning || unpackRunning || backendMissing}
             onClick={() => void act('start', { variant: 'auto' })}
-            title="Скачать и применить минимальный дамп, который закрывает отставание каталога"
+            title={t('gc.autoTitle')}
           >
-            Обновить каталог (авто)
+            {t('gc.autoButton')}
           </button>
           {(status?.variants ?? []).map((info) => (
             <button
@@ -539,45 +531,39 @@ docker compose --env-file .env.production --profile monitoring \\
         </div>
 
         <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
-          Полный <code>systems.json.gz</code> (5.9 ГиБ) нужен <strong>один раз</strong>. Spansh публикует тот же
-          каталог дельтами — <code>systems_1day</code> (~4 МиБ), <code>systems_1week</code> (~21 МиБ),
-          <code> systems_1month</code> (~88 МиБ): формат тот же, запись тем же upsert’ом, поэтому ночное
-          обновление идёт секунды, а не неделю. Дельта не пересобирает облако точек (это полный проход по
-          2×10⁸ строк) — его обновляет полный импорт.
+          {t('gc.planBody')}
           {status?.download_segments != null && (
             <>
               <br />
-              Скачивание идёт в <strong>{status.download_segments}</strong> параллельных Range-соединений
-              (<code>GALAXY_DOWNLOAD_SEGMENTS</code>): на тонком канале это главный способ сократить 6 ГиБ
-              с недели до часов. Прогресс каждого сегмента лежит рядом с архивом и переживает перезапуск.
+              {t('gc.segmentsBody', { count: status.download_segments })}
             </>
           )}
         </div>
       </div>
 
       <div style={cardStyle}>
-        <div style={labelStyle}>Архив дампа на диске</div>
+        <div style={labelStyle}>{t('gc.archiveLabel')}</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
           <button
             type="button"
             className={downloadRunning ? 'btn' : 'btn btn-cyan'}
             disabled={busy !== null || downloadRunning || running}
             onClick={() => void act('download')}
-            title={running ? 'Дождитесь окончания импорта: он читает этот файл' : undefined}
+            title={running ? t('gc.waitImport') : undefined}
           >
-            {interruptedDownload ? 'Продолжить скачивание' : 'Скачать архив'}
+            {interruptedDownload ? t('gc.resumeDownload') : t('gc.downloadArchive')}
           </button>
           <button
             type="button"
             className="btn"
             disabled={busy !== null || downloadRunning || running}
             onClick={() => void act('download', { variant: 'full' })}
-            title="Полный systems.json.gz — нужен только для холодного старта"
+            title={t('gc.fullTitle')}
           >
-            Скачать полный дамп
+            {t('gc.downloadFull')}
           </button>
           <button type="button" className="btn" disabled={busy !== null || !downloadRunning} onClick={() => void act('cancel-download')}>
-            Остановить скачивание
+            {t('gc.stopDownload')}
           </button>
         </div>
 
@@ -588,7 +574,7 @@ docker compose --env-file .env.production --profile monitoring \\
             </div>
             <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>
               {archive.percent.toFixed(1)}% — {formatBytes(archive.state.bytes_done)}
-              {archive.state.bytes_total ? ` из ${formatBytes(archive.state.bytes_total)}` : ''}
+              {archive.state.bytes_total ? ` ${t('gc.ofSize', { size: formatBytes(archive.state.bytes_total) })}` : ''}
             </div>
           </div>
         )}
@@ -597,35 +583,27 @@ docker compose --env-file .env.production --profile monitoring \\
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginBottom: 8 }}>
             <IconCheckCircle size={14} color="#22c55e" />
             <span>
-              На диске: {formatBytes(archive.state.bytes_done)}
-              {archive.state.downloaded_at ? `, скачан ${formatTime(archive.state.downloaded_at)}` : ''}
+              {t('gc.onDisk', { size: formatBytes(archive.state.bytes_done) })}
+              {archive.state.downloaded_at ? t('gc.downloadedAt', { time: formatTime(archive.state.downloaded_at) }) : ''}
             </span>
           </div>
         )}
         {archive?.state.phase === 'failed' && archive.state.error && (
           <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', color: '#ef4444', fontSize: 13, marginBottom: 8 }}>
             <IconXCircle size={14} color="#ef4444" />
-            <span>Скачивание: {archive.state.error}</span>
+            <span>{t('gc.downloadError', { error: archive.state.error })}</span>
           </div>
         )}
         {interruptedDownload && (
           <div style={{ fontSize: 12, color: '#e67e22', marginBottom: 8 }}>
-            Скачивание прервано перезапуском процесса — уже скачанные байты на месте, нажмите «Продолжить скачивание».
+            {t('gc.downloadInterrupted')}
           </div>
         )}
 
         <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
-          Кнопка «Скачать архив» берёт тот файл, который назван выше в «Что качать сейчас» (обычно дельту);
-          «Скачать полный дамп» — всегда 5.9 ГиБ. Каждый вариант лежит в своём файле, поэтому ночная дельта
-          не затирает полный архив, который качался днями.
+          {t('gc.archiveNote1')}
           <br />
-          Дамп <code>systems.json.gz</code> (~6 ГиБ) хранится в <code>{status?.archive_dir || 'data/spansh'}</code>
-          (на сервере это отдельный диск, смонтированный под каталог). Перед загрузкой нового дампа предыдущий
-          удаляется, а после успешного импорта удаляется и сам архив — он больше не нужен, следующее обновление
-          приходит дельтой. Импорт всегда читает дамп <strong>с диска</strong>:
-          при обрыве соединения скачивание продолжает с сохранённого байта (HTTP Range), а «Продолжить импорт»
-          перечитывает локальный файл и пропускает уже записанные системы — заново скачивать 6 ГиБ не нужно.
-          Повреждённый архив определяется проверкой gzip и скачивается заново.
+          {t('gc.archiveNote2', { dir: status?.archive_dir || 'data/spansh' })}
         </div>
 
         {!!archive?.log?.length && (
