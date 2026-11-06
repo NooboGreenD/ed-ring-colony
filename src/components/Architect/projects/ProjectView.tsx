@@ -12,6 +12,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ArchitectNav from '@/components/Architect/ArchitectNav';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { cardStyle, errorText, ghostButton, goodText, mutedText, primaryButton } from '@/components/Architect/panelStyles';
 import type { ProjectProgressView } from '@/lib/architect/projectProgress';
 import type { LeaderPeriod, LeaderScope, ProjectLeadersView } from '@/lib/architect/projectLeaders';
@@ -38,12 +39,12 @@ import ProjectSettings from '@/components/Architect/projects/ProjectSettings';
 export type ProjectTab = 'overview' | 'systems' | 'leaders' | 'members' | 'carriers' | 'settings';
 
 const TABS: Array<{ id: ProjectTab; label: string }> = [
-  { id: 'overview', label: 'Обзор' },
-  { id: 'systems', label: 'Системы' },
-  { id: 'leaders', label: 'Лидеры' },
-  { id: 'members', label: 'Участники' },
-  { id: 'carriers', label: 'Авианосцы' },
-  { id: 'settings', label: 'Настройки' },
+  { id: 'overview', label: 'pv.tabOverview' },
+  { id: 'systems', label: 'pv.tabSystems' },
+  { id: 'leaders', label: 'pv.tabLeaders' },
+  { id: 'members', label: 'pv.tabMembers' },
+  { id: 'carriers', label: 'pv.tabCarriers' },
+  { id: 'settings', label: 'pv.tabSettings' },
 ];
 
 export type ProgressResponse = ProjectProgressView & {
@@ -63,6 +64,7 @@ function tabFromHash(): ProjectTab {
 }
 
 export default function ProjectView({ projectId }: { projectId: string }) {
+  const { t } = useI18n();
   const [detail, setDetail] = useState<ProjectDetailResponse | null>(null);
   const [detailError, setDetailError] = useState('');
   const [status, setStatus] = useState<number | null>(null);
@@ -98,7 +100,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
     const result = await apiJson<ProjectDetailResponse>(base);
     setStatus(result.status);
     if (!result.ok || !result.data) {
-      setDetailError(result.error || 'Не удалось открыть проект');
+      setDetailError(result.error || t('pv.openFailed'));
       return;
     }
     setDetailError('');
@@ -108,7 +110,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
   const loadProgress = useCallback(async () => {
     const result = await apiJson<ProgressResponse>(`${base}/progress`);
     if (!result.ok || !result.data) {
-      setProgressError(result.error || 'Не удалось посчитать прогресс');
+      setProgressError(result.error || t('pv.progressFailed'));
       return;
     }
     setProgressError('');
@@ -120,7 +122,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
     const result = await apiJson<LeadersResponse>(`${base}/leaderboard?period=${nextPeriod}&scope=${nextScope}`);
     setLeadersLoading(false);
     if (!result.ok || !result.data) {
-      setLeadersError(result.error || 'Не удалось собрать лидеров');
+      setLeadersError(result.error || t('pv.leadersFailed'));
       return;
     }
     setLeadersError('');
@@ -142,16 +144,16 @@ export default function ProjectView({ projectId }: { projectId: string }) {
     const result = await apiJson<ProgressResponse>(`${base}/progress`, { method: 'POST' });
     setRefreshing(false);
     if (!result.ok || !result.data) {
-      setProgressError(result.error || 'Raven Colonial не ответил');
+      setProgressError(result.error || t('pv.ravenNoAnswer'));
       return;
     }
     setProgress(result.data);
     const data = result.data;
-    if (data.throttled) setNotice('Обновление уже шло несколько секунд назад — показаны текущие данные.');
+    if (data.throttled) setNotice(t('pv.throttled'));
     else {
-      const parts = [`Из Raven обновлено систем: ${data.refreshed ?? 0}`];
-      if (data.failed?.length) parts.push(`без ответа: ${data.failed.join(', ')}`);
-      if (data.pending) parts.push(`ещё ждут обновления: ${data.pending} — нажмите ещё раз через 15 секунд`);
+      const parts = [t('pv.refreshedSystems', { count: data.refreshed ?? 0 })];
+      if (data.failed?.length) parts.push(t('pv.noAnswer', { list: data.failed.join(', ') }));
+      if (data.pending) parts.push(t('pv.waiting', { count: data.pending }));
       setNotice(parts.join(' · '));
     }
   }, [base]);
@@ -181,19 +183,19 @@ export default function ProjectView({ projectId }: { projectId: string }) {
         <section style={cardStyle}>
           {detailError ? (
             <>
-              <h1 style={{ margin: 0, fontSize: 20 }}>{status === 401 ? 'Нужен вход' : 'Проект недоступен'}</h1>
+              <h1 style={{ margin: 0, fontSize: 20 }}>{status === 401 ? t('pv.loginNeeded') : t('pv.projectUnavailable')}</h1>
               <p style={{ ...mutedText, margin: '8px 0 12px' }}>
                 {status === 401
-                  ? 'Проекты систем видят только их участники — войдите в аккаунт.'
-                  : `${detailError}. Возможно, вас ещё не добавили в проект или он удалён.`}
+                  ? t('pv.membersOnly')
+                  : t('pv.maybeNotAdded', { error: detailError })}
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
-                {status === 401 && <Link href="/login" style={primaryButton}>Войти</Link>}
-                <Link href="/architect/projects" style={ghostButton}>← Все проекты</Link>
+                {status === 401 && <Link href="/login" style={primaryButton}>{t('pv.signIn')}</Link>}
+                <Link href="/architect/projects" style={ghostButton}>{t('pv.allProjects')}</Link>
               </div>
             </>
           ) : (
-            <p style={mutedText}>Открываем проект…</p>
+            <p style={mutedText}>{t('pv.opening')}</p>
           )}
         </section>
       </main>
@@ -209,7 +211,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div style={{ minWidth: 0, flex: '1 1 480px' }}>
             <div style={{ ...mutedText, marginBottom: 6 }}>
-              <Link href="/architect/projects" style={{ color: 'var(--muted)' }}>Проекты систем</Link> / {project.name}
+              <Link href="/architect/projects" style={{ color: 'var(--muted)' }}>{t('pv.systemsProjects')}</Link> / {project.name}
             </div>
             <h1 style={{ margin: 0, fontSize: 24, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <ColorDot color={project.color} size={14} />
@@ -223,20 +225,20 @@ export default function ProjectView({ projectId }: { projectId: string }) {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
               {project.targetDate && (
                 <Badge tone={days != null && days < 0 ? 'var(--red)' : days != null && days <= 7 ? 'var(--orange)' : 'var(--muted)'}>
-                  срок {formatDate(project.targetDate)}{days != null ? (days < 0 ? ` · просрочен на ${-days} дн` : ` · ${days} дн`) : ''}
+                  {t('pv.deadline', { date: formatDate(project.targetDate) })}{days != null ? (days < 0 ? t('pv.overdueBy', { days: -days }) : t('pv.days', { days })) : ''}
                 </Badge>
               )}
-              {project.trackingSince && <Badge>вклад с {formatDate(project.trackingSince)}</Badge>}
+              {project.trackingSince && <Badge>{t('pv.contributionSince', { date: formatDate(project.trackingSince) })}</Badge>}
               <span style={mutedText}>
-                {detail.systems.length} систем · {detail.members.length} участников · {detail.carriers.length} авианосцев
-                {contributors != null ? ` · пилотов с вкладом: ${contributors}` : ''}
+                {t('pv.counts', { systems: detail.systems.length, members: detail.members.length, carriers: detail.carriers.length })}
+                {contributors != null ? t('pv.contributors', { count: contributors }) : ''}
               </span>
             </div>
           </div>
           <div style={{ flex: '0 1 340px', minWidth: 260 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <span style={{ ...mutedText, textTransform: 'uppercase', letterSpacing: 0.6, fontSize: 10, fontFamily: 'ui-monospace, monospace' }}>
-                Общий прогресс
+                {t('pv.totalProgress')}
               </span>
               <span style={{ fontSize: 26, fontFamily: 'ui-monospace, monospace', color: headerColor }}>
                 {summary ? formatPercent(summary.progress) : '…'}
@@ -244,13 +246,13 @@ export default function ProjectView({ projectId }: { projectId: string }) {
             </div>
             <ProgressBar value={summary?.progress ?? null} tone={headerColor} height={12} />
             <div style={{ ...mutedText, marginTop: 6, display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-              <span>{summary ? `систем готово ${summary.systemsDone}/${summary.systems} · площадок ${summary.sitesComplete}/${summary.sites}` : 'считаем…'}</span>
-              <span title={summary?.updatedAt ?? undefined}>данные {formatAgo(summary?.updatedAt)}</span>
+              <span>{summary ? t('pv.systemsDone', { done: summary.systemsDone, total: summary.systems, sitesDone: summary.sitesComplete, sites: summary.sites }) : t('pv.calculating')}</span>
+              <span title={summary?.updatedAt ?? undefined}>{t('pv.dataAt', { ago: formatAgo(summary?.updatedAt) })}</span>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
               {viewer.permissions.refresh && (
                 <button type="button" style={primaryButton} disabled={refreshing} onClick={() => void refreshFromRaven()}>
-                  {refreshing ? 'Опрашиваем Raven…' : 'Обновить из Raven'}
+                  {refreshing ? t('pv.pollingRaven') : t('pv.refreshRaven')}
                 </button>
               )}
             </div>
@@ -261,7 +263,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
       {notice && <p style={{ ...goodText, margin: '0 0 10px' }}>{notice}</p>}
       {progressError && <p style={{ ...errorText, margin: '0 0 10px' }}>{progressError}</p>}
 
-      <nav aria-label="Разделы проекта" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+      <nav aria-label={t('pv.sectionsAria')} style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
         {tabs.map((item) => (
           <button
             key={item.id}
@@ -282,7 +284,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
               fontFamily: 'ui-monospace, monospace',
             }}
           >
-            {item.label}
+            {t(item.label)}
             {item.id === 'systems' && ` · ${detail.systems.length}`}
             {item.id === 'members' && ` · ${detail.members.length}`}
             {item.id === 'carriers' && ` · ${detail.carriers.length}`}
