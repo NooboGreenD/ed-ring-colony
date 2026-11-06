@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
+import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
 import { useAtlasSearchProgress, useAtlasSearchResult } from '@/hooks/useAtlasSearchProgress';
@@ -51,12 +52,16 @@ import {
  * поэтому размер и количество в подписи берутся из загруженного файла, а не
  * из константы в коде (раньше здесь стояло «~35 МБ», и оно расходилось).
  */
-function formatPointCount(count: number): string {
-  return count >= 1_000_000 ? `${(count / 1_000_000).toFixed(2)} млн` : `${Math.round(count / 1000)}k`;
+type TFn = (key: string, params?: TranslationParams) => string;
+
+function formatPointCount(count: number, t: TFn): string {
+  return count >= 1_000_000
+    ? t('gmap.pointMillions', { value: (count / 1_000_000).toFixed(2) })
+    : t('gmap.pointThousands', { value: Math.round(count / 1000) });
 }
 
-function formatMegabytes(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+function formatMegabytes(bytes: number, t: TFn): string {
+  return t('gmap.megabytes', { value: (bytes / (1024 * 1024)).toFixed(1) });
 }
 
 type MapStatus = 'planned' | 'building' | 'done';
@@ -242,6 +247,7 @@ export default function GalaxyMap({
   powerplay = null,
   factions = null,
 }: GalaxyMapProps) {
+  const { t, locale } = useI18n();
   // Прогресс любого поисковика Atlas (миры, маршрут, кольцо, рынок) приходит из
   // общего канала: карта показывает сам процесс, а не только результат.
   const searchProgress = useAtlasSearchProgress();
@@ -333,8 +339,11 @@ export default function GalaxyMap({
   });
   const compactMap = showOnlyMainRoute;
   const allSystemsNote = allSystemsData
-    ? `${formatPointCount(allSystemsData.count)} точек, файл ${formatMegabytes(POINTS_HEADER_SIZE + allSystemsData.count * POINTS_BYTES_PER_POINT)}`
-    : 'размер облака определяет лимит хранилища';
+    ? t('gmap.allSystemsNote', {
+      points: formatPointCount(allSystemsData.count, t),
+      size: formatMegabytes(POINTS_HEADER_SIZE + allSystemsData.count * POINTS_BYTES_PER_POINT, t),
+    })
+    : t('gmap.allSystemsNoteFallback');
 
   // Ленивая загрузка облака точек (размер = лимит бакета ∩ бюджет файла).
   // Сначала спрашиваем статус каталога:
@@ -365,7 +374,7 @@ export default function GalaxyMap({
           return;
         }
       } catch (err: any) {
-        if (!cancelled) setAllSystemsError(err?.message || 'Не удалось загрузить все системы');
+        if (!cancelled) setAllSystemsError(err?.message || t('gmap.errAllSystems'));
       } finally {
         if (!cancelled) setAllSystemsLoading(false);
       }
@@ -638,10 +647,10 @@ export default function GalaxyMap({
     try {
       const response = await fetch(`/api/galaxy/systems/${encodeURIComponent(id64)}`);
       const data = await response.json();
-      if (!response.ok || !data.name) throw new Error(data.error || 'Система не найдена');
+      if (!response.ok || !data.name) throw new Error(data.error || t('gmap.errSystemNotFound'));
       openGalaxy(data);
     } catch (error: any) {
-      setAllSystemsError(error?.message || 'Не удалось открыть систему');
+      setAllSystemsError(error?.message || t('gmap.errOpenSystem'));
     }
   }, [openGalaxy]);
 
@@ -672,7 +681,7 @@ export default function GalaxyMap({
     try {
       const response = await fetch(`/api/edsm/system?name=${encodeURIComponent(query)}`);
       const data = await response.json();
-      if (!response.ok || !data.coords) throw new Error(data.error || 'Система не найдена');
+      if (!response.ok || !data.coords) throw new Error(data.error || t('gmap.errSystemNotFound'));
       openGalaxy({
         id64: data.id64 != null ? String(data.id64) : '',
         name: data.name || query,
@@ -687,7 +696,7 @@ export default function GalaxyMap({
         distance_from_sgra: null,
         source: 'edsm',
       });
-    } catch (error) { setSystemSearchError(error instanceof Error ? error.message : 'Система не найдена'); }
+    } catch (error) { setSystemSearchError(error instanceof Error ? error.message : t('gmap.errSystemNotFound')); }
     finally { setSystemSearchLoading(false); }
   }, [handleSelectHub, handleSelectRouteSystem, openGalaxy, systemSearch, uniqueHubs, uniqueRouteSystems]);
 
@@ -927,7 +936,7 @@ export default function GalaxyMap({
       {searchProgress.active && (
         <div className="map-search-hud">
           <div className="map-search-hud-head">
-            <span>{searchProgress.title || 'ПОИСК ATLAS'}</span>
+            <span>{searchProgress.title || t('gmap.hudSearchTitle')}</span>
             <span className="map-search-hud-percent">{Math.round(searchProgress.percent)}%</span>
           </div>
           <div className="map-search-hud-bar">
@@ -936,29 +945,29 @@ export default function GalaxyMap({
           <div className="map-search-hud-message">{searchProgress.message}</div>
           {searchProgress.summary && <div className="map-search-hud-summary">{searchProgress.summary}</div>}
           <div className="map-search-hud-counters">
-            <span>{searchProgress.finished ? 'Поиск завершён' : `Этап: ${searchProgress.stage}`}</span>
-            <span>{(searchProgress.elapsedMs / 1000).toFixed(1)} с</span>
+            <span>{searchProgress.finished ? t('gmap.hudFinished') : t('gmap.hudStage', { stage: searchProgress.stage })}</span>
+            <span>{t('gmap.hudSeconds', { value: (searchProgress.elapsedMs / 1000).toFixed(1) })}</span>
             {Object.entries(searchProgress.counters).map(([label, value]) => (
-              <span key={label}>{label}: {typeof value === 'number' ? value.toLocaleString('ru-RU') : value}</span>
+              <span key={label}>{label}: {typeof value === 'number' ? value.toLocaleString(locale) : value}</span>
             ))}
           </div>
           <div className="map-search-hud-hint">
             {searchProgress.finished
-              ? 'Результат остаётся на карте — убрать можно кнопкой «Убрать с карты»'
-              : 'Процесс поиска отображается на карте: точки появляются по мере нахождения'}
+              ? t('gmap.hudFinishedHint')
+              : t('gmap.hudProgressHint')}
           </div>
         </div>
       )}
       {showSearchResult && searchResult && (
         <div className="map-search-hud map-search-hud-result">
           <div className="map-search-hud-head">
-            <span>{searchResult.title || 'РЕЗУЛЬТАТ ПОИСКА ATLAS'}</span>
+            <span>{searchResult.title || t('gmap.hudResultTitle')}</span>
             <button
               type="button"
               className="map-search-hud-close"
               onClick={() => clearAtlasSearchResult()}
-              aria-label="Убрать результат поиска с карты"
-              title="Убрать результат поиска с карты"
+              aria-label={t('gmap.hudResultRemove')}
+              title={t('gmap.hudResultRemove')}
             >
               ✕
             </button>
@@ -967,37 +976,37 @@ export default function GalaxyMap({
           {searchResult.summary && <div className="map-search-hud-summary">{searchResult.summary}</div>}
           <div className="map-search-hud-counters">
             {Object.entries(searchResult.counters).map(([label, value]) => (
-              <span key={label}>{label}: {typeof value === 'number' ? value.toLocaleString('ru-RU') : value}</span>
+              <span key={label}>{label}: {typeof value === 'number' ? value.toLocaleString(locale) : value}</span>
             ))}
           </div>
           <div className="map-search-hud-hint">
             {searchResult.points.length > 0
-              ? `На карте: ${searchResult.points.length.toLocaleString('ru-RU')} точек`
-              : 'На карте: контур и маршрут'}
+              ? t('gmap.hudOnMapPoints', { count: searchResult.points.length.toLocaleString(locale) })
+              : t('gmap.hudOnMapOutline')}
           </div>
         </div>
       )}
       {(searchProgress.active || showSearchResult) && (
         <div className="map-search-legend">
-          <span><i style={{ background: '#e67e22' }} /> Опорные точки поиска</span>
-          <span><i style={{ background: '#8bc34a' }} /> Найденные системы</span>
-          <span><i style={{ background: '#4dd0e1' }} /> Кандидаты</span>
-          <span><i style={{ background: '#9ca3af' }} /> Расчётные (триангуляция)</span>
-          {searchProgress.active && <span><i style={{ background: '#ffd166' }} /> Точка сканирования</span>}
+          <span><i style={{ background: '#e67e22' }} /> {t('gmap.legendRefPoints')}</span>
+          <span><i style={{ background: '#8bc34a' }} /> {t('gmap.legendFoundSystems')}</span>
+          <span><i style={{ background: '#4dd0e1' }} /> {t('gmap.legendCandidates')}</span>
+          <span><i style={{ background: '#9ca3af' }} /> {t('gmap.legendTriangulated')}</span>
+          {searchProgress.active && <span><i style={{ background: '#ffd166' }} /> {t('gmap.legendScanPoint')}</span>}
         </div>
       )}
       <div className={`galaxy-map-controls${mobileControlsOpen ? ' expanded' : ''}`}>
         <button type="button" className="galaxy-map-controls-toggle" aria-expanded={mobileControlsOpen}
           aria-controls={controlsId} onClick={() => setMobileControlsOpen(open => !open)}>
-          <IconGlobe size={14} /> Слои и управление картой <span aria-hidden="true">{mobileControlsOpen ? '−' : '+'}</span>
+          <IconGlobe size={14} /> {t('gmap.controlsTitle')} <span aria-hidden="true">{mobileControlsOpen ? '−' : '+'}</span>
         </button>
         <div className="galaxy-map-controls-body" id={controlsId}>
         <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
           <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
-            <IconRefresh size={12} /> Сброс вида
+            <IconRefresh size={12} /> {t('gmap.resetView')}
           </button>
           <button onClick={focusLastProgressPoint} style={{ marginTop: 6, background: 'rgba(230,126,34,0.14)', border: '1px solid rgba(230,126,34,0.45)', color: '#e67e22', padding: '5px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
-            <IconMapPin size={12} /> Последняя стройка
+            <IconMapPin size={12} /> {t('gmap.lastBuild')}
           </button>
           <div style={{ display: 'flex', gap: 4, marginTop: 6, position: 'relative' }}>
             <input
@@ -1019,10 +1028,10 @@ export default function GalaxyMap({
                   else void searchForSystem();
                 }
               }}
-              placeholder="Поиск системы..."
+              placeholder={t('gmap.searchPlaceholder')}
               style={{ minWidth: 0, flex: 1, background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '5px 7px', borderRadius: 4, fontSize: 11 }}
             />
-            <button onClick={() => void searchForSystem()} disabled={systemSearchLoading} style={{ background: 'rgba(59,130,246,.18)', border: '1px solid rgba(59,130,246,.5)', color: '#8bbcff', padding: '4px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>{systemSearchLoading ? '…' : 'Найти'}</button>
+            <button onClick={() => void searchForSystem()} disabled={systemSearchLoading} style={{ background: 'rgba(59,130,246,.18)', border: '1px solid rgba(59,130,246,.5)', color: '#8bbcff', padding: '4px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>{systemSearchLoading ? '…' : t('gmap.searchButton')}</button>
             {suggestOpen && suggestions.length > 0 && (
               <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, marginTop: 4, background: '#1a1c1f', border: '1px solid #3a3d40', borderRadius: 4, maxHeight: 220, overflow: 'auto' }}>
                 {suggestions.map((hit, index) => (
@@ -1046,11 +1055,11 @@ export default function GalaxyMap({
             type="button"
             onClick={() => window.dispatchEvent(new CustomEvent('atlas-route-target-selected', { detail: { name: galaxyPick.name } }))}
             style={{ marginTop: 5, width: '100%', background: 'rgba(230,126,34,.15)', border: '1px solid rgba(230,126,34,.5)', color: '#ffd19b', padding: '5px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
-          >Маршрут корабля сюда: {galaxyPick.name}</button>}
+          >{t('gmap.shipRouteHere', { name: galaxyPick.name })}</button>}
         </div>
 
         <div style={{ marginBottom: 12, pointerEvents: 'auto' }}>
-          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4, textTransform: 'uppercase' }}>Выбор точки маршрута</div>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4, textTransform: 'uppercase' }}>{t('gmap.routeTargetTitle')}</div>
           <select
             value={selectedRouteSystem?.system_name || ''}
             onChange={(event) => {
@@ -1059,7 +1068,7 @@ export default function GalaxyMap({
             }}
             style={{ background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '6px 8px', borderRadius: 4, fontSize: 12, width: '100%', cursor: 'pointer' }}
           >
-            <option value="">Выберите систему...</option>
+            <option value="">{t('gmap.pickSystem')}</option>
             {uniqueRouteSystems.map((system) => (
               <option key={system.id} value={system.system_name}>{system.sort_order}. {system.system_name}</option>
             ))}
@@ -1069,19 +1078,18 @@ export default function GalaxyMap({
         <div style={{ marginBottom: 9, pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: '#eeeeee', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input type="checkbox" checked={showKnownSystems} onChange={(event) => setShowKnownSystems(event.target.checked)} />
-            Маршрут и хабы ({routeMarkerSystems.length + uniqueHubs.length})
+            {t('gmap.routesAndHubs', { count: routeMarkerSystems.length + uniqueHubs.length })}
           </label>
           <label style={{ fontSize: 11, color: '#ffd166', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title={
-              `Экспериментально: известные системы галактики (Spansh). Каталог — ~2×10⁸ систем, `
-              + `в слое показана равномерная выборка: ${allSystemsNote}. Первое включение скачивает весь файл.`
+              t('gmap.allSystemsTitle', { note: allSystemsNote })
             }>
             <input type="checkbox" checked={showAllSystems} onChange={(event) => setShowAllSystems(event.target.checked)} />
-            Все системы{allSystemsData ? ` (${formatPointCount(allSystemsData.count)})` : ''} ⚗
+            {t('gmap.allSystems')}{allSystemsData ? ` (${formatPointCount(allSystemsData.count, t)})` : ''} ⚗
           </label>
           {showAllSystems && allSystemsData && (
             <div style={{ paddingLeft: 22, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-              <button type="button" onClick={() => setClassMask(ALL_CLASS_MASK)} style={{ fontSize: 9, color: '#ffd166', background: 'transparent', border: '1px solid #3a3d40', borderRadius: 3, cursor: 'pointer' }}>Все</button>
-              <button type="button" onClick={() => setClassMask(EXOTIC_CLASS_MASK)} style={{ fontSize: 9, color: '#c4b5fd', background: 'transparent', border: '1px solid #3a3d40', borderRadius: 3, cursor: 'pointer' }}>Редкие</button>
+              <button type="button" onClick={() => setClassMask(ALL_CLASS_MASK)} style={{ fontSize: 9, color: '#ffd166', background: 'transparent', border: '1px solid #3a3d40', borderRadius: 3, cursor: 'pointer' }}>{t('gmap.starClassesAll')}</button>
+              <button type="button" onClick={() => setClassMask(EXOTIC_CLASS_MASK)} style={{ fontSize: 9, color: '#c4b5fd', background: 'transparent', border: '1px solid #3a3d40', borderRadius: 3, cursor: 'pointer' }}>{t('gmap.starClassesExotic')}</button>
               {STAR_CLASS_LIST.map((cls, index) => (
                 <label key={cls} title={STAR_CLASS_LABELS[cls]} style={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'pointer' }}>
                   <input
@@ -1100,7 +1108,7 @@ export default function GalaxyMap({
                 ? allSystemsError
                 : allSystemsInfo
                   ? allSystemsInfo
-                  : 'Загрузка всех систем…'}
+                  : t('gmap.allSystemsLoading')}
             </div>
           )}
           <CarrierLayerControls
@@ -1119,21 +1127,21 @@ export default function GalaxyMap({
           {powerplay && (
             <div className="powerplay-layer-controls" style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
               <label style={{ fontSize: 11, color: '#f0af28', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
-                title="Системы под контролем держав PowerPlay 2.0 — фильтр по державам и состояниям во вкладке «PowerPlay»">
+                title={t('gmap.powerplayTitle')}>
                 <input
                   type="checkbox"
                   checked={powerplayVisible}
                   onChange={(event) => powerplay.onVisibleChange?.(event.target.checked)}
                 />
                 <PowerplayGlyph state="Stronghold" color="#f0af28" size={12} />
-                PowerPlay ({powerplay.status === 'loading' && powerplay.systems.length === 0 ? '…' : powerplay.systems.length.toLocaleString('ru-RU')})
+                PowerPlay ({powerplay.status === 'loading' && powerplay.systems.length === 0 ? '…' : powerplay.systems.length.toLocaleString(locale)})
               </label>
               {powerplayVisible && (
                 <div style={{ paddingLeft: 22, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', fontSize: 9, color: '#9ca3af', alignItems: 'center' }}>
-                  <span><PowerplayGlyph state="Stronghold" color="#d1d5db" size={9} /> оплот</span>
-                  <span><PowerplayGlyph state="Fortified" color="#d1d5db" size={9} /> укреплённая</span>
-                  <span><PowerplayGlyph state="Exploited" color="#d1d5db" size={9} /> эксплуатируемая</span>
-                  <span style={{ color: '#6b7280' }}>цвет — держава</span>
+                  <span><PowerplayGlyph state="Stronghold" color="#d1d5db" size={9} /> {t('gmap.ppStronghold')}</span>
+                  <span><PowerplayGlyph state="Fortified" color="#d1d5db" size={9} /> {t('gmap.ppFortified')}</span>
+                  <span><PowerplayGlyph state="Exploited" color="#d1d5db" size={9} /> {t('gmap.ppExploited')}</span>
+                  <span style={{ color: '#6b7280' }}>{t('gmap.ppColorLegend')}</span>
                 </div>
               )}
             </div>
@@ -1141,26 +1149,26 @@ export default function GalaxyMap({
           {factions && (
             <div className="bgs-layer-controls" style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
               <label style={{ fontSize: 11, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
-                title="Населённые системы с минорными фракциями — поиск фракций и фильтр во вкладке «Фракции»">
+                title={t('gmap.factionsTitle')}>
                 <input
                   type="checkbox"
                   checked={factionsVisible}
                   onChange={(event) => factions.onVisibleChange?.(event.target.checked)}
                 />
                 <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: '50%', background: 'linear-gradient(135deg, #3b82f6, #a855f7 50%, #22c55e)', display: 'inline-block' }} />
-                Фракции ({factions.status === 'loading' && factions.points.length === 0 ? '…' : factions.count.toLocaleString('ru-RU')})
+                {t('gmap.factions', { count: factions.status === 'loading' && factions.points.length === 0 ? '…' : factions.count.toLocaleString(locale) })}
               </label>
               {factionsVisible && (
                 <div style={{ paddingLeft: 22, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', fontSize: 9, color: '#9ca3af', alignItems: 'center' }}>
                   {factions.selectedCount > 0 ? (
                     <>
-                      <span><PowerplayGlyph state="Stronghold" color="#d1d5db" size={9} title="у власти" /> у власти</span>
-                      <span><PowerplayGlyph state="Fortified" color="#d1d5db" size={9} title="несколько выбранных" /> несколько</span>
-                      <span><PowerplayGlyph state="Exploited" color="#d1d5db" size={9} title="присутствует" /> присутствует</span>
-                      <span style={{ color: '#6b7280' }}>цвет — фракция</span>
+                      <span><PowerplayGlyph state="Stronghold" color="#d1d5db" size={9} title={t('gmap.factionInPower')} /> {t('gmap.factionInPower')}</span>
+                      <span><PowerplayGlyph state="Fortified" color="#d1d5db" size={9} title={t('gmap.factionSeveral')} /> {t('gmap.factionSeveral')}</span>
+                      <span><PowerplayGlyph state="Exploited" color="#d1d5db" size={9} title={t('gmap.factionPresent')} /> {t('gmap.factionPresent')}</span>
+                      <span style={{ color: '#6b7280' }}>{t('gmap.factionColorLegend')}</span>
                     </>
                   ) : (
-                    <span style={{ color: '#6b7280' }}>цвет — принадлежность системы</span>
+                    <span style={{ color: '#6b7280' }}>{t('gmap.systemColorLegend')}</span>
                   )}
                 </div>
               )}
@@ -1170,35 +1178,35 @@ export default function GalaxyMap({
             <>
               <label style={{ fontSize: 11, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                 <input type="checkbox" checked={showProjectRoute} onChange={(event) => setShowProjectRoute(event.target.checked)} />
-                Маршрут проекта
+                {t('gmap.projectRoute')}
               </label>
               <label style={{ fontSize: 11, color: '#e91e63', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                 <input type="checkbox" checked={showAtlasCandidates} onChange={(event) => setShowAtlasCandidates(event.target.checked)} />
-                Atlas-кандидаты ({atlasCandidates.length})
+                {t('gmap.atlasCandidates', { count: atlasCandidates.length })}
               </label>
               <label style={{ fontSize: 11, color: '#00bcd4', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                 <input type="checkbox" checked={showPilots} onChange={(event) => setShowPilots(event.target.checked)} />
-                Пилоты ({pilots.length})
+                {t('gmap.pilots', { count: pilots.length })}
               </label>
               <label style={{ fontSize: 11, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                 <input type="checkbox" checked={showMarketResults} onChange={(event) => setShowMarketResults(event.target.checked)} />
-                Системы с рынками ({visibleMarketResults.length})
+                {t('gmap.systemsWithMarkets', { count: visibleMarketResults.length })}
               </label>
               <label style={{ fontSize: 11, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                 <input type="checkbox" checked={showNoMarketSystems} onChange={(event) => setShowNoMarketSystems(event.target.checked)} />
-                Системы без рынков ({visibleNoMarketSystems.length})
+                {t('gmap.systemsWithoutMarkets', { count: visibleNoMarketSystems.length })}
               </label>
               <div style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
-                <label style={{ fontSize: 11, color: '#d8e8ff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionLabels} onChange={(event) => setShowRegionLabels(event.target.checked)} /> Имена секторов</label>
-                <label style={{ fontSize: 11, color: '#ff9a3d', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionBoundaries} onChange={(event) => setShowRegionBoundaries(event.target.checked)} /> Границы секторов</label>
-                <label style={{ fontSize: 11, color: '#e67e22', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRingZone} onChange={(event) => setShowRingZone(event.target.checked)} /> Оранжевый пояс</label>
+                <label style={{ fontSize: 11, color: '#d8e8ff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionLabels} onChange={(event) => setShowRegionLabels(event.target.checked)} /> {t('gmap.regionLabels')}</label>
+                <label style={{ fontSize: 11, color: '#ff9a3d', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionBoundaries} onChange={(event) => setShowRegionBoundaries(event.target.checked)} /> {t('gmap.regionBoundaries')}</label>
+                <label style={{ fontSize: 11, color: '#e67e22', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRingZone} onChange={(event) => setShowRingZone(event.target.checked)} /> {t('gmap.orangeBelt')}</label>
               </div>
             </>
           )}
           <div style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
             <label style={{ fontSize: 11, color: '#b48cff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={showNebulae} onChange={(event) => setShowNebulae(event.target.checked)} />
-              Туманности ({GALAXY_NEBULAE.length})
+              {t('gmap.nebulae', { count: GALAXY_NEBULAE.length })}
             </label>
             {showNebulae && (
               <div style={{ paddingLeft: 22, display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center', marginTop: 4 }}>
@@ -1227,23 +1235,23 @@ export default function GalaxyMap({
                 })}
                 <label style={{ fontSize: 10, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', marginLeft: 2 }}>
                   <input type="checkbox" checked={showNebulaLabels} onChange={(event) => setShowNebulaLabels(event.target.checked)} />
-                  подписи
+                  {t('gmap.nebulaLabels')}
                 </label>
               </div>
             )}
             <div style={{ fontSize: 9, color: '#6b7280', paddingLeft: 22, marginTop: 3, lineHeight: 1.3 }}>
-              координаты и размеры — из игры; клик по названию открывает карточку объекта
+              {t('gmap.nebulaeNote')}
             </div>
           </div>
         </div>
 
         <div style={{ borderTop: '1px solid #2d2f33', paddingTop: 8, marginBottom: 8, pointerEvents: 'auto' }}>
-          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase' }}>Фильтр точек по статусу</div>
+          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase' }}>{t('gmap.statusFilterTitle')}</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {([
-              ['planned', 'Запланировано', '#9ca3af'],
-              ['building', 'Строительство', '#e67e22'],
-              ['done', 'Завершено', '#22c55e'],
+              ['planned', 'gmap.statusPlanned', '#9ca3af'],
+              ['building', 'gmap.statusBuilding', '#e67e22'],
+              ['done', 'gmap.statusDone', '#22c55e'],
             ] as Array<[MapStatus, string, string]>).map(([status, label, color]) => (
               <label key={status} style={{ fontSize: 10, color, display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer' }}>
                 <input
@@ -1251,20 +1259,20 @@ export default function GalaxyMap({
                   checked={statusFilters[status]}
                   onChange={(event) => setStatusFilters((current) => ({ ...current, [status]: event.target.checked }))}
                 />
-                {label}
+                {t(label)}
               </label>
             ))}
           </div>
         </div>
 
         <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
-          <span style={{ color: '#22c55e' }}><IconCircleFill size={8} /></span> Завершён
-          <span style={{ marginLeft: 8, color: '#e67e22' }}><IconCircleFill size={8} /></span> Строительство
-          <span style={{ marginLeft: 8, color: '#9ca3af' }}><IconCircleFill size={8} /></span> Запланирован
+          <span style={{ color: '#22c55e' }}><IconCircleFill size={8} /></span> {t('gmap.statusDone')}
+          <span style={{ marginLeft: 8, color: '#e67e22' }}><IconCircleFill size={8} /></span> {t('gmap.statusBuilding')}
+          <span style={{ marginLeft: 8, color: '#9ca3af' }}><IconCircleFill size={8} /></span> {t('gmap.statusPlanned')}
         </div>
         {!compactMap && (
           <div style={{ fontSize: 11, color: '#9ca3af' }}>
-            <span style={{ color: '#3b82f6' }}><IconCircleFill size={8} /></span> Маршрут проекта
+            <span style={{ color: '#3b82f6' }}><IconCircleFill size={8} /></span> {t('gmap.projectRoute')}
           </div>
         )}
         </div>
@@ -1280,18 +1288,18 @@ export default function GalaxyMap({
           </Link>
           <div style={{ marginTop: 6, fontSize: 12, color: '#eeeeee' }}>
             {STAR_CLASS_LABELS[galaxyPick.star_type as keyof typeof STAR_CLASS_LABELS] || galaxyPick.star_type}
-            {galaxyPick.star_giant_class && galaxyPick.star_giant_class !== 'dwarf' ? ` · ${galaxyPick.star_giant_class === 'supergiant' ? 'сверхгигант' : 'гигант'}` : ''}
+            {galaxyPick.star_giant_class && galaxyPick.star_giant_class !== 'dwarf' ? t(galaxyPick.star_giant_class === 'supergiant' ? 'gmap.starSupergiant' : 'gmap.starGiant') : ''}
           </div>
           {galaxyPick.main_star && <div style={{ marginTop: 2, fontSize: 11, color: '#9ca3af' }}>{galaxyPick.main_star}</div>}
           <div style={{ marginTop: 6, fontSize: 12, color: '#9ca3af' }}>
             <IconMapPin size={12} /> {formatCoordinate(galaxyPick.x)}, {formatCoordinate(galaxyPick.y)}, {formatCoordinate(galaxyPick.z)}
           </div>
           <div style={{ marginTop: 4, fontSize: 11, color: '#9ca3af' }}>
-            До Sol: {galaxyPick.distance_from_sols != null ? `${Number(galaxyPick.distance_from_sols).toFixed(1)} св.лет` : '—'}
-            {' · '}до Sgr A*: {galaxyPick.distance_from_sgra != null ? `${Number(galaxyPick.distance_from_sgra).toFixed(1)} св.лет` : '—'}
+            {t('gmap.toSol')} {galaxyPick.distance_from_sols != null ? t('gmap.lightyears', { value: Number(galaxyPick.distance_from_sols).toFixed(1) }) : '—'}
+            {' · '}{t('gmap.toSgrA')} {galaxyPick.distance_from_sgra != null ? t('gmap.lightyears', { value: Number(galaxyPick.distance_from_sgra).toFixed(1) }) : '—'}
           </div>
-          {galaxyPick.needs_permit && <div style={{ marginTop: 4, fontSize: 11, color: '#f87171' }}>Нужен permit</div>}
-          <div style={{ marginTop: 4, fontSize: 10, color: '#6b7280' }}>{galaxyPick.source === 'edsm' ? 'EDSM' : 'Каталог Spansh'} · не стройка маршрута</div>
+          {galaxyPick.needs_permit && <div style={{ marginTop: 4, fontSize: 11, color: '#f87171' }}>{t('gmap.needsPermit')}</div>}
+          <div style={{ marginTop: 4, fontSize: 10, color: '#6b7280' }}>{t('gmap.sourceNote', { source: galaxyPick.source === 'edsm' ? 'EDSM' : t('gmap.spanshCatalog') })}</div>
           <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#3b82f6', textDecoration: 'none' }}>EDSM</a>
             <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#e67e22', textDecoration: 'none' }}>Raven</a>
@@ -1341,17 +1349,17 @@ export default function GalaxyMap({
           {hoveredFaction.entries.length > 0 ? (
             hoveredFaction.entries.slice(0, 3).map((entry) => (
               <span key={entry.factionId} style={{ display: 'block' }}>
-                <span style={{ color: entry.color }}>{entry.name}</span> · {formatInfluence(entry.influence)}{entry.controls ? ' · у власти' : ''}
+                <span style={{ color: entry.color }}>{entry.name}</span> · {formatInfluence(entry.influence)}{entry.controls ? t('gmap.inPowerSuffix') : ''}
               </span>
             ))
           ) : (
             <span style={{ display: 'block' }}>
               {hoveredFaction.system?.controlling ? `${hoveredFaction.system.controlling} · ` : ''}
               <span style={{ color: BGS_ALLEGIANCE_COLOR[hoveredFaction.system?.allegiance ?? 'None'] }}>{allegianceLabel(hoveredFaction.system?.allegiance)}</span>
-              {hoveredFaction.system ? ` · фракций: ${hoveredFaction.system.factionsCount}` : ''}
+              {hoveredFaction.system ? t('gmap.factionsCountSuffix', { count: hoveredFaction.system.factionsCount }) : ''}
             </span>
           )}
-          <em>щёлкните — все фракции системы</em>
+          <em>{t('gmap.clickAllFactions')}</em>
         </div>
       )}
 
@@ -1364,7 +1372,7 @@ export default function GalaxyMap({
         >
           <strong style={{ color: powerInfo(hoveredPowerplay.power).color }}>{hoveredPowerplay.name}</strong>
           <span>{powerInfo(hoveredPowerplay.power).label} · {POWERPLAY_STATE_LABEL[hoveredPowerplay.state].toLowerCase()}</span>
-          <em>щёлкните — карточка системы</em>
+          <em>{t('gmap.clickSystemCard')}</em>
         </div>
       )}
 
@@ -1391,22 +1399,22 @@ export default function GalaxyMap({
           </div>
           {(selected as any).status && (
             <div style={{ marginTop: 4, fontSize: 12 }}>
-              Статус: {' '}
+              {t('gmap.statusLabel')} {' '}
               <span style={{ color: (selected as any).status === 'done' ? '#22c55e' : (selected as any).status === 'building' ? '#e67e22' : '#9ca3af' }}>
-                {(selected as any).status === 'done' ? 'Завершён' : (selected as any).status === 'building' ? 'Строительство' : 'Запланирован'}
+                {(selected as any).status === 'done' ? t('gmap.statusDone') : (selected as any).status === 'building' ? t('gmap.statusBuilding') : t('gmap.statusPlanned')}
               </span>
             </div>
           )}
           {(selected as any).progress != null && (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#eeeeee' }}>Прогресс: {formatProgress((selected as any).progress)}%</div>
+            <div style={{ marginTop: 4, fontSize: 12, color: '#eeeeee' }}>{t('gmap.progressValue', { value: formatProgress((selected as any).progress) })}</div>
           )}
           {(selected as any).total_delivered != null && (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Доставлено: {Number((selected as any).total_delivered).toLocaleString('ru')}</div>
+            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>{t('gmap.delivered', { value: Number((selected as any).total_delivered).toLocaleString(locale) })}</div>
           )}
           {(selected as any).distance != null && (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Расстояние: {Number((selected as any).distance).toFixed(1)} св.лет</div>
+            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>{t('gmap.distanceValue', { value: Number((selected as any).distance).toFixed(1) })}</div>
           )}
-          {(selected as any).type && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Тип: {(selected as any).type}</div>}
+          {(selected as any).type && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>{t('gmap.typeLabel', { type: (selected as any).type })}</div>}
 
           <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <a

@@ -32,6 +32,7 @@ import {
   AchievementIcon,
 } from '@/components/Icons';
 import { useFriends } from '@/hooks/useFriends';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 /**
  * Название ранга по его номеру. `null`/`undefined` — «нет данных» и показывается
@@ -54,46 +55,14 @@ const MERCENARY_RANKS = ['Defenceless', 'Mostly Defenceless', 'Rookie', 'Soldier
  * поэтому новая колонка журнала не сломает досье.
  */
 const CARGO_KIND_META: Record<string, { label: string; hint: string; color: string }> = {
-  construction_site: {
-    label: 'Стройплощадки колонизации',
-    hint: 'ColonisationContribution и сдача груза у рынка стройплощадки',
-    color: '#f39c12',
-  },
-  colonisation_ship: {
-    label: 'Колонизационные корабли',
-    hint: 'System Colonisation Ship — первый порт системы',
-    color: '#fbbf24',
-  },
-  legacy_site: {
-    label: 'Исторические поставки',
-    hint: 'Строки, загруженные до введения признака получателя',
-    color: '#a3a3a3',
-  },
-  fleet_carrier: {
-    label: 'Авианосцы',
-    hint: 'Отгрузка на Fleet Carrier, в том числе по торговым ордерам',
-    color: '#60a5fa',
-  },
-  mission_delivery: {
-    label: 'Грузовые миссии',
-    hint: 'CargoDepot и MissionCompleted: груз миссий, не проекты',
-    color: '#22c55e',
-  },
-  market_sale: {
-    label: 'Продажа на рынках',
-    hint: 'MarketSell на обычном рынке, не связанном со стройкой',
-    color: '#e67e22',
-  },
-  powerplay_delivery: {
-    label: 'Powerplay',
-    hint: 'PowerplayDeliver',
-    color: '#a855f7',
-  },
-  rescue_delivery: {
-    label: 'Search and Rescue',
-    hint: 'SearchAndRescue',
-    color: '#ef4444',
-  },
+  construction_site: { label: 'dossier.kindSiteLabel', hint: 'dossier.kindSiteHint', color: '#f39c12' },
+  colonisation_ship: { label: 'dossier.kindShipLabel', hint: 'dossier.kindShipHint', color: '#fbbf24' },
+  legacy_site: { label: 'dossier.kindLegacyLabel', hint: 'dossier.kindLegacyHint', color: '#a3a3a3' },
+  fleet_carrier: { label: 'dossier.kindCarrierLabel', hint: 'dossier.kindCarrierHint', color: '#60a5fa' },
+  mission_delivery: { label: 'dossier.kindMissionLabel', hint: 'dossier.kindMissionHint', color: '#22c55e' },
+  market_sale: { label: 'dossier.kindMarketLabel', hint: 'dossier.kindMarketHint', color: '#e67e22' },
+  powerplay_delivery: { label: 'dossier.kindPowerplayLabel', hint: 'dossier.kindPowerplayHint', color: '#a855f7' },
+  rescue_delivery: { label: 'dossier.kindRescueLabel', hint: 'dossier.kindRescueHint', color: '#ef4444' },
 };
 const EXOBIOLOGIST_RANKS = ['Directionless', 'Mostly Directionless', 'Compiler', 'Collector', 'Explorer', 'Surveyor', 'Taxonomist', 'Geneticist', 'Elite', 'Elite I', 'Elite II', 'Elite III', 'Elite IV', 'Elite V'];
 
@@ -311,6 +280,7 @@ function InaraProgress({
   label: string;
   sub?: string;
 }) {
+  const { locale } = useI18n();
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
     <div style={{ marginBottom: 14 }}>
@@ -338,7 +308,7 @@ function InaraProgress({
             color: '#9ca3af',
           }}
         >
-          {value.toLocaleString('ru-RU')} / {max.toLocaleString('ru-RU')}
+          {value.toLocaleString(locale)} / {max.toLocaleString(locale)}
         </span>
       </div>
       <div
@@ -375,6 +345,7 @@ function InaraProgress({
 
 /* ── Section header (Inara style) ── */
 function SectionHeader({ title, count }: { title: string; count?: number }) {
+  const { locale } = useI18n();
   return (
     <h3
       style={{
@@ -401,7 +372,7 @@ function SectionHeader({ title, count }: { title: string; count?: number }) {
             letterSpacing: 1,
           }}
         >
-          ({count.toLocaleString('ru-RU')})
+          ({count.toLocaleString(locale)})
         </span>
       )}
     </h3>
@@ -466,6 +437,7 @@ function AchievementTrackCard({
     total: number;
   };
 }) {
+  const { t, locale } = useI18n();
   const track = p.track;
   const isLocked = p.earned === 0;
   const currentColor = p.earned > 0 ? tierColor(p.earned) : '#475569';
@@ -521,7 +493,7 @@ function AchievementTrackCard({
                   fontFamily: 'ui-monospace, monospace',
                 }}
               >
-                ТИР {p.earned}
+                {t('dossier.tierBadge', { tier: p.earned })}
               </span>
             )}
           </div>
@@ -529,14 +501,14 @@ function AchievementTrackCard({
         </div>
         <div style={{ textAlign: 'right', minWidth: 80 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: isLocked ? '#475569' : currentColor, fontFamily: 'ui-monospace, monospace' }}>
-            {p.total.toLocaleString('ru-RU')}
+            {p.total.toLocaleString(locale)}
           </div>
           <div style={{ fontSize: 10, color: '#9ca3af' }}>
             {p.next
-              ? `до T${p.next.rank}: ${(p.next.threshold - p.total).toLocaleString('ru-RU')}`
+              ? t('dossier.tierNext', { rank: p.next.rank, left: (p.next.threshold - p.total).toLocaleString(locale) })
               : p.earned > 0
-                ? 'МАКС'
-                : `T1: ${track.ranks[0].threshold.toLocaleString('ru-RU')}`}
+                ? t('dossier.max')
+                : t('dossier.tierOne', { value: track.ranks[0].threshold.toLocaleString(locale) })}
           </div>
         </div>
       </div>
@@ -577,6 +549,7 @@ function AchievementTrackCard({
 }
 
 export default function CmdrDossier(props: Props) {
+  const { t, locale } = useI18n();
   const [tab, setTab] = useState<'overview' | 'transport' | 'architect' | 'achievements' | 'squadron'>('overview');
   const [sending, setSending] = useState(false);
   const [optimisticSent, setOptimisticSent] = useState(false);
@@ -593,11 +566,11 @@ export default function CmdrDossier(props: Props) {
   const showDeliveries = own || privacy.deliveries !== false;
   const showLocation = own || privacy.location !== false;
   const hiddenBlocks = [
-    !showCargo && 'тоннаж и структуру перевозок',
-    !showDeliveries && 'историю поставок',
-    !showBalance && 'баланс',
-    !showRanks && 'ранги',
-    !showLocation && 'текущее положение',
+    !showCargo && t('dossier.hiddenCargo'),
+    !showDeliveries && t('dossier.hiddenDeliveries'),
+    !showBalance && t('dossier.hiddenBalance'),
+    !showRanks && t('dossier.hiddenRanks'),
+    !showLocation && t('dossier.hiddenLocation'),
   ].filter((item): item is string => Boolean(item));
 
   const {
@@ -626,12 +599,12 @@ export default function CmdrDossier(props: Props) {
     setSending(false);
     if (ok) {
       setOptimisticSent(true);
-      showToast('Запрос в друзья отправлен', 'ok');
+      showToast(t('dossier.toastRequestSent'), 'ok');
     } else if (status === 409) {
-      showToast('Вы уже друзья с этим пилотом', 'ok');
+      showToast(t('dossier.toastAlreadyFriends'), 'ok');
       refresh();
     } else {
-      showToast('Не удалось отправить запрос', 'err');
+      showToast(t('dossier.toastRequestFailed'), 'err');
     }
   };
 
@@ -639,10 +612,10 @@ export default function CmdrDossier(props: Props) {
     if (!props.profileUserId || !props.currentUserId) return;
     const ok = await acceptRequest({ requester_id: props.profileUserId, addressee_id: props.currentUserId });
     if (ok) {
-      showToast('Запрос принят! Вы теперь друзья', 'ok');
+      showToast(t('dossier.toastAccepted'), 'ok');
       refresh();
     } else {
-      showToast('Не удалось принять запрос', 'err');
+      showToast(t('dossier.toastAcceptFailed'), 'err');
     }
   };
 
@@ -650,10 +623,10 @@ export default function CmdrDossier(props: Props) {
     if (!props.profileUserId || !props.currentUserId) return;
     const ok = await rejectRequest({ requester_id: props.profileUserId, addressee_id: props.currentUserId });
     if (ok) {
-      showToast('Запрос отклонён', 'ok');
+      showToast(t('dossier.toastRejected'), 'ok');
       refresh();
     } else {
-      showToast('Не удалось отклонить запрос', 'err');
+      showToast(t('dossier.toastRejectFailed'), 'err');
     }
   };
 
@@ -662,10 +635,10 @@ export default function CmdrDossier(props: Props) {
     const ok = await rejectRequest({ requester_id: props.currentUserId, addressee_id: props.profileUserId });
     if (ok) {
       setOptimisticSent(false);
-      showToast('Запрос отменён', 'ok');
+      showToast(t('dossier.toastCancelled'), 'ok');
       refresh();
     } else {
-      showToast('Не удалось отменить запрос', 'err');
+      showToast(t('dossier.toastCancelFailed'), 'err');
     }
   };
 
@@ -711,33 +684,33 @@ export default function CmdrDossier(props: Props) {
           {friendStatus === 'friend' && (
             <>
               <span style={{ color: '#22c55e', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <IconCheck size={14} color="#22c55e" /> Вы друзья
+                <IconCheck size={14} color="#22c55e" /> {t('dossier.youFriends')}
               </span>
-              <span style={{ color: '#9ca3af', fontSize: 12 }}>Перейдите в раздел Друзья, чтобы написать сообщение.</span>
+              <span style={{ color: '#9ca3af', fontSize: 12 }}>{t('dossier.friendsGoWrite')}</span>
             </>
           )}
           {friendStatus === 'pending_incoming' && (
             <>
-              <span style={{ color: '#e67e22', fontSize: 13, fontWeight: 600 }}>Входящий запрос в друзья</span>
+              <span style={{ color: '#e67e22', fontSize: 13, fontWeight: 600 }}>{t('dossier.incomingRequest')}</span>
               <button onClick={handleAccept} className="btn btn-cyan" style={{ fontSize: 12, padding: '5px 12px' }}>
-                <IconCheck size={12} /> Принять
+                <IconCheck size={12} /> {t('dossier.accept')}
               </button>
               <button onClick={handleReject} className="btn" style={{ fontSize: 12, padding: '5px 12px', borderColor: '#e74c3c', color: '#e74c3c' }}>
-                <IconError size={12} /> Отклонить
+                <IconError size={12} /> {t('dossier.reject')}
               </button>
             </>
           )}
           {friendStatus === 'pending_outgoing' && (
             <>
-              <span style={{ color: '#9ca3af', fontSize: 13 }}>Запрос в друзья отправлен</span>
+              <span style={{ color: '#9ca3af', fontSize: 13 }}>{t('dossier.requestSentLabel')}</span>
               <button onClick={handleCancel} className="btn" style={{ fontSize: 12, padding: '5px 12px', borderColor: '#e74c3c', color: '#e74c3c' }}>
-                Отменить
+                {t('dossier.cancel')}
               </button>
             </>
           )}
           {friendStatus === 'none' && (
             <button onClick={handleSendRequest} disabled={sending} className="btn btn-cyan" style={{ fontSize: 13, padding: '6px 16px', opacity: sending ? 0.6 : 1 }}>
-              {sending ? 'Отправка...' : '+ Добавить в друзья'}
+              {sending ? t('dossier.sending') : t('dossier.addFriend')}
             </button>
           )}
         </div>
@@ -749,35 +722,35 @@ export default function CmdrDossier(props: Props) {
           className={tab === 'overview' ? 'tab tab-active' : 'tab'}
           onClick={() => setTab('overview')}
         >
-          Обзор
+          {t('sq.tabOverview')}
         </button>
         <button
           type="button"
           className={tab === 'transport' ? 'tab tab-active' : 'tab'}
           onClick={() => setTab('transport')}
         >
-          Структура перевозок{props.opsCount ? ` (${props.opsCount})` : ''}
+          {t('dossier.tabTransport')}{props.opsCount ? ` (${props.opsCount})` : ''}
         </button>
         <button
           type="button"
           className={tab === 'architect' ? 'tab tab-active' : 'tab'}
           onClick={() => setTab('architect')}
         >
-          Системы архитектора{props.architectSystems.length ? ` (${props.architectSystems.length})` : ''}
+          {t('dossier.tabArchitect')}{props.architectSystems.length ? ` (${props.architectSystems.length})` : ''}
         </button>
         <button
           type="button"
           className={tab === 'achievements' ? 'tab tab-active' : 'tab'}
           onClick={() => setTab('achievements')}
         >
-          Достижения{totalTiers > 0 ? ` (${totalTiers})` : ''}
+          {t('dossier.tabAchievements')}{totalTiers > 0 ? ` (${totalTiers})` : ''}
         </button>
         <button
           type="button"
           className={tab === 'squadron' ? 'tab tab-active' : 'tab'}
           onClick={() => setTab('squadron')}
         >
-          Эскадрилья
+          {t('sq.squadron')}
         </button>
       </div>
 
@@ -793,80 +766,80 @@ export default function CmdrDossier(props: Props) {
             }}
           >
             <StatCard
-              label="Всего тонн"
-              value={props.totalTons.toLocaleString('ru-RU')}
+              label={t('sys.colTons')}
+              value={props.totalTons.toLocaleString(locale)}
               color="#e67e22"
               icon={<IconAnchor size={14} color="#e67e22" />}
               sub={
                 cargoTrack?.next
-                  ? `до Т${cargoTrack.next.rank}: ${(cargoTrack.next.threshold - props.totalTons).toLocaleString('ru-RU')} т`
+                  ? t('dossier.tierNext', { rank: cargoTrack.next.rank, left: (cargoTrack.next.threshold - props.totalTons).toLocaleString(locale) })
                   : cargoTrack && cargoTrack.earned > 0
-                    ? 'МАКС'
+                    ? t('dossier.max')
                     : undefined
               }
             />
             <StatCard
-              label="На стройки"
-              value={props.siteTons.toLocaleString('ru-RU')}
+              label={t('dossier.statToSites')}
+              value={props.siteTons.toLocaleString(locale)}
               color="#f39c12"
               icon={<IconBuilding size={14} color="#f39c12" />}
-              sub={props.totalTons > 0 ? `${props.siteSharePercent.toFixed(0)}% всего груза` : undefined}
+              sub={props.totalTons > 0 ? t('dossier.percentOfTotal', { percent: props.siteSharePercent.toFixed(0) }) : undefined}
             />
             <StatCard
-              label="Операций"
-              value={props.opsCount.toLocaleString('ru-RU')}
+              label={t('dossier.statOperations')}
+              value={props.opsCount.toLocaleString(locale)}
               color="#f472b6"
               icon={<IconRadio size={14} color="#f472b6" />}
               sub={
                 opsTrack?.next
-                  ? `до Т${opsTrack.next.rank}: ${(opsTrack.next.threshold - props.opsCount).toLocaleString('ru-RU')}`
+                  ? t('dossier.tierNext', { rank: opsTrack.next.rank, left: (opsTrack.next.threshold - props.opsCount).toLocaleString(locale) })
                   : opsTrack && opsTrack.earned > 0
-                    ? 'МАКС'
+                    ? t('dossier.max')
                     : undefined
               }
             />
             <StatCard
-              label="Хабов"
+              label={t('lb.colHubs')}
               value={props.hubsCount}
               color="#22c55e"
               icon={<IconAtlas size={14} color="#22c55e" />}
               sub={
                 hubsTrack?.next
-                  ? `до Т${hubsTrack.next.rank}: ${hubsTrack.next.threshold - props.hubsCount}`
+                  ? t('dossier.tierNext', { rank: hubsTrack.next.rank, left: String(hubsTrack.next.threshold - props.hubsCount) })
                   : hubsTrack && hubsTrack.earned > 0
-                    ? 'МАКС'
+                    ? t('dossier.max')
                     : undefined
               }
             />
             <StatCard
-              label="Маршрут"
+              label={t('atlas.tabRoute')}
               value={props.routeCount}
               color="#60a5fa"
               icon={<IconRoute size={14} color="#60a5fa" />}
             />
             <StatCard
-              label="Систем маршрутов"
+              label={t('dossier.statRouteSystems')}
               value={props.routeSystemsVisited}
               color="#60a5fa"
               icon={<IconRoute size={14} color="#60a5fa" />}
-              sub="Уникальных систем маршрутов"
+              sub={t('dossier.statRouteSystemsSub')}
             />
             <StatCard
-              label="Систем всего"
+              label={t('dossier.statSystemsTotal')}
               value={props.systems.length}
               color="#c4b5fd"
               icon={<IconAtlas size={14} color="#c4b5fd" />}
             />
             <StatCard
-              label="Архитектор"
+              label={t('nav.architect')}
               value={props.architectCount}
               color="#f39c12"
               icon={<IconBuilding size={14} color="#f39c12" />}
               sub={
                 architectTrack?.next
-                  ? `до Т${architectTrack.next.rank}: ${architectTrack.next.threshold - props.architectCount}`
+                  ? t('dossier.tierNext', { rank: architectTrack.next.rank, left: String(architectTrack.next.threshold - props.architectCount) })
                   : architectTrack && architectTrack.earned > 0
-                    ? 'МАКС'
+                    ? t('dossier.max')
                     : undefined
               }
             />
@@ -888,14 +861,14 @@ export default function CmdrDossier(props: Props) {
               }}
             >
               <IconInfo size={14} color="#9ca3af" />
-              Командир скрыл в настройках приватности: {hiddenBlocks.join(', ')}.
+              {t('dossier.hiddenTitle', { blocks: hiddenBlocks.join(', ') })}
             </div>
           )}
 
           {/* ── Строительный тоннаж: только поставки на площадки проектов ── */}
           {showCargo && (
           <div style={{ marginBottom: 24 }}>
-            <SectionHeader title="Тоннаж на стройплощадки" count={props.siteOpsCount} />
+            <SectionHeader title={t('dossier.siteSection')} count={props.siteOpsCount} />
             <div
               style={{
                 border: '1px solid #f39c1233',
@@ -913,27 +886,27 @@ export default function CmdrDossier(props: Props) {
                 }}
               >
                 <StatCard
-                  label="Завезено на стройки"
-                  value={props.siteTons.toLocaleString('ru-RU')}
+                  label={t('dossier.siteTons')}
+                  value={props.siteTons.toLocaleString(locale)}
                   color="#f39c12"
                   icon={<IconBuilding size={14} color="#f39c12" />}
-                  sub="только площадки проектов"
+                  sub={t('dossier.siteTonsSub')}
                 />
                 <StatCard
-                  label="Весь перевозимый груз"
-                  value={props.totalTons.toLocaleString('ru-RU')}
+                  label={t('dossier.totalCargo')}
+                  value={props.totalTons.toLocaleString(locale)}
                   color="#e67e22"
                   icon={<IconAnchor size={14} color="#e67e22" />}
-                  sub="все поставки за всё время"
+                  sub={t('dossier.totalCargoSub')}
                 />
                 <StatCard
-                  label="Поставок на стройки"
-                  value={props.siteOpsCount.toLocaleString('ru-RU')}
+                  label={t('dossier.siteOps')}
+                  value={props.siteOpsCount.toLocaleString(locale)}
                   color="#7dd3fc"
                   icon={<IconRadio size={14} color="#7dd3fc" />}
                 />
                 <StatCard
-                  label="Систем со стройками"
+                  label={t('dossier.siteSystems')}
                   value={props.siteSystems.length}
                   color="#22c55e"
                   icon={<IconAtlas size={14} color="#22c55e" />}
@@ -944,8 +917,8 @@ export default function CmdrDossier(props: Props) {
                   value={props.siteTons}
                   max={props.totalTons}
                   color="#f39c12"
-                  label="Доля строительных поставок"
-                  sub={`${props.siteSharePercent.toFixed(1)}% груза ушло на площадки колонизационных проектов, остальное — ${Math.max(0, props.totalTons - props.siteTons).toLocaleString('ru-RU')} т`}
+                  label={t('dossier.siteShare')}
+                  sub={t('dossier.siteShareSub', { percent: props.siteSharePercent.toFixed(1), rest: Math.max(0, props.totalTons - props.siteTons).toLocaleString(locale) })}
                 />
               )}
               {props.siteSystems.length > 0 && (
@@ -970,7 +943,7 @@ export default function CmdrDossier(props: Props) {
                       }}
                     >
                       {systemName}{' '}
-                      <span style={{ color: '#f39c12', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
+                      <span style={{ color: '#f39c12', fontWeight: 600 }}>{tons.toLocaleString(locale)} {t('dossier.tonsUnit')}</span>
                     </span>
                   ))}
                 </div>
@@ -978,7 +951,7 @@ export default function CmdrDossier(props: Props) {
               {props.siteCommodities.length > 0 && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6, letterSpacing: 0.4 }}>
-                    ЧАЩЕ ВСЕГО НА СТРОЙКИ ВЕЗЛИ
+                    {t('dossier.topSiteCommodities')}
                   </div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                     {props.siteCommodities.slice(0, 6).map(([commodity, tons]) => (
@@ -994,7 +967,7 @@ export default function CmdrDossier(props: Props) {
                         }}
                       >
                         {commodity}{' '}
-                        <span style={{ color: '#f39c12', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
+                        <span style={{ color: '#f39c12', fontWeight: 600 }}>{tons.toLocaleString(locale)} {t('dossier.tonsUnit')}</span>
                       </span>
                     ))}
                   </div>
@@ -1002,9 +975,7 @@ export default function CmdrDossier(props: Props) {
               )}
               {props.siteTons === 0 && (
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                  Строительных поставок пока нет: блок считает только груз, сданный на площадки
-                  колонизационных проектов и колонизационные корабли (ColonisationContribution и
-                  сдача груза у рынка стройплощадки), а не любые перевозки.
+                  {t('dossier.siteEmpty')}
                 </div>
               )}
             </div>
@@ -1063,7 +1034,7 @@ export default function CmdrDossier(props: Props) {
                   />
                   <StatCard
                     label="CR"
-                    value={props.capiProfile.credits?.toLocaleString('ru-RU') ?? '—'}
+                    value={props.capiProfile.credits?.toLocaleString(locale) ?? '—'}
                     color="#22c55e"
                   />
                 </div>
@@ -1078,30 +1049,30 @@ export default function CmdrDossier(props: Props) {
                   }}
                 >
                   <span>
-                    Корабль:{' '}
+                    {t('dossier.capiShip')}{' '}
                     <span style={{ color: '#eeeeee' }}>
-                      {showLocation ? (props.capiProfile.current_ship ?? '—') : 'скрыто'}
+                      {showLocation ? (props.capiProfile.current_ship ?? '—') : t('dossier.capiHidden')}
                     </span>
                   </span>
                   <span>
-                    Система:{' '}
+                    {t('dossier.capiSystem')}{' '}
                     <span style={{ color: '#eeeeee' }}>
-                      {showLocation ? (props.capiProfile.current_system ?? '—') : 'скрыто'}
+                      {showLocation ? (props.capiProfile.current_system ?? '—') : t('dossier.capiHidden')}
                     </span>
                   </span>
                   <span>
-                    Станция:{' '}
+                    {t('dossier.capiStation')}{' '}
                     <span style={{ color: '#eeeeee' }}>
-                      {showLocation ? (props.capiProfile.current_station ?? '—') : 'скрыто'}
+                      {showLocation ? (props.capiProfile.current_station ?? '—') : t('dossier.capiHidden')}
                     </span>
                   </span>
-                  {showBalance && props.capiProfile.loan != null && <span>Займ: <span style={{ color: '#eeeeee' }}>{props.capiProfile.loan.toLocaleString('ru-RU')} CR</span></span>}
-                  {showLocation && props.capiProfile.ships && <span>Флот: <span style={{ color: '#eeeeee' }}>{props.capiProfile.ships.length} кораблей</span></span>}
+                  {showBalance && props.capiProfile.loan != null && <span>{t('dossier.capiLoan')} <span style={{ color: '#eeeeee' }}>{props.capiProfile.loan.toLocaleString(locale)} CR</span></span>}
+                  {showLocation && props.capiProfile.ships && <span>{t('dossier.capiFleet')} <span style={{ color: '#eeeeee' }}>{props.capiProfile.ships.length} {t('dossier.shipsCount', { count: props.capiProfile.ships.length })}</span></span>}
                   {props.capiProfile.last_updated && (
                     <span style={{ marginLeft: 'auto' }}>
-                      Обновлено:{' '}
+                      {t('dossier.capiUpdated')}{' '}
                       <span style={{ color: '#e67e22' }}>
-                        {new Date(props.capiProfile.last_updated).toLocaleString('ru-RU')}
+                        {new Date(props.capiProfile.last_updated).toLocaleString(locale)}
                       </span>
                     </span>
                   )}
@@ -1113,7 +1084,7 @@ export default function CmdrDossier(props: Props) {
           {/* ── Exploration, First Discoveries & Pilot Balances ── */}
           {(props.pilotStats || props.capiProfile) && (
             <div style={{ marginBottom: 24 }}>
-              <SectionHeader title="Исследования, Первооткрывательство и Баланс" />
+              <SectionHeader title={t('dossier.secResearch')} />
               <div
                 style={{
                   border: '1px solid #3b82f633',
@@ -1137,7 +1108,7 @@ export default function CmdrDossier(props: Props) {
                       gap: 6,
                     }}
                   >
-                    <span>Баланс пилота (Кредиты, ARX, Монеты наемников)</span>
+                    <span>{t('dossier.balanceTitle')}</span>
                   </div>
                   {showBalance ? (
                     <div
@@ -1148,27 +1119,27 @@ export default function CmdrDossier(props: Props) {
                       }}
                     >
                       <StatCard
-                        label="Баланс Кредитов"
-                        value={((props.pilotStats?.credits ?? props.capiProfile?.credits ?? 0)).toLocaleString('ru-RU') + ' CR'}
+                        label={t('dossier.balanceCredits')}
+                        value={((props.pilotStats?.credits ?? props.capiProfile?.credits ?? 0)).toLocaleString(locale) + ' CR'}
                         color="#22c55e"
-                        sub="Игровой капитал"
+                        sub={t('dossier.balanceCreditsSub')}
                       />
                       <StatCard
-                        label="Баланс ARX"
-                        value={((props.pilotStats?.arx ?? 0)).toLocaleString('ru-RU') + ' ARX'}
+                        label={t('dossier.balanceArx')}
+                        value={((props.pilotStats?.arx ?? 0)).toLocaleString(locale) + ' ARX'}
                         color="#a855f7"
-                        sub="Премиум Frontier"
+                        sub={t('dossier.balanceArxSub')}
                       />
                       <StatCard
-                        label="Монеты наёмников"
-                        value={((props.pilotStats?.mercenary_coins ?? 0)).toLocaleString('ru-RU')}
+                        label={t('dossier.balanceMerc')}
+                        value={((props.pilotStats?.mercenary_coins ?? 0)).toLocaleString(locale)}
                         color="#f59e0b"
-                        sub="Жетоны Operations (кап 9999)"
+                        sub={t('dossier.balanceMercSub')}
                       />
                     </div>
                   ) : (
                     <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                      Баланс скрыт настройками приватности командира.
+                      {t('dossier.balanceHidden')}
                     </div>
                   )}
                 </div>
@@ -1185,7 +1156,7 @@ export default function CmdrDossier(props: Props) {
                       marginBottom: 10,
                     }}
                   >
-                    Первооткрывательство в галактике
+                    {t('dossier.discoveriesTitle')}
                   </div>
                   <div
                     style={{
@@ -1195,20 +1166,20 @@ export default function CmdrDossier(props: Props) {
                     }}
                   >
                     <StatCard
-                      label="Системы первым"
-                      value={((props.pilotStats?.first_discoveries_count ?? 0)).toLocaleString('ru-RU')}
+                      label={t('dossier.statSystemsFirst')}
+                      value={((props.pilotStats?.first_discoveries_count ?? 0)).toLocaleString(locale)}
                       color="#3b82f6"
                       sub="First Discovered"
                     />
                     <StatCard
-                      label="Планеты первым"
-                      value={((props.pilotStats?.first_mapped_count ?? 0)).toLocaleString('ru-RU')}
+                      label={t('dossier.statPlanetsFirst')}
+                      value={((props.pilotStats?.first_mapped_count ?? 0)).toLocaleString(locale)}
                       color="#06b6d4"
                       sub="First Mapped"
                     />
                     <StatCard
-                      label="Первопроходец"
-                      value={((props.pilotStats?.first_footfalls_count ?? 0)).toLocaleString('ru-RU')}
+                      label={t('dossier.statFootfalls')}
+                      value={((props.pilotStats?.first_footfalls_count ?? 0)).toLocaleString(locale)}
                       color="#10b981"
                       sub="First Footfalls"
                     />
@@ -1227,7 +1198,7 @@ export default function CmdrDossier(props: Props) {
                       marginBottom: 10,
                     }}
                   >
-                    Экзобиология и Органика
+                    {t('dossier.exoTitle')}
                   </div>
                   <div
                     style={{
@@ -1237,31 +1208,31 @@ export default function CmdrDossier(props: Props) {
                     }}
                   >
                     <StatCard
-                      label="Собрано образцов"
-                      value={((props.pilotStats?.bio_samples_count ?? 0)).toLocaleString('ru-RU')}
+                      label={t('dossier.statBioSamples')}
+                      value={((props.pilotStats?.bio_samples_count ?? 0)).toLocaleString(locale)}
                       color="#10b981"
                       sub="Genuses / Samples"
                     />
                     <StatCard
-                      label="Видов органики"
-                      value={((props.pilotStats?.bio_species_count ?? 0)).toLocaleString('ru-RU')}
+                      label={t('dossier.statBioSpecies')}
+                      value={((props.pilotStats?.bio_species_count ?? 0)).toLocaleString(locale)}
                       color="#84cc16"
-                      sub="Уникальных видов"
+                      sub={t('dossier.statBioSpeciesSub')}
                     />
                     <StatCard
-                      label="Ценность находок"
-                      value={((props.pilotStats?.bio_value_cr ?? 0)).toLocaleString('ru-RU') + ' CR'}
+                      label={t('dossier.statBioValue')}
+                      value={((props.pilotStats?.bio_value_cr ?? 0)).toLocaleString(locale) + ' CR'}
                       color="#eab308"
-                      sub="Сданные данные"
+                      sub={t('dossier.statBioValueSub')}
                     />
                     <StatCard
-                      label="Ранг Экзобиолога"
+                      label={t('dossier.statExoRank')}
                       value={EXOBIOLOGIST_RANKS[props.pilotStats?.exobiologist_rank ?? 0] ?? '—'}
                       color="#10b981"
                       sub="Vista Genomics"
                     />
                     <StatCard
-                      label="Ранг Наёмника"
+                      label={t('dossier.statMercRank')}
                       value={MERCENARY_RANKS[props.pilotStats?.mercenary_rank ?? 0] ?? '—'}
                       color="#ef4444"
                       sub="Odyssey Mercenary"
@@ -1293,7 +1264,7 @@ export default function CmdrDossier(props: Props) {
                   marginBottom: 14,
                 }}
               >
-                Прогресс достижений — {totalTiers} тиров
+                {t('dossier.tierProgress', { count: totalTiers })}
               </div>
               <div
                 style={{
@@ -1307,8 +1278,8 @@ export default function CmdrDossier(props: Props) {
                     value={props.totalTons}
                     max={cargoTrack.next?.threshold ?? cargoTrack.current?.threshold ?? 1}
                     color="#e67e22"
-                    label="Экспедиционер"
-                    sub={cargoTrack.next ? `Тир ${cargoTrack.earned} → ${cargoTrack.next.rank}` : `Тир ${cargoTrack.earned} (макс)`}
+                    label={t('dossier.trackExpeditioner')}
+                    sub={cargoTrack.next ? t('dossier.tierSub', { tier: cargoTrack.earned, next: cargoTrack.next.rank }) : t('dossier.tierSubMax', { tier: cargoTrack.earned })}
                   />
                 )}
                 {steelTrack && steelTrack.earned > 0 && (
@@ -1316,8 +1287,8 @@ export default function CmdrDossier(props: Props) {
                     value={steelTrack.total}
                     max={steelTrack.next?.threshold ?? steelTrack.current?.threshold ?? 1}
                     color="#eeeeee"
-                    label="Металлург"
-                    sub={steelTrack.next ? `Тир ${steelTrack.earned} → ${steelTrack.next.rank}` : `Тир ${steelTrack.earned} (макс)`}
+                    label={t('dossier.trackSteel')}
+                    sub={steelTrack.next ? t('dossier.tierSub', { tier: steelTrack.earned, next: steelTrack.next.rank }) : t('dossier.tierSubMax', { tier: steelTrack.earned })}
                   />
                 )}
                 {titaniumTrack && titaniumTrack.earned > 0 && (
@@ -1325,8 +1296,8 @@ export default function CmdrDossier(props: Props) {
                     value={titaniumTrack.total}
                     max={titaniumTrack.next?.threshold ?? titaniumTrack.current?.threshold ?? 1}
                     color="#7dd3fc"
-                    label="Титановый мастер"
-                    sub={titaniumTrack.next ? `Тир ${titaniumTrack.earned} → ${titaniumTrack.next.rank}` : `Тир ${titaniumTrack.earned} (макс)`}
+                    label={t('dossier.trackTitanium')}
+                    sub={titaniumTrack.next ? t('dossier.tierSub', { tier: titaniumTrack.earned, next: titaniumTrack.next.rank }) : t('dossier.tierSubMax', { tier: titaniumTrack.earned })}
                   />
                 )}
                 {cmmTrack && cmmTrack.earned > 0 && (
@@ -1334,8 +1305,8 @@ export default function CmdrDossier(props: Props) {
                     value={cmmTrack.total}
                     max={cmmTrack.next?.threshold ?? cmmTrack.current?.threshold ?? 1}
                     color="#c4b5fd"
-                    label="Композитчик"
-                    sub={cmmTrack.next ? `Тир ${cmmTrack.earned} → ${cmmTrack.next.rank}` : `Тир ${cmmTrack.earned} (макс)`}
+                    label={t('dossier.trackComposites')}
+                    sub={cmmTrack.next ? t('dossier.tierSub', { tier: cmmTrack.earned, next: cmmTrack.next.rank }) : t('dossier.tierSubMax', { tier: cmmTrack.earned })}
                   />
                 )}
                 {architectTrack && (architectTrack.earned > 0 || props.architectCount > 0) && (
@@ -1343,8 +1314,8 @@ export default function CmdrDossier(props: Props) {
                     value={props.architectCount}
                     max={architectTrack.next?.threshold ?? architectTrack.current?.threshold ?? 1}
                     color="#f39c12"
-                    label="Архитектор"
-                    sub={architectTrack.next ? `Тир ${architectTrack.earned} → ${architectTrack.next.rank}` : `Тир ${architectTrack.earned} (макс)`}
+                    label={t('dossier.trackArchitect')}
+                    sub={architectTrack.next ? t('dossier.tierSub', { tier: architectTrack.earned, next: architectTrack.next.rank }) : t('dossier.tierSubMax', { tier: architectTrack.earned })}
                   />
                 )}
                 {hubsTrack && hubsTrack.earned > 0 && (
@@ -1352,8 +1323,8 @@ export default function CmdrDossier(props: Props) {
                     value={props.hubsCount}
                     max={hubsTrack.next?.threshold ?? hubsTrack.current?.threshold ?? 1}
                     color="#22c55e"
-                    label="Первооткрыватель"
-                    sub={hubsTrack.next ? `Тир ${hubsTrack.earned} → ${hubsTrack.next.rank}` : `Тир ${hubsTrack.earned} (макс)`}
+                    label={t('dossier.trackDiscoverer')}
+                    sub={hubsTrack.next ? t('dossier.tierSub', { tier: hubsTrack.earned, next: hubsTrack.next.rank }) : t('dossier.tierSubMax', { tier: hubsTrack.earned })}
                   />
                 )}
                 {opsTrack && opsTrack.earned > 0 && (
@@ -1361,8 +1332,8 @@ export default function CmdrDossier(props: Props) {
                     value={props.opsCount}
                     max={opsTrack.next?.threshold ?? opsTrack.current?.threshold ?? 1}
                     color="#f472b6"
-                    label="Оперативник"
-                    sub={opsTrack.next ? `Тир ${opsTrack.earned} → ${opsTrack.next.rank}` : `Тир ${opsTrack.earned} (макс)`}
+                    label={t('dossier.trackOperative')}
+                    sub={opsTrack.next ? t('dossier.tierSub', { tier: opsTrack.earned, next: opsTrack.next.rank }) : t('dossier.tierSubMax', { tier: opsTrack.earned })}
                   />
                 )}
               </div>
@@ -1372,7 +1343,7 @@ export default function CmdrDossier(props: Props) {
           {/* ── Top Systems (Inara table style) ── */}
           {showDeliveries && props.systems.length > 0 && (
             <div style={{ marginBottom: 24 }}>
-              <SectionHeader title="Топ систем по доставкам" count={props.systems.length} />
+              <SectionHeader title={t('dossier.topSystems')} count={props.systems.length} />
               <div
                 style={{
                   border: '1px solid #323538',
@@ -1384,8 +1355,8 @@ export default function CmdrDossier(props: Props) {
                   <thead>
                     <tr>
                       <th style={{ width: 40, textAlign: 'center' }}>#</th>
-                      <th>Система</th>
-                      <th style={{ textAlign: 'right' }}>Тонн</th>
+                      <th>{t('dossier.colSystem')}</th>
+                      <th style={{ textAlign: 'right' }}>{t('dossier.colTons')}</th>
                       <th style={{ textAlign: 'right', width: 80 }}>%</th>
                     </tr>
                   </thead>
@@ -1413,7 +1384,7 @@ export default function CmdrDossier(props: Props) {
                               fontWeight: 600,
                             }}
                           >
-                            {tons.toLocaleString('ru-RU')}
+                            {tons.toLocaleString(locale)}
                           </td>
                           <td style={{ textAlign: 'right' }}>
                             <div
@@ -1458,7 +1429,7 @@ export default function CmdrDossier(props: Props) {
           {/* ── Top Commodities (Inara bar style) ── */}
           {showDeliveries && props.commodities.length > 0 && (
             <div style={{ marginBottom: 24 }}>
-              <SectionHeader title="Топ товаров" count={props.commodities.length} />
+              <SectionHeader title={t('dossier.topCommodities')} count={props.commodities.length} />
               <div
                 style={{
                   border: '1px solid #323538',
@@ -1511,7 +1482,7 @@ export default function CmdrDossier(props: Props) {
                           color: '#9ca3af',
                         }}
                       >
-                        {tons.toLocaleString('ru-RU')} т
+                        {tons.toLocaleString(locale)} {t('dossier.tonsUnit')}
                       </span>
                     </div>
                   );
@@ -1523,7 +1494,7 @@ export default function CmdrDossier(props: Props) {
           {/* ── Recent Deliveries (Inara table style) ── */}
           {showDeliveries && props.recent.length > 0 && (
             <div style={{ marginBottom: 24 }}>
-              <SectionHeader title="Последние доставки" count={props.recent.length} />
+              <SectionHeader title={t('dossier.recentDeliveries')} count={props.recent.length} />
               <div
                 style={{
                   border: '1px solid #323538',
@@ -1534,10 +1505,10 @@ export default function CmdrDossier(props: Props) {
                 <table style={{ margin: 0, fontSize: 13 }}>
                   <thead>
                     <tr>
-                      <th>Дата</th>
-                      <th>Система</th>
-                      <th>Товар</th>
-                      <th style={{ textAlign: 'right' }}>Тонн</th>
+                      <th>{t('forum.date')}</th>
+                      <th>{t('dossier.colSystem')}</th>
+                      <th>{t('atlas.ui.commodityLabel')}</th>
+                      <th style={{ textAlign: 'right' }}>{t('dossier.colTons')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1577,7 +1548,7 @@ export default function CmdrDossier(props: Props) {
           {Object.keys(props.trackTons).length > 0 && (
             <div style={{ marginBottom: 24 }}>
               <SectionHeader
-                title="Активность за 7 дней"
+                title={t('dossier.activity7')}
                 count={Object.keys(props.trackTons).length}
               />
               <div
@@ -1603,7 +1574,7 @@ export default function CmdrDossier(props: Props) {
                         fontFamily: 'ui-monospace, monospace',
                       }}
                     >
-                      {sys}: <strong style={{ color: '#e67e22' }}>{tons.toLocaleString('ru-RU')} т</strong>
+                      {sys}: <strong style={{ color: '#e67e22' }}>{tons.toLocaleString(locale)} {t('dossier.tonsUnit')}</strong>
                     </span>
                   ))}
               </div>
@@ -1616,13 +1587,13 @@ export default function CmdrDossier(props: Props) {
         <div>
           {props.cargoKinds.length === 0 || !showCargo ? (
             <div className="card" style={{ margin: 0, padding: 30, textAlign: 'center', color: 'var(--muted)' }}>
-              {showCargo ? 'Данных о структуре перевозок пока нет.' : 'Командир скрыл структуру перевозок.'}
+              {showCargo ? t('dossier.cargoNone') : t('dossier.cargoHidden')}
             </div>
           ) : null}
       {/* ── Структура перевозок: куда именно ушёл груз ── */}
       {showCargo && props.cargoKinds.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <SectionHeader title="Структура перевозок" count={props.opsCount} />
+          <SectionHeader title={t('dossier.transportSection')} count={props.opsCount} />
           <div
             style={{
               border: '1px solid #323538',
@@ -1632,9 +1603,7 @@ export default function CmdrDossier(props: Props) {
             }}
           >
             <p style={{ margin: '0 0 14px', fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
-              Один и тот же тоннаж разложен по получателю: стройплощадки и колонизационные корабли
-              считаются вкладом в проекты, а отгрузки авианосцам, грузовые миссии и продажа на
-              рынках — перевозками безотносительно к колонизации.
+              {t('dossier.transportLead')}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {props.cargoKinds.map((entry) => {
@@ -1643,7 +1612,7 @@ export default function CmdrDossier(props: Props) {
                 return (
                   <div key={entry.kind}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
-                      <span style={{ color: '#eeeeee' }} title={meta?.hint}>
+                      <span style={{ color: '#eeeeee' }} title={meta ? t(meta.hint) : undefined}>
                         <span
                           style={{
                             display: 'inline-block',
@@ -1654,13 +1623,13 @@ export default function CmdrDossier(props: Props) {
                             marginRight: 8,
                           }}
                         />
-                        {meta?.label ?? entry.kind}
+                        {meta ? t(meta.label) : entry.kind}
                         <span style={{ color: '#6b7280', marginLeft: 8, fontSize: 11 }}>
-                          {entry.ops.toLocaleString('ru-RU')} поставок
+                          {t('dossier.deliveriesCount', { count: entry.ops.toLocaleString(locale) })}
                         </span>
                       </span>
                       <span style={{ color: meta?.color ?? '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
-                        {entry.tons.toLocaleString('ru-RU')} т · {share.toFixed(1)}%
+                        {t('dossier.cargoLine', { tons: entry.tons.toLocaleString(locale), share: share.toFixed(1) })}
                       </span>
                     </div>
                     <div style={{ background: '#25282b', borderRadius: 4, height: 6, marginTop: 6 }}>
@@ -1680,7 +1649,7 @@ export default function CmdrDossier(props: Props) {
             {props.transportSystems.length > 0 && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6, letterSpacing: 0.4 }}>
-                  КУДА ВОЗИЛИ ВНЕ ПРОЕКТОВ
+                  {t('dossier.nonProjectTitle')}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {props.transportSystems.slice(0, 8).map(([systemName, tons]) => (
@@ -1696,7 +1665,7 @@ export default function CmdrDossier(props: Props) {
                       }}
                     >
                       {systemName}{' '}
-                      <span style={{ color: '#e67e22', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
+                      <span style={{ color: '#e67e22', fontWeight: 600 }}>{tons.toLocaleString(locale)} {t('dossier.tonsUnit')}</span>
                     </span>
                   ))}
                 </div>
@@ -1712,17 +1681,17 @@ export default function CmdrDossier(props: Props) {
         <div>
           {props.architectCount === 0 && (
             <div className="card" style={{ margin: 0, padding: 30, textAlign: 'center', color: 'var(--muted)' }}>
-              Командир пока не является архитектором ни одной системы (по данным Raven Colonial).
+              {t('dossier.architectEmpty')}
             </div>
           )}
           <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--muted)' }}>
-            Системы, где командир зарегистрирован архитектором колонизации. Нажмите на систему, чтобы открыть её страницу.
+            {t('dossier.architectLead')}
           </p>
       {/* ── Architect Systems (RavenColonial) ── */}
       {props.architectCount > 0 && (
         <div style={{ marginBottom: 24 }}>
           <SectionHeader
-            title="Системы архитектора"
+            title={t('dossier.architectTitle')}
             count={props.architectSystems.length}
           />
           <div
@@ -1736,7 +1705,7 @@ export default function CmdrDossier(props: Props) {
               <Link
                 href={`/system/${encodeURIComponent(sys)}`}
                 key={sys}
-                title={`Открыть систему ${sys}`}
+                title={t('dossier.openSystem', { system: sys })}
                 className="dossier-arch-link"
                 style={{
                   textDecoration: 'none',
@@ -1763,7 +1732,7 @@ export default function CmdrDossier(props: Props) {
         <div>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
-            <h2 style={{ margin: 0, fontSize: 18, color: '#eeeeee' }}>Достижения</h2>
+            <h2 style={{ margin: 0, fontSize: 18, color: '#eeeeee' }}>{t('dossier.achievementsTitle')}</h2>
             <span
               style={{
                 background: 'rgba(255,157,46,0.15)',
@@ -1775,7 +1744,7 @@ export default function CmdrDossier(props: Props) {
                 fontFamily: 'ui-monospace, monospace',
               }}
             >
-              Всего тиров: {totalTiers}
+              {t('dossier.tiersTotal', { count: totalTiers })}
             </span>
           </div>
 
@@ -1796,7 +1765,7 @@ export default function CmdrDossier(props: Props) {
           {/* Hero badges */}
           {heroes.length > 0 && (
             <div style={{ marginTop: 24 }}>
-              <SectionHeader title="Геройские награды" count={heroes.length} />
+              <SectionHeader title={t('dossier.heroAwards')} count={heroes.length} />
               <div
                 style={{
                   display: 'grid',
@@ -1840,7 +1809,7 @@ export default function CmdrDossier(props: Props) {
                   <div style={{ width: 12, height: 48, borderRadius: 2, background: props.squadron.color, flexShrink: 0 }} />
                   <div>
                     <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'ui-monospace, monospace', letterSpacing: 1, textTransform: 'uppercase' }}>
-                      {props.squadron.tag ? `[${props.squadron.tag}]` : 'Эскадрилья'}
+                      {props.squadron.tag ? `[${props.squadron.tag}]` : t('sq.squadron')}
                     </div>
                     <h2 style={{ margin: '4px 0 0', color: props.squadron.color }}>{props.squadron.name}</h2>
                     {props.squadron.description && (
@@ -1861,45 +1830,45 @@ export default function CmdrDossier(props: Props) {
                   letterSpacing: 1,
                   textTransform: 'uppercase',
                 }}>
-                  {props.squadron.status === 'active' ? 'Активна' : props.squadron.status === 'recruiting' ? 'Набор' : props.squadron.status === 'closed' ? 'Закрыта' : 'Расформирована'}
+                  {props.squadron.status === 'active' ? t('dossier.sqActive') : props.squadron.status === 'recruiting' ? t('dossier.sqRecruiting') : props.squadron.status === 'closed' ? t('dossier.sqClosed') : t('dossier.sqDisbanded')}
                 </span>
               </div>
 
               {/* Бейджи параметров */}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 10px', marginBottom: 20 }}>
                 {props.squadron.allegiance && (
-                  <span style={badgeStyle} title="Принадлежность">
+                  <span style={badgeStyle} title={t('dossier.badgeAllegiance')}>
                     <AllegianceIcon allegiance={props.squadron.allegiance} size={12} color="#9ca3af" /> {props.squadron.allegiance}
                   </span>
                 )}
                 {props.squadron.power && (
-                  <span style={{ ...badgeStyle, borderColor: '#e67e2255', color: '#f39c12' }} title="Сила (Power)">
+                  <span style={{ ...badgeStyle, borderColor: '#e67e2255', color: '#f39c12' }} title={t('dossier.badgePower')}>
                     <IconPower size={12} color="#f39c12" /> {props.squadron.power}
                   </span>
                 )}
                 {props.squadron.activity_type && props.squadron.activity_type !== 'Mixed' && (
-                  <span style={{ ...badgeStyle, borderColor: '#60a5fa55', color: '#60a5fa' }} title="Тип активности">
+                  <span style={{ ...badgeStyle, borderColor: '#60a5fa55', color: '#60a5fa' }} title={t('dossier.badgeActivity')}>
                     <IconActivity size={12} color="#60a5fa" /> {props.squadron.activity_type}
                   </span>
                 )}
                 {props.squadron.home_system && (
-                  <span style={{ ...badgeStyle, borderColor: '#c4b5fd55', color: '#c4b5fd' }} title="Домашняя система">
+                  <span style={{ ...badgeStyle, borderColor: '#c4b5fd55', color: '#c4b5fd' }} title={t('dossier.badgeHome')}>
                     <IconHomeSystem size={12} color="#c4b5fd" /> {props.squadron.home_system}
                   </span>
                 )}
                 {props.squadron.language && (
-                  <span style={badgeStyle} title="Язык">
+                  <span style={badgeStyle} title={t('dossier.badgeLanguage')}>
                     <IconLanguage size={12} color="#9ca3af" /> {props.squadron.language}
                   </span>
                 )}
                 {props.squadron.timezone && (
-                  <span style={badgeStyle} title="Часовой пояс">
+                  <span style={badgeStyle} title={t('dossier.badgeTimezone')}>
                     <IconTimezone size={12} color="#9ca3af" /> {props.squadron.timezone}
                   </span>
                 )}
                 {props.squadron.is_open_recruitment && (
-                  <span style={{ ...badgeStyle, borderColor: '#22c55e55', color: '#22c55e' }} title="Набор">
-                    <IconOpenRecruit size={12} color="#22c55e" /> Свободный набор
+                  <span style={{ ...badgeStyle, borderColor: '#22c55e55', color: '#22c55e' }} title={t('dossier.badgeRecruit')}>
+                    <IconOpenRecruit size={12} color="#22c55e" /> {t('dossier.openRecruit')}
                   </span>
                 )}
                 {props.squadron.discord_url && (
@@ -1909,7 +1878,7 @@ export default function CmdrDossier(props: Props) {
                 )}
                 {props.squadron.website_url && (
                   <a href={props.squadron.website_url} target="_blank" rel="noreferrer" style={{ ...badgeStyle, borderColor: '#22c55e55', color: '#22c55e', textDecoration: 'none' }}>
-                    <IconWebsite size={12} color="#22c55e" /> Сайт
+                    <IconWebsite size={12} color="#22c55e" /> {t('dossier.website')}
                   </a>
                 )}
               </div>
@@ -1918,25 +1887,25 @@ export default function CmdrDossier(props: Props) {
               <div className="stat-grid" style={{ marginBottom: 24 }}>
                 <div className="stat-box">
                   <div className="num" style={{ color: props.squadron.color }}>{props.squadron.member_count || 0}</div>
-                  <div className="lbl">Пилотов</div>
+                  <div className="lbl">{t('dossier.sqPilots')}</div>
                   <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, fontFamily: 'ui-monospace, monospace' }}>
-                    из {props.squadron.member_limit || 600}
+                    {t('dossier.sqOf', { count: props.squadron.member_limit || 600 })}
                   </div>
                 </div>
                 <div className="stat-box">
                   <div className="num" style={{ color: props.squadron.color }}>{props.squadron.project_count || 0}</div>
-                  <div className="lbl">Проектов</div>
+                  <div className="lbl">{t('dossier.sqProjects')}</div>
                 </div>
                 <div className="stat-box">
                   <div className="num" style={{ color: props.squadron.color }}>#{props.rank ?? '—'}</div>
-                  <div className="lbl">Место пилота</div>
+                  <div className="lbl">{t('dossier.sqPilotPlace')}</div>
                 </div>
               </div>
 
               {/* Действия */}
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                 <Link href={`/squadrons/${props.squadron.id}`} className="btn btn-cyan">
-                  Перейти к эскадрилье
+                  {t('dossier.sqGo')}
                 </Link>
               </div>
             </>
@@ -1949,10 +1918,10 @@ export default function CmdrDossier(props: Props) {
               }}>
                 —
               </div>
-              <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>Нет эскадрильи</h3>
-              <p style={{ margin: 0, fontSize: 13 }}>Пилот не состоит в эскадрилье</p>
+              <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>{t('dossier.sqNone')}</h3>
+              <p style={{ margin: 0, fontSize: 13 }}>{t('dossier.sqNoneText')}</p>
               <Link href="/squadrons" className="btn btn-cyan" style={{ marginTop: 16, fontSize: 12 }}>
-                Найти эскадрилью
+                {t('dossier.sqFind')}
               </Link>
             </div>
           )}
@@ -1960,7 +1929,7 @@ export default function CmdrDossier(props: Props) {
       )}
 
       <Link href="/leaderboard" className="btn btn-cyan" style={{ marginTop: 18 }}>
-        ← К лидерборду
+        {t('dossier.backToLeaderboard')}
       </Link>
     </div>
   );

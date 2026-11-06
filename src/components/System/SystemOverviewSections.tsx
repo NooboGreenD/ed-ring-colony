@@ -28,6 +28,9 @@ import { allegianceLabel, economyLabel, governmentLabel, securityLabel, stateLab
 import { CARRIER_RELATION_LABEL } from '@/lib/carrierMap';
 import { POWERPLAY_STATE_LABEL, POWERPLAY_STATE_ZONE, powerColor, powerLabel, type PowerplayState } from '@/lib/powerplay';
 import { STAGE_LABELS, STATUS_LABELS, type ProjectStatus, type SystemStage } from '@/lib/architect/projects';
+import type { TFn } from '@/lib/i18n/gameLabels';
+import { ALLEGIANCE_KEYS, GOVERNMENT_KEYS, POWER_STATE_KEYS, POWER_STATE_ZONE_KEYS, STATE_KEYS, gameLabel } from '@/lib/i18n/gameLabels';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { SystemOverview } from '@/lib/systemOverview';
 
 const mono = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -96,32 +99,44 @@ function chip(tone: string): CSSProperties {
   };
 }
 
-const number = (value: number | null | undefined, digits = 0) =>
+const number = (locale: string, value: number | null | undefined, digits = 0) =>
   typeof value === 'number' && Number.isFinite(value)
-    ? value.toLocaleString('ru-RU', { maximumFractionDigits: digits })
+    ? value.toLocaleString(locale, { maximumFractionDigits: digits })
     : '—';
 
-function when(value: string | null | undefined): string {
+function when(locale: string, value: string | null | undefined): string {
   if (!value) return '—';
   const ms = Date.parse(value);
-  return Number.isFinite(ms) ? new Date(ms).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+  return Number.isFinite(ms) ? new Date(ms).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' }) : '—';
 }
 
 const SYSTEM_STATUS_LABEL: Record<string, string> = {
-  planned: 'Запланирована',
-  building: 'Строится',
-  done: 'Построена',
-  unknown: 'Нет данных',
+  planned: 'sysOv.statusPlanned',
+  building: 'sysOv.statusBuilding',
+  done: 'sysOv.statusDone',
+  unknown: 'sysOv.statusUnknown',
 };
 
 const SOURCE_LABEL: Record<string, string> = {
-  edsm: 'дамп EDSM',
+  edsm: 'sysOv.srcEdsm',
   helper: 'Colonial Helper',
-  web: 'журнал через сайт',
+  web: 'sysOv.srcWeb',
   eddn: 'EDDN',
   'colonial-helper': 'Colonial Helper',
   spansh: 'Spansh',
 };
+
+/** Ключ справочника в перевод: латинские значения (EDDN, Spansh) остаются как есть. */
+function sourceLabel(t: TFn, source: string): string {
+  const key = SOURCE_LABEL[source];
+  if (!key) return source;
+  return key.includes('.') ? t(key) : key;
+}
+
+function statusLabel(t: TFn, status: string): string {
+  const key = SYSTEM_STATUS_LABEL[status];
+  return key ? t(key) : status;
+}
 
 function Section({ icon, title, action, children }: { icon: ReactNode; title: string; action?: ReactNode; children: ReactNode }) {
   return (
@@ -146,16 +161,17 @@ function Fact({ name, children }: { name: string; children: ReactNode }) {
 
 /** Переходы в разделы сайта и внешние сервисы — одинаковые на всех страницах. */
 export function SystemLinksBar({ overview }: { overview: SystemOverview }) {
+  const { t } = useI18n();
   const { links } = overview;
   return (
-    <nav aria-label="Эта система в других разделах" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
-      <Link href={links.atlas} style={chip('var(--cyan)')}><IconAtlas size={12} /> Атлас</Link>
-      <Link href={links.factions} style={chip('var(--cyan)')}><IconShieldHalf size={12} /> Фракции</Link>
+    <nav aria-label={t('sysOv.linksAria')} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+      <Link href={links.atlas} style={chip('var(--cyan)')}><IconAtlas size={12} /> {t('sysOv.linkAtlas')}</Link>
+      <Link href={links.factions} style={chip('var(--cyan)')}><IconShieldHalf size={12} /> {t('sysOv.linkFactions')}</Link>
       <Link href={links.powerplay} style={chip('var(--cyan)')}><IconPower size={12} /> PowerPlay</Link>
-      <Link href={links.nearby} style={chip('var(--cyan)')}><IconCompass size={12} /> Поблизости</Link>
-      <Link href={links.market} style={chip('var(--green)')}><IconStore size={12} /> Рынки рядом</Link>
-      <Link href={links.stations} style={chip('var(--green)')}><IconSearch size={12} /> Поиск по станциям</Link>
-      <Link href={links.architect} style={chip('var(--orange)')}><IconConstruction size={12} /> Архитектор</Link>
+      <Link href={links.nearby} style={chip('var(--cyan)')}><IconCompass size={12} /> {t('sysOv.linkNearby')}</Link>
+      <Link href={links.market} style={chip('var(--green)')}><IconStore size={12} /> {t('sysOv.linkMarket')}</Link>
+      <Link href={links.stations} style={chip('var(--green)')}><IconSearch size={12} /> {t('sysOv.linkStations')}</Link>
+      <Link href={links.architect} style={chip('var(--orange)')}><IconConstruction size={12} /> {t('sysOv.linkArchitect')}</Link>
       <a href={links.external.edsm} target="_blank" rel="noopener noreferrer" style={chip('var(--muted)')}>EDSM <IconExternalLink size={10} /></a>
       {links.external.spansh && <a href={links.external.spansh} target="_blank" rel="noopener noreferrer" style={chip('var(--muted)')}>Spansh <IconExternalLink size={10} /></a>}
       <a href={links.external.raven} target="_blank" rel="noopener noreferrer" style={chip('var(--muted)')}>Raven <IconExternalLink size={10} /></a>
@@ -165,37 +181,38 @@ export function SystemLinksBar({ overview }: { overview: SystemOverview }) {
 }
 
 function ColonisationSection({ overview }: { overview: SystemOverview }) {
+  const { t, locale } = useI18n();
   const { progress, architect, plans, known } = overview.colonisation;
   if (!known && !architect && plans.length === 0) return null;
   const tone = progress.status === 'done' ? 'var(--green)' : progress.status === 'building' ? 'var(--orange)' : 'var(--cyan)';
   return (
     <Section
       icon={<IconChart size={18} />}
-      title="Колонизация — все источники"
-      action={<Link href={overview.links.architect} style={chip('var(--orange)')}><IconConstruction size={12} /> Открыть в Архитекторе</Link>}
+      title={t('sysOv.colonisationTitle')}
+      action={<Link href={overview.links.architect} style={chip('var(--orange)')}><IconConstruction size={12} /> {t('sysOv.openInArchitect')}</Link>}
     >
       <p style={{ ...muted, marginTop: 0 }}>
-        Тот же расчёт, что в «Проектах систем»: кэш Raven Colonial, площадки из журналов пилотов (Colonial Helper, загрузка на сайте, CAPI) и план архитектора.
+        {t('sysOv.colonisationLead')}
       </p>
       <div style={grid}>
-        <Fact name="Прогресс">
-          <span style={{ fontSize: 26, fontWeight: 700, color: tone }}>{progress.progress == null ? '—' : `${number(progress.progress, 2)}%`}</span>
+        <Fact name={t('sysOv.factProgress')}>
+          <span style={{ fontSize: 26, fontWeight: 700, color: tone }}>{progress.progress == null ? '—' : `${number(locale, progress.progress, 2)}%`}</span>
         </Fact>
-        <Fact name="Статус"><span style={{ color: tone }}>{SYSTEM_STATUS_LABEL[progress.status] ?? progress.status}</span></Fact>
-        <Fact name="Площадки">{progress.sites.length ? `${progress.sitesComplete} готово · ${progress.sitesActive} в работе` : '—'}</Fact>
-        {progress.totalTons > 0 && <Fact name="Тоннаж">{number(progress.doneTons)} / {number(progress.totalTons)} т</Fact>}
-        {progress.remaining != null && <Fact name="Осталось привезти">{number(progress.remaining)} т</Fact>}
-        <Fact name="Архитектор">{architect ? `${architect.name}${architect.isViewer ? ' (вы)' : ''}` : 'не назначен'}</Fact>
+        <Fact name={t('sysOv.factStatus')}><span style={{ color: tone }}>{statusLabel(t, progress.status)}</span></Fact>
+        <Fact name={t('sysOv.factSites')}>{progress.sites.length ? t('sysOv.sitesSummary', { done: progress.sitesComplete, active: progress.sitesActive }) : '—'}</Fact>
+        {progress.totalTons > 0 && <Fact name={t('sysOv.factTonnage')}>{number(locale, progress.doneTons)} / {number(locale, progress.totalTons)} {t('sysOv.tonsUnit')}</Fact>}
+        {progress.remaining != null && <Fact name={t('sysOv.factRemaining')}>{number(locale, progress.remaining)} {t('sysOv.tonsUnit')}</Fact>}
+        <Fact name={t('sysOv.factArchitect')}>{architect ? `${architect.isViewer ? t('sysOv.architectSelf', { name: architect.name }) : architect.name}` : t('sysOv.architectNone')}</Fact>
       </div>
       {progress.sites.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <div style={label}>Площадки</div>
+          <div style={label}>{t('sysOv.sitesLabel')}</div>
           {progress.sites.slice(0, 12).map((site) => (
             <div key={site.key} style={row}>
               <span>{site.name}{site.body ? <span style={muted}> · {site.body}</span> : null}</span>
               <span style={{ color: site.complete ? 'var(--green)' : 'var(--orange)', fontFamily: mono }}>
-                {site.complete ? 'готово' : site.progress == null ? '—' : `${number(site.progress, 1)}%`}
-                <span style={muted}> · {site.source === 'both' ? 'Raven + журнал' : site.source === 'raven' ? 'Raven' : 'журнал'}</span>
+                {site.complete ? t('sysOv.siteDone') : site.progress == null ? '—' : `${number(locale, site.progress, 1)}%`}
+                <span style={muted}> · {site.source === 'both' ? t('sysOv.sourceBoth') : site.source === 'raven' ? 'Raven' : t('sysOv.sourceJournal')}</span>
               </span>
             </div>
           ))}
@@ -203,27 +220,27 @@ function ColonisationSection({ overview }: { overview: SystemOverview }) {
       )}
       {progress.needs.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <div style={label}>Что ещё нужно</div>
+          <div style={label}>{t('sysOv.needsLabel')}</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {progress.needs.slice(0, 12).map((need) => (
-              <span key={need.key} style={{ ...chip('var(--line)'), color: 'var(--text)' }}>{need.label}: {number(need.remaining)} т</span>
+              <span key={need.key} style={{ ...chip('var(--line)'), color: 'var(--text)' }}>{need.label}: {number(locale, need.remaining)} {t('sysOv.tonsUnit')}</span>
             ))}
           </div>
           <div style={{ marginTop: 10 }}>
-            <Link href={overview.links.market} style={{ color: 'var(--green)', fontSize: 12 }}>Где купить рядом → Атлас «Рынок»</Link>
+            <Link href={overview.links.market} style={{ color: 'var(--green)', fontSize: 12 }}>{t('sysOv.whereToBuy')}</Link>
           </div>
         </div>
       )}
       {plans.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <div style={label}>Планы системы</div>
+          <div style={label}>{t('sysOv.plansLabel')}</div>
           {plans.map((plan) => (
             <div key={plan.id} style={row}>
               <span>
                 {plan.title}
-                <span style={muted}> · {plan.authorName}{plan.byArchitect ? ' (архитектор)' : ''}{plan.own ? ' · ваш' : ''}{plan.visibility !== 'public' ? ' · черновик' : ''}</span>
+                <span style={muted}> · {plan.authorName}{plan.byArchitect ? t('sysOv.planByArchitect') : ''}{plan.own ? t('sysOv.planOwn') : ''}{plan.visibility !== 'public' ? t('sysOv.planDraft') : ''}</span>
               </span>
-              <span style={{ fontFamily: mono, ...muted }}>{plan.siteCount} площ. · {number(plan.haulTons)} т</span>
+              <span style={{ fontFamily: mono, ...muted }}>{t('sysOv.planLine', { sites: plan.siteCount, tons: number(locale, plan.haulTons) })}</span>
             </div>
           ))}
         </div>
@@ -233,46 +250,47 @@ function ColonisationSection({ overview }: { overview: SystemOverview }) {
 }
 
 function ProjectsSection({ overview }: { overview: SystemOverview }) {
+  const { t, locale } = useI18n();
   const { squadron, architect } = overview.projects;
   const { route, hub } = overview.ring;
   if (!squadron.length && !architect.length && !route && !hub) return null;
   return (
-    <Section icon={<IconProjects size={18} />} title="Проекты и кольцо">
+    <Section icon={<IconProjects size={18} />} title={t('sysOv.projectsTitle')}>
       {(route || hub) && (
         <div style={{ ...grid, marginBottom: 12 }}>
-          {hub && <Fact name="Хаб кольца">{hub.name || 'Хаб'}{hub.segment != null ? <span style={muted}> · сегмент {hub.segment}</span> : null}</Fact>}
-          {route && <Fact name="Маршрут кольца">№ {route.order}{route.progress != null ? ` · ${number(route.progress)}%` : ''}</Fact>}
-          <Fact name="Карта кольца"><Link href="/map" style={{ color: 'var(--cyan)' }}>Открыть карту</Link> · <Link href="/systems" style={{ color: 'var(--cyan)' }}>системы</Link></Fact>
+          {hub && <Fact name={t('sysOv.factRingHub')}>{hub.name || t('sysOv.hubFallback')}{hub.segment != null ? <span style={muted}>{t('sysOv.hubSegment', { segment: hub.segment })}</span> : null}</Fact>}
+          {route && <Fact name={t('sysOv.factRingRoute')}>{t('sysOv.routeNumber', { order: route.order })}{route.progress != null ? ` · ${number(locale, route.progress)}%` : ''}</Fact>}
+          <Fact name={t('sysOv.factRingMap')}><Link href="/map" style={{ color: 'var(--cyan)' }}>{t('sysOv.openMap')}</Link> · <Link href="/systems" style={{ color: 'var(--cyan)' }}>{t('sysOv.systemsLink')}</Link></Fact>
         </div>
       )}
       {squadron.length > 0 && (
         <div style={{ marginBottom: architect.length ? 14 : 0 }}>
-          <div style={label}>Проекты эскадрилий</div>
+          <div style={label}>{t('sysOv.sqProjectsLabel')}</div>
           {squadron.map((project) => (
             <div key={`sq-${project.id}`} style={row}>
               <span>
                 <Link href={`/projects/${project.id}`} style={{ color: project.color || 'var(--text)' }}>{project.name}</Link>
                 {project.squadron && (
-                  <span style={muted}> · <Link href={`/squadrons/${project.squadron.id}`} style={{ color: 'var(--muted)' }}>{project.squadron.tag ? `[${project.squadron.tag}] ` : ''}{project.squadron.name ?? 'эскадрилья'}</Link></span>
+                  <span style={muted}> · <Link href={`/squadrons/${project.squadron.id}`} style={{ color: 'var(--muted)' }}>{project.squadron.tag ? `[${project.squadron.tag}] ` : ''}{project.squadron.name ?? t('sysOv.squadronFallback')}</Link></span>
                 )}
               </span>
-              <span style={{ fontFamily: mono }}>{SYSTEM_STATUS_LABEL[project.systemStatus] ?? project.systemStatus}</span>
+              <span style={{ fontFamily: mono }}>{statusLabel(t, project.systemStatus)}</span>
             </div>
           ))}
         </div>
       )}
       {architect.length > 0 && (
         <div>
-          <div style={label}>Ваши «Проекты систем»</div>
+          <div style={label}>{t('sysOv.ownProjectsLabel')}</div>
           {architect.map((project) => (
             <div key={`ap-${project.id}`} style={row}>
               <span>
                 <Link href={`/architect/projects/${project.id}`} style={{ color: project.color || 'var(--text)' }}>{project.name}</Link>
-                <span style={muted}> · {STATUS_LABELS[project.status as ProjectStatus] ?? project.status}</span>
+                <span style={muted}> · {STATUS_LABELS[project.status as ProjectStatus] ? t(STATUS_LABELS[project.status as ProjectStatus]) : project.status}</span>
               </span>
               <span style={{ fontFamily: mono }}>
-                {STAGE_LABELS[project.stage as SystemStage] ?? project.stage}
-                {project.progress != null ? <span style={muted}> · проект {number(project.progress, 1)}%</span> : null}
+                {STAGE_LABELS[project.stage as SystemStage] ? t(STAGE_LABELS[project.stage as SystemStage]) : project.stage}
+                {project.progress != null ? <span style={muted}>{t('sysOv.projectProgress', { percent: number(locale, project.progress, 1) })}</span> : null}
               </span>
             </div>
           ))}
@@ -283,6 +301,7 @@ function ProjectsSection({ overview }: { overview: SystemOverview }) {
 }
 
 function StationsSection({ overview }: { overview: SystemOverview }) {
+  const { t, locale } = useI18n();
   const { items } = overview.stations;
   if (!items.length) return null;
   const stations = items.filter((station) => !station.carrier);
@@ -290,8 +309,8 @@ function StationsSection({ overview }: { overview: SystemOverview }) {
   return (
     <Section
       icon={<IconStore size={18} />}
-      title={`Станции (${stations.length})`}
-      action={<Link href={overview.links.stations} style={chip('var(--green)')}><IconSearch size={12} /> Поиск по станциям</Link>}
+      title={t('sysOv.stationSection', { count: stations.length })}
+      action={<Link href={overview.links.stations} style={chip('var(--green)')}><IconSearch size={12} /> {t('sysOv.linkStations')}</Link>}
     >
       {stations.slice(0, 20).map((station) => (
         <div key={station.key} style={row}>
@@ -299,40 +318,41 @@ function StationsSection({ overview }: { overview: SystemOverview }) {
             {station.name}
             <span style={muted}>
               {station.type ? ` · ${station.type}` : ''}
-              {station.distanceLs != null ? ` · ${number(station.distanceLs)} св. с.` : ''}
-              {station.engineers.length ? ` · инженеры: ${station.engineers.join(', ')}` : ''}
+              {station.distanceLs != null ? t('sysOv.lsUnit', { value: number(locale, station.distanceLs) }) : ''}
+              {station.engineers.length ? t('sysOv.stationEngineers', { names: station.engineers.join(', ') }) : ''}
             </span>
           </span>
           <span style={{ ...muted, fontFamily: mono, textAlign: 'right' }}>
             {(['market', 'outfitting', 'shipyard'] as const)
               .filter((kind) => station.inventories[kind])
-              .map((kind) => ({ market: 'рынок', outfitting: 'модули', shipyard: 'верфь' })[kind])
-              .join(' · ') || 'без товаров'}
-            {' · '}{SOURCE_LABEL[station.source] ?? station.source} {when(station.observedAt)}
+              .map((kind) => t({ market: 'sysOv.market', outfitting: 'sysOv.outfitting', shipyard: 'sysOv.shipyard' }[kind]))
+              .join(' · ') || t('sysOv.noGoods')}
+            {' · '}{sourceLabel(t, station.source)} {when(locale, station.observedAt)}
           </span>
         </div>
       ))}
-      {carriers > 0 && <p style={{ ...muted, marginBottom: 0 }}>Ещё {carriers} авианосц(а/ев) с рынком — в разделе «Авианосцы» ниже и в поиске станций.</p>}
+      {carriers > 0 && <p style={{ ...muted, marginBottom: 0 }}>{t('sysOv.carriersMore', { count: carriers })}</p>}
     </Section>
   );
 }
 
 function FactionsSection({ overview }: { overview: SystemOverview }) {
+  const { t, locale } = useI18n();
   const detail = overview.factions;
   if (!detail) return null;
   return (
     <Section
       icon={<IconShieldHalf size={18} />}
-      title="Минорные фракции"
-      action={<Link href={overview.links.factions} style={chip('var(--cyan)')}><IconAtlas size={12} /> На карте фракций</Link>}
+      title={t('sysOv.factionsTitle')}
+      action={<Link href={overview.links.factions} style={chip('var(--cyan)')}><IconAtlas size={12} /> {t('sysOv.factionsOnMap')}</Link>}
     >
       <div style={grid}>
-        <Fact name="Контролирует">{detail.controlling ?? '—'}</Fact>
-        <Fact name="Принадлежность">{allegianceLabel(detail.allegiance)}</Fact>
-        <Fact name="Правительство">{governmentLabel(detail.government)}</Fact>
-        <Fact name="Экономика">{economyLabel(detail.economy)}{detail.secondEconomy ? ` / ${economyLabel(detail.secondEconomy)}` : ''}</Fact>
-        <Fact name="Безопасность">{securityLabel(detail.security)}</Fact>
-        <Fact name="Население">{number(detail.population)}</Fact>
+        <Fact name={t('sysOv.factControlling')}>{detail.controlling ?? '—'}</Fact>
+        <Fact name={t('sysOv.factAllegiance')}>{gameLabel(t, ALLEGIANCE_KEYS, detail.allegiance, allegianceLabel(detail.allegiance))}</Fact>
+        <Fact name={t('sysOv.factGovernment')}>{gameLabel(t, GOVERNMENT_KEYS, detail.government, governmentLabel(detail.government))}</Fact>
+        <Fact name={t('sysOv.factEconomy')}>{economyLabel(detail.economy)}{detail.secondEconomy ? ` / ${economyLabel(detail.secondEconomy)}` : ''}</Fact>
+        <Fact name={t('sysOv.factSecurity')}>{securityLabel(detail.security)}</Fact>
+        <Fact name={t('sysOv.factPopulation')}>{number(locale, detail.population)}</Fact>
       </div>
       {detail.factions.length > 0 && (
         <div style={{ marginTop: 14 }}>
@@ -340,24 +360,25 @@ function FactionsSection({ overview }: { overview: SystemOverview }) {
             <div key={faction.id} style={row}>
               <span>
                 {faction.name}
-                <span style={muted}> · {allegianceLabel(faction.allegiance)}{faction.isPlayer ? ' · игроков' : ''}</span>
+                <span style={muted}> · {gameLabel(t, ALLEGIANCE_KEYS, faction.allegiance, allegianceLabel(faction.allegiance))}{faction.isPlayer ? t('sysOv.playerFaction') : ''}</span>
               </span>
               <span style={{ fontFamily: mono }}>
-                {faction.influence == null ? '—' : `${number(faction.influence * 100, 1)}%`}
-                {faction.activeStates.length ? <span style={muted}> · {faction.activeStates.map((state) => stateLabel(state)).join(', ')}</span> : null}
+                {faction.influence == null ? '—' : `${number(locale, faction.influence * 100, 1)}%`}
+                {faction.activeStates.length ? <span style={muted}> · {faction.activeStates.map((state) => gameLabel(t, STATE_KEYS, state, stateLabel(state))).join(', ')}</span> : null}
               </span>
             </div>
           ))}
         </div>
       )}
       <p style={{ ...muted, marginBottom: 0 }}>
-        Наблюдение: {when(detail.observedAt)} · {BGS_SOURCE_LABEL[detail.source as BgsSource] ?? detail.source}
+        {t('sysOv.observed', { when: when(locale, detail.observedAt), source: BGS_SOURCE_LABEL[detail.source as BgsSource] ?? detail.source })}
       </p>
     </Section>
   );
 }
 
 function PowerplaySection({ overview }: { overview: SystemOverview }) {
+  const { t, locale } = useI18n();
   const pp = overview.powerplay;
   if (!pp) return null;
   const color = pp.power ? powerColor(pp.power) : 'var(--muted)';
@@ -366,35 +387,36 @@ function PowerplaySection({ overview }: { overview: SystemOverview }) {
     <Section
       icon={<IconPower size={18} />}
       title="PowerPlay"
-      action={<Link href={overview.links.powerplay} style={chip('var(--cyan)')}><IconAtlas size={12} /> На карте PowerPlay</Link>}
+      action={<Link href={overview.links.powerplay} style={chip('var(--cyan)')}><IconAtlas size={12} /> {t('sysOv.ppOnMap')}</Link>}
     >
       <div style={grid}>
-        <Fact name="Держава">
-          <span style={{ color }}>{pp.power ? powerLabel(pp.power) : 'не определена'}</span>
+        <Fact name={t('sysOv.factPower')}>
+          <span style={{ color }}>{pp.power ? powerLabel(pp.power) : t('sysOv.powerUnknown')}</span>
           {!pp.power && (
             <div style={muted}>
-              Дамп EDSM перечисляет у системы несколько держав и не говорит, какая владелец; его уточнит журнал пилота или EDDN
+              {t('sysOv.ppUnknownHint')}
             </div>
           )}
         </Fact>
-        <Fact name="Состояние">{POWERPLAY_STATE_LABEL[state] ?? pp.state}<div style={muted}>{POWERPLAY_STATE_ZONE[state] ?? ''}</div></Fact>
-        {pp.controlProgress != null && <Fact name="Шкала контроля">{number(pp.controlProgress * 100, 1)}%</Fact>}
-        {pp.reinforcement != null && <Fact name="Подкрепление">{number(pp.reinforcement)}</Fact>}
-        {pp.undermining != null && <Fact name="Подрыв">{number(pp.undermining)}</Fact>}
+        <Fact name={t('sysOv.factState')}>{gameLabel(t, POWER_STATE_KEYS, pp.state, POWERPLAY_STATE_LABEL[state] ?? pp.state)}<div style={muted}>{gameLabel(t, POWER_STATE_ZONE_KEYS, pp.state, POWERPLAY_STATE_ZONE[state] ?? '')}</div></Fact>
+        {pp.controlProgress != null && <Fact name={t('sysOv.factControlScale')}>{number(locale, pp.controlProgress * 100, 1)}%</Fact>}
+        {pp.reinforcement != null && <Fact name={t('sysOv.factReinforcement')}>{number(locale, pp.reinforcement)}</Fact>}
+        {pp.undermining != null && <Fact name={t('sysOv.factUndermining')}>{number(locale, pp.undermining)}</Fact>}
         {(pp.powers.length > 1 || (!pp.power && pp.powers.length > 0)) && (
-          <Fact name={pp.power ? 'Державы в системе' : 'Претенденты'}>{pp.powers.map((power) => powerLabel(power)).join(', ')}</Fact>
+          <Fact name={pp.power ? t('sysOv.factPowersInSystem') : t('sysOv.factContenders')}>{pp.powers.map((power) => powerLabel(power)).join(', ')}</Fact>
         )}
       </div>
-      <p style={{ ...muted, marginBottom: 0 }}>Наблюдение: {when(pp.observedAt)} · {SOURCE_LABEL[pp.source] ?? pp.source}</p>
+      <p style={{ ...muted, marginBottom: 0 }}>{t('sysOv.observed', { when: when(locale, pp.observedAt), source: sourceLabel(t, pp.source) })}</p>
     </Section>
   );
 }
 
 function CarriersSection({ overview }: { overview: SystemOverview }) {
+  const { t } = useI18n();
   const { carriers } = overview;
   if (!carriers.length) return null;
   return (
-    <Section icon={<IconAnchor size={18} />} title={`Авианосцы (${carriers.length})`}>
+    <Section icon={<IconAnchor size={18} />} title={t('sysOv.carriersSection', { count: carriers.length })}>
       {carriers.map((carrier) => (
         <div key={carrier.id} style={row}>
           <span>
@@ -408,8 +430,8 @@ function CarriersSection({ overview }: { overview: SystemOverview }) {
             </span>
           </span>
           <span style={{ ...muted, fontFamily: mono, textAlign: 'right' }}>
-            {carrier.jump ? `прыжок → ${carrier.jump.system}` : carrier.docking ?? ''}
-            {carrier.estimated ? ' · по расписанию' : ''}
+            {carrier.jump ? t('sysOv.carrierJump', { system: carrier.jump.system }) : carrier.docking ?? ''}
+            {carrier.estimated ? t('sysOv.carrierScheduled') : ''}
           </span>
         </div>
       ))}
@@ -418,23 +440,24 @@ function CarriersSection({ overview }: { overview: SystemOverview }) {
 }
 
 function CommunitySection({ overview }: { overview: SystemOverview }) {
+  const { t, locale } = useI18n();
   const { goals, deliveries, scans } = overview.community;
   if (!goals.length && deliveries.tons <= 0 && scans.bodies <= 0) return null;
   return (
-    <Section icon={<IconUsers size={18} />} title="Сообщество">
+    <Section icon={<IconUsers size={18} />} title={t('sysOv.communityTitle')}>
       <div style={grid}>
-        {deliveries.tons > 0 && <Fact name="Привезено на стройки">{number(deliveries.tons)} т<div style={muted}>{number(deliveries.pilots)} пилот(ов) · последняя {when(deliveries.lastAt)}</div></Fact>}
-        {scans.bodies > 0 && <Fact name="Сканы тел">{number(scans.bodies)}<div style={muted}>обновлены {when(scans.updatedAt)}</div></Fact>}
-        <Fact name="Рейтинги"><Link href="/leaderboard" style={{ color: 'var(--cyan)' }}>Лидерборд</Link></Fact>
+        {deliveries.tons > 0 && <Fact name={t('sysOv.factDelivered')}>{number(locale, deliveries.tons)} {t('sysOv.tonsUnit')}<div style={muted}>{t('sysOv.deliveredPilots', { pilots: number(locale, deliveries.pilots), when: when(locale, deliveries.lastAt) })}</div></Fact>}
+        {scans.bodies > 0 && <Fact name={t('sysOv.factScans')}>{number(locale, scans.bodies)}<div style={muted}>{t('sysOv.scansUpdated', { when: when(locale, scans.updatedAt) })}</div></Fact>}
+        <Fact name={t('sysOv.factRatings')}><Link href="/leaderboard" style={{ color: 'var(--cyan)' }}>{t('sysOv.leaderboard')}</Link></Fact>
       </div>
       {goals.map((goal) => (
         <div key={goal.id} style={row}>
           <span>
             <Link href="/cg" style={{ color: 'var(--text)' }}>{goal.title}</Link>
-            <span style={muted}>{goal.station ? ` · ${goal.station}` : ''}{goal.colonisation ? ' · колонизация' : ''}</span>
+            <span style={muted}>{goal.station ? ` · ${goal.station}` : ''}{goal.colonisation ? t('sysOv.goalColonisation') : ''}</span>
           </span>
           <span style={{ ...muted, fontFamily: mono }}>
-            {goal.complete ? 'завершена' : `ярус ${goal.tier ?? '—'}/${goal.tierMax ?? '—'} · до ${when(goal.expiresAt)}`}
+            {goal.complete ? t('sysOv.goalComplete') : t('sysOv.goalTier', { tier: goal.tier ?? '—', max: goal.tierMax ?? '—', when: when(locale, goal.expiresAt) })}
           </span>
         </div>
       ))}
@@ -443,12 +466,13 @@ function CommunitySection({ overview }: { overview: SystemOverview }) {
 }
 
 function FreshnessSection({ overview }: { overview: SystemOverview }) {
+  const { t, locale } = useI18n();
   if (!overview.freshness.length && !overview.warnings.length) return null;
   return (
-    <Section icon={<IconDatabase size={18} />} title="Источники данных">
+    <Section icon={<IconDatabase size={18} />} title={t('sysOv.sourcesTitle')}>
       <div style={grid}>
         {overview.freshness.map((item) => (
-          <Fact key={item.source} name={item.label}>{when(item.at)}</Fact>
+          <Fact key={item.source} name={item.label}>{when(locale, item.at)}</Fact>
         ))}
       </div>
       {overview.warnings.map((warning) => (

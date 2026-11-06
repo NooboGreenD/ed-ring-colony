@@ -19,6 +19,7 @@ import { buildOrreryLayout, habitableZoneLs, toStructures } from '@/lib/systemOr
 import SystemOrrery3D from '@/components/SystemMap/SystemOrrery3D';
 import SystemOverviewSections, { SystemLinksBar } from '@/components/System/SystemOverviewSections';
 import { STAR_CLASS_LABELS, type StarClass } from '@/lib/galaxySystems';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { SystemOverview } from '@/lib/systemOverview';
 
 interface ResourceData {
@@ -163,6 +164,7 @@ function linkButtonStyle(tone: string): React.CSSProperties {
 const NO_ROWS: any[] = [];
 
 export default function SystemPage() {
+  const { t, locale } = useI18n();
   const { name } = useParams();
   const systemName = decodeURIComponent(name as string);
   const [system, setSystem] = useState<SystemData | null>(null);
@@ -263,7 +265,7 @@ export default function SystemPage() {
     return (
       <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 40, textAlign: 'center' }}>
         <div style={{ color: 'var(--orange)', fontFamily: 'ui-monospace, monospace', fontSize: 14, letterSpacing: 2 }}>
-          Загрузка системы...
+          {t('syspage.loading')}
         </div>
       </main>
     );
@@ -274,34 +276,34 @@ export default function SystemPage() {
     return (
       <main className="card" style={pageStyle}>
         <div style={{ marginBottom: 20 }}>
-          <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
+          <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>{t('syspage.backToMap')}</Link>
         </div>
         <h1 style={titleStyle}>{galaxy.name}</h1>
         <p style={{ color: 'var(--muted)', marginTop: 0 }}>
-          Система есть в каталоге Spansh. Стройки на маршруте колонии здесь нет — это не статус «запланировано».
+          {t('syspage.spanshNote')}
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
           <div>
-            <div style={labelStyle}>Главная звезда</div>
+            <div style={labelStyle}>{t('syspage.mainStar')}</div>
             <div style={{ color: 'var(--text)' }}>{starLabel}</div>
             {galaxy.main_star && <div style={{ fontSize: 12, color: 'var(--muted)' }}>{galaxy.main_star}</div>}
           </div>
           <div>
-            <div style={labelStyle}>Координаты</div>
+            <div style={labelStyle}>{t('syspage.coordinates')}</div>
             <div style={{ color: 'var(--text)', fontFamily: 'ui-monospace, monospace', fontSize: 13 }}>
               {galaxy.x.toFixed(2)}, {galaxy.y.toFixed(2)}, {galaxy.z.toFixed(2)}
             </div>
           </div>
           <div>
-            <div style={labelStyle}>До Sol / Sgr A*</div>
+            <div style={labelStyle}>{t('syspage.toSolSgra')}</div>
             <div style={{ color: 'var(--text)' }}>
-              {galaxy.distance_from_sols != null ? `${Number(galaxy.distance_from_sols).toFixed(1)} св.лет` : '—'}
+              {galaxy.distance_from_sols != null ? t('syspage.ly', { value: Number(galaxy.distance_from_sols).toFixed(1) }) : '—'}
               {' · '}
-              {galaxy.distance_from_sgra != null ? `${Number(galaxy.distance_from_sgra).toFixed(1)} св.лет` : '—'}
+              {galaxy.distance_from_sgra != null ? t('syspage.ly', { value: Number(galaxy.distance_from_sgra).toFixed(1) }) : '—'}
             </div>
           </div>
           {galaxy.needs_permit && (
-            <div style={{ color: 'var(--red)' }}>Нужен permit</div>
+            <div style={{ color: 'var(--red)' }}>{t('syspage.permitNeeded')}</div>
           )}
         </div>
         {overview ? <SystemLinksBar overview={overview} /> : (
@@ -323,7 +325,7 @@ export default function SystemPage() {
           />
         )}
         {orreryLayout.bodies.length > 0 && (
-          <p style={{ color: 'var(--muted)', fontSize: 13 }}>В локальных сканах {orreryLayout.bodies.length} тел.</p>
+          <p style={{ color: 'var(--muted)', fontSize: 13 }}>{t('syspage.localBodies', { count: orreryLayout.bodies.length })}</p>
         )}
         {overview && <SystemOverviewSections overview={overview} />}
       </main>
@@ -336,11 +338,11 @@ export default function SystemPage() {
     return (
       <main className="card" style={pageStyle}>
         <div style={{ marginBottom: 20 }}>
-          <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
+          <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>{t('syspage.backToMap')}</Link>
         </div>
         <h1 style={titleStyle}>{overview.name}</h1>
         <p style={{ color: 'var(--muted)', marginTop: 0 }}>
-          Системы нет в каталоге и у Raven Colonial, но о ней знают другие разделы сайта.
+          {t('syspage.otherSections')}
         </p>
         <SystemLinksBar overview={overview} />
         <SystemOverviewSections overview={overview} />
@@ -351,9 +353,9 @@ export default function SystemPage() {
   if (!system || !system.found) {
     return (
       <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 40 }}>
-        <h1 style={{ color: 'var(--red)' }}><IconXCircle size={20} color="var(--red)" /> Система не найдена</h1>
-        <p style={{ color: 'var(--muted)' }}>{system?.error || 'Не удалось загрузить данные системы'}</p>
-        <Link href="/map" style={{ color: 'var(--cyan)', textDecoration: 'none' }}>← Вернуться к карте</Link>
+        <h1 style={{ color: 'var(--red)' }}><IconXCircle size={20} color="var(--red)" /> {t('syspage.notFound')}</h1>
+        <p style={{ color: 'var(--muted)' }}>{system?.error || t('syspage.loadFailed')}</p>
+        <Link href="/map" style={{ color: 'var(--cyan)', textDecoration: 'none' }}>{t('syspage.backToMapShort')}</Link>
       </main>
     );
   }
@@ -368,7 +370,7 @@ export default function SystemPage() {
   return (
     <main className="card" style={pageStyle}>
       <div style={{ marginBottom: 20 }}>
-        <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
+        <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>{t('syspage.backToMap')}</Link>
       </div>
 
       <h1 style={titleStyle}>{systemName}</h1>
@@ -384,13 +386,13 @@ export default function SystemPage() {
           <IconPlane size={12} /> RavenColonial <IconExternalLink size={10} />
         </a>
         <Link href={`/architect?system=${encodeURIComponent(systemName)}`} style={linkButtonStyle('var(--orange)')}>
-          <IconConstruction size={12} /> Архитектор системы
+          <IconConstruction size={12} /> {t('syspage.architectLink')}
         </Link>
         <Link
           href={`/atlas?tab=market&system=${encodeURIComponent(systemName)}`}
           style={linkButtonStyle('var(--green)')}
         >
-          <IconPackage size={12} /> Рынки рядом
+          <IconPackage size={12} /> {t('syspage.marketsNearby')}
         </Link>
         <a
           href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(systemName)}`}
@@ -411,47 +413,47 @@ export default function SystemPage() {
 
       {/* Статус строительства */}
       <div style={panelStyle}>
-        <h2 style={sectionTitleStyle}><IconChart size={18} /> Статус строительства</h2>
+        <h2 style={sectionTitleStyle}><IconChart size={18} /> {t('syspage.constructionStatus')}</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
           <div>
-            <div style={labelStyle}>Прогресс</div>
+            <div style={labelStyle}>{t('syspage.progress')}</div>
             <div style={{ fontSize: 32, fontWeight: 700, color: system.progress === 100 ? 'var(--green)' : 'var(--orange)' }}>
               {system.progress == null ? '—' : `${formatPercent(system.progress)}%`}
             </div>
           </div>
           <div>
-            <div style={labelStyle}>Статус</div>
+            <div style={labelStyle}>{t('syspage.status')}</div>
             <div style={{ fontSize: 16, fontWeight: 600, color: system.status === 'done' ? 'var(--green)' : system.status === 'building' ? 'var(--orange)' : 'var(--cyan)' }}>
-              {system.status === 'done' ? <><IconCheckCircle size={16} /> Завершён</> : system.status === 'building' ? <><IconConstruction size={16} /> Строительство</> : <><IconCheck size={16} /> Запланирован</>}
+              {system.status === 'done' ? <><IconCheckCircle size={16} /> {t('syspage.statusDone')}</> : system.status === 'building' ? <><IconConstruction size={16} /> {t('syspage.statusBuilding')}</> : <><IconCheck size={16} /> {t('syspage.statusPlanned')}</>}
             </div>
           </div>
           {hasImportedCargo && (
             <div>
-              <div style={labelStyle}>Груз доставлен</div>
+              <div style={labelStyle}>{t('syspage.cargoDelivered')}</div>
               <div style={{ fontSize: 16, color: 'var(--text)', fontWeight: 600 }}>
-                {formatCargo(hasSystemCargoTotals ? system.totalProvided : importedCargo)} / {formatCargo(system.totalRequired)} т
+                {t('syspage.tonsPair', { provided: formatCargo(hasSystemCargoTotals ? system.totalProvided : importedCargo), required: formatCargo(system.totalRequired) })}
               </div>
               <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
-                Осталось: {formatCargo(system.totalRemaining)} т
+                {t('syspage.remaining', { value: formatCargo(system.totalRemaining) })}
               </div>
             </div>
           )}
           {system.siteName && (
             <div>
-              <div style={labelStyle}>Сайт</div>
+              <div style={labelStyle}>{t('syspage.site')}</div>
               <div style={{ fontSize: 16, color: 'var(--text)' }}>{system.siteName}</div>
             </div>
           )}
           {system.architectName && (
             <div>
-              <div style={labelStyle}>Архитектор</div>
+              <div style={labelStyle}>{t('syspage.architect')}</div>
               <div style={{ fontSize: 16, color: 'var(--text)' }}>{system.architectName}</div>
             </div>
           )}
           {system.updated_at && (
             <div>
-              <div style={labelStyle}>Обновлено</div>
-              <div style={{ fontSize: 14, color: 'var(--muted)' }}>{new Date(system.updated_at).toLocaleString('ru-RU')}</div>
+              <div style={labelStyle}>{t('syspage.updated')}</div>
+              <div style={{ fontSize: 14, color: 'var(--muted)' }}>{new Date(system.updated_at).toLocaleString(locale)}</div>
             </div>
           )}
         </div>
@@ -461,25 +463,25 @@ export default function SystemPage() {
           площадки, — без похода в EDSM и Spansh. */}
       {(starFacts.length > 0 || galaxy) && (
         <div style={panelStyle}>
-          <h2 style={sectionTitleStyle}><IconGlobe size={18} /> Система и обитаемые зоны</h2>
+          <h2 style={sectionTitleStyle}><IconGlobe size={18} /> {t('syspage.systemAndZones')}</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             {starFacts.map((star) => (
               <div key={star.name} style={innerPanelStyle}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
                   <span style={{ color: 'var(--orange)', fontWeight: 700, fontSize: 14 }}>★ {star.short}</span>
-                  <span style={{ color: 'var(--muted)', fontSize: 11 }}>{star.cls || 'класс неизвестен'}</span>
+                  <span style={{ color: 'var(--muted)', fontSize: 11 }}>{star.cls || t('syspage.unknownClass')}</span>
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: 'var(--muted)' }}>
-                  {star.tempK > 0 && <span>{Math.round(star.tempK).toLocaleString('ru-RU')} K</span>}
-                  {star.radiusM > 0 && <span>{Math.round(star.radiusM / 1000).toLocaleString('ru-RU')} км</span>}
-                  {star.distanceLs > 0 && <span>{Math.round(star.distanceLs).toLocaleString('ru-RU')} св. с от входа</span>}
+                  {star.tempK > 0 && <span>{Math.round(star.tempK).toLocaleString(locale)} K</span>}
+                  {star.radiusM > 0 && <span>{t('syspage.km', { value: Math.round(star.radiusM / 1000).toLocaleString(locale) })}</span>}
+                  {star.distanceLs > 0 && <span>{t('syspage.lsFromEntry', { value: Math.round(star.distanceLs).toLocaleString(locale) })}</span>}
                 </div>
                 {star.zone[0] > 0 && (
                   <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 6, lineHeight: 1.5 }}>
-                    Обитаемая зона: {Math.round(star.zone[0]).toLocaleString('ru-RU')}–{Math.round(star.zone[1]).toLocaleString('ru-RU')} св. с
+                    {t('syspage.habitableZone', { from: Math.round(star.zone[0]).toLocaleString(locale), to: Math.round(star.zone[1]).toLocaleString(locale) })}
                     <br />
                     <span style={{ color: 'var(--muted)' }}>
-                      ({(star.zone[0] / 499.00478).toFixed(2)}–{(star.zone[1] / 499.00478).toFixed(2)} а.е.) — здесь стоит искать землеподобные планеты
+                      {t('syspage.habitableAu', { from: (star.zone[0] / 499.00478).toFixed(2), to: (star.zone[1] / 499.00478).toFixed(2) })}
                     </span>
                   </div>
                 )}
@@ -487,16 +489,16 @@ export default function SystemPage() {
             ))}
             {galaxy && (
               <div style={innerPanelStyle}>
-                <div style={labelStyle}>В галактике</div>
+                <div style={labelStyle}>{t('syspage.inGalaxy')}</div>
                 <div style={{ color: 'var(--text)', fontFamily: 'ui-monospace, monospace', fontSize: 12.5 }}>
                   {galaxy.x.toFixed(2)}, {galaxy.y.toFixed(2)}, {galaxy.z.toFixed(2)}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: 'var(--muted)' }}>
-                  {galaxy.distance_from_sols != null && <span>до Sol: {Number(galaxy.distance_from_sols).toFixed(1)} св. лет</span>}
-                  {galaxy.distance_from_sgra != null && <span>до Sgr A*: {Number(galaxy.distance_from_sgra).toFixed(1)} св. лет</span>}
+                  {galaxy.distance_from_sols != null && <span>{t('syspage.toSol', { value: Number(galaxy.distance_from_sols).toFixed(1) })}</span>}
+                  {galaxy.distance_from_sgra != null && <span>{t('syspage.toSgra', { value: Number(galaxy.distance_from_sgra).toFixed(1) })}</span>}
                 </div>
-                {galaxy.needs_permit && <div style={{ color: 'var(--red)', fontSize: 11.5, marginTop: 4 }}>нужен permit</div>}
-                {galaxy.main_star && <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 4 }}>каталог: {galaxy.main_star}</div>}
+                {galaxy.needs_permit && <div style={{ color: 'var(--red)', fontSize: 11.5, marginTop: 4 }}>{t('syspage.permitNeededLower')}</div>}
+                {galaxy.main_star && <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 4 }}>{t('syspage.catalogue', { name: galaxy.main_star })}</div>}
               </div>
             )}
           </div>
@@ -517,7 +519,7 @@ export default function SystemPage() {
       {/* Проекты / Постройки */}
       {system.projects.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <h2 style={sectionTitleStyle}><IconConstruction size={18} /> Постройки ({system.projects.length})</h2>
+          <h2 style={sectionTitleStyle}><IconConstruction size={18} /> {t('syspage.projectsTitle', { count: system.projects.length })}</h2>
           <div style={{ display: 'grid', gap: 12 }}>
             {system.projects.map((project) => {
               const hasProjectCargoTotals = typeof project.totalRequired === 'number'
@@ -536,18 +538,18 @@ export default function SystemPage() {
                       background: 'transparent',
                       borderRadius: 4,
                     }}>
-                      {project.complete ? <><IconCheckCircle size={16} /> Завершён</> : `${formatPercent(project.progress)}%`}
+                      {project.complete ? <><IconCheckCircle size={16} /> {t('syspage.statusDone')}</> : `${formatPercent(project.progress)}%`}
                     </span>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 12 }}>
                     {project.buildType && (
                       <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-                        <span style={{ color: 'var(--text)' }}>Тип:</span> {project.buildType}
+                        <span style={{ color: 'var(--text)' }}>{t('syspage.type')}</span> {project.buildType}
                       </div>
                     )}
                     {project.bodyName && (
                       <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-                        <span style={{ color: 'var(--text)' }}>Тело:</span> {project.bodyName}
+                        <span style={{ color: 'var(--text)' }}>{t('syspage.body')}</span> {project.bodyName}
                       </div>
                     )}
                     {project.buildId && (
@@ -561,7 +563,7 @@ export default function SystemPage() {
                           onClick={() => setMapFocus(project.bodyName ?? '')}
                           style={{ ...linkButtonStyle('var(--cyan)'), padding: '3px 8px', fontSize: 10, cursor: 'pointer' }}
                         >
-                          показать на карте
+                          {t('syspage.showOnMap')}
                         </button>
                       </div>
                     )}
@@ -570,15 +572,15 @@ export default function SystemPage() {
                   {hasProjectCargoTotals && (
                     <div style={{ marginBottom: 12, padding: '9px 12px', borderRadius: 3, background: 'transparent', color: 'var(--text)', fontSize: 13, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                       <IconPackage size={13} color="var(--cyan)" />
-                      <span>Доставлено:</span>
-                      <strong style={{ color: 'var(--text)' }}>{formatCargo(project.totalProvided)} / {formatCargo(project.totalRequired)} т</strong>
-                      <span style={{ color: 'var(--muted)' }}>· Осталось: {formatCargo(project.totalRemaining)} т</span>
+                      <span>{t('syspage.delivered')}</span>
+                      <strong style={{ color: 'var(--text)' }}>{t('syspage.tonsPair', { provided: formatCargo(project.totalProvided), required: formatCargo(project.totalRequired) })}</strong>
+                      <span style={{ color: 'var(--muted)' }}>· {t('syspage.remaining', { value: formatCargo(project.totalRemaining) })}</span>
                     </div>
                   )}
 
                   {project.resources.length > 0 && (
                     <div style={{ marginTop: 12 }}>
-                      <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 8, fontWeight: 600 }}><IconPackage size={11} /> Ресурсы проекта</div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 8, fontWeight: 600 }}><IconPackage size={11} /> {t('syspage.projectResources')}</div>
                       <div style={{ display: 'grid', gap: 6 }}>
                         {project.resources.map((resource) => {
                           const exact = hasExactAmounts(resource);
@@ -599,12 +601,12 @@ export default function SystemPage() {
                                   }} />
                                 </div>
                               ) : (
-                                <span style={{ flex: 1, color: 'var(--muted)', fontSize: 11 }}>Нет точных данных о доставке</span>
+                                <span style={{ flex: 1, color: 'var(--muted)', fontSize: 11 }}>{t('syspage.noExactData')}</span>
                               )}
                               <span style={{ color: 'var(--muted)', fontSize: 12, minWidth: 130, textAlign: 'right' }}>
                                 {exact
-                                  ? `${formatCargo(resource.provided)} / ${formatCargo(resource.required)} т`
-                                  : `Осталось: ${formatCargo(resource.remaining)} т`}
+                                  ? t('syspage.tonsPair', { provided: formatCargo(resource.provided), required: formatCargo(resource.required) })
+                                  : t('syspage.remaining', { value: formatCargo(resource.remaining) })}
                               </span>
                               {resource.remaining === 0 && <span style={{ color: 'var(--green)', fontSize: 11, fontWeight: 600 }}><IconCheck size={12} color="var(--green)" /></span>}
                             </div>
@@ -613,7 +615,7 @@ export default function SystemPage() {
                       </div>
                       {hasApproximateRows && (
                         <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 11 }}>
-                          RavenColonial передаёт по этим позициям текущий остаток. Общий доставленный объём выше рассчитан по исходной и оставшейся потребности.
+                          {t('syspage.approxNote')}
                         </div>
                       )}
                     </div>
@@ -628,7 +630,7 @@ export default function SystemPage() {
       {/* Общие ресурсы системы */}
       {system.resources.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <h2 style={sectionTitleStyle}><IconPackage size={18} /> Общие ресурсы системы</h2>
+          <h2 style={sectionTitleStyle}><IconPackage size={18} /> {t('syspage.systemResources')}</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 10 }}>
             {system.resources.map((resource) => {
               const exact = hasExactAmounts(resource);
@@ -637,8 +639,8 @@ export default function SystemPage() {
                   <span style={{ color: 'var(--text)', fontSize: 14 }}>{resource.name}</span>
                   <span style={{ color: resource.remaining === 0 ? 'var(--green)' : 'var(--orange)', fontSize: 13, fontWeight: 600, textAlign: 'right' }}>
                     {exact
-                      ? `${formatCargo(resource.provided)} / ${formatCargo(resource.required)} т`
-                      : `Осталось: ${formatCargo(resource.remaining)} т`}
+                      ? t('syspage.tonsPair', { provided: formatCargo(resource.provided), required: formatCargo(resource.required) })
+                      : t('syspage.remaining', { value: formatCargo(resource.remaining) })}
                   </span>
                 </div>
               );
@@ -646,7 +648,7 @@ export default function SystemPage() {
           </div>
           {resourceRowsAreApproximate && (
             <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 10, marginBottom: 0 }}>
-              Для общего списка RavenColonial публикует остаток по товару, а не историческое распределение доставок по каждой позиции.
+              {t('syspage.sharedNote')}
             </p>
           )}
         </div>

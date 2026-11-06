@@ -45,11 +45,8 @@ import type { AtlasPowerplayState } from '@/hooks/usePowerplayLayer';
 import type { SystemSuggestion } from '@/hooks/useSystemAutocomplete';
 import { downloadCsv } from '@/lib/atlas';
 import {
-  POWER_ALLEGIANCE_LABEL,
   POWERPLAY_BASIS_SHORT,
-  POWERPLAY_STATE_HINT,
   POWERPLAY_STATE_LABEL,
-  POWERPLAY_STATE_PLURAL,
   POWERPLAY_STATES,
   filterPowerplaySystems,
   findPowerplaySystem,
@@ -75,6 +72,13 @@ import {
   type PowerplaySystem,
 } from '@/lib/powerplay';
 import { formatPowerplayBytes } from '@/lib/powerplayProgress';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import {
+  POWER_ALLEGIANCE_KEYS,
+  POWER_STATE_HINT_KEYS,
+  POWER_STATE_KEYS,
+  POWER_STATE_PLURAL_KEYS,
+} from '@/lib/i18n/gameLabels';
 
 const PAGE_SIZE = 150;
 const MUTED = '#9ca3af';
@@ -87,17 +91,6 @@ const ALLEGIANCES: { id: PowerAllegiance; Icon: typeof IconEmpire }[] = [
   { id: 'Alliance', Icon: IconAlliance },
   { id: 'Independent', Icon: IconIndependent },
 ];
-
-function formatCount(value: number): string {
-  return value.toLocaleString('ru-RU');
-}
-
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '—';
-  const ms = Date.parse(value);
-  if (!Number.isFinite(ms)) return '—';
-  return new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
 
 interface CheckResult {
   name: string;
@@ -161,6 +154,17 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
     visible, setVisible, filter, setFilter, status, data, error, reload, systems, visibleSystems, counts, selectedId, select,
     showSystem, focusOverview, download, filterPowers,
   } = powerplay;
+  const { t, locale } = useI18n();
+  const formatCount = (value: number) => value.toLocaleString(locale);
+  const formatDateTime = (value: string | null | undefined) => {
+    if (!value) return '—';
+    const ms = Date.parse(value);
+    if (!Number.isFinite(ms)) return '—';
+    return new Date(ms).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+  const stateText = (state: PowerplaySystem['state']) => t(POWER_STATE_KEYS[state]);
+  const statePluralText = (state: PowerplaySystem['state']) => t(POWER_STATE_PLURAL_KEYS[state]);
+  const allegianceText = (id: PowerAllegiance) => t(POWER_ALLEGIANCE_KEYS[id]);
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [checkName, setCheckName] = useState('');
@@ -195,7 +199,7 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
         : await resolveSystem(clean, systems);
       if (!resolved) {
         setCheck(null);
-        setCheckError(`Система «${clean}» не найдена ни в каталоге, ни в EDSM`);
+        setCheckError(t('atlas.ui.ppSystemNotFound', { name: clean }));
         return;
       }
       const controlled = findPowerplaySystem(systems, resolved.name);
@@ -253,78 +257,90 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
     const percent = download?.total ? (download.received / download.total) * 100 : null;
     statusBlock = (
       <>
-        <div className="powerplay-status-title">Загружаю системы держав…</div>
-        <StatusBar percent={percent} label="Загрузка систем держав" />
+        <div className="powerplay-status-title">{t('atlas.ui.ppLoadingSystems')}</div>
+        <StatusBar percent={percent} label={t('atlas.ui.ppLoadingProgress')} />
         <div className="powerplay-status-detail">
           {download && download.received > 0
-            ? `${formatPowerplayBytes(download.received)}${download.total ? ` из ${formatPowerplayBytes(download.total)}` : ''}`
-            : 'Запрашиваю набор у сервера'}
+            ? download.total
+              ? t('atlas.ui.bgsBytesOf', {
+                received: formatPowerplayBytes(download.received),
+                total: formatPowerplayBytes(download.total),
+              })
+              : formatPowerplayBytes(download.received)
+            : t('atlas.ui.ppRequestingSet')}
         </div>
       </>
     );
   } else if (statusKind === 'importing') {
     statusBlock = (
       <>
-        <div className="powerplay-status-title">Сервер загружает данные EDSM{serverProgress ? ` — ${Math.round(serverProgress.percent)} %` : '…'}</div>
-        <StatusBar percent={serverProgress ? serverProgress.percent : null} label="Импорт дампа EDSM на сервере" />
-        <div className="powerplay-status-detail">
-          {serverProgress?.message || 'Скачивание и разбор дампа EDSM'}
+        <div className="powerplay-status-title">
+          {t('atlas.ui.ppServerImport')}
+          {serverProgress ? ` — ${Math.round(serverProgress.percent)} %` : '…'}
         </div>
-        <div className="powerplay-status-hint">Это занимает до минуты. Карта заполнится сама — обновлять страницу не нужно.</div>
+        <StatusBar percent={serverProgress ? serverProgress.percent : null} label={t('atlas.ui.ppImportStatusLabel')} />
+        <div className="powerplay-status-detail">
+          {serverProgress?.message || t('atlas.ui.ppDumpImportLabel')}
+        </div>
+        <div className="powerplay-status-hint">{t('atlas.ui.ppImportHint')}</div>
       </>
     );
   } else if (statusKind === 'error') {
     statusBlock = (
       <>
-        <div className="powerplay-status-title"><IconAlert size={12} /> Не удалось загрузить системы PowerPlay</div>
-        <div className="powerplay-status-detail">{error || 'Сервер не ответил'}</div>
-        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>Повторить</button>
+        <div className="powerplay-status-title"><IconAlert size={12} /> {t('atlas.ui.ppLoadFailed')}</div>
+        <div className="powerplay-status-detail">{error || t('atlas.ui.bgsServerNoAnswer')}</div>
+        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>{t('atlas.ui.bgsRetry')}</button>
       </>
     );
   } else if (statusKind === 'empty') {
     statusBlock = (
       <>
-        <div className="powerplay-status-title"><IconAlert size={12} /> Данных пока нет</div>
+        <div className="powerplay-status-title"><IconAlert size={12} /> {t('atlas.ui.ppNoData')}</div>
         <div className="powerplay-status-detail">
-          {meta?.lastError ? `Последняя загрузка не удалась: ${meta.lastError}.` : 'Сервер ещё не загружал дамп EDSM.'}
+          {meta?.lastError
+            ? t('atlas.ui.bgsLastLoadFailed', { error: meta.lastError })
+            : t('atlas.ui.ppServerNotLoaded')}
         </div>
-        <div className="powerplay-status-hint">
-          Сайт загружает данные сам (задача powerplay-sync, а при пустой базе — при открытии этой вкладки). Администратор
-          может запустить загрузку и посмотреть её журнал: Админка → Игровые данные → PowerPlay.
-        </div>
-        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>Проверить снова</button>
+        <div className="powerplay-status-hint">{t('atlas.ui.ppAutoHint')}</div>
+        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>{t('atlas.ui.bgsCheckAgain')}</button>
       </>
     );
   } else {
     statusBlock = (
       <>
         <div className="powerplay-status-title">
-          <IconCheckCircle size={12} /> Загружено {formatCount(systems.length)} систем · держав: {powersWithSystems}
+          <IconCheckCircle size={12} />{' '}
+          {t('atlas.ui.ppLoadedCounts', { systems: formatCount(systems.length), powers: powersWithSystems })}
         </div>
-        <div className="powerplay-status-detail" title="EDSM собирает состояние систем из журналов пилотов (EDDN); в дампе — системы, о которых сообщали за последние ~30 дней">
-          Дамп EDSM от {formatPowerplayDate(meta?.dumpGeneratedAt ?? meta?.syncedAt)}
+        <div className="powerplay-status-detail" title={t('atlas.ui.ppDumpTitle')}>
+          {t('atlas.ui.ppDumpFrom', { date: formatPowerplayDate(meta?.dumpGeneratedAt ?? meta?.syncedAt) })}
           {meta?.oldestObservation && meta.newestObservation
-            ? ` · наблюдения ${formatPowerplayDate(meta.oldestObservation)}–${formatPowerplayDate(meta.newestObservation)}`
+            ? t('atlas.ui.ppObservations', {
+              from: formatPowerplayDate(meta.oldestObservation),
+              to: formatPowerplayDate(meta.newestObservation),
+            })
             : ''}
-          {meta?.checkedAt ? ` · проверено ${formatDateTime(meta.checkedAt)}` : ''}
+          {meta?.checkedAt ? t('atlas.ui.ppChecked', { date: formatDateTime(meta.checkedAt) }) : ''}
           {' · '}
           <a href={meta?.sourceUrl || 'https://www.edsm.net/en/nightly-dumps'} target="_blank" rel="noopener noreferrer">EDSM</a>
         </div>
         {counts.unknown > 0 && (
           <div className="powerplay-status-hint" data-powerplay-unknown={counts.unknown}>
-            У {formatCount(counts.unknown)} систем владелец не определён (серые точки): дамп EDSM перечисляет все державы,
-            чьи зоны накрывают систему, но не говорит, какая из них владеет. Владельца уточняют журналы пилотов
-            (Colonial Helper, загрузка журналов, CAPI) и живые данные EDDN; «+N?» у державы — в скольких таких системах
-            она среди претендентов.
+            {t('atlas.ui.ppUnknownOwnerHint', { count: formatCount(counts.unknown) })}
           </div>
         )}
         {meta?.refreshing && (
           <div className="powerplay-status-hint">
-            Сервер обновляет данные{meta.progress ? `: ${meta.progress.stageLabel.toLowerCase()}, ${Math.round(meta.progress.percent)} %` : '…'} —
-            новый набор подгрузится сам.
+            {meta.progress
+              ? t('atlas.ui.ppRefreshingProgress', {
+                stage: meta.progress.stageLabel.toLowerCase(),
+                percent: Math.round(meta.progress.percent),
+              })
+              : t('atlas.ui.ppRefreshing')}
           </div>
         )}
-        {meta?.lastError && <div className="powerplay-warning">Последнее обновление не удалось: {meta.lastError}</div>}
+        {meta?.lastError && <div className="powerplay-warning">{t('atlas.ui.ppUpdateFailed', { error: meta.lastError })}</div>}
       </>
     );
   }
@@ -333,13 +349,13 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
     <div className="atlas-section powerplay-panel" data-powerplay-panel="">
       <div className="atlas-section-head">
         <h4>
-          <IconPower size={13} /> PowerPlay: системы держав
+          <IconPower size={13} /> {t('atlas.ui.ppTitle')}
         </h4>
         <div className="atlas-section-actions">
-          <button type="button" className="atlas-icon-btn" title="Выгрузить список в CSV" onClick={exportList} disabled={listed.length === 0}>
+          <button type="button" className="atlas-icon-btn" title={t('atlas.ui.downloadCsv')} onClick={exportList} disabled={listed.length === 0}>
             <IconDownload size={12} />
           </button>
-          <button type="button" className="atlas-icon-btn" title="Перезапросить данные" onClick={reload}>
+          <button type="button" className="atlas-icon-btn" title={t('atlas.ui.bgsReloadTitle')} onClick={reload}>
             <IconRefresh size={12} />
           </button>
         </div>
@@ -351,24 +367,26 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
 
       <label className="powerplay-toggle">
         <input type="checkbox" checked={visible} onChange={(event) => setVisible(event.target.checked)} />
-        Показывать на карте
+        {t('atlas.ui.bgsShowOnMap')}
         {loaded && <span className="powerplay-toggle-count">{formatCount(visibleSystems.length)}</span>}
       </label>
 
       {/* ── Фильтр по державам: всегда виден, работает и до загрузки ── */}
       <div className="powerplay-filter" data-powerplay-filter="">
         <div className="powerplay-group-head">
-          <span className="powerplay-group-title">Державы · показано {shownPowers} из {filterPowers.length}</span>
+          <span className="powerplay-group-title">
+            {t('atlas.ui.ppPowersTitle', { shown: shownPowers, total: filterPowers.length })}
+          </span>
           <span className="powerplay-group-actions">
             <button type="button" className="atlas-link-btn" onClick={() => setFilter(showAllPowers(filter))} disabled={filter.hiddenPowers.length === 0}>
-              все
+              {t('atlas.ui.ppAllPowers')}
             </button>
             <button type="button" className="atlas-link-btn" onClick={() => setFilter(hideAllPowers(filter, filterPowers))} disabled={shownPowers === 0}>
-              ни одной
+              {t('atlas.ui.ppNone')}
             </button>
           </span>
         </div>
-        <div className="powerplay-allegiances" role="group" aria-label="Фракции держав">
+        <div className="powerplay-allegiances" role="group" aria-label={t('atlas.ui.ppPowersAllegianceAria')}>
           {ALLEGIANCES.map(({ id, Icon }) => {
             const active = isAllegianceSolo(filter, id, filterPowers);
             return (
@@ -378,19 +396,19 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                 className={`powerplay-allegiance${active ? ' active' : ''}`}
                 aria-pressed={active}
                 data-allegiance={id}
-                title={active ? 'Снова показать все державы' : `Показать только державы: ${POWER_ALLEGIANCE_LABEL[id]}`}
+                title={active ? t('atlas.ui.ppShowAllPowers') : t('atlas.ui.ppShowOnlyAllegiance', { name: allegianceText(id) })}
                 onClick={() => {
                   const next = active ? showAllPowers(filter) : soloAllegiance(filter, id, filterPowers);
                   setFilter(next);
                   if (!active) focusOverview(filterPowerplaySystems(systems, next));
                 }}
               >
-                <Icon size={11} /> {POWER_ALLEGIANCE_LABEL[id]}
+                <Icon size={11} /> {allegianceText(id)}
               </button>
             );
           })}
         </div>
-        <ul className="powerplay-powers" aria-label="Державы">
+        <ul className="powerplay-powers" aria-label={t('atlas.ui.ppPowersAria')}>
           {counts.powers.map((item) => {
             const info = powerInfo(item.power);
             const on = isPowerVisible(filter, item.power);
@@ -398,24 +416,31 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
             const title = !loaded
               ? info.label
               : unknownRow
-                ? `${info.label}: ${formatCount(item.total)} систем — EDSM перечисляет у них несколько держав и не говорит, какая владелец`
-                : `${info.label}: ${formatCount(item.total)} систем`
-                  + (item.contested > 0 ? `; ещё в ${formatCount(item.contested)} системах владелец не определён, и эта держава — среди претендентов` : '');
+                ? t('atlas.ui.ppPowerTooltipUnknown', { name: info.label, count: formatCount(item.total) })
+                : t('atlas.ui.ppPowerTooltip', { name: info.label, count: formatCount(item.total) })
+                  + (item.contested > 0 ? t('atlas.ui.ppPowerContestedSuffix', { count: formatCount(item.contested) }) : '');
             return (
               <li key={item.power} className={`powerplay-power${on ? '' : ' off'}${unknownRow ? ' unknown' : ''}`} data-power={item.power}>
                 <label className="powerplay-power-main" title={title}>
                   <input type="checkbox" checked={on} onChange={() => setFilter(togglePowerVisible(filter, item.power))} />
                   <PowerSwatch color={info.color} />
                   <span className="powerplay-power-name">{info.label}</span>
-                  {info.allegiance && <span className="powerplay-power-allegiance">{POWER_ALLEGIANCE_LABEL[info.allegiance]}</span>}
+                  {info.allegiance && <span className="powerplay-power-allegiance">{allegianceText(info.allegiance)}</span>}
                 </label>
                 {loaded ? (
-                  <span className="powerplay-power-counts" aria-label={`Оплоты ${item.states.Stronghold}, укреплённые ${item.states.Fortified}, эксплуатируемые ${item.states.Exploited}`}>
-                    <span title="Оплоты"><PowerplayGlyph state="Stronghold" color={info.color} size={9} /> {formatCount(item.states.Stronghold)}</span>
-                    <span title="Укреплённые"><PowerplayGlyph state="Fortified" color={info.color} size={9} /> {formatCount(item.states.Fortified)}</span>
-                    <span title="Эксплуатируемые"><PowerplayGlyph state="Exploited" color={info.color} size={9} /> {formatCount(item.states.Exploited)}</span>
+                  <span
+                    className="powerplay-power-counts"
+                    aria-label={t('atlas.ui.ppStatesAria', {
+                      stronghold: item.states.Stronghold,
+                      fortified: item.states.Fortified,
+                      exploited: item.states.Exploited,
+                    })}
+                  >
+                    <span title={statePluralText('Stronghold')}><PowerplayGlyph state="Stronghold" color={info.color} size={9} /> {formatCount(item.states.Stronghold)}</span>
+                    <span title={statePluralText('Fortified')}><PowerplayGlyph state="Fortified" color={info.color} size={9} /> {formatCount(item.states.Fortified)}</span>
+                    <span title={statePluralText('Exploited')}><PowerplayGlyph state="Exploited" color={info.color} size={9} /> {formatCount(item.states.Exploited)}</span>
                     {item.contested > 0 && (
-                      <span className="powerplay-power-contested" title={`Ещё в ${formatCount(item.contested)} системах владелец не определён, и ${info.label} — среди претендентов`} data-powerplay-contested={item.contested}>
+                      <span className="powerplay-power-contested" title={t('atlas.ui.ppContestedTitle', { count: formatCount(item.contested), name: info.label })} data-powerplay-contested={item.contested}>
                         +{formatCount(item.contested)}?
                       </span>
                     )}
@@ -426,14 +451,14 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                 <button
                   type="button"
                   className="powerplay-solo"
-                  title={`Показать только ${info.label} и подвести к ней камеру`}
+                  title={t('atlas.ui.ppSoloPower', { name: info.label })}
                   onClick={() => {
                     const next = soloPower(filter, item.power, filterPowers);
                     setFilter(next);
                     focusOverview(filterPowerplaySystems(systems, next));
                   }}
                 >
-                  только
+                  {t('atlas.ui.ppOnly')}
                 </button>
               </li>
             );
@@ -441,8 +466,8 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
         </ul>
       </div>
 
-      <div className="powerplay-group-title">Состояние</div>
-      <div className="powerplay-chips" role="group" aria-label="Состояние систем">
+      <div className="powerplay-group-title">{t('atlas.ui.ppStateGroup')}</div>
+      <div className="powerplay-chips" role="group" aria-label={t('atlas.ui.ppStateGroupAria')}>
         {POWERPLAY_STATES.map((state) => {
           const on = filter.states[state] !== false;
           return (
@@ -451,11 +476,11 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
               type="button"
               className={`powerplay-chip${on ? ' active' : ''}`}
               aria-pressed={on}
-              title={POWERPLAY_STATE_HINT[state]}
+              title={t(POWER_STATE_HINT_KEYS[state])}
               onClick={() => setFilter(togglePowerplayState(filter, state))}
             >
               <PowerplayGlyph state={state} color={on ? PP_COLOR : DIM} size={12} />
-              {POWERPLAY_STATE_PLURAL[state]}
+              {statePluralText(state)}
               {loaded && <span className="powerplay-chip-count">{formatCount(counts.states[state])}</span>}
             </button>
           );
@@ -466,11 +491,12 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
         <>
           <div className="powerplay-summary">
             <span>
-              На карте: <strong>{formatCount(visibleSystems.length)}</strong> из {formatCount(systems.length)} систем
+              {t('atlas.ui.ppOnMap')} <strong>{formatCount(visibleSystems.length)}</strong>{' '}
+              {t('atlas.ui.ppOnMapOf', { total: formatCount(systems.length) })}
               {filtered && (
                 <>
                   {' · '}
-                  <span title="Оплоты / укреплённые / эксплуатируемые">
+                  <span title={t('atlas.ui.ppStatesTripleTitle')}>
                     {formatCount(visibleCounts.Stronghold)} / {formatCount(visibleCounts.Fortified)} / {formatCount(visibleCounts.Exploited)}
                   </span>
                 </>
@@ -481,12 +507,12 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
               className="atlas-link-btn powerplay-overview"
               onClick={() => focusOverview()}
               disabled={visibleSystems.length === 0}
-              title="Подвести камеру так, чтобы были видны все системы под фильтром"
+              title={t('atlas.ui.ppFocusFiltered')}
             >
-              Показать целиком
+              {t('atlas.ui.bgsShowWhole')}
             </button>
-            {!visible && <div className="powerplay-warning">Слой выключен — включите «Показывать на карте».</div>}
-            <div className="powerplay-hint">Системы кликабельны: щёлкните точку на карте или строку списка — откроется карточка системы.</div>
+            {!visible && <div className="powerplay-warning">{t('atlas.ui.ppLayerOff')}</div>}
+            <div className="powerplay-hint">{t('atlas.ui.ppClickHint')}</div>
           </div>
 
           <div className="atlas-inline-search">
@@ -498,19 +524,20 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                 setQuery(event.target.value);
                 setLimit(PAGE_SIZE);
               }}
-              placeholder="Найти систему под фильтром"
-              aria-label="Поиск системы среди систем держав"
+              placeholder={t('atlas.ui.ppSearchPlaceholder')}
+              aria-label={t('atlas.ui.ppSearchAria')}
             />
             {query && (
-              <button type="button" onClick={() => setQuery('')} aria-label="Очистить поиск">
+              <button type="button" onClick={() => setQuery('')} aria-label={t('atlas.ui.ppClearSearchAria')}>
                 <IconX size={11} />
               </button>
             )}
           </div>
           <p className="atlas-list-counter">
-            Показано {formatCount(shown.length)} из {formatCount(listed.length)} — сначала оплоты, затем укреплённые
+            {t('atlas.shownOf', { shown: formatCount(shown.length), total: formatCount(listed.length) })}
+            {t('atlas.ui.ppListCountOrder')}
           </p>
-          <ul className="powerplay-list" aria-label="Системы держав">
+          <ul className="powerplay-list" aria-label={t('atlas.ui.ppListAria')}>
             {shown.map((system) => {
               const info = powerInfo(system.power);
               const key = system.id64 || system.nameLc;
@@ -523,60 +550,66 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                     aria-pressed={active}
                     data-powerplay-row={system.name}
                     onClick={() => select(system, { focus: true })}
-                    title="Показать на карте и открыть карточку"
+                    title={t('atlas.ui.ppRowTitle')}
                   >
                     <PowerplayGlyph state={system.state} color={info.color} size={12} />
                     <span className="powerplay-row-name">{system.name}</span>
-                    <span className="powerplay-row-meta">{info.label} · {POWERPLAY_STATE_LABEL[system.state].toLowerCase()}</span>
+                    <span className="powerplay-row-meta">
+                      {t('atlas.ui.ppRowMeta', { power: info.label, state: stateText(system.state).toLocaleLowerCase(locale) })}
+                    </span>
                   </button>
                 </li>
               );
             })}
             {listed.length === 0 && (
               <li className="powerplay-empty">
-                {query ? 'Под поиск ничего не нашлось' : shownPowers === 0 ? 'Все державы скрыты — отметьте хотя бы одну' : 'Под фильтр систем нет'}
+                {query
+                  ? t('atlas.ui.ppNoSearchMatch')
+                  : shownPowers === 0
+                    ? t('atlas.ui.ppAllPowersHidden')
+                    : t('atlas.ui.ppNoFilterMatch')}
               </li>
             )}
           </ul>
           {listed.length > shown.length && (
             <button type="button" className="atlas-link-btn powerplay-more" onClick={() => setLimit((value) => value + PAGE_SIZE)}>
-              Показать ещё {formatCount(Math.min(PAGE_SIZE, listed.length - shown.length))}
+              {t('atlas.ui.bgsShowMore', { count: formatCount(Math.min(PAGE_SIZE, listed.length - shown.length)) })}
             </button>
           )}
 
           <div className="powerplay-check">
-            <div className="powerplay-group-title">Чья зона? Проверить любую систему</div>
+            <div className="powerplay-group-title">{t('atlas.ui.ppCheckTitle')}</div>
             <SystemSearchInput
               compact
               value={checkName}
               onChange={setCheckName}
               onSelect={(suggestion) => void runCheck(suggestion.name, suggestion)}
               onSubmit={(value) => void runCheck(value)}
-              placeholder="Например, система вашей колонии"
+              placeholder={t('atlas.ui.ppCheckPlaceholder')}
             />
-            {checking && <div className="powerplay-status">Проверяем…</div>}
+            {checking && <div className="powerplay-status">{t('atlas.ui.ppChecking')}</div>}
             {checkError && <div className="atlas-error powerplay-status">{checkError}</div>}
             {check && !checking && (
               <div className="powerplay-check-result" data-powerplay-check={check.name}>
                 <div className="powerplay-check-title">{check.name}</div>
                 {check.controlled ? (
                   <div>
-                    Под контролем:{' '}
+                    {t('atlas.ui.ppControlledBy')}{' '}
                     <span style={{ color: powerInfo(check.controlled.power).color, fontWeight: 600 }}>
-                      {isUnknownPower(check.controlled.power) ? 'держава не определена' : powerInfo(check.controlled.power).label}
+                      {isUnknownPower(check.controlled.power) ? t('pp.unknownPower') : powerInfo(check.controlled.power).label}
                     </span>
-                    {' · '}{POWERPLAY_STATE_LABEL[check.controlled.state].toLowerCase()}
+                    {' · '}{stateText(check.controlled.state).toLocaleLowerCase(locale)}
                     {isUnknownPower(check.controlled.power) && (check.controlled.candidates ?? []).length > 0 && (
                       <span style={{ color: MUTED }}>
-                        {' '}— одна из: {(check.controlled.candidates ?? []).map((candidate) => powerInfo(candidate).label).join(', ')}
+                        {t('atlas.ui.ppOneOf', { list: (check.controlled.candidates ?? []).map((candidate) => powerInfo(candidate).label).join(', ') })}
                       </span>
                     )}
                   </div>
                 ) : (
-                  <div style={{ color: MUTED }}>Не под контролем держав (по данным слоя).</div>
+                  <div style={{ color: MUTED }}>{t('atlas.ui.ppNotControlled')}</div>
                 )}
                 {check.influence.length > 0 ? (
-                  <ul className="powerplay-check-list" aria-label="Зоны влияния">
+                  <ul className="powerplay-check-list" aria-label={t('atlas.ui.ppZonesAria')}>
                     {check.influence.map((item) => {
                       const info = powerInfo(item.power);
                       return (
@@ -585,18 +618,18 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                           <span>
                             <span style={{ color: info.color, fontWeight: 600 }}>{info.label}</span>
                             <span style={{ color: MUTED }}>
-                              {' '}— {POWERPLAY_STATE_LABEL[item.nearest.state].toLowerCase()}{' '}
+                              {' — '}{stateText(item.nearest.state).toLocaleLowerCase(locale)}{' '}
                               <button
                                 type="button"
                                 className="powerplay-system-link"
                                 data-powerplay-link={item.nearest.name}
-                                title="Показать эту систему на карте"
+                                title={t('atlas.ui.ppShowSystemTitle')}
                                 onClick={() => showSystem({ id64: item.nearest.id64, name: item.nearest.name })}
                               >
                                 {item.nearest.name}
                               </button>
                               , {formatLy(item.nearest.distance)}
-                              {item.sources > 1 ? `, зон: ${item.sources}` : ''}
+                              {item.sources > 1 ? t('atlas.ui.ppZonesCount', { count: item.sources }) : ''}
                             </span>
                           </span>
                         </li>
@@ -604,12 +637,9 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                     })}
                   </ul>
                 ) : (
-                  <div style={{ color: DIM }}>Ни одна зона влияния сюда не дотягивается.</div>
+                  <div style={{ color: DIM }}>{t('atlas.ui.ppNoZones')}</div>
                 )}
-                <div className="powerplay-hint">
-                  Зона влияния — 30 св. лет вокруг оплота и 20 св. лет вокруг укреплённой системы: в ней держава может
-                  забрать систему себе.
-                </div>
+                <div className="powerplay-hint">{t('atlas.ui.ppZoneHint')}</div>
               </div>
             )}
           </div>

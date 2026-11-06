@@ -13,12 +13,14 @@ import { previewSkin } from "@/components/Cosmetics/HudSkinProvider";
 import { authFetch } from "@/lib/supabaseClient";
 import { IconCheck, IconX, IconSearch, IconLock, IconCreditCard } from "@/components/Icons";
 import { ThemeSwatch } from "@/components/Admin/Billing/ProductManager";
+import type { TFn } from '@/lib/i18n/gameLabels';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 type Category = "all" | "frame" | "badge" | "skin" | "glow" | "title" | "inventory";
 
-const CATEGORY_LABEL: Record<string, string> = { frame: "Рамка аватара", badge: "Знак отличия", skin: "HUD-тема", glow: "Свечение позывного", title: "Почетный титул" };
+const CATEGORY_LABEL: Record<string, string> = { frame: 'shop.catFrame', badge: 'shop.catBadge', skin: 'shop.catSkin', glow: 'shop.catGlow', title: 'shop.catTitle' };
 const RARITY_COLOR: Record<string, string> = { legendary: "#fbbf24", epic: "#c084fc", rare: "#38bdf8", common: "#9ca3af" };
-const METHOD_LABEL: Record<string, string> = { card: "Карта", sbp: "СБП", crypto: "Крипто", manual: "Перевод" };
+const METHOD_LABEL: Record<string, string> = { card: 'shop.methodCard', sbp: 'shop.methodSbp', crypto: 'shop.methodCrypto', manual: 'shop.methodManual' };
 
 /** Small visual preview of an item, driven by its preview_data. */
 function ItemPreview({ item, size = "md" }: { item: ShopItem; size?: "sm" | "md" | "lg" }) {
@@ -42,6 +44,7 @@ function ItemPreview({ item, size = "md" }: { item: ShopItem; size?: "sm" | "md"
 }
 
 export default function PremiumShopPage() {
+  const { t, locale } = useI18n();
   const router = useRouter();
   const [items, setItems] = useState<ShopItem[]>([]);
   const [plans, setPlans] = useState<BillingPlan[]>([]);
@@ -86,12 +89,12 @@ export default function PremiumShopPage() {
     try {
       const [itemsRes, stateRes] = await Promise.all([authFetch("/api/shop/items", { cache: "no-store" }), authFetch("/api/shop/user-state", { cache: "no-store" })]);
       const [itemsData, st] = await Promise.all([itemsRes.json(), stateRes.json()]);
-      if (!stateRes.ok || !st.success) throw new Error(st.error || "Не удалось проверить статус подписки");
+      if (!stateRes.ok || !st.success) throw new Error(st.error || t('shop.subStatusFailed'));
       if (itemsRes.ok && itemsData.success) setItems(itemsData.items || []);
       else if (itemsRes.status !== 401 && itemsRes.status !== 403) {
-        throw new Error(itemsData.error || "Не удалось загрузить каталог премиум-магазина");
+        throw new Error(itemsData.error || t('shop.catalogFailed'));
       } else if (st.subscription || st.isPreview || (["admin", "moderator", "support_manager"].includes(st.role) && st.authenticated)) {
-        throw new Error(itemsData.error || "Не удалось подтвердить доступ к каталогу");
+        throw new Error(itemsData.error || t('shop.accessFailed'));
       }
       if (st.success) {
         setAuthenticated(Boolean(st.authenticated || st.isPreview));
@@ -113,7 +116,7 @@ export default function PremiumShopPage() {
         if (!selectedPack && st.settings?.credit_packs?.length) setSelectedPack(st.settings.credit_packs[1]?.id || st.settings.credit_packs[0].id);
       }
     } catch (e: any) {
-      const message = "Ошибка загрузки магазина: " + e.message;
+      const message = t('shop.loadError', { message: e.message });
       setLoadError(message);
       showToast(message, false);
     } finally {
@@ -146,7 +149,7 @@ export default function PremiumShopPage() {
 
   const requireAuth = () => {
     if (!authenticated) {
-      showToast("Войдите в аккаунт, чтобы покупать и экипировать улучшения", false);
+      showToast(t('shop.loginRequired'), false);
       return false;
     }
     return true;
@@ -156,10 +159,10 @@ export default function PremiumShopPage() {
     setPreview((p) => ({ ...p, [item.category]: item.id }));
     if (item.category === "skin") {
       previewSkin({ id: item.id, preview: item.preview_data });
-      showToast(`Цветовая схема «${item.title}» применена к сайту для предпросмотра`);
+      showToast(t('shop.skinPreviewApplied', { title: item.title }));
       return;
     }
-    showToast(`Примерка: «${item.title}» — смотрите в примерочной выше`);
+    showToast(t('shop.tryOnToast', { title: item.title }));
   };
 
   const resetPreview = () => {
@@ -176,13 +179,13 @@ export default function PremiumShopPage() {
     try {
       const res = await authFetch("/api/shop/equip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: item.category, itemId: on ? item.id : null }) });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка");
+      if (!res.ok) throw new Error(data.error || t('shop.genericError'));
       setEquipped(data.equipped);
       setPreview((p) => ({ ...p, [item.category]: on ? item.id : null }));
       if (item.category === "skin") previewSkin(null);
       invalidateCosmetics(userId || undefined);
       window.dispatchEvent(new Event("cosmetics:changed"));
-      showToast(on ? `«${item.title}» экипировано — теперь это видно во всём проекте` : `«${item.title}» снято`);
+      showToast(on ? t('shop.equippedToast', { title: item.title }) : t('shop.unequippedToast', { title: item.title }));
       load();
     } catch (e: any) {
       showToast(e.message, false);
@@ -195,8 +198,8 @@ export default function PremiumShopPage() {
     try {
       const res = await authFetch("/api/shop/purchase", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ itemId: buyingItem.id, autoEquip: true }) });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка покупки");
-      showToast(`Куплено: «${buyingItem.title}». Транзакция ${data.transaction?.id}. Предмет надет и виден во всём проекте.`);
+      if (!res.ok) throw new Error(data.error || t('shop.purchaseError'));
+      showToast(t('shop.purchasedToast', { title: buyingItem.title, id: data.transaction?.id }));
       setBuyingItem(null);
       if (buyingItem.category === "skin") previewSkin(null);
       invalidateCosmetics(userId || undefined);
@@ -212,16 +215,16 @@ export default function PremiumShopPage() {
   const checkout = async (payload: Record<string, any>) => {
     if (!requireAuth()) return;
     if (!selectedProvider) {
-      showToast("Платёжные системы ещё не подключены администратором", false);
+      showToast(t('shop.providersMissing'), false);
       return;
     }
     setBusy(true);
     try {
       const res = await authFetch("/api/billing/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: selectedProvider, ...payload }) });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Не удалось создать платёж");
+      if (!res.ok) throw new Error(data.error || t('shop.paymentFailed'));
       if (data.paymentUrl) window.location.href = data.paymentUrl;
-      else showToast("Платёж создан, ожидает подтверждения");
+      else showToast(t('shop.paymentCreated'));
     } catch (e: any) {
       showToast(e.message, false);
     } finally {
@@ -239,14 +242,14 @@ export default function PremiumShopPage() {
   const hasShopAccess = Boolean(subscription) || (authenticated && isPreview);
 
   if (loading) {
-    return <div className="card" role="status" style={{ maxWidth: 760, margin: "40px auto", padding: 28, textAlign: "center", color: "var(--muted)" }}>Проверяем доступ к премиум-магазину…</div>;
+    return <div className="card" role="status" style={{ maxWidth: 760, margin: "40px auto", padding: 28, textAlign: "center", color: "var(--muted)" }}>{t('shop.checkingAccess')}</div>;
   }
 
   if (loadError) {
     return (
       <div className="card" role="alert" style={{ maxWidth: 760, margin: "40px auto", padding: 28, textAlign: "center", borderTop: "2px solid #e74c3c" }}>
         <p style={{ color: "#ff8b7e" }}>{loadError}</p>
-        <button type="button" onClick={() => void load()}>Повторить проверку</button>
+        <button type="button" onClick={() => void load()}>{t('shop.retryCheck')}</button>
       </div>
     );
   }
@@ -255,14 +258,14 @@ export default function PremiumShopPage() {
     return (
       <div className="card" style={{ maxWidth: 760, margin: "40px auto", padding: "clamp(22px, 5vw, 42px)", borderTop: "2px solid var(--orange)", textAlign: "center" }}>
         <IconLock size={28} color="var(--orange)" />
-        <div className="kicker" style={{ marginTop: 14 }}>Доступ к каталогу ограничен</div>
-        <h1 style={{ margin: "10px 0", fontSize: "clamp(22px, 4vw, 32px)" }}>Премиум-магазин доступен подписчикам</h1>
+        <div className="kicker" style={{ marginTop: 14 }}>{t('shop.accessLimited')}</div>
+        <h1 style={{ margin: "10px 0", fontSize: "clamp(22px, 4vw, 32px)" }}>{t('shop.subscribersOnly')}</h1>
         <p style={{ maxWidth: 580, margin: "0 auto 20px", color: "var(--muted)", lineHeight: 1.7 }}>
-          Оформите любую активную подписку, чтобы открыть каталог косметики и улучшений. Подписка также помогает поддерживать развитие проекта.
+          {t('shop.subscribersOnlyLead')}
         </p>
         <div style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
-          <Link href="/subscriptions" className="btn btn-orange">Посмотреть подписки →</Link>
-          {!authenticated && <Link href="/login" className="btn btn-cyan">Войти</Link>}
+          <Link href="/subscriptions" className="btn btn-orange">{t('shop.viewSubscriptions')}</Link>
+          {!authenticated && <Link href="/login" className="btn btn-cyan">{t('shop.login')}</Link>}
         </div>
       </div>
     );
@@ -271,15 +274,15 @@ export default function PremiumShopPage() {
   const ProviderPicker = () =>
     providers.length === 0 ? (
       <div style={{ fontSize: 12, color: "#f39c12", padding: "8px 10px", border: "1px solid rgba(243,156,18,0.4)", background: "rgba(243,156,18,0.08)" }}>
-        Оплата реальными деньгами пока недоступна: администратор не подключил ни одной платёжной системы.
+        {t('shop.noPayments')}
       </div>
     ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <span style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1 }}>Способ оплаты</span>
+        <span style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1 }}>{t('shop.paymentMethod')}</span>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {providers.map((p) => (
             <button key={p.id} type="button" onClick={() => setSelectedProvider(p.id)} style={{ fontSize: 11, padding: "5px 10px", borderColor: selectedProvider === p.id ? "var(--orange)" : "var(--line)", color: selectedProvider === p.id ? "var(--orange)" : "var(--muted)", background: selectedProvider === p.id ? "rgba(230,126,34,0.12)" : "transparent", display: "inline-flex", gap: 6, alignItems: "center" }}>
-              <IconCreditCard size={11} /> {p.name} <span style={{ opacity: 0.7 }}>({p.methods.map((m) => METHOD_LABEL[m] || m).join("/")})</span>
+              <IconCreditCard size={11} /> {p.name} <span style={{ opacity: 0.7 }}>({p.methods.map((m) => (METHOD_LABEL[m] ? t(METHOD_LABEL[m]) : m)).join("/")})</span>
               {p.test_mode && <span style={{ fontSize: 9, color: "#f39c12" }}>TEST</span>}
             </button>
           ))}
@@ -299,26 +302,26 @@ export default function PremiumShopPage() {
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
-          <div className="kicker">Сектор снабжения</div>
-          <h1 style={{ margin: "4px 0 0" }}>ПРЕМИУМ-МАГАЗИН</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted)" }}>Рамки, знаки, титулы, свечение позывного и HUD-темы. Всё купленное отображается в профиле, на форуме, в реестре и лидерборде.</p>
+          <div className="kicker">{t('shop.kicker')}</div>
+          <h1 style={{ margin: "4px 0 0" }}>{t('shop.heading')}</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted)" }}>{t('shop.lead')}</p>
         </div>
         {["admin", "moderator", "support_manager"].includes(userRole) && (
           <Link href="/admin?tab=billing" style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", padding: "6px 12px", border: "1px solid var(--line)", color: "var(--cyan)" }}>
-            Панель биллинга →
+            {t('shop.billingPanel')}
           </Link>
         )}
       </div>
 
       {!authenticated && !loading && (
         <div style={{ padding: "10px 14px", border: "1px solid rgba(52,152,219,0.5)", background: "rgba(52,152,219,0.08)", fontSize: 13 }}>
-          Вы просматриваете каталог как гость. <Link href="/login" style={{ color: "var(--cyan)" }}>Войдите</Link>, чтобы покупать и экипировать улучшения.
+          {t('shop.guestNotice')} <Link href="/login" style={{ color: "var(--cyan)" }}>{t('shop.login')}</Link>{t('shop.guestNoticeTail')}
         </div>
       )}
 
       {pendingPayments.length > 0 && (
         <div style={{ padding: "10px 14px", border: "1px solid #f39c12", background: "rgba(243,156,18,0.08)", fontSize: 13 }}>
-          <b style={{ color: "#f39c12" }}>Незавершённые платежи:</b>{" "}
+          <b style={{ color: "#f39c12" }}>{t('shop.pendingPayments')}</b>{" "}
           {pendingPayments.map((p) => (
             <Link key={p.id} href={`/premium-shop/pay/${p.id}`} style={{ marginRight: 12, color: "var(--orange)" }}>
               {p.amount_rub} ₽ ({p.provider_id}) →
@@ -337,23 +340,23 @@ export default function PremiumShopPage() {
               <CosmeticCallsign name={cmdrName} glowId={equipped.glow_id} glowPreview={itemOf(equipped.glow_id)?.preview_data} tier={subscription?.plan?.badge_label || null} tierColor={subscription?.plan?.color || null} fontSize={18} />
             </div>
             <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              {equipped.title_id ? <CosmeticTitle titleId={equipped.title_id} titlePreview={itemOf(equipped.title_id)?.preview_data} text={itemOf(equipped.title_id)?.title} /> : <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>Титул не выбран</span>}
+              {equipped.title_id ? <CosmeticTitle titleId={equipped.title_id} titlePreview={itemOf(equipped.title_id)?.preview_data} text={itemOf(equipped.title_id)?.title} /> : <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>{t('shop.noTitle')}</span>}
               {subscription ? (
-                <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>• {subscription.plan?.name} до {new Date(subscription.expires_at || "").toLocaleDateString("ru-RU")} • скидка {subscription.plan?.discount_pct || 0}%</span>
+                <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>{t('shop.subUntil', { plan: subscription.plan?.name ?? '', date: new Date(subscription.expires_at || "").toLocaleDateString(locale), pct: subscription.plan?.discount_pct || 0 })}</span>
               ) : (
-                <Link href="/subscriptions" style={{ fontSize: 11, color: "var(--cyan)", fontFamily: "ui-monospace, monospace" }}>• Стандартный статус — оформить подписку →</Link>
+                <Link href="/subscriptions" style={{ fontSize: 11, color: "var(--cyan)", fontFamily: "ui-monospace, monospace" }}>{t('shop.standardStatus')}</Link>
               )}
             </div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1, fontFamily: "ui-monospace, monospace" }}>Баланс кредитов</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1, fontFamily: "ui-monospace, monospace" }}>{t('shop.creditBalance')}</div>
             <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>
-              {credits.toLocaleString("ru-RU")} <span style={{ fontSize: 13, color: "var(--muted)" }}>Кр.</span>
+              {credits.toLocaleString(locale)} <span style={{ fontSize: 13, color: "var(--muted)" }}>{t('shop.creditsShort')}</span>
             </div>
           </div>
-          <button type="button" className="btn-orange" onClick={() => (requireAuth() ? setShowTopup(true) : null)} style={{ padding: "8px 16px" }}>+ Пополнить</button>
+          <button type="button" className="btn-orange" onClick={() => (requireAuth() ? setShowTopup(true) : null)} style={{ padding: "8px 16px" }}>{t('shop.topup')}</button>
         </div>
       </div>
 
@@ -361,9 +364,9 @@ export default function PremiumShopPage() {
       <div className="card" style={{ margin: 0, background: "radial-gradient(ellipse at center, #2e3236 0%, #202225 100%)", border: "1px solid var(--orange)", padding: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
           <h3 style={{ margin: 0, letterSpacing: 2, color: "var(--orange)", display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ width: 8, height: 8, background: "#2ecc71", borderRadius: "50%", boxShadow: "0 0 8px #2ecc71" }} /> ПРИМЕРОЧНАЯ (LIVE PREVIEW)
+            <span style={{ width: 8, height: 8, background: "#2ecc71", borderRadius: "50%", boxShadow: "0 0 8px #2ecc71" }} /> {t('shop.fittingRoom')}
           </h3>
-          <button type="button" onClick={resetPreview} style={{ fontSize: 11, padding: "4px 10px", borderColor: "var(--line)", color: "var(--muted)" }}>Сбросить к текущему</button>
+          <button type="button" onClick={resetPreview} style={{ fontSize: 11, padding: "4px 10px", borderColor: "var(--line)", color: "var(--muted)" }}>{t('shop.resetToCurrent')}</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 20, padding: "16px 20px", background: "#181a1c", border: "1px dashed rgba(230,126,34,0.4)", borderRadius: 4 }}>
           <div className="shop-fitting-identity" style={{ display: "flex", alignItems: "center", gap: 18 }}>
@@ -374,30 +377,30 @@ export default function PremiumShopPage() {
                 <CosmeticCallsign name={cmdrName} glowId={preview.glow} glowPreview={pGlow?.preview_data} tier={subscription?.plan?.badge_label || "CMDR"} tierColor={subscription?.plan?.color || null} fontSize={20} />
               </div>
               <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                {preview.title ? <CosmeticTitle titleId={preview.title} titlePreview={pTitle?.preview_data} text={pTitle?.title} /> : <span style={{ fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}>Выберите титул в каталоге</span>}
-                {pSkin && <span style={{ fontSize: 11, color: pSkin.preview_data?.color || "var(--orange)", fontFamily: "ui-monospace, monospace" }}>[Схема: {pSkin.title}{preview.skin !== equipped.skin_id ? " — предпросмотр применён к сайту" : ""}]</span>}
+                {preview.title ? <CosmeticTitle titleId={preview.title} titlePreview={pTitle?.preview_data} text={pTitle?.title} /> : <span style={{ fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}>{t('shop.chooseTitle')}</span>}
+                {pSkin && <span style={{ fontSize: 11, color: pSkin.preview_data?.color || "var(--orange)", fontFamily: "ui-monospace, monospace" }}>[{t('shop.skinScheme', { title: pSkin.title })}{preview.skin !== equipped.skin_id ? t('shop.skinPreviewTail') : ''}]</span>}
               </div>
             </div>
           </div>
-          <div style={{ fontSize: 12, color: "var(--muted)", maxWidth: 320, lineHeight: 1.5 }}>Нажимайте <strong>«Примерить»</strong> на товарах — карточка обновится мгновенно. После покупки предмет надевается автоматически.</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", maxWidth: 320, lineHeight: 1.5 }}>{t('shop.fittingHintHead')} <strong>{t('shop.tryOn')}</strong> {t('shop.fittingHintTail')}</div>
         </div>
       </div>
 
       {/* Tabs */}
       <div className="tabs" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        <button type="button" className={category === "all" ? "tab tab-active" : "tab"} onClick={() => setCategory("all")}>ВСЕ ({items.length})</button>
+        <button type="button" className={category === "all" ? "tab tab-active" : "tab"} onClick={() => setCategory("all")}>{t('shop.tabAll', { count: items.length })}</button>
         {(["frame", "badge", "skin", "glow", "title"] as const).map((c) => (
-          <button key={c} type="button" className={category === c ? "tab tab-active" : "tab"} onClick={() => setCategory(c)}>{CATEGORY_LABEL[c].toUpperCase()} ({counts[c] || 0})</button>
+          <button key={c} type="button" className={category === c ? "tab tab-active" : "tab"} onClick={() => setCategory(c)}>{t(CATEGORY_LABEL[c]).toUpperCase()} ({counts[c] || 0})</button>
         ))}
-        <button type="button" className={category === "inventory" ? "tab tab-active" : "tab"} onClick={() => setCategory("inventory")} style={{ borderColor: "var(--cyan)", color: category === "inventory" ? "var(--cyan)" : "var(--muted)" }}>МОЙ ИНВЕНТАРЬ ({inventory.length})</button>
+        <button type="button" className={category === "inventory" ? "tab tab-active" : "tab"} onClick={() => setCategory("inventory")} style={{ borderColor: "var(--cyan)", color: category === "inventory" ? "var(--cyan)" : "var(--muted)" }}>{t('shop.tabInventory', { count: inventory.length })}</button>
       </div>
 
       {/* Inventory */}
       {category === "inventory" && (
         <div className="card" style={{ margin: 0 }}>
-          <h3 style={{ margin: "0 0 16px" }}>ВАШИ ПРИОБРЕТЁННЫЕ МОДИФИКАЦИИ</h3>
+          <h3 style={{ margin: "0 0 16px" }}>{t('shop.inventoryTitle')}</h3>
           {inventory.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>Пока ничего не куплено.</div>
+            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>{t('shop.inventoryEmpty')}</div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 16 }}>
               {inventory.map((inv) => {
@@ -408,23 +411,23 @@ export default function PremiumShopPage() {
                   <div key={inv.id} style={{ padding: 16, background: "#25282b", border: active ? "1px solid var(--orange)" : "1px solid var(--line)", borderRadius: 3, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                     <div>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                        <span style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>{CATEGORY_LABEL[item.category]}</span>
-                        {active && <span style={{ fontSize: 10, color: "#2ecc71", fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>✓ ЭКИПИРОВАНО</span>}
+                        <span style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>{t(CATEGORY_LABEL[item.category])}</span>
+                        {active && <span style={{ fontSize: 10, color: "#2ecc71", fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>{t('shop.equippedBadge')}</span>}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
                         <ItemPreview item={item} size="sm" />
                         <div>
                           <div style={{ fontWeight: 600, color: "var(--text)" }}>{item.title}</div>
-                          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Куплено {new Date(inv.purchased_at).toLocaleDateString("ru-RU")}{inv.price_paid_credits ? ` за ${inv.price_paid_credits} Кр.` : inv.price_paid_rub ? ` за ${inv.price_paid_rub} ₽` : ""}</div>
+                          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{t('shop.purchasedAt', { date: new Date(inv.purchased_at).toLocaleDateString(locale), price: inv.price_paid_credits ? t('shop.forCredits', { value: inv.price_paid_credits }) : inv.price_paid_rub ? t('shop.forRub', { value: inv.price_paid_rub }) : '' })}</div>
                         </div>
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "var(--line)" }}>Примерить</button>
+                      <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "var(--line)" }}>{t('shop.tryOn')}</button>
                       {active ? (
-                        <button type="button" disabled={equipping} onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
+                        <button type="button" disabled={equipping} onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>{t('shop.unequip')}</button>
                       ) : (
-                        <button type="button" className="btn-orange" disabled={equipping} onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 6, fontSize: 11 }}>Экипировать</button>
+                        <button type="button" className="btn-orange" disabled={equipping} onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 6, fontSize: 11 }}>{t('shop.equip')}</button>
                       )}
                     </div>
                   </div>
@@ -439,14 +442,14 @@ export default function PremiumShopPage() {
       {category !== "inventory" && (
         <>
           <div style={{ position: "relative", maxWidth: 360 }}>
-            <input type="text" placeholder="Поиск по каталогу..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", paddingLeft: 32 }} />
+            <input type="text" placeholder={t('shop.searchPlaceholder')} value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", paddingLeft: 32 }} />
             <span style={{ position: "absolute", left: 10, top: 12, pointerEvents: "none" }}><IconSearch size={14} color="#9ca3af" /></span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))", gap: 18 }}>
             {loading ? (
-              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted)" }}>Загрузка каталога...</div>
+              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted)" }}>{t('shop.catalogLoading')}</div>
             ) : filtered.length === 0 ? (
-              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted)" }}>Товары не найдены</div>
+              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted)" }}>{t('shop.nothingFound')}</div>
             ) : (
               filtered.map((item) => {
                 const owned = isOwned(item.id);
@@ -461,12 +464,12 @@ export default function PremiumShopPage() {
                     <div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                         <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 2, background: `${rc}20`, color: rc, border: `1px solid ${rc}60`, fontFamily: "ui-monospace, monospace", fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>{item.rarity}{item.is_featured ? " ★" : ""}</span>
-                        <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>{CATEGORY_LABEL[item.category]}</span>
+                        <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>{t(CATEGORY_LABEL[item.category])}</span>
                       </div>
                       <div style={{ height: 90, background: "#1c1e20", borderRadius: 3, border: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12, position: "relative", overflow: "hidden" }}>
                         <ItemPreview item={item} size="lg" />
                         {item.is_locked_for_user && (
-                          <span title={`Требуется подписка ${reqPlan?.name || item.requires_subscription}`} style={{ position: "absolute", top: 6, right: 6, display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9, padding: "2px 6px", background: "rgba(0,0,0,0.6)", color: reqPlan?.color || "#c084fc", border: `1px solid ${reqPlan?.color || "#c084fc"}` }}>
+                          <span title={t('shop.requiresSubscription', { plan: reqPlan?.name || item.requires_subscription || '' })} style={{ position: "absolute", top: 6, right: 6, display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9, padding: "2px 6px", background: "rgba(0,0,0,0.6)", color: reqPlan?.color || "#c084fc", border: `1px solid ${reqPlan?.color || "#c084fc"}` }}>
                             <IconLock size={9} /> {reqPlan?.badge_label || "PREMIUM"}
                           </span>
                         )}
@@ -478,26 +481,26 @@ export default function PremiumShopPage() {
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
                         <div>
                           <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                            <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>{finalCredits.toLocaleString("ru-RU")} Кр.</span>
-                            {disc > 0 && <span style={{ fontSize: 11, color: "var(--muted)", textDecoration: "line-through" }}>{item.price_credits.toLocaleString("ru-RU")}</span>}
+                            <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>{finalCredits.toLocaleString(locale)} {t('shop.creditsShort')}</span>
+                            {disc > 0 && <span style={{ fontSize: 11, color: "var(--muted)", textDecoration: "line-through" }}>{item.price_credits.toLocaleString(locale)}</span>}
                             {finalRub > 0 && <span style={{ fontSize: 12, color: "var(--muted)" }}>· {finalRub} ₽</span>}
                           </div>
-                          {disc > 0 ? <div style={{ fontSize: 10, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>Ваша скидка подписчика: −{disc}%</div> : item.subscriber_discount_pct > 0 ? <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>Подписчикам −{item.subscriber_discount_pct}%</div> : null}
+                          {disc > 0 ? <div style={{ fontSize: 10, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>{t('shop.discountYours', { pct: disc })}</div> : item.subscriber_discount_pct > 0 ? <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>{t('shop.discountForSubs', { pct: item.subscriber_discount_pct })}</div> : null}
                         </div>
-                        {owned && <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>{eq ? "✓ НАДЕТО" : "В ИНВЕНТАРЕ"}</span>}
+                        {owned && <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>{eq ? t('shop.worn') : t('shop.inInventory')}</span>}
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "var(--line)", color: "var(--text)" }}>Примерить</button>
+                        <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "var(--line)", color: "var(--text)" }}>{t('shop.tryOn')}</button>
                         {owned ? (
                           eq ? (
-                            <button type="button" disabled={equipping} onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
+                            <button type="button" disabled={equipping} onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>{t('shop.unequip')}</button>
                           ) : (
-                            <button type="button" className="btn-orange" disabled={equipping} onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Надеть</button>
+                            <button type="button" className="btn-orange" disabled={equipping} onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 8, fontSize: 11 }}>{t('shop.wear')}</button>
                           )
                         ) : item.is_locked_for_user ? (
-                          <Link href="/subscriptions" className="btn" style={{ flex: 1, textAlign: "center", padding: 8, fontSize: 11, borderColor: reqPlan?.color || "#c084fc", color: reqPlan?.color || "#c084fc" }}>Нужна подписка</Link>
+                          <Link href="/subscriptions" className="btn" style={{ flex: 1, textAlign: "center", padding: 8, fontSize: 11, borderColor: reqPlan?.color || "#c084fc", color: reqPlan?.color || "#c084fc" }}>{t('shop.needSubscription')}</Link>
                         ) : (
-                          <button type="button" className="btn-orange" onClick={() => (requireAuth() ? setBuyingItem(item) : null)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Купить</button>
+                          <button type="button" className="btn-orange" onClick={() => (requireAuth() ? setBuyingItem(item) : null)} style={{ flex: 1, padding: 8, fontSize: 11 }}>{t('shop.buy')}</button>
                         )}
                       </div>
                     </div>
@@ -511,34 +514,34 @@ export default function PremiumShopPage() {
 
       {/* Purchase modal */}
       {buyingItem && (
-        <Modal title="ПОДТВЕРЖДЕНИЕ ПОКУПКИ" onClose={() => setBuyingItem(null)}>
+        <Modal title={t('shop.confirmTitle')} onClose={() => setBuyingItem(null)}>
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
             <ItemPreview item={buyingItem} size="md" />
             <div>
               <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>{buyingItem.title}</div>
-              <div style={{ fontSize: 11, color: "var(--muted)" }}>{CATEGORY_LABEL[buyingItem.category]} • {buyingItem.rarity}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)" }}>{t(CATEGORY_LABEL[buyingItem.category])} • {buyingItem.rarity}</div>
             </div>
           </div>
           <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>{buyingItem.description}</p>
           <div style={{ padding: "12px 14px", background: "#1c1e20", border: "1px solid var(--line)", borderRadius: 2, marginBottom: 14, fontSize: 13 }}>
-            <Row label="Цена в кредитах:" value={`${(buyingItem.final_price_credits ?? buyingItem.price_credits).toLocaleString("ru-RU")} Кр.`} color="#38bdf8" />
-            <Row label="Ваш баланс:" value={`${credits.toLocaleString("ru-RU")} Кр.`} />
-            {(buyingItem.final_price_rub ?? buyingItem.price_rub) > 0 && <Row label="Или картой:" value={`${buyingItem.final_price_rub ?? buyingItem.price_rub} ₽`} color="var(--orange)" />}
-            {(buyingItem.applied_discount_pct || 0) > 0 && <Row label="Скидка подписчика:" value={`−${buyingItem.applied_discount_pct}%`} color="#2ecc71" />}
+            <Row label={t('shop.priceCredits')} value={`${(buyingItem.final_price_credits ?? buyingItem.price_credits).toLocaleString(locale)} ${t('shop.creditsShort')}`} color="#38bdf8" />
+            <Row label={t('shop.yourBalance')} value={`${credits.toLocaleString(locale)} ${t('shop.creditsShort')}`} />
+            {(buyingItem.final_price_rub ?? buyingItem.price_rub) > 0 && <Row label={t('shop.orByCard')} value={`${buyingItem.final_price_rub ?? buyingItem.price_rub} ₽`} color="var(--orange)" />}
+            {(buyingItem.applied_discount_pct || 0) > 0 && <Row label={t('shop.subscriberDiscount')} value={`−${buyingItem.applied_discount_pct}%`} color="#2ecc71" />}
           </div>
           {(buyingItem.final_price_rub ?? buyingItem.price_rub) > 0 && <div style={{ marginBottom: 14 }}><ProviderPicker /></div>}
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
-            <button type="button" onClick={() => setBuyingItem(null)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>Отмена</button>
+            <button type="button" onClick={() => setBuyingItem(null)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>{t('shop.cancel')}</button>
             {(buyingItem.final_price_rub ?? buyingItem.price_rub) > 0 && providers.length > 0 && (
-              <button type="button" className="btn-cyan" disabled={busy} onClick={() => checkout({ purpose: "shop_purchase", itemId: buyingItem.id })}>{busy ? "..." : `Оплатить ${buyingItem.final_price_rub ?? buyingItem.price_rub} ₽`}</button>
+              <button type="button" className="btn-cyan" disabled={busy} onClick={() => checkout({ purpose: "shop_purchase", itemId: buyingItem.id })}>{busy ? "..." : t('shop.payRub', { price: buyingItem.final_price_rub ?? buyingItem.price_rub })}</button>
             )}
             <button type="button" className="btn-orange" disabled={busy || credits < (buyingItem.final_price_credits ?? buyingItem.price_credits)} onClick={buyWithCredits}>
-              {busy ? "Списание..." : credits < (buyingItem.final_price_credits ?? buyingItem.price_credits) ? "Недостаточно кредитов" : "Оплатить кредитами"}
+              {busy ? t('shop.writeOff') : credits < (buyingItem.final_price_credits ?? buyingItem.price_credits) ? t('shop.notEnoughCredits') : t('shop.payWithCredits')}
             </button>
           </div>
           {credits < (buyingItem.final_price_credits ?? buyingItem.price_credits) && (
             <div style={{ marginTop: 10, textAlign: "right" }}>
-              <button type="button" onClick={() => { setBuyingItem(null); setShowTopup(true); }} style={{ fontSize: 11, border: "none", color: "var(--cyan)", background: "transparent" }}>Пополнить баланс →</button>
+              <button type="button" onClick={() => { setBuyingItem(null); setShowTopup(true); }} style={{ fontSize: 11, border: "none", color: "var(--cyan)", background: "transparent" }}>{t('shop.topupBalance')}</button>
             </div>
           )}
         </Modal>
@@ -546,8 +549,8 @@ export default function PremiumShopPage() {
 
       {/* Top-up modal */}
       {showTopup && (
-        <Modal title="ПОПОЛНЕНИЕ БАЛАНСА КРЕДИТОВ" onClose={() => setShowTopup(false)} width={500}>
-          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>Выберите пакет. Кредиты зачисляются автоматически после подтверждения платежа платёжной системой.</p>
+        <Modal title={t('shop.topupTitle')} onClose={() => setShowTopup(false)} width={500}>
+          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>{t('shop.topupLead')}</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
             {packs.map((p) => {
               const total = Math.round(p.credits * (1 + (p.bonus_pct || 0) / 100));
@@ -555,8 +558,8 @@ export default function PremiumShopPage() {
               return (
                 <div key={p.id} onClick={() => setSelectedPack(p.id)} style={{ padding: "12px 16px", background: sel ? "rgba(230,126,34,0.15)" : "#25282b", border: sel ? "1px solid var(--orange)" : "1px solid var(--line)", borderRadius: 2, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div>
-                    <div style={{ fontWeight: 600, color: "var(--text)", fontSize: 14 }}>+{total.toLocaleString("ru-RU")} Кредитов</div>
-                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{p.label}{p.bonus_pct ? ` • бонус +${p.bonus_pct}%` : ""}</div>
+                    <div style={{ fontWeight: 600, color: "var(--text)", fontSize: 14 }}>{t('shop.creditsAdded', { count: total.toLocaleString(locale) })}</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{p.label}{p.bonus_pct ? t('shop.bonus', { pct: p.bonus_pct }) : ""}</div>
                   </div>
                   <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "var(--orange)" }}>{p.price_rub} ₽</div>
                 </div>
@@ -565,9 +568,9 @@ export default function PremiumShopPage() {
           </div>
           <div style={{ marginBottom: 16 }}><ProviderPicker /></div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-            <button type="button" onClick={() => setShowTopup(false)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>Отмена</button>
+            <button type="button" onClick={() => setShowTopup(false)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>{t('shop.cancel')}</button>
             <button type="button" className="btn-orange" disabled={busy || !pack || providers.length === 0} onClick={() => pack && checkout({ purpose: "credit_topup", packId: pack.id })}>
-              {busy ? "Создание платежа..." : pack ? `Оплатить ${pack.price_rub} ₽` : "Выберите пакет"}
+              {busy ? t('shop.creatingPayment') : pack ? t('shop.payRub', { price: pack.price_rub }) : t('shop.choosePack')}
             </button>
           </div>
         </Modal>

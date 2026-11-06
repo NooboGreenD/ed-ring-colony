@@ -28,10 +28,10 @@ export type LeaderPeriod = (typeof LEADER_PERIODS)[number];
 export type LeaderScope = 'all' | 'members';
 
 export const PERIOD_LABELS: Record<LeaderPeriod, string> = {
-  all: 'Всё время',
-  '90d': '90 дней',
-  '30d': '30 дней',
-  '7d': '7 дней',
+  all: 'lead.periodAll',
+  '90d': 'lead.period90d',
+  '30d': 'lead.period30d',
+  '7d': 'lead.period7d',
 };
 
 export function isLeaderPeriod(value: unknown): value is LeaderPeriod {

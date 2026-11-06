@@ -7,6 +7,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { CarrierView } from '@/lib/fleetCarriers';
 import {
   ROLE_LABELS,
@@ -262,16 +263,19 @@ export function Badge({ children, tone = 'var(--muted)', title }: { children: Re
 }
 
 export function RoleBadge({ role }: { role: ProjectRole | null }) {
-  if (!role) return <Badge tone="var(--muted)">администратор</Badge>;
-  return <Badge tone={ROLE_TONES[role]}>{ROLE_LABELS[role].toLowerCase()}</Badge>;
+  const { t } = useI18n();
+  if (!role) return <Badge tone="var(--muted)">{t('psys.adminRole')}</Badge>;
+  return <Badge tone={ROLE_TONES[role]}>{t(ROLE_LABELS[role]).toLowerCase()}</Badge>;
 }
 
 export function StatusBadge({ status }: { status: ProjectStatus }) {
-  return <Badge tone={STATUS_TONES[status]}>{STATUS_LABELS[status].toLowerCase()}</Badge>;
+  const { t } = useI18n();
+  return <Badge tone={STATUS_TONES[status]}>{t(STATUS_LABELS[status]).toLowerCase()}</Badge>;
 }
 
 export function StageBadge({ stage }: { stage: SystemStage }) {
-  return <Badge tone={STAGE_TONES[stage]}>{STAGE_LABELS[stage].toLowerCase()}</Badge>;
+  const { t } = useI18n();
+  return <Badge tone={STAGE_TONES[stage]}>{t(STAGE_LABELS[stage]).toLowerCase()}</Badge>;
 }
 
 export function ColorDot({ color, size = 10 }: { color: string; size?: number }) {

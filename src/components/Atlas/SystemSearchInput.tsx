@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { IconSearch, IconX, IconClock, IconGlobe } from '@/components/Icons';
 import { useRecentSystems, useSystemAutocomplete, type SystemSuggestion } from '@/hooks/useSystemAutocomplete';
 import { normalizeSystemKey } from '@/lib/atlas';
+import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
 
 /**
  * Поле поиска системы с автодополнением — общий элемент для всех поисковиков
@@ -30,13 +31,20 @@ interface Props {
   compact?: boolean;
 }
 
-function suggestionMeta(system: SystemSuggestion): string {
+type TFn = (key: string, params?: TranslationParams) => string;
+
+function suggestionMeta(system: SystemSuggestion, t: TFn, locale: string): string {
   const parts: string[] = [];
-  if (typeof system.distance_from_sols === 'number') parts.push(`Sol: ${Math.round(system.distance_from_sols).toLocaleString('ru-RU')} св.л.`);
-  if (typeof system.distance_from_sgra === 'number') parts.push(`Sgr A*: ${Math.round(system.distance_from_sgra).toLocaleString('ru-RU')} св.л.`);
+  const unit = t('atlas.ui.unitLightYears');
+  if (typeof system.distance_from_sols === 'number') {
+    parts.push(t('atlas.ui.systemDistance', { label: 'Sol', value: Math.round(system.distance_from_sols).toLocaleString(locale), unit }));
+  }
+  if (typeof system.distance_from_sgra === 'number') {
+    parts.push(t('atlas.ui.systemDistance', { label: 'Sgr A*', value: Math.round(system.distance_from_sgra).toLocaleString(locale), unit }));
+  }
   if (system.star_type) parts.push(system.star_type);
   else if (system.main_star) parts.push(system.main_star);
-  if (system.needs_permit) parts.push('нужен пропуск');
+  if (system.needs_permit) parts.push(t('atlas.ui.needPermit'));
   return parts.join(' · ');
 }
 
@@ -46,13 +54,15 @@ export function SystemSearchInput({
   onSelect,
   onSubmit,
   label,
-  placeholder = 'Например, Sol или Colonia',
+  placeholder,
   hint,
   id,
   disabled,
   autoFocus,
   compact,
 }: Props) {
+  const { t, locale } = useI18n();
+  const placeholderText = placeholder ?? t('atlas.ui.examplePlaceholder');
   const generatedId = useId();
   const inputId = id || `atlas-system-${generatedId}`;
   const listId = `${inputId}-list`;
@@ -161,7 +171,7 @@ export function SystemSearchInput({
           value={value}
           disabled={disabled}
           autoFocus={autoFocus}
-          placeholder={placeholder}
+          placeholder={placeholderText}
           onFocus={() => {
             setShowRecent(true);
             setOpen(true);
@@ -178,7 +188,7 @@ export function SystemSearchInput({
           <button
             type="button"
             className="atlas-system-clear"
-            aria-label="Очистить"
+            aria-label={t('atlas.ui.clear')}
             onClick={() => {
               onChange('');
               setOpen(true);
@@ -191,9 +201,9 @@ export function SystemSearchInput({
       </div>
 
       {open && (options.length > 0 || emptyState || error) && (
-        <ul className="atlas-system-list" id={listId} role="listbox" aria-label="Подсказки систем">
+        <ul className="atlas-system-list" id={listId} role="listbox" aria-label={t('atlas.ui.suggestionsAria')}>
           {showRecent && value.trim().length < 2 && options.length > 0 && (
-            <li className="atlas-system-group" role="presentation">Последние системы</li>
+            <li className="atlas-system-group" role="presentation">{t('atlas.ui.recentSystems')}</li>
           )}
           {options.map((option, index) => {
             if (option.kind === 'recent') {
@@ -215,7 +225,7 @@ export function SystemSearchInput({
                 </li>
               );
             }
-            const meta = suggestionMeta(option.system);
+            const meta = suggestionMeta(option.system, t, locale);
             return (
               <li
                 key={`${option.system.source}-${option.system.name}`}
@@ -237,11 +247,11 @@ export function SystemSearchInput({
           })}
           {emptyState && (
             <li className="atlas-system-empty" role="presentation">
-              {error ? 'Подсказки недоступны — введите имя системы вручную' : 'Система не найдена в каталоге'}
+              {error ? t('atlas.ui.suggestionsUnavailable') : t('atlas.ui.systemNotInCatalog')}
             </li>
           )}
           {!showRecent && suggestions.length > 0 && normalizeSystemKey(options[0]?.kind === 'system' ? options[0].system.name : '') !== normalizeSystemKey(value) && (
-            <li className="atlas-system-hint" role="presentation">Enter — искать по введённому имени</li>
+            <li className="atlas-system-hint" role="presentation">{t('atlas.ui.enterToSearch')}</li>
           )}
         </ul>
       )}

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, type ComponentType, type ReactNode } from 'react';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { GalaxyMapProps } from './GalaxyMap';
 
 type GalaxyMapComponent = ComponentType<GalaxyMapProps>;
@@ -24,6 +25,7 @@ export function GalaxyMapClient({
   errorFallback,
   ...mapProps
 }: GalaxyMapClientProps) {
+  const { t } = useI18n();
   const [Map, setMap] = useState<GalaxyMapComponent | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -47,7 +49,7 @@ export function GalaxyMapClient({
   if (failed) {
     return errorFallback ?? (
       <div role="alert" className="map-page-loading">
-        Не удалось загрузить 3D-карту. Обновите страницу и попробуйте снова.
+        {t('card.mapFailed')}
       </div>
     );
   }

@@ -5,6 +5,7 @@ import { useAtlas } from '@/components/Atlas/AtlasContext';
 import { CollapsibleSection } from '@/components/Atlas/CollapsibleSection';
 import { IconCrosshair, IconRefresh, IconSearch, IconTrash, IconX } from '@/components/Icons';
 import { formatCoordinates, worldTypeLabel } from '@/lib/atlas';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { AtlasFavorite, WorldType } from '@/types/atlas';
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export function AtlasFavorites({ onSelect }: Props) {
+  const { t } = useI18n();
   const { favorites, favoritesLoading, favoritesNeedAuth, removeFavorite, refreshFavorites } = useAtlas();
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -35,11 +37,11 @@ export function AtlasFavorites({ onSelect }: Props) {
 
   return (
     <CollapsibleSection
-      title="Избранное"
+      title={t('atlas.favorites')}
       count={favorites.length}
       storageKey="favorites"
       actions={
-        <button type="button" className="atlas-icon-btn" onClick={() => void refreshFavorites()} title="Обновить избранное">
+        <button type="button" className="atlas-icon-btn" onClick={() => void refreshFavorites()} title={t('atlas.ui.refreshFavorites')}>
           <IconRefresh size={12} />
         </button>
       }
@@ -52,11 +54,11 @@ export function AtlasFavorites({ onSelect }: Props) {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Фильтр по системе"
-              aria-label="Фильтр избранного"
+              placeholder={t('atlas.ui.filterBySystem')}
+              aria-label={t('atlas.ui.favoritesFilterAria')}
             />
             {query && (
-              <button type="button" onClick={() => setQuery('')} aria-label="Очистить фильтр">
+              <button type="button" onClick={() => setQuery('')} aria-label={t('atlas.clearFilter')}>
                 <IconX size={11} />
               </button>
             )}
@@ -68,7 +70,7 @@ export function AtlasFavorites({ onSelect }: Props) {
                 className={`atlas-filter-pill${typeFilter === 'all' ? ' active' : ''}`}
                 onClick={() => setTypeFilter('all')}
               >
-                Все ({favorites.length})
+                {t('atlas.allCount', { count: favorites.length })}
               </button>
               {types.map(([type, count]) => (
                 <button
@@ -85,15 +87,13 @@ export function AtlasFavorites({ onSelect }: Props) {
         </>
       )}
 
-      {favoritesLoading && favorites.length === 0 && <p className="atlas-muted">Загрузка…</p>}
+      {favoritesLoading && favorites.length === 0 && <p className="atlas-muted">{t('atlas.loadingDots')}</p>}
       {!favoritesLoading && favorites.length === 0 && (
         <p className="atlas-muted">
-          {favoritesNeedAuth
-            ? 'Нет локальных закладок. Добавляйте их звездой в списке кандидатов — они сохранятся в браузере, а после входа синхронизируются с профилем.'
-            : 'Пока ничего не отмечено. Нажмите ☆ у кандидата в списке.'}
+          {favoritesNeedAuth ? t('atlas.ui.favoritesEmptyLocal') : t('atlas.ui.favoritesEmpty')}
         </p>
       )}
-      {favorites.length > 0 && visible.length === 0 && <p className="atlas-muted">Ничего не найдено по фильтру.</p>}
+      {favorites.length > 0 && visible.length === 0 && <p className="atlas-muted">{t('atlas.ui.nothingFound')}</p>}
 
       <div className="atlas-list">
         {visible.map((favorite) => (
@@ -105,7 +105,7 @@ export function AtlasFavorites({ onSelect }: Props) {
               <button
                 type="button"
                 className="atlas-icon-btn"
-                title="Показать на карте"
+                title={t('atlas.showOnMap')}
                 onClick={() => onSelect(favorite)}
               >
                 <IconCrosshair size={12} />
@@ -113,7 +113,7 @@ export function AtlasFavorites({ onSelect }: Props) {
               <button
                 type="button"
                 className="atlas-icon-btn danger"
-                title="Удалить из избранного"
+                title={t('atlas.ui.removeFavorite')}
                 onClick={() => void removeFavorite(favorite.id)}
               >
                 <IconTrash size={12} />

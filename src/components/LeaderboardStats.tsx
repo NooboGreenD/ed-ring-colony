@@ -18,6 +18,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import PilotIdentity from '@/components/Cosmetics/PilotIdentity';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { IconBuilding, IconStats } from '@/components/Icons';
 
 export type StatsPeriod = 'all' | 'week' | 'month';
@@ -44,9 +45,9 @@ export interface TopArchitectEntry {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  planned: 'запланирована',
-  building: 'строится',
-  done: 'построена',
+  planned: 'lbs.statusPlanned',
+  building: 'lbs.statusBuilding',
+  done: 'lbs.statusDone',
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -110,16 +111,17 @@ const caption: React.CSSProperties = {
 };
 
 function BuiltSystemsBlock({ systems }: { systems: BuiltSystemEntry[] }) {
+  const { t, locale } = useI18n();
   return (
     <section style={card}>
       <h3 style={heading}>
         <IconBuilding size={20} color="#e67e22" />
-        Самые застроенные системы
+        {t('lbs.topSystems')}
       </h3>
-      <p style={caption}>По тоннажу грузов, завезённых пилотами на стройку за период.</p>
+      <p style={caption}>{t('lbs.topSystemsCaption')}</p>
       <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {systems.length === 0 && (
-          <p style={{ color: '#9ca3af', fontSize: 13 }}>Поставок за этот период не было.</p>
+          <p style={{ color: '#9ca3af', fontSize: 13 }}>{t('lbs.noDeliveries')}</p>
         )}
         {systems.map((entry) => (
           <div
@@ -144,13 +146,13 @@ function BuiltSystemsBlock({ systems }: { systems: BuiltSystemEntry[] }) {
                 </Link>
                 {entry.status && (
                   <span style={{ fontSize: 11, color: STATUS_COLORS[entry.status] || '#9ca3af' }}>
-                    {STATUS_LABELS[entry.status]}
+                    {STATUS_LABELS[entry.status] ? t(STATUS_LABELS[entry.status]) : entry.status}
                     {entry.progress != null ? ` · ${entry.progress}%` : ''}
                   </span>
                 )}
               </div>
               <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
-                {entry.pilots} пил. · {entry.deliveries_count} рейс.
+                {t('lbs.pilotsTrips', { pilots: entry.pilots, trips: entry.deliveries_count })}
               </div>
               {entry.progress != null && (
                 <div style={{ marginTop: 5, height: 4, borderRadius: 2, background: '#25282b', overflow: 'hidden' }}>
@@ -174,7 +176,7 @@ function BuiltSystemsBlock({ systems }: { systems: BuiltSystemEntry[] }) {
                 whiteSpace: 'nowrap',
               }}
             >
-              {entry.total_amount.toLocaleString('ru')} т
+              {t('lbs.tons', { value: entry.total_amount.toLocaleString(locale) })}
             </div>
           </div>
         ))}
@@ -184,17 +186,18 @@ function BuiltSystemsBlock({ systems }: { systems: BuiltSystemEntry[] }) {
 }
 
 function TopArchitectsBlock({ architects }: { architects: TopArchitectEntry[] }) {
+  const { t, locale } = useI18n();
   return (
     <section style={card}>
       <h3 style={heading}>
         <IconStats size={20} color="#22d3ee" />
-        Топ архитекторов
+        {t('lbs.topArchitects')}
       </h3>
-      <p style={caption}>Закреплённые системы и опубликованные планы застройки.</p>
+      <p style={caption}>{t('lbs.topArchitectsCaption')}</p>
       <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {architects.length === 0 && (
           <p style={{ color: '#9ca3af', fontSize: 13 }}>
-            Публичных планов пока нет — сохраните план системы в «Архитекторе» и откройте его всем.
+            {t('lbs.noPlans')}
           </p>
         )}
         {architects.map((entry) => (
@@ -214,14 +217,14 @@ function TopArchitectsBlock({ architects }: { architects: TopArchitectEntry[] })
               <PilotIdentity userId={entry.user_id} cmdrName={entry.cmdr_name} showAvatar={false} fontSize={13} style={{ color: '#22d3ee' }} />
               <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
                 {entry.plans_count > 0
-                  ? `планов: ${entry.plans_count} · построек: ${entry.sites_count} · ${entry.haul_tons.toLocaleString('ru')} т`
-                  : 'без публичных планов'}
+                  ? t('lbs.plansSites', { plans: entry.plans_count, sites: entry.sites_count, tons: entry.haul_tons.toLocaleString(locale) })
+                  : t('lbs.noPublicPlans')}
               </div>
               <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {entry.assigned_systems > 0 && (
                   <span
                     title={entry.assigned_systems - entry.assigned_names.length > 0
-                      ? `и ещё ${entry.assigned_systems - entry.assigned_names.length}`
+                      ? t('lbs.andMore', { count: entry.assigned_systems - entry.assigned_names.length })
                       : entry.assigned_names.join(', ')}
                     style={{
                       fontSize: 11,
@@ -231,7 +234,7 @@ function TopArchitectsBlock({ architects }: { architects: TopArchitectEntry[] })
                       padding: '1px 7px',
                     }}
                   >
-                    ★ архитектор: {entry.assigned_names.join(', ')}
+                    {t('lbs.architect', { names: entry.assigned_names.join(', ') })}
                     {entry.assigned_systems > entry.assigned_names.length ? '…' : ''}
                   </span>
                 )}
@@ -246,7 +249,9 @@ function TopArchitectsBlock({ architects }: { architects: TopArchitectEntry[] })
                 whiteSpace: 'nowrap',
               }}
             >
-              {entry.assigned_systems > 0 ? `${entry.assigned_systems} сист.` : `${entry.sites_count} постр.`}
+              {entry.assigned_systems > 0
+                ? t('lbs.systemsCount', { count: entry.assigned_systems })
+                : t('lbs.sitesCount', { count: entry.sites_count })}
             </div>
           </div>
         ))}
@@ -256,6 +261,7 @@ function TopArchitectsBlock({ architects }: { architects: TopArchitectEntry[] })
 }
 
 export default function LeaderboardStats({ period }: { period: StatsPeriod }) {
+  const { t } = useI18n();
   const [systems, setSystems] = useState<BuiltSystemEntry[]>([]);
   const [architects, setArchitects] = useState<TopArchitectEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -280,13 +286,13 @@ export default function LeaderboardStats({ period }: { period: StatsPeriod }) {
         if (!alive) return;
         setSystems([]);
         setArchitects([]);
-        setError(err instanceof Error ? err.message : 'Не удалось загрузить статистику');
+        setError(err instanceof Error ? err.message : t('lbs.errLoad'));
       })
       .finally(() => {
         if (alive) setLoading(false);
       });
     return () => { alive = false; };
-  }, [period]);
+  }, [period, t]);
 
   return (
     <div
@@ -299,12 +305,12 @@ export default function LeaderboardStats({ period }: { period: StatsPeriod }) {
     >
       {error ? (
         <div style={{ ...card, gridColumn: '1 / -1', color: '#f87171', fontSize: 12 }}>
-          Статистика недоступна: {error}
+          {t('lbs.unavailable', { error })}
         </div>
       ) : (
         <>
           {loading && systems.length === 0 && architects.length === 0 && (
-            <div style={{ ...card, gridColumn: '1 / -1', color: '#9ca3af', fontSize: 12 }}>Загрузка статистики…</div>
+            <div style={{ ...card, gridColumn: '1 / -1', color: '#9ca3af', fontSize: 12 }}>{t('lbs.loading')}</div>
           )}
           <BuiltSystemsBlock systems={systems} />
           <TopArchitectsBlock architects={architects} />

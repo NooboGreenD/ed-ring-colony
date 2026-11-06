@@ -14,24 +14,22 @@
 import Link from 'next/link';
 import { IconExternalLink, IconMapPin } from '@/components/Icons';
 import {
-  POWER_ALLEGIANCE_LABEL,
-  POWERPLAY_STATE_HINT,
-  POWERPLAY_STATE_LABEL,
-  POWERPLAY_STATE_ZONE,
-  formatLy,
   formatPowerplayDate,
   isUnknownPower,
   powerInfo,
-  powerplayAge,
   powerplayBasisText,
   type PowerplayInfluence,
   type PowerplaySystem,
 } from '@/lib/powerplay';
-
-/** Чьё это наблюдение — подпись к дате. */
-function observationLabel(system: PowerplaySystem): string {
-  return system.basis === 'journal' ? 'Журнал игры' : 'Данные EDSM';
-}
+import { useI18n } from '@/lib/i18n/I18nContext';
+import {
+  POWER_ALLEGIANCE_KEYS,
+  POWER_BASIS_KEYS,
+  POWER_STATE_HINT_KEYS,
+  POWER_STATE_KEYS,
+  POWER_STATE_ZONE_KEYS,
+  gameLabel,
+} from '@/lib/i18n/gameLabels';
 import { PowerSwatch, PowerplayGlyph } from './PowerplayGlyph';
 
 const MUTED = '#9ca3af';
@@ -56,10 +54,29 @@ export interface PowerplaySystemCardProps {
 }
 
 export function PowerplaySystemCard({ system, influence, onClose, onFocus, onShowSystem, now = Date.now() }: PowerplaySystemCardProps) {
+  const { t, locale } = useI18n();
   const info = powerInfo(system.power);
   const color = info.color;
   const unknown = isUnknownPower(system.power);
-  const basisText = powerplayBasisText(system);
+  const basisText = gameLabel(
+    t,
+    POWER_BASIS_KEYS,
+    unknown ? 'unknown' : system.basis,
+    powerplayBasisText(system) ?? '',
+  );
+  const lyText = (distance: number) => {
+    const digits = distance < 10 ? 2 : 1;
+    return t('card.distanceLy', {
+      value: distance.toLocaleString(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits }),
+    });
+  };
+  const ageText = (value: number | null | undefined) => {
+    if (value == null || !Number.isFinite(value)) return t('card.ppAgeUnknown');
+    const days = Math.floor(Math.max(0, now - value) / 86_400_000);
+    if (days === 0) return t('card.ageToday');
+    if (days === 1) return t('card.ageYesterday');
+    return t('card.ageDays', { count: days });
+  };
   // Соседи владельца (державы, чьи зоны тоже накрывают систему) или претенденты.
   const others = (system.candidates ?? []).filter((candidate) => candidate !== system.power);
   const shown = influence.slice(0, INFLUENCE_SHOWN);
@@ -70,7 +87,7 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
     <div
       className="powerplay-system-card"
       role="dialog"
-      aria-label={`PowerPlay: система ${system.name}`}
+      aria-label={t('card.ppAria', { name: system.name })}
       data-powerplay-system={system.id64 || system.name}
       style={{
         position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.92)', backdropFilter: 'blur(8px)',
@@ -91,8 +108,8 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
         <button
           type="button"
           onClick={onClose}
-          title="Закрыть"
-          aria-label="Закрыть карточку"
+          title={t('atlas.ui.close')}
+          aria-label={t('card.closeAria')}
           style={{ background: 'transparent', border: 'none', color: DIM, cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
         >
           ✕
@@ -102,16 +119,16 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
       <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: TEXT }} data-powerplay-owner={unknown ? 'unknown' : system.power}>
         <PowerSwatch color={color} />
         <span style={{ fontWeight: 600 }}>{info.label}</span>
-        {info.allegiance && <span style={{ fontSize: 11, color: MUTED }}>· {POWER_ALLEGIANCE_LABEL[info.allegiance]}</span>}
+        {info.allegiance && <span style={{ fontSize: 11, color: MUTED }}>· {t(POWER_ALLEGIANCE_KEYS[info.allegiance])}</span>}
       </div>
       {basisText && (
         <div style={{ marginTop: 2, fontSize: 11, color: unknown ? '#fbbf24' : DIM, lineHeight: 1.35 }} data-powerplay-basis={unknown ? 'unknown' : system.basis ?? ''}>
-          {unknown ? 'Владелец не определён: EDSM перечисляет несколько держав и не говорит, какая из них владеет системой' : `Держава ${basisText}`}
+          {unknown ? t('card.ppUnknownOwner') : t('card.ppOwnerBasis', { basis: basisText })}
         </div>
       )}
       {others.length > 0 && (
         <div style={{ marginTop: 4, fontSize: 11, color: MUTED, lineHeight: 1.5 }} data-powerplay-candidates={others.join('|')}>
-          {unknown ? 'Претенденты: ' : 'Зоны соседей: '}
+          {unknown ? t('card.ppCandidates') : t('card.ppNeighbourZones')}
           {others.map((candidate, index) => {
             const other = powerInfo(candidate);
             return (
@@ -123,13 +140,14 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
           })}
         </div>
       )}
-      <div style={{ marginTop: 4, fontSize: 12, color: TEXT }} title={POWERPLAY_STATE_HINT[system.state]}>
-        {POWERPLAY_STATE_LABEL[system.state]}
+      <div style={{ marginTop: 4, fontSize: 12, color: TEXT }} title={t(POWER_STATE_HINT_KEYS[system.state])}>
+        {t(POWER_STATE_KEYS[system.state])}
         <span style={{ color: MUTED }}> · {system.state}</span>
       </div>
-      <div style={{ marginTop: 2, fontSize: 11, color: MUTED }}>{POWERPLAY_STATE_ZONE[system.state]}</div>
+      <div style={{ marginTop: 2, fontSize: 11, color: MUTED }}>{t(POWER_STATE_ZONE_KEYS[system.state])}</div>
       <div style={{ marginTop: 6, fontSize: 11, color: DIM }}>
-        {observationLabel(system)}: {formatPowerplayDate(system.observedAt)} ({powerplayAge(system.observedAt, now)})
+        {system.basis === 'journal' ? t('card.observationJournal') : t('card.observationEdsm')}:{' '}
+        {formatPowerplayDate(system.observedAt)} ({ageText(system.observedAt)})
       </div>
       <div style={{ marginTop: 2, fontSize: 11, color: DIM }}>
         <IconMapPin size={11} /> {formatCoordinate(system.x)}, {formatCoordinate(system.y)}, {formatCoordinate(system.z)}
@@ -137,14 +155,14 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
 
       <div style={{ marginTop: 10, borderTop: '1px solid #2d2f33', paddingTop: 8 }}>
         <div style={{ fontSize: 10, color: MUTED, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
-          Зоны влияния в этой точке
+          {t('card.ppZonesTitle')}
         </div>
         {shown.length === 0 ? (
           <div style={{ fontSize: 11, color: DIM, lineHeight: 1.4 }}>
-            Ни один оплот (30 св. лет) или укреплённая система (20 св. лет) сюда не дотягивается — по данным слоя.
+            {t('card.ppNoZones')}
           </div>
         ) : (
-          <ul aria-label="Зоны влияния" style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+          <ul aria-label={t('atlas.ui.ppZonesAria')} style={{ margin: 0, padding: 0, listStyle: 'none' }}>
             {shown.map((item) => {
               const other = powerInfo(item.power);
               const own = item.power === system.power && !unknown;
@@ -153,29 +171,29 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
                   <PowerplayGlyph state={item.nearest.state} color={other.color} size={12} style={{ marginTop: 1 }} />
                   <span style={{ minWidth: 0 }}>
                     <span style={{ color: own ? TEXT : other.color, fontWeight: 600 }}>{other.label}</span>
-                    {own ? <span style={{ color: DIM }}> · своя держава</span> : null}
+                    {own ? <span style={{ color: DIM }}>{t('card.ppOwnPower')}</span> : null}
                     <br />
-                    {POWERPLAY_STATE_LABEL[item.nearest.state].toLowerCase()}{' '}
+                    {t(POWER_STATE_KEYS[item.nearest.state]).toLocaleLowerCase(locale)}{' '}
                     {onShowSystem ? (
                       <button
                         type="button"
                         className="powerplay-system-link"
                         data-powerplay-link={item.nearest.name}
-                        title="Открыть эту систему"
+                        title={t('card.ppOpenSystem')}
                         onClick={() => onShowSystem({ id64: item.nearest.id64, name: item.nearest.name })}
                       >
                         {item.nearest.name}
                       </button>
                     ) : item.nearest.name}
-                    , {formatLy(item.nearest.distance)}
-                    {item.sources > 1 ? <span style={{ color: DIM }}> · зон: {item.sources}</span> : null}
+                    , {lyText(item.nearest.distance)}
+                    {item.sources > 1 ? <span style={{ color: DIM }}>{t('card.ppZonesCount', { count: item.sources })}</span> : null}
                   </span>
                 </li>
               );
             })}
           </ul>
         )}
-        {hidden > 0 && <div style={{ fontSize: 10, color: DIM, marginTop: 3 }}>и ещё держав: {hidden}</div>}
+        {hidden > 0 && <div style={{ fontSize: 10, color: DIM, marginTop: 3 }}>{t('card.ppMorePowers', { count: hidden })}</div>}
       </div>
 
       <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -185,7 +203,7 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, onSho
             onClick={() => onFocus(system)}
             style={{ fontSize: 11, color, background: `${color}14`, border: `1px solid ${color}55`, borderRadius: 4, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit', textTransform: 'none', letterSpacing: 'normal' }}
           >
-            <IconMapPin size={10} /> К системе
+            <IconMapPin size={10} /> {t('card.toSystem')}
           </button>
         )}
         <a

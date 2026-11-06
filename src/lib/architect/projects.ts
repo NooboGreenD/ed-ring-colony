@@ -33,31 +33,31 @@ export const SYSTEM_STAGES = ['planned', 'claimed', 'building', 'done', 'on_hold
 export type SystemStage = (typeof SYSTEM_STAGES)[number];
 
 export const ROLE_LABELS: Record<ProjectRole, string> = {
-  owner: 'Создатель',
-  moderator: 'Модератор',
-  member: 'Участник',
+  owner: 'proj.roleOwner',
+  moderator: 'proj.roleModerator',
+  member: 'proj.roleMember',
 };
 
 export const STATUS_LABELS: Record<ProjectStatus, string> = {
-  planning: 'Подготовка',
-  active: 'В работе',
-  paused: 'На паузе',
-  completed: 'Завершён',
-  archived: 'Архив',
+  planning: 'proj.statusPlanning',
+  active: 'proj.statusActive',
+  paused: 'proj.statusPaused',
+  completed: 'proj.statusCompleted',
+  archived: 'proj.statusArchived',
 };
 
 export const STAGE_LABELS: Record<SystemStage, string> = {
-  planned: 'В планах',
-  claimed: 'Заявлена',
-  building: 'Строится',
-  done: 'Готова',
-  on_hold: 'Отложена',
+  planned: 'proj.stagePlanned',
+  claimed: 'proj.stageClaimed',
+  building: 'proj.stageBuilding',
+  done: 'proj.stageDone',
+  on_hold: 'proj.stageOnHold',
 };
 
 export const PRIORITY_LABELS: Record<number, string> = {
-  1: 'Высокий',
-  2: 'Обычный',
-  3: 'Низкий',
+  1: 'proj.priorityHigh',
+  2: 'proj.priorityNormal',
+  3: 'proj.priorityLow',
 };
 
 /** Палитра меток проекта — те же акценты, что в DESIGN.md. */

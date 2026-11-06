@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { IconCheck, IconError, IconSync, IconWaiting } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import type { TFn } from '@/lib/i18n/gameLabels';
 import { capiReasonText, describeJournalStatus } from '@/lib/capi/messages';
 import { NO_ENTITLEMENT_MESSAGE } from '@/lib/capi/entitlement';
 import { platformSelection } from '@/lib/capi/platform';
@@ -76,24 +78,37 @@ type SyncJob = {
   } | null;
 };
 
-function syncStageLabel(stage: string): string {
-  const labels: Record<string, string> = {
-    queued: 'Задание ожидает worker', starting: 'Worker забрал задание', token_lookup: 'Проверка сайт-привязки Frontier',
-    session: 'Проверка и обновление сессии Frontier',
-    profile_request: 'Запрос профиля Frontier', profile_received: 'Профиль получен',
-    profile_site_lookup: 'Проверка привязки профиля сайта', profile_save: 'Сохранение профиля',
-    community_goals_request: 'Запрос необязательных Community Goals', community_goals_save: 'Сохранение каталога Community Goals',
-    stats_save: 'Сохранение статистики командира', member_location: 'Обновление положения в эскадрилье',
-    journal_request: 'Запрос журнала Frontier', journal_parse: 'Разбор JSON журнала',
-    journal_reports_save: 'Сохранение отчётов Community Goals из журнала',
-    journal_reports_catalog: 'Обновление каталога Community Goals из журнала',
-    journal_sites_save: 'Запись событий колонизации', journal_snapshots_save: 'Запись снимков прогресса',
-    journal_projects_sync: 'Синхронизация проектов эскадрилий',
-    journal_observations_parse: 'Разбор наблюдений систем', journal_observations_save: 'Запись фракций и PowerPlay из журнала',
-    finalize: 'Завершение и запись результата', succeeded: 'Завершено', failed: 'Ошибка',
-    worker_lost: 'Worker не ответил; превышено число повторных попыток',
-  };
-  return labels[stage] || `Этап: ${stage.replaceAll('_', ' ')}`;
+const STAGE_KEYS: Record<string, string> = {
+  queued: 'capi.stageQueued',
+  starting: 'capi.stageStarting',
+  token_lookup: 'capi.stageTokenLookup',
+  session: 'capi.stageSession',
+  profile_request: 'capi.stageProfileRequest',
+  profile_received: 'capi.stageProfileReceived',
+  profile_site_lookup: 'capi.stageProfileSiteLookup',
+  profile_save: 'capi.stageProfileSave',
+  community_goals_request: 'capi.stageGoalsRequest',
+  community_goals_save: 'capi.stageGoalsSave',
+  stats_save: 'capi.stageStatsSave',
+  member_location: 'capi.stageMemberLocation',
+  journal_request: 'capi.stageJournalRequest',
+  journal_parse: 'capi.stageJournalParse',
+  journal_reports_save: 'capi.stageJournalReportsSave',
+  journal_reports_catalog: 'capi.stageJournalReportsCatalog',
+  journal_sites_save: 'capi.stageSitesSave',
+  journal_snapshots_save: 'capi.stageSnapshotsSave',
+  journal_projects_sync: 'capi.stageProjectsSync',
+  journal_observations_parse: 'capi.stageObservationsParse',
+  journal_observations_save: 'capi.stageObservationsSave',
+  finalize: 'capi.stageFinalize',
+  succeeded: 'capi.stageSucceeded',
+  failed: 'capi.stageFailed',
+  worker_lost: 'capi.stageWorkerLost',
+};
+
+function syncStageLabel(t: TFn, stage: string): string {
+  const key = STAGE_KEYS[stage];
+  return key ? t(key) : t('capi.stageFallback', { stage: stage.replaceAll('_', ' ') });
 }
 
 type Diagnostics = {
@@ -126,8 +141,8 @@ const FED_RANKS = ['None','Recruit','Cadet','Midshipman','Petty Officer','Chief 
  * или Epic, проходит авторизацию, но получает токен учётки магазина — и CAPI
  * отвечает `400 Please Visit the store to purchase Elite: Dangerous`.
  */
-const PLATFORMS: { id: string; label: string }[] = [
-  { id: 'auto', label: 'Определить автоматически' },
+const PLATFORMS: { id: string; label: string; labelKey?: string }[] = [
+  { id: 'auto', label: 'Auto-detect', labelKey: 'capi.platformAuto' },
   { id: 'frontier', label: 'Frontier' },
   { id: 'steam', label: 'Steam' },
   { id: 'epic', label: 'Epic Games Store (EGS)' },
@@ -140,13 +155,14 @@ function rankLabel(list: string[], value: number | null | undefined): string {
   return list[value] ?? String(value);
 }
 
-function dateLabel(value: string | null | undefined): string {
+function dateLabel(value: string | null | undefined, locale: string): string {
   if (!value) return '—';
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString('ru-RU');
+  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString(locale);
 }
 
 export default function CapiPage() {
+  const { t, locale } = useI18n();
   const [profile, setProfile] = useState<CapiProfileData | null>(null);
   const [binding, setBinding] = useState<BindingData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -170,10 +186,10 @@ export default function CapiPage() {
         setProfile(data.profile ?? null);
         setBinding(data.binding ?? null);
       } else if (res.status === 401) {
-        setError('Сессия сайта истекла — войдите заново.');
+        setError(t('capi.sessionExpired'));
       }
     } catch (profileError) {
-      setError(profileError instanceof Error ? profileError.message : 'Не удалось загрузить профиль');
+      setError(profileError instanceof Error ? profileError.message : t('capi.profileLoadFailed'));
     } finally {
       setLoading(false);
     }
@@ -195,8 +211,8 @@ export default function CapiPage() {
       if (status === 'success') {
         setNotice({
           kind: 'success',
-          title: cmdr ? `Аккаунт Frontier привязан: CMDR ${cmdr}` : 'Аккаунт Frontier привязан',
-          hint: reason ? text.hint : 'Данные командира загружены. Дальше они обновляются по кнопке «Синхронизировать» и по расписанию.',
+          title: cmdr ? t('capi.linkedTitleCmdr', { cmdr }) : t('capi.linkedTitle'),
+          hint: reason ? text.hint : t('capi.linkedHint'),
         });
       } else {
         setNotice({
@@ -246,7 +262,9 @@ export default function CapiPage() {
       await new Promise((resolve) => window.setTimeout(resolve, 1500));
       const res = await authFetch(`/api/capi/sync/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.job) throw new Error(data.error || `Не удалось проверить состояние синхронизации (HTTP ${res.status})`);
+      if (!res.ok || !data.job) {
+        throw new Error(data.error || t('capi.syncStatusFailed', { status: res.status }));
+      }
 
       const job = data.job as SyncJob;
       setSyncJob(job);
@@ -258,10 +276,10 @@ export default function CapiPage() {
         setError(null);
       } else {
         setSyncReport(job.result ? reportFromJob(job) : null);
-        const message = [job.result?.error || job.error || 'Фоновая синхронизация завершилась ошибкой', job.result?.detail]
+        const message = [job.result?.error || job.error || t('capi.syncFailed'), job.result?.detail]
           .filter((part, index, all): part is string => Boolean(part) && all.indexOf(part) === index)
           .join(' · ');
-        setError(job.result?.needsReauth ? `${message} — подключите аккаунт заново.` : message);
+        setError(job.result?.needsReauth ? t('capi.syncFailedReauth', { message }) : message);
       }
       await fetchProfile();
       return;
@@ -279,7 +297,7 @@ export default function CapiPage() {
       setSyncing(true);
       await pollSyncJob(job.id);
     } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : 'Не удалось продолжить синхронизацию');
+      setError(syncError instanceof Error ? syncError.message : t('capi.syncResumeFailed'));
     } finally {
       setSyncing(false);
     }
@@ -294,33 +312,37 @@ export default function CapiPage() {
       const res = await authFetch('/api/capi/sync', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.job) {
-        const fallbackError = `Не удалось поставить синхронизацию в очередь (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''})`;
-        setError(data.needsAuth ? `${data.error || fallbackError}. Подключите Frontier.` : data.error || fallbackError);
+        const fallbackError = res.statusText
+          ? t('capi.syncQueueFailedText', { status: res.status, text: res.statusText })
+          : t('capi.syncQueueFailed', { status: res.status });
+        setError(data.needsAuth
+          ? t('capi.syncQueueNeedsAuth', { error: data.error || fallbackError })
+          : data.error || fallbackError);
         return;
       }
       const job = data.job as SyncJob;
       setSyncJob(job);
       await pollSyncJob(job.id);
     } catch (syncError) {
-      setError(syncError instanceof Error ? syncError.message : 'Не удалось поставить синхронизацию в очередь');
+      setError(syncError instanceof Error ? syncError.message : t('capi.syncQueueFailedShort'));
     } finally {
       setSyncing(false);
     }
   }
 
   async function handleUnlink() {
-    if (!window.confirm('Отвязать аккаунт Frontier? Данные CAPI будут удалены.')) return;
+    if (!window.confirm(t('capi.unlinkConfirm'))) return;
     setError(null);
     const res = await authFetch('/api/capi/unlink', { method: 'DELETE' });
     if (res.ok) {
       setProfile(null);
       setDiagnostics(null);
       setSyncReport(null);
-      setNotice({ kind: 'partial', title: 'Аккаунт Frontier отвязан', hint: 'Можно подключить его заново в любой момент.' });
+      setNotice({ kind: 'partial', title: t('capi.unlinkedTitle'), hint: t('capi.unlinkedHint') });
       await fetchProfile();
     } else {
       const data = await res.json().catch(() => ({}));
-      setError(data.error || 'Не удалось отвязать аккаунт');
+      setError(data.error || t('capi.unlinkFailed'));
     }
   }
 
@@ -331,9 +353,9 @@ export default function CapiPage() {
       const res = await authFetch('/api/capi/status?probe=1');
       const data = await res.json();
       if (res.ok) setDiagnostics(data);
-      else setError(data.error || 'Диагностика недоступна');
+      else setError(data.error || t('capi.diagUnavailable'));
     } catch (diagError) {
-      setError(diagError instanceof Error ? diagError.message : 'Диагностика недоступна');
+      setError(diagError instanceof Error ? diagError.message : t('capi.diagUnavailable'));
     } finally {
       setDiagLoading(false);
     }
@@ -346,15 +368,15 @@ export default function CapiPage() {
       const res = await authFetch('/api/capi/network-check', { cache: 'no-store' });
       const data = await res.json();
       if (res.ok) setNetworkCheck(data as NetworkCheck);
-      else setNetworkError(data.error || 'Проверка сети недоступна');
+      else setNetworkError(data.error || t('capi.networkUnavailable'));
     } catch (checkError) {
-      setNetworkError(checkError instanceof Error ? checkError.message : 'Проверка сети недоступна');
+      setNetworkError(checkError instanceof Error ? checkError.message : t('capi.networkUnavailable'));
     } finally {
       setNetworkLoading(false);
     }
   }
 
-  if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>Загрузка...</div>;
+  if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>{t('capi.loading')}</div>;
 
   // Привязка определяется токеном, а не кэшем профиля: строка в
   // capi_profiles может отсутствовать при живой связи (командир ещё не
@@ -380,8 +402,7 @@ export default function CapiPage() {
         FRONTIER CAPI
       </h2>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 20 }}>
-        Эта привязка принадлежит сайту. Colonial Helper может запрашивать синхронизацию только через токен проекта;
-        Frontier-токены остаются на сервере и без привязки на сайте Helper не получит доступ.
+        {t('capi.siteBindingNote')}
       </p>
 
       {notice && (
@@ -403,16 +424,8 @@ export default function CapiPage() {
 
       {!linked ? (
         <div className="card">
-          <p style={{ color: 'var(--muted)', marginBottom: 12 }}>
-            Подключите аккаунт Frontier, чтобы досье пилота заполнялось из Companion API:
-            ранги, кредиты, корабли, текущая система и события колонизации.
-          </p>
-          <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
-            Выберите, как вы входите в Elite Dangerous — диалог Frontier покажет именно этот способ входа.
-            Если не уверены, оставьте «Определить автоматически»: Frontier сам предложит Steam, Epic или вход почтой.
-            Ответ «Please Visit the store to purchase Elite: Dangerous» означает отказ CAPI в проверке прав на игру,
-            но сам по себе не доказывает, что выбрана не та платформа.
-          </p>
+          <p style={{ color: 'var(--muted)', marginBottom: 12 }}>{t('capi.introLead')}</p>
+          <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>{t('capi.introPlatform')}</p>
           <div className="capi-platforms">
             {PLATFORMS.map((item) => (
               <button
@@ -421,11 +434,11 @@ export default function CapiPage() {
                 className={`capi-platform${platform === item.id ? ' capi-platform-active' : ''}`}
                 onClick={() => setPlatform(item.id)}
               >
-                {item.label}
+                {item.labelKey ? t(item.labelKey) : item.label}
               </button>
             ))}
           </div>
-          <a href={`/api/capi/auth?platform=${platform}`} className="btn btn-orange">Подключить Frontier Account</a>
+          <a href={`/api/capi/auth?platform=${platform}`} className="btn btn-orange">{t('capi.connect')}</a>
         </div>
       ) : (
         <>
@@ -433,43 +446,50 @@ export default function CapiPage() {
             <div className="capi-head">
               <div className={needsReauth ? 'capi-status-broken' : hasCapiError ? 'capi-status-pending' : 'capi-status-connected'}>
                 <span className="capi-dot" style={{ background: needsReauth ? 'var(--red)' : hasCapiError ? 'var(--orange)' : 'var(--green)' }} />
-                {needsReauth ? 'Требуется повторная авторизация' : hasCapiError ? 'Авторизация сохранена, CAPI недоступен' : 'Подключено'}
+                {needsReauth
+                  ? t('capi.statusReauth')
+                  : hasCapiError
+                    ? t('capi.statusCapiError')
+                    : t('capi.statusConnected')}
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-cyan" onClick={handleSync} disabled={syncing}>
-                  <IconSync size={14} /> {syncing ? 'Синхр...' : 'Синхронизировать'}
+                  <IconSync size={14} /> {syncing ? t('capi.syncingShort') : t('capi.sync')}
                 </button>
                 <button className="btn" onClick={handleDiagnostics} disabled={diagLoading}>
-                  {diagLoading ? 'Проверка...' : 'Диагностика'}
+                  {diagLoading ? t('capi.checking') : t('capi.diagnostics')}
                 </button>
                 <button className="btn" onClick={handleNetworkCheck} disabled={networkLoading}>
-                  {networkLoading ? 'Проверяю сеть...' : 'Проверить сеть сервера'}
+                  {networkLoading ? t('capi.networkChecking') : t('capi.networkCheck')}
                 </button>
-                <button className="btn danger-btn" onClick={handleUnlink}>Отвязать</button>
+                <button className="btn danger-btn" onClick={handleUnlink}>{t('capi.unlink')}</button>
               </div>
             </div>
 
             <p style={{ fontFamily: 'ui-monospace', fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>
               CMDR: <span style={{ color: 'var(--orange)' }}>{profile?.cmdr_name || binding?.capiName || '—'}</span>
-              {' | '}Обновлено: {dateLabel(profile?.last_updated)}
-              {binding?.platform ? ` | Платформа: ${binding.platform}` : ''}
+              {' '}{t('capi.updated', { date: dateLabel(profile?.last_updated, locale) })}
+              {binding?.platform ? t('capi.platformLabel', { platform: binding.platform }) : ''}
             </p>
 
             {syncing && (
               <div className="capi-notice capi-notice-partial" role="status" style={{ marginTop: 12 }}>
-                <strong><IconWaiting size={14} /> {syncJob ? syncStageLabel(syncJob.stage) : 'Постановка в очередь синхронизации'}</strong>
+                <strong>
+                  <IconWaiting size={14} /> {syncJob ? syncStageLabel(t, syncJob.stage) : t('capi.queuePlacement')}
+                </strong>
                 <div className="capi-notice-hint">
-                  {syncJob ? `Задание ${syncJob.id.slice(0, 8)} · попытка ${syncJob.attempts ?? 1}. Синхронизация продолжится на сервере, даже если закрыть страницу.` : 'HTTP-запрос только создаёт задание; получение профиля и журнала выполняется фоновым worker.'}
+                  {syncJob
+                    ? t('capi.jobHint', { id: syncJob.id.slice(0, 8), attempt: syncJob.attempts ?? 1 })
+                    : t('capi.jobQueuedHint')}
                 </div>
               </div>
             )}
 
             {needsReauth && (
               <div className="capi-notice capi-notice-error" style={{ marginTop: 12 }}>
-                <strong><IconError size={14} /> Frontier больше не принимает сохранённый токен</strong>
+                <strong><IconError size={14} /> {t('capi.tokenRejectedTitle')}</strong>
                 <div className="capi-notice-hint">
-                  {binding?.lastError || 'Refresh-токен Frontier живёт не дольше 25 дней.'} Подключите аккаунт заново,
-                  выбрав платформу, где куплена игра:
+                  {binding?.lastError || t('capi.refreshTokenHint')} {t('capi.reconnectHint')}
                 </div>
                 {/*
                   Выбор платформы и при переподключении. Раньше кнопка молча
@@ -485,70 +505,69 @@ export default function CapiPage() {
                       className={`capi-platform${platform === item.id ? ' capi-platform-active' : ''}`}
                       onClick={() => setPlatform(item.id)}
                     >
-                      {item.label}
+                      {item.labelKey ? t(item.labelKey) : item.label}
                     </button>
                   ))}
                 </div>
                 {binding?.platform && (
                   <div className="capi-notice-hint" style={{ marginTop: 6 }}>
-                    Прошлый токен был выдан платформой «{binding.platform}».
-                    {binding.platform === 'frontier'
-                      ? ' Если игра куплена в Steam/Epic — выберите её ниже и на странице Frontier войдите кнопкой платформы, а не почтой.'
-                      : ''}
+                    {t('capi.prevPlatform', { platform: binding.platform })}
+                    {binding.platform === 'frontier' ? t('capi.prevPlatformFrontier') : ''}
                   </div>
                 )}
                 <a href={`/api/capi/auth?platform=${platform}`} className="btn btn-orange" style={{ marginTop: 8 }}>
-                  Переподключить
+                  {t('capi.reconnect')}
                 </a>
               </div>
             )}
 
             {hasCapiError && (
               <div className="capi-notice capi-notice-partial" style={{ marginTop: 12 }}>
-                <strong><IconWaiting size={14} /> Ошибка получения данных CAPI, не потеря авторизации</strong>
+                <strong><IconWaiting size={14} /> {t('capi.capiErrorTitle')}</strong>
                 <div className="capi-notice-hint">{binding?.lastError}</div>
                 {frontierStoreEntitlementError ? (
                   <div className="capi-notice-hint" style={{ marginTop: 8 }}>
-                    Наличие «frontier» в identity токена не доказывает, что вы вошли не через Epic. Frontier фиксирует известные сбои CAPI для EGS-аккаунтов: OAuth и /me могут работать, а /profile отвечает HTTP 400. Повторная авторизация не исправляет серверную проверку права и не запускается автоматически; привязка сайта сохранена.{' '}
-                    <a href="https://issues.frontierstore.net/issue-detail/21258" target="_blank" rel="noreferrer">Инцидент Frontier #21258</a>. Журнальные события по-прежнему можно передавать через Colonial Helper, но профильные поля появятся после восстановления CAPI.
+                    {t('capi.egsHint')}{' '}
+                    <a href="https://issues.frontierstore.net/issue-detail/21258" target="_blank" rel="noreferrer">
+                      {t('capi.egsIssueLink')}
+                    </a>
+                    {`. ${t('capi.egsIssueTail')}`}
                   </div>
                 ) : (
-                  <div className="capi-notice-hint">
-                    Сохранённые токены не удалены. Можно повторить синхронизацию и открыть диагностику без нового входа.
-                  </div>
+                  <div className="capi-notice-hint">{t('capi.tokensKept')}</div>
                 )}
               </div>
             )}
 
             {profileEmpty && !needsReauth && !hasCapiError && (
               <div className="capi-notice capi-notice-partial" style={{ marginTop: 12 }}>
-                <strong><IconWaiting size={14} /> Привязка есть, данных пока нет</strong>
-                <div className="capi-notice-hint">
-                  Companion API отдаёт профиль только после входа в игру. Зайдите в Elite Dangerous
-                  и нажмите «Синхронизировать».
-                </div>
+                <strong><IconWaiting size={14} /> {t('capi.profileEmptyTitle')}</strong>
+                <div className="capi-notice-hint">{t('capi.profileEmptyHint')}</div>
               </div>
             )}
 
             <div className={`capi-binding capi-binding-${binding?.status === 'conflict' ? 'warn' : 'ok'}`}>
               <strong style={{ color: binding?.status === 'conflict' || binding?.status === 'missing' ? 'var(--orange)' : 'var(--green)' }}>
                 {binding?.status === 'conflict'
-                  ? 'Проверка привязки: требуется внимание'
+                  ? t('capi.bindConflict')
                   : binding?.status === 'missing'
-                    ? 'Проверка привязки: имя Frontier не подтверждено'
-                    : 'Проверка привязки: профиль связан'}
+                    ? t('capi.bindMissing')
+                    : t('capi.bindOk')}
               </strong>
               <div style={{ color: 'var(--muted)', marginTop: 4 }}>
-                Сайт: {binding?.siteName || 'имя будет заполнено из Frontier'} · Frontier: {binding?.capiName || '—'}
+                {t('capi.siteName', {
+                  site: binding?.siteName || t('capi.siteNameEmpty'),
+                  capi: binding?.capiName || '—',
+                })}
               </div>
               {binding?.status === 'conflict' && (
                 <div style={{ color: 'var(--orange)', marginTop: 4 }}>
-                  Имя в профиле сайта не изменено автоматически. Проверьте ник в личном кабинете, чтобы URL досье и данные CAPI совпадали.
+                  {t('capi.nickHint')}
                 </div>
               )}
               <div style={{ color: 'var(--muted)', marginTop: 4 }}>
-                Последняя синхронизация: {dateLabel(binding?.lastSyncedAt)}
-                {binding?.accessExpired ? ' · токен доступа просрочен, обновится при синхронизации' : ''}
+                {t('capi.lastSync', { date: dateLabel(binding?.lastSyncedAt, locale) })}
+                {binding?.accessExpired ? t('capi.tokenExpired') : ''}
               </div>
             </div>
           </div>
@@ -557,14 +576,16 @@ export default function CapiPage() {
             <div className={`capi-notice ${syncJob?.status === 'failed' ? 'capi-notice-error' : 'capi-notice-success'}`} style={{ marginBottom: 20 }}>
               <strong>
                 {syncJob?.status === 'failed' ? <IconError size={14} /> : <IconCheck size={14} />}
-                {' '}{syncJob?.status === 'failed' ? 'Синхронизация завершилась с ошибкой' : 'Синхронизация завершена'}
+                {' '}{syncJob?.status === 'failed' ? t('capi.syncErrorTitle') : t('capi.syncDoneTitle')}
               </strong>
               <div className="capi-notice-hint">
                 {syncReport.cmdrName ? `CMDR ${syncReport.cmdrName}. ` : ''}
-                Событий колонизации добавлено: {syncReport.eventsImported}
-                {syncReport.eventsDuplicate ? `, повторов пропущено: ${syncReport.eventsDuplicate}` : ''}
+                {t('capi.eventsImported', { count: syncReport.eventsImported })}
+                {syncReport.eventsDuplicate ? t('capi.eventsDuplicates', { count: syncReport.eventsDuplicate }) : ''}
                 {' · '}{describeJournalStatus(syncReport.journalStatus)}
-                {syncReport.durationMs != null ? ` · ${Math.round(syncReport.durationMs / 100) / 10} с` : ''}
+                {syncReport.durationMs != null
+                  ? t('capi.durationSeconds', { seconds: Math.round(syncReport.durationMs / 100) / 10 })
+                  : ''}
               </div>
               {syncReport.warnings.length > 0 && (
                 <ul className="capi-warnings">
@@ -573,32 +594,58 @@ export default function CapiPage() {
               )}
               {syncReport.jobId && (
                 <details style={{ marginTop: 8 }}>
-                  <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>Диагностика этапов · задание {syncReport.jobId}</summary>
+                  <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>
+                    {t('capi.stagesDetails', { id: syncReport.jobId })}
+                  </summary>
                   {(syncReport.endpoint || syncReport.errorKind || syncReport.detail) && (
                     <div className="capi-notice-hint" style={{ marginTop: 8 }}>
                       {syncReport.endpoint && <div>CAPI endpoint: <code>{syncReport.endpoint}</code>{syncReport.host ? ` · ${syncReport.host}` : ''}</div>}
-                      {syncReport.errorKind && <div>Тип ошибки: {syncReport.errorKind}{syncReport.reason ? ` · ${syncReport.reason}` : ''}{syncReport.platform ? ` · платформа ${syncReport.platform}` : ''}</div>}
-                      {syncReport.transportPhase && <div>Транспорт: {syncReport.transportPhase === 'response_headers' ? 'ожидание HTTP-заголовков' : 'чтение тела HTTP-ответа'}</div>}
-                      {syncReport.httpStatus !== undefined && syncReport.httpStatus !== null && (
-                        <div>HTTP: {syncReport.httpStatus === 0 ? 'ответ не получен' : syncReport.httpStatus}</div>
+                      {syncReport.errorKind && (
+                        <div>
+                          {t('capi.errorKind', { kind: syncReport.errorKind })}
+                          {syncReport.reason ? ` · ${syncReport.reason}` : ''}
+                          {syncReport.platform ? t('capi.errorPlatform', { platform: syncReport.platform }) : ''}
+                        </div>
                       )}
-                      {syncReport.detail && <div>Деталь: {syncReport.detail}</div>}
+                      {syncReport.transportPhase && (
+                        <div>
+                          {t('capi.transport', {
+                            phase: syncReport.transportPhase === 'response_headers'
+                              ? t('capi.transportHeaders')
+                              : t('capi.transportBody'),
+                          })}
+                        </div>
+                      )}
+                      {syncReport.httpStatus !== undefined && syncReport.httpStatus !== null && (
+                        <div>
+                          {t('capi.httpStatus', {
+                            status: syncReport.httpStatus === 0 ? t('capi.httpNoResponse') : syncReport.httpStatus,
+                          })}
+                        </div>
+                      )}
+                      {syncReport.detail && <div>{t('capi.detail', { detail: syncReport.detail })}</div>}
                     </div>
                   )}
                   {syncReport.stageTimings?.length ? (
                     <ul className="capi-warnings">
                       {syncReport.stageTimings.map((timing, index) => (
-                        <li key={`${timing.stage}-${index}`}>{syncStageLabel(timing.stage)}{timing.attempt ? ` (попытка ${timing.attempt})` : ''}: {Math.round(timing.durationMs / 10) / 100} с</li>
+                        <li key={`${timing.stage}-${index}`}>
+                          {t('capi.stageTiming', {
+                            label: syncStageLabel(t, timing.stage),
+                            attempt: timing.attempt ? t('capi.stageAttempt', { attempt: timing.attempt }) : '',
+                            seconds: Math.round(timing.durationMs / 10) / 100,
+                          })}
+                        </li>
                       ))}
                     </ul>
-                  ) : <div className="capi-notice-hint">Измерения этапов недоступны для этого завершения.</div>}
+                  ) : <div className="capi-notice-hint">{t('capi.stageTimingsUnavailable')}</div>}
                 </details>
               )}
             </div>
           )}
 
           <div className="card">
-            <h3 className="capi-section-title">Ранги</h3>
+            <h3 className="capi-section-title">{t('capi.ranks')}</h3>
             <div className="capi-rank-grid">
               {[
                 { name: 'Combat', value: rankLabel(RANK_NAMES, profile?.combat_rank) },
@@ -617,43 +664,41 @@ export default function CapiPage() {
           </div>
 
           <div className="card" style={{ marginTop: 20 }}>
-            <h3 className="capi-section-title">Текущее состояние</h3>
+            <h3 className="capi-section-title">{t('capi.currentState')}</h3>
             <div className="stat-grid">
               <div className="stat-box">
                 <div className="num" style={{ fontSize: 16 }}>{profile?.current_system || '—'}</div>
-                <div className="lbl">Система</div>
+                <div className="lbl">{t('capi.system')}</div>
               </div>
               <div className="stat-box">
                 <div className="num" style={{ fontSize: 16 }}>{profile?.current_station || '—'}</div>
-                <div className="lbl">Станция</div>
+                <div className="lbl">{t('capi.station')}</div>
               </div>
               <div className="stat-box">
                 <div className="num" style={{ fontSize: 16 }}>{profile?.current_ship || '—'}</div>
-                <div className="lbl">Корабль</div>
+                <div className="lbl">{t('capi.ship')}</div>
               </div>
               <div className="stat-box">
-                <div className="num">{profile?.credits?.toLocaleString('ru-RU') ?? '—'}</div>
+                <div className="num">{profile?.credits?.toLocaleString(locale) ?? '—'}</div>
                 <div className="lbl">CR</div>
               </div>
               <div className="stat-box">
                 <div className="num">{Array.isArray(profile?.ships) ? profile.ships.length : '—'}</div>
-                <div className="lbl">Кораблей</div>
+                <div className="lbl">{t('capi.ships')}</div>
               </div>
             </div>
           </div>
 
           {networkError && (
             <div className="capi-notice capi-notice-error" style={{ marginTop: 16 }} role="alert">
-              Проверка связи сервера с Frontier не выполнена: {networkError}
+              {t('capi.networkNotChecked', { error: networkError })}
             </div>
           )}
 
           {networkCheck && (
             <div className="card" style={{ marginTop: 20 }}>
-              <h3 className="capi-section-title">Исходящая сеть сайта → Frontier CAPI</h3>
-              <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.6 }}>
-                Проверка выполняется с веб-сервера без CAPI-токена пользователя. Ответ HTTP 401/403 здесь ожидаем и означает, что DNS, HTTPS и узел Frontier доступны.
-              </p>
+              <h3 className="capi-section-title">{t('capi.networkTitle')}</h3>
+              <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.6 }}>{t('capi.networkLead')}</p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
                 {networkCheck.probes.map((probe) => {
                   const passed = probe.reachable && probe.https.ok;
@@ -663,12 +708,30 @@ export default function CapiPage() {
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                         <strong>{title}</strong>
                         <span style={{ color: passed ? 'var(--green)' : 'var(--red)', fontSize: 11, fontWeight: 700 }}>
-                          {passed ? 'ДОСТУПЕН' : probe.dns.ok ? 'HTTPS НЕДОСТУПЕН' : 'DNS ОШИБКА'}
+                          {passed
+                            ? t('capi.probeReachable')
+                            : probe.dns.ok
+                              ? t('capi.probeHttpsDown')
+                              : t('capi.probeDnsError')}
                         </span>
                       </div>
                       <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 8, lineHeight: 1.7 }}>
-                        <div>DNS: {probe.dns.ok ? `OK · ${probe.dns.addressCount ?? 0} адрес(а) · ${probe.dns.durationMs} мс` : `${probe.dns.code || 'ошибка'} · ${probe.dns.error || 'не удалось разрешить имя'}`}</div>
-                        <div>HTTPS: {probe.https.status ? `HTTP ${probe.https.status} · ${probe.https.durationMs} мс` : `${probe.https.code || 'ошибка'} · ${probe.https.error || 'ответ не получен'}`}</div>
+                        <div>
+                          DNS: {probe.dns.ok
+                            ? t('capi.dnsOk', { count: probe.dns.addressCount ?? 0, ms: probe.dns.durationMs })
+                            : t('capi.dnsFail', {
+                              code: probe.dns.code || t('capi.dnsErrorFallback'),
+                              error: probe.dns.error || t('capi.dnsResolveFail'),
+                            })}
+                        </div>
+                        <div>
+                          HTTPS: {probe.https.status
+                            ? t('capi.httpsOk', { status: probe.https.status, ms: probe.https.durationMs })
+                            : t('capi.dnsFail', {
+                              code: probe.https.code || t('capi.dnsErrorFallback'),
+                              error: probe.https.error || t('capi.httpsNoResponse'),
+                            })}
+                        </div>
                         <div style={{ overflowWrap: 'anywhere' }}>{probe.host}</div>
                       </div>
                     </div>
@@ -676,21 +739,25 @@ export default function CapiPage() {
                 })}
               </div>
               <p style={{ color: 'var(--muted)', fontSize: 10, marginBottom: 0 }}>
-                Проверено: {new Date(networkCheck.checkedAt).toLocaleString('ru-RU')} · лимит: DNS {networkCheck.timeoutMs.dns} мс, HTTPS {networkCheck.timeoutMs.https} мс.
+                {t('capi.checkedAt', {
+                  time: new Date(networkCheck.checkedAt).toLocaleString(locale),
+                  dns: networkCheck.timeoutMs.dns,
+                  https: networkCheck.timeoutMs.https,
+                })}
               </p>
             </div>
           )}
 
           {diagnostics && (
             <div className="card" style={{ marginTop: 20 }}>
-              <h3 className="capi-section-title">Диагностика привязки</h3>
+              <h3 className="capi-section-title">{t('capi.diagTitle')}</h3>
               <pre className="capi-diagnostics">{JSON.stringify(diagnostics, null, 2)}</pre>
               <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 8 }}>
-                `config.redirectMatchesSite: false` — адрес возврата не совпадает с сайтом;
-                `live.kind: maintenance` — Companion API временно недоступен;
-                `live.reason: entitlement_unavailable` — OAuth сохранён, CAPI не подтвердил права на игру;
-                `live.platform` — подтверждённая платформа, `live.detail` — ответ Frontier;
-                `stored.looksEmpty: true` — профиль сохранён пустым, нужна синхронизация после входа в игру.
+                {t('capi.diagRedirect')}{' '}
+                {t('capi.diagMaintenance')}{' '}
+                {t('capi.diagEntitlement')}{' '}
+                {t('capi.diagPlatform')}{' '}
+                {t('capi.diagStored')}
               </p>
             </div>
           )}

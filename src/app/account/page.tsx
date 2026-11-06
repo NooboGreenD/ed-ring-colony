@@ -51,14 +51,14 @@ type Tab = "profile" | "squadron" | "carrier" | "journals" | "tokens" | "premium
  * таблица не «прыгала» между загрузками.
  */
 const CARGO_KIND_LABELS: Record<string, string> = {
-  construction_site: "Стройплощадки колонизации",
-  colonisation_ship: "Колонизационные корабли",
-  fleet_carrier: "Авианосцы",
-  mission_delivery: "Грузовые миссии",
+  construction_site: "account.cargoSite",
+  colonisation_ship: "account.cargoShip",
+  fleet_carrier: "account.cargoCarrier",
+  mission_delivery: "account.cargoMission",
   powerplay_delivery: "Powerplay",
   rescue_delivery: "Search and Rescue",
-  market_sale: "Продажа на рынках",
-  legacy_site: "Исторические поставки",
+  market_sale: "account.cargoMarket",
+  legacy_site: "account.cargoLegacy",
 };
 const CARGO_KIND_ORDER = [
   "construction_site",
@@ -72,7 +72,7 @@ const CARGO_KIND_ORDER = [
 ];
 
 export default function AccountPage() {
-  const { t, setLocale } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const [user, setUser] = useState<any>(null);
   const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<any>(null);
@@ -208,7 +208,7 @@ export default function AccountPage() {
   if (!authReady) {
     return (
       <main className="card auth-card">
-        <p>Загрузка...</p>
+        <p>{t('account.loading')}</p>
       </main>
     );
   }
@@ -857,14 +857,14 @@ export default function AccountPage() {
         >
           <div>
             <div style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--orange, #e67e22)", fontWeight: 700, letterSpacing: 1 }}>
-              ПАНЕЛЬ АДМИНИСТРАТОРА // ФИНАНСЫ И СТАТИСТИКА
+              {t('account.adminPanelTitle')}
             </div>
             <div style={{ fontSize: 13, color: "var(--text, #eeeeee)", marginTop: 2 }}>
-              Доступен модуль биллинга, аналитика выручки, инфографика и управление премиум-подписками.
+              {t('account.adminPanelText')}
             </div>
           </div>
           <Link href="/admin?tab=billing" className="btn btn-orange" style={{ padding: "6px 14px", fontSize: 11 }}>
-            Открыть биллинг
+            {t('account.openBilling')}
           </Link>
         </div>
       )}
@@ -872,11 +872,11 @@ export default function AccountPage() {
       <div className="tabs" style={{ marginBottom: 20 }}>
         <button className={tab === "profile" ? "tab tab-active" : "tab"} onClick={() => setTab("profile")}>{t('account.tabProfile')}</button>
         <button className={tab === "squadron" ? "tab tab-active" : "tab"} onClick={() => setTab("squadron")}>{t('account.tabSquadron')}</button>
-        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => setTab("carrier")}>Авианосец</button>
+        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => setTab("carrier")}>{t('account.tabCarrier')}</button>
         <button className={tab === "journals" ? "tab tab-active" : "tab"} onClick={() => setTab("journals")}>{t('account.tabJournals')}</button>
         <button className={tab === "tokens" ? "tab tab-active" : "tab"} onClick={() => { setTab("tokens"); loadTokens(); }}>{t('account.tabTokens')}</button>
-        <button className={tab === "premium" ? "tab tab-active" : "tab"} onClick={() => setTab("premium")} style={{ borderColor: tab === "premium" ? undefined : "rgba(230,126,34,0.4)", color: tab === "premium" ? undefined : "var(--orange)" }}>{t('account.tabPremium') || 'Премиум и покупки'}</button>
-        <button className={tab === "builds" ? "tab tab-active" : "tab"} onClick={() => { setTab("builds"); void loadBuilds(); }}>Мои сборки</button>
+        <button className={tab === "premium" ? "tab tab-active" : "tab"} onClick={() => setTab("premium")} style={{ borderColor: tab === "premium" ? undefined : "rgba(230,126,34,0.4)", color: tab === "premium" ? undefined : "var(--orange)" }}>{t('account.tabPremium')}</button>
+        <button className={tab === "builds" ? "tab tab-active" : "tab"} onClick={() => { setTab("builds"); void loadBuilds(); }}>{t('account.tabBuilds')}</button>
       </div>
 
       {tab === "profile" && (
@@ -955,7 +955,7 @@ export default function AccountPage() {
                       fontFamily: 'ui-monospace, monospace',
                     }}
                   >
-                    {privacy[key] ? 'видно всем' : 'скрыто от других'}
+                    {privacy[key] ? t('account.privacyVisible') : t('account.privacyHidden')}
                   </span>
                 </span>
               </label>
@@ -989,7 +989,7 @@ export default function AccountPage() {
               <button type="button" onClick={linkFrontier} className="btn btn-orange" style={{ fontSize: 12 }}>{t('account.linkFrontier')}</button>
             )}
             <Link href="/account/capi" className="btn btn-cyan" style={{ fontSize: 12 }}>
-              Управление CAPI и диагностика
+              {t('account.capiManage')}
             </Link>
           </div>
 
@@ -1142,7 +1142,7 @@ export default function AccountPage() {
               className="btn btn-danger"
               disabled={busy || resettingJournals}
               onClick={async () => {
-                if (!confirm('Очистить все ранее загруженные журнальные данные? После этого можно заново загрузить логи с нуля — мусорные части в БД будут удалены, статистика пересчитается.')) return;
+                if (!confirm(t('account.resetConfirm'))) return;
                 setResettingJournals(true);
                 setJournalsResetError(null);
                 setJournalsResetResult(null);
@@ -1153,27 +1153,27 @@ export default function AccountPage() {
                     body: JSON.stringify({ confirm: true }),
                   });
                   const data = await res.json().catch(() => ({}));
-                  if (!res.ok) throw new Error(data.error || 'Ошибка очистки');
+                  if (!res.ok) throw new Error(data.error || t('account.resetError'));
                   const r = data.reset || {};
-                  setJournalsResetResult(
-                    `Очищено: поставок — ${r.deliveriesDeleted ?? 0}, ` +
-                    `импортов — ${r.journalImportsDeleted ?? 0}, ` +
-                    `событий стройки — ${r.legacyEventsDeleted ?? 0}, ` +
-                    `сканов тел — ${r.systemScansDeleted ?? 0}. Теперь можно загрузить логи заново.`
-                  );
+                  setJournalsResetResult(t('account.resetDone', {
+                    deliveries: r.deliveriesDeleted ?? 0,
+                    imports: r.journalImportsDeleted ?? 0,
+                    events: r.legacyEventsDeleted ?? 0,
+                    scans: r.systemScansDeleted ?? 0,
+                  }));
                   setSummary(null);
                   setFiles(null);
                 } catch (err: any) {
-                  setJournalsResetError(err instanceof Error ? err.message : 'Ошибка очистки');
+                  setJournalsResetError(err instanceof Error ? err.message : t('account.resetError'));
                 } finally {
                   setResettingJournals(false);
                 }
               }}
               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginLeft: 'auto' }}
-              title="Очистить все журнальные данные этого профиля (поставки, сканы, статистику пилота) для последующей загрузки с нуля"
+              title={t('account.resetTitle')}
             >
               <IconTrash size={14} />
-              {resettingJournals ? 'Очистка...' : 'Очистить и пересчитать логи'}
+              {resettingJournals ? t('account.resetBusy') : t('account.resetAction')}
             </button>
           </div>
 
@@ -1208,22 +1208,22 @@ export default function AccountPage() {
               {summary.error ? (<p style={{ color: "#e74c3c" }}>{summary.error}</p>) : (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px", fontSize: 12 }}>
                   <span style={{ color: '#6b7280' }}>{t('account.files')}</span><span style={{ color: "#eeeeee" }}>{summary.filesProcessed}</span>
-                  <span style={{ color: '#6b7280' }}>{t('account.events')}</span><span style={{ color: "#eeeeee" }}>{summary.eventsFound?.toLocaleString('ru')}</span>
-                  <span style={{ color: '#6b7280' }}>{t('account.records')}</span><span style={{ color: "#22c55e" }}>{summary.inserted?.toLocaleString('ru')}</span>
-                  <span style={{ color: '#6b7280' }}>{t('account.duplicatesLabel')}</span><span style={{ color: "#9ca3af" }}>{summary.duplicates?.toLocaleString('ru')}</span>
+                  <span style={{ color: '#6b7280' }}>{t('account.events')}</span><span style={{ color: "#eeeeee" }}>{summary.eventsFound?.toLocaleString(locale)}</span>
+                  <span style={{ color: '#6b7280' }}>{t('account.records')}</span><span style={{ color: "#22c55e" }}>{summary.inserted?.toLocaleString(locale)}</span>
+                  <span style={{ color: '#6b7280' }}>{t('account.duplicatesLabel')}</span><span style={{ color: "#9ca3af" }}>{summary.duplicates?.toLocaleString(locale)}</span>
                   {summary.deferred > 0 && (
                     <>
                       <span style={{ color: '#6b7280' }}>{t('account.deferredLabel')}</span>
-                      <span style={{ color: "#e74c3c" }}>{summary.deferred.toLocaleString('ru')}</span>
+                      <span style={{ color: "#e74c3c" }}>{summary.deferred.toLocaleString(locale)}</span>
                     </>
                   )}
                   {summary.cmdr && (<><span style={{ color: '#6b7280' }}>{t('account.cmdrLabel')}</span><span style={{ color: "#eeeeee" }}>{summary.cmdr}</span></>)}
                   {summary.parserStats?.transportedTons != null && (
                     <>
                       <span style={{ color: '#6b7280' }}>{t('account.transportedTonsLabel')}</span>
-                      <span style={{ color: "#eeeeee" }}>{summary.parserStats.transportedTons.toLocaleString('ru')}</span>
+                      <span style={{ color: "#eeeeee" }}>{summary.parserStats.transportedTons.toLocaleString(locale)}</span>
                       <span style={{ color: '#6b7280' }}>{t('account.constructionTonsLabel')}</span>
-                      <span style={{ color: "#f39c12" }}>{summary.parserStats.constructionTons.toLocaleString('ru')}</span>
+                      <span style={{ color: "#f39c12" }}>{summary.parserStats.constructionTons.toLocaleString(locale)}</span>
                     </>
                   )}
                   {summary.parserStats?.kindTons && Object.keys(summary.parserStats.kindTons).length > 0 && (
@@ -1234,9 +1234,9 @@ export default function AccountPage() {
                           .filter((kind) => (summary.parserStats.kindTons?.[kind] ?? 0) > 0)
                           .map((kind) => (
                             <span key={kind} style={{ display: 'block' }}>
-                              {CARGO_KIND_LABELS[kind] ?? kind}:{' '}
+                              {CARGO_KIND_LABELS[kind] ? t(CARGO_KIND_LABELS[kind]) : kind}:{' '}
                               <span style={{ color: '#f39c12' }}>
-                                {(summary.parserStats.kindTons?.[kind] ?? 0).toLocaleString('ru')} т
+                                {t('pov.tons', { value: (summary.parserStats.kindTons?.[kind] ?? 0).toLocaleString(locale) })}
                               </span>
                             </span>
                           ))}
@@ -1247,8 +1247,8 @@ export default function AccountPage() {
                     <>
                       <span style={{ color: '#6b7280' }}>{t('account.telemetryLabel')}</span>
                       <span style={{ color: "#9ca3af" }}>
-                        {(summary.telemetry.systemScansInserted ?? 0).toLocaleString('ru')} /{' '}
-                        {(summary.telemetry.constructionInserted ?? summary.telemetry.snapshotInserted ?? 0).toLocaleString('ru')}
+                        {(summary.telemetry.systemScansInserted ?? 0).toLocaleString(locale)} /{' '}
+                        {(summary.telemetry.constructionInserted ?? summary.telemetry.snapshotInserted ?? 0).toLocaleString(locale)}
                       </span>
                     </>
                   )}
@@ -1256,25 +1256,22 @@ export default function AccountPage() {
               )}
               {summary.factions?.events > 0 && (
                 <p style={{ color: summary.factions.failedChunks ? '#e74c3c' : '#9ca3af', fontSize: 12, margin: '10px 0 0' }}>
-                  Минорные фракции: систем {summary.factions.events.toLocaleString('ru')}, обновлено на карте {summary.factions.applied.toLocaleString('ru')}
-                  {summary.factions.created ? `, новых ${summary.factions.created.toLocaleString('ru')}` : ''}
-                  {summary.factions.stale ? `, уже свежее на сайте ${summary.factions.stale.toLocaleString('ru')}` : ''}
-                  {summary.factions.failedChunks ? ` — ${summary.factions.failedChunks} пачек не отправилось, загрузите журнал ещё раз` : ''}.
+                  {t('account.factionsLine', { events: summary.factions.events.toLocaleString(locale), applied: summary.factions.applied.toLocaleString(locale) })}
+                  {summary.factions.created ? `, ${t('account.factionsCreated', { count: summary.factions.created.toLocaleString(locale) })}` : ''}
+                  {summary.factions.stale ? `, ${t('account.factionsStale', { count: summary.factions.stale.toLocaleString(locale) })}` : ''}
+                  {summary.factions.failedChunks ? ` — ${t('account.factionsFailed', { count: summary.factions.failedChunks })}` : ''}.
                 </p>
               )}
               {summary.carriers?.events > 0 && (
                 <p style={{ color: summary.carriers.failedChunks ? '#e74c3c' : '#9ca3af', fontSize: 12, margin: '10px 0 0' }}>
-                  Авианосцы: событий {summary.carriers.events.toLocaleString('ru')}, носителей {summary.carriers.carriers},
-                  {' '}применено {summary.carriers.applied.toLocaleString('ru')}, повторов {summary.carriers.duplicates.toLocaleString('ru')}
-                  {summary.carriers.failedChunks ? ` — ${summary.carriers.failedChunks} пачек не отправилось, загрузите журнал ещё раз` : ''}.
-                  {' '}<Link href="/account?tab=carrier" style={{ color: '#3498db' }}>Открыть «Авианосец»</Link>
+                  {t('account.carriersLine', { events: summary.carriers.events.toLocaleString(locale), carriers: summary.carriers.carriers, applied: summary.carriers.applied.toLocaleString(locale), duplicates: summary.carriers.duplicates.toLocaleString(locale) })}
+                  {summary.carriers.failedChunks ? ` — ${t('account.carriersFailed', { count: summary.carriers.failedChunks })}` : ''}.
+                  {' '}<Link href="/account?tab=carrier" style={{ color: '#3498db' }}>{t('account.openCarrierTab')}</Link>
                 </p>
               )}
               {summary.telemetryFailedChunks > 0 && (
                 <p style={{ color: '#e74c3c', fontSize: 12, margin: '10px 0 0' }}>
-                  Часть телеметрии ({summary.telemetryFailedChunks} пачек: снимки строек, сканы тел или
-                  статистика пилота) не отправилась после трёх попыток — загрузите журнал ещё раз,
-                  повторы по этим данным безопасны.
+                  {t('account.telemetryFailed', { count: summary.telemetryFailedChunks })}
                 </p>
               )}
               {summary.deferred > 0 && (
@@ -1333,10 +1330,10 @@ export default function AccountPage() {
       {tab === "premium" && <AccountPremiumPanel />}
       {tab === "builds" && (
         <section className="card" style={{ marginTop: 16 }}>
-          <h2>Мои сборки</h2>
-          <p style={{ color: 'var(--muted)' }}>Сохранённые сборки кораблей, привязанные к вашему досье пилота.</p>
-          {myBuilds.length === 0 ? <p>Сохранённых сборок пока нет.</p> : (
-            <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>Название</th><th>Корабль</th><th>Сохранена</th></tr></thead><tbody>
+          <h2>{t('account.buildsTitle')}</h2>
+          <p style={{ color: 'var(--muted)' }}>{t('account.buildsHint')}</p>
+          {myBuilds.length === 0 ? <p>{t('account.buildsEmpty')}</p> : (
+            <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>{t('account.buildsColName')}</th><th>{t('account.buildsColShip')}</th><th>{t('account.buildsColSaved')}</th></tr></thead><tbody>
               {myBuilds.map((build) => (
                 <tr key={build.id}>
                   <td>

@@ -3,6 +3,7 @@
 import { use, useEffect, useState, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import regionPack from '@/lib/galacticRegions.json';
 import {
   IconAtlas,
@@ -63,6 +64,7 @@ interface SectorData {
 }
 
 export default function SectorDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { t, locale } = useI18n();
   const resolvedParams = use(params);
   const router = useRouter();
   const currentId = Number(resolvedParams.id);
@@ -84,7 +86,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
     fetch(`/api/atlas/sector/${currentId}`)
       .then(async (res) => {
         const body = await res.json();
-        if (!res.ok) throw new Error(body.error || 'Ошибка загрузки сектора');
+        if (!res.ok) throw new Error(body.error || t('atlas.sector.loadError'));
         setData(body);
       })
       .catch((err) => {
@@ -127,13 +129,13 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
               containsSgrA: currentId === 1,
             },
             intel: {
-              type: currentId === 1 ? 'Галактическое Ядро' : currentId === 18 ? 'Обитаемый Рукав' : 'Спиральный Рукав',
+              type: currentId === 1 ? 'atlas.sector.typeCore' : currentId === 18 ? 'atlas.sector.typeInhabited' : 'atlas.sector.typeSpiral',
               typeEn: currentId === 1 ? 'Galactic Core' : currentId === 18 ? 'Inhabited Space' : 'Spiral Arm',
               code: currentId === 1 ? 'CORE-CENTRE' : currentId === 18 ? 'CORE-WORLDS' : 'SPIRAL-ARM',
-              starDensity: currentId === 1 ? 'Экстремальная' : 'Стандартная',
-              navigationRisk: currentId === 1 ? 'Повышенный' : 'Низкий',
-              fuelAvailability: 'Стабильная',
-              description: `Сектор кодекса ${localRegion.name}. Данные скомпилированы из реестра Galactic Regions.`,
+              starDensity: currentId === 1 ? 'atlas.sector.densityExtreme' : 'atlas.sector.densityStandard',
+              navigationRisk: currentId === 1 ? 'atlas.sector.riskRaised' : 'atlas.sector.riskLow',
+              fuelAvailability: 'atlas.sector.fuelStable',
+              description: 'atlas.sector.codexDescription',
             },
             statistics: {
               cached_systems: currentId === 18 ? 1420 : 180,
@@ -145,10 +147,10 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
             adjacentSectors: adjacent,
             path: localRegion.path,
             pathGalactic: localRegion.path.map((p) => [p[0] + SAGA.x, p[1] + SAGA.z]),
-            source: 'Автономная база данных Codex Regions',
+            source: 'atlas.sector.codexSource',
           });
         } else {
-          setError(err instanceof Error ? err.message : 'Сектор не найден');
+          setError(err instanceof Error ? err.message : t('atlas.sector.notFound'));
         }
       })
       .finally(() => setLoading(false));
@@ -243,7 +245,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
       <div className="sector-container">
         <div className="card" style={{ padding: 40, textAlign: 'center' }}>
           <div style={{ color: 'var(--orange)', fontFamily: 'ui-monospace, monospace', fontSize: 13, letterSpacing: 2, textTransform: 'uppercase' }}>
-            <IconRefreshCw size={18} /> ИНИЦИАЛИЗАЦИЯ ТЕЛЕМЕТРИИ СЕКТОРА SEC-{String(currentId).padStart(2, '0')}...
+            <IconRefreshCw size={18} /> {t('atlas.sector.initTelemetry', { code: String(currentId).padStart(2, '0') })}
           </div>
         </div>
       </div>
@@ -257,22 +259,22 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
           <div className="sector-breadcrumbs" style={{ marginBottom: 14 }}>
             <Link href="/atlas">ATLAS</Link>
             <span className="sep">//</span>
-            <Link href="/atlas/sector">СЕКТОРЫ</Link>
+            <Link href="/atlas/sector">{t('atlas.sector.breadcrumbSectors')}</Link>
             <span className="sep">//</span>
-            <span className="current">ОШИБКА</span>
+            <span className="current">{t('atlas.sector.breadcrumbError')}</span>
           </div>
           <h2 style={{ color: 'var(--red)', fontSize: 18, marginBottom: 8 }}>
-            <IconAlert size={20} /> СЕКТОР {currentId} НЕ НАЙДЕН
+            <IconAlert size={20} /> {t('atlas.sector.notFoundTitle', { id: currentId })}
           </h2>
           <p style={{ color: 'var(--muted)', fontSize: 14, marginBottom: 18 }}>
-            {error || 'Запрошенный сектор отсутствует в реестре Codex Galactic Regions.'}
+            {error || t('atlas.sector.defaultError')}
           </p>
           <div style={{ display: 'flex', gap: 10 }}>
             <Link href="/atlas/sector" className="btn btn-orange">
-              В РЕЕСТР СЕКТОРОВ
+              {t('atlas.sector.toRegistry')}
             </Link>
             <Link href="/atlas" className="btn btn-cyan">
-              В КАРТУ ATLAS
+              {t('atlas.sector.toAtlasMap')}
             </Link>
           </div>
         </div>
@@ -287,7 +289,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
         <div className="sector-breadcrumbs">
           <Link href="/atlas">ATLAS</Link>
           <span className="sep">//</span>
-          <Link href="/atlas/sector">СЕКТОРЫ ГАЛАКТИКИ</Link>
+          <Link href="/atlas/sector">{t('atlas.sector.breadcrumbGalaxySectors')}</Link>
           <span className="sep">//</span>
           <span className="current">
             SEC-{String(data.id).padStart(2, '0')}: {data.name}
@@ -300,7 +302,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
             className="sector-quick-select"
             value={data.id}
             onChange={(e) => router.push(`/atlas/sector/${e.target.value}`)}
-            aria-label="Выбор сектора"
+            aria-label={t('atlas.sector.selectAria')}
           >
             {ALL_REGIONS.map((r) => (
               <option key={r.id} value={r.id}>
@@ -314,7 +316,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
             href={`/atlas/sector/${prevId}`}
             className="btn"
             style={{ padding: '6px 12px', fontSize: 11 }}
-            title={`Предыдущий сектор: ${ALL_REGIONS.find((r) => r.id === prevId)?.name}`}
+            title={t('atlas.sector.prevSector', { name: ALL_REGIONS.find((r) => r.id === prevId)?.name ?? '' })}
           >
             <IconArrowLeft size={12} /> SEC-{String(prevId).padStart(2, '0')}
           </Link>
@@ -322,7 +324,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
             href={`/atlas/sector/${nextId}`}
             className="btn"
             style={{ padding: '6px 12px', fontSize: 11 }}
-            title={`Следующий сектор: ${ALL_REGIONS.find((r) => r.id === nextId)?.name}`}
+            title={t('atlas.sector.nextSector', { name: ALL_REGIONS.find((r) => r.id === nextId)?.name ?? '' })}
           >
             SEC-{String(nextId).padStart(2, '0')} <IconArrowRight size={12} />
           </Link>
@@ -333,7 +335,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
             className="btn btn-orange"
             style={{ padding: '6px 14px', fontSize: 11 }}
           >
-            <IconAtlas size={12} /> 3D АТЛАС
+            <IconAtlas size={12} /> {t('atlas.sector.atlas3d')}
           </Link>
         </div>
       </div>
@@ -349,59 +351,59 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
           </span>
           <span className="sector-status-pill">
             <span className="dot" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--green)' }} />
-            СТАТУС: {data.statistics.survey_status || 'АКТИВЕН'}
+            {t('atlas.sector.statusLabel')} {data.statistics.survey_status || t('atlas.sector.statusActive')}
           </span>
           <span
             className="sector-badge"
             style={{ borderColor: 'var(--line)', color: 'var(--muted)', background: 'transparent' }}
           >
-            {data.intel.type}
+            {t(data.intel.type)}
           </span>
           {data.telemetry.containsSol && (
             <span className="sector-badge" style={{ borderColor: 'var(--cyan)', color: 'var(--cyan)', background: 'rgba(52,152,219,0.1)' }}>
-              КОЛЫБЕЛЬ SOL
+              {t('atlas.sector.cradleSol')}
             </span>
           )}
           {data.telemetry.containsSgrA && (
             <span className="sector-badge" style={{ borderColor: '#ffd700', color: '#ffd700', background: 'rgba(255,215,0,0.1)' }}>
-              ЦЕНТР SAGITTARIUS A*
+              {t('atlas.sector.centerSgr')}
             </span>
           )}
         </div>
 
         <h1 className="sector-title">{data.name}</h1>
-        <p className="sector-subtitle">{data.intel.description}</p>
+        <p className="sector-subtitle">{t(data.intel.description, { name: data.name })}</p>
       </div>
 
       {/* ── Key Metrics ── */}
       <div className="stat-grid">
         <div className="stat-box">
           <div className="num">
-            {data.statistics.cached_systems.toLocaleString('ru-RU')}
+            {data.statistics.cached_systems.toLocaleString(locale)}
           </div>
-          <div className="lbl">Систем в кэше Atlas</div>
+          <div className="lbl">{t('atlas.sector.systemsInCache')}</div>
         </div>
         <div className="stat-box">
           <div className="num">
-            {data.statistics.known_real_systems.toLocaleString('ru-RU')}
+            {data.statistics.known_real_systems.toLocaleString(locale)}
           </div>
-          <div className="lbl">Известных систем</div>
+          <div className="lbl">{t('atlas.sector.knownSystems')}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: data.statistics.inhabited_systems ? 'var(--green)' : 'var(--muted)' }}>
             {data.statistics.inhabited_systems != null
-              ? data.statistics.inhabited_systems.toLocaleString('ru-RU')
+              ? data.statistics.inhabited_systems.toLocaleString(locale)
               : '—'}
           </div>
-          <div className="lbl">Обитаемых систем</div>
+          <div className="lbl">{t('atlas.sector.habitableSystems')}</div>
         </div>
         <div className="stat-box">
           <div className="num" style={{ color: 'var(--cyan)' }}>
             {data.statistics.explored_percent != null
               ? `${(data.statistics.explored_percent * 100).toFixed(1)}%`
-              : 'Уточняется'}
+              : t('atlas.sector.beingSpecified')}
           </div>
-          <div className="lbl">Картографировано</div>
+          <div className="lbl">{t('atlas.sector.mapped')}</div>
         </div>
       </div>
 
@@ -411,7 +413,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
         <div className="sector-radar-card">
           <div className="sector-radar-header">
             <h3>
-              <IconCrosshair size={14} /> ТАКТИЧЕСКИЙ РАДАР СЕКТОРА
+              <IconCrosshair size={14} /> {t('atlas.sector.radarTitle')}
             </h3>
 
             <div className="sector-radar-controls">
@@ -420,21 +422,21 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
                 className={`btn sector-radar-btn ${showGrid ? 'btn-orange' : ''}`}
                 onClick={() => setShowGrid(!showGrid)}
               >
-                СЕТКА
+                {t('atlas.sector.grid')}
               </button>
               <button
                 type="button"
                 className={`btn sector-radar-btn ${showRings ? 'btn-orange' : ''}`}
                 onClick={() => setShowRings(!showRings)}
               >
-                КОЛЬЦА
+                {t('atlas.sector.rings')}
               </button>
               <button
                 type="button"
                 className={`btn sector-radar-btn ${showBeacons ? 'btn-orange' : ''}`}
                 onClick={() => setShowBeacons(!showBeacons)}
               >
-                МАЯКИ
+                {t('atlas.sector.beacons')}
               </button>
             </div>
           </div>
@@ -604,11 +606,11 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
             >
               {radarHover ? (
                 <>
-                  КУРСОР: <span style={{ color: 'var(--orange)' }}>X {radarHover.x} · Z {radarHover.z} LY</span>
+                  {t('atlas.sector.cursor')} <span style={{ color: 'var(--orange)' }}>X {radarHover.x} · Z {radarHover.z} LY</span>
                 </>
               ) : (
                 <>
-                  ЦЕНТР: <span style={{ color: 'var(--text)' }}>X {data.center.x} · Z {data.center.z} LY</span>
+                  {t('atlas.sector.center')} <span style={{ color: 'var(--text)' }}>X {data.center.x} · Z {data.center.z} LY</span>
                 </>
               )}
             </div>
@@ -617,11 +619,11 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
           <div className="sector-radar-legend">
             <div className="sector-radar-legend-item">
               <span style={{ display: 'inline-block', width: 10, height: 10, background: 'rgba(230,126,34,0.3)', border: '1px solid #e67e22' }} />
-              <span>Граница региона ({data.telemetry.verticesCount} вершин)</span>
+              <span>{t('atlas.sector.regionBorder', { count: data.telemetry.verticesCount })}</span>
             </div>
             <div className="sector-radar-legend-item">
               <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--orange)' }} />
-              <span>Центр сектора</span>
+              <span>{t('atlas.sector.sectorCenter')}</span>
             </div>
             {data.telemetry.containsSgrA && (
               <div className="sector-radar-legend-item">
@@ -632,7 +634,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
             {data.telemetry.containsSol && (
               <div className="sector-radar-legend-item">
                 <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--cyan)' }} />
-                <span>Система Sol</span>
+                <span>{t('atlas.sector.systemSol')}</span>
               </div>
             )}
           </div>
@@ -642,60 +644,60 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
         <div className="sector-data-column">
           <div className="sector-spatial-card">
             <h3>
-              <IconMapPin size={14} /> ПРОСТРАНСТВЕННАЯ ТЕЛЕМЕТРИЯ
+              <IconMapPin size={14} /> {t('atlas.sector.spatialTelemetry')}
             </h3>
 
             <div className="sector-telemetry-row">
-              <span className="label">Координаты центра (Galactic)</span>
+              <span className="label">{t('atlas.sector.coordCenter')}</span>
               <span className="val" style={{ color: 'var(--orange)' }}>
                 X {data.center.x} · Y 0 · Z {data.center.z} LY
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Смещение относительно Sgr A*</span>
+              <span className="label">{t('atlas.sector.offsetSgr')}</span>
               <span className="val">
                 ΔX {data.centerRelSgrA.x} · ΔZ {data.centerRelSgrA.z} LY
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Дистанция до Sol (Земля)</span>
+              <span className="label">{t('atlas.sector.distanceSol')}</span>
               <span className="val">
-                {data.telemetry.distanceToSol.toLocaleString('ru-RU')} LY
+                {data.telemetry.distanceToSol.toLocaleString(locale)} LY
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Дистанция до Sagittarius A*</span>
+              <span className="label">{t('atlas.sector.distanceSgr')}</span>
               <span className="val">
-                {data.telemetry.distanceToSgrA.toLocaleString('ru-RU')} LY
+                {data.telemetry.distanceToSgrA.toLocaleString(locale)} LY
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Габариты региона (Ш × Д)</span>
+              <span className="label">{t('atlas.sector.regionSize')}</span>
               <span className="val">
-                {data.dimensions.width.toLocaleString('ru-RU')} × {data.dimensions.length.toLocaleString('ru-RU')} LY
+                {data.dimensions.width.toLocaleString(locale)} × {data.dimensions.length.toLocaleString(locale)} LY
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Границы по оси X (Min / Max)</span>
+              <span className="label">{t('atlas.sector.boundsX')}</span>
               <span className="val">
                 [{data.bounds.min_x} ... {data.bounds.max_x}] LY
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Границы по оси Z (Min / Max)</span>
+              <span className="label">{t('atlas.sector.boundsZ')}</span>
               <span className="val">
                 [{data.bounds.min_z} ... {data.bounds.max_z}] LY
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Оценочный объём пространства</span>
+              <span className="label">{t('atlas.sector.volume')}</span>
               <span className="val">
                 ~{data.dimensions.approxVolumeMly3 ?? ((data.dimensions.width * data.dimensions.length * 2000) / 1_000_000_000).toFixed(2)} Mly³
               </span>
@@ -705,30 +707,30 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
           {/* Navigation Intel & Advisories */}
           <div className="sector-spatial-card">
             <h3>
-              <IconRingPlanet size={14} /> РАЗВЕДСВОДКА И НАВИГАЦИЯ
+              <IconRingPlanet size={14} /> {t('atlas.sector.reconTitle')}
             </h3>
 
             <div className="sector-telemetry-row">
-              <span className="label">Классификация</span>
+              <span className="label">{t('atlas.sector.classification')}</span>
               <span className="val" style={{ color: 'var(--cyan)' }}>
                 {data.intel.typeEn}
               </span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Плотность звёзд</span>
-              <span className="val">{data.intel.starDensity}</span>
+              <span className="label">{t('atlas.sector.starDensity')}</span>
+              <span className="val">{t(data.intel.starDensity)}</span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Навигационный риск</span>
-              <span className="val">{data.intel.navigationRisk}</span>
+              <span className="label">{t('atlas.sector.navRisk')}</span>
+              <span className="val">{t(data.intel.navigationRisk)}</span>
             </div>
 
             <div className="sector-telemetry-row">
-              <span className="label">Дозаправка (Fuel Scoop)</span>
+              <span className="label">{t('atlas.sector.refuel')}</span>
               <span className="val" style={{ color: 'var(--green)' }}>
-                {data.intel.fuelAvailability}
+                {t(data.intel.fuelAvailability)}
               </span>
             </div>
 
@@ -738,14 +740,14 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
                 className="btn btn-orange"
                 style={{ fontSize: 11, padding: '8px 14px' }}
               >
-                <IconSearch size={12} /> ПОИСК СИСТЕМ В ATLAS
+                <IconSearch size={12} /> {t('atlas.sector.searchSystems')}
               </Link>
               <Link
                 href={`/atlas?tab=route`}
                 className="btn btn-cyan"
                 style={{ fontSize: 11, padding: '8px 14px' }}
               >
-                <IconRoute size={12} /> МАРШРУТ ЧЕРЕЗ СЕКТОР
+                <IconRoute size={12} /> {t('atlas.sector.routeThrough')}
               </Link>
             </div>
           </div>
@@ -756,7 +758,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
       {data.adjacentSectors && data.adjacentSectors.length > 0 && (
         <div className="card">
           <h3 style={{ fontSize: 13, letterSpacing: 2, textTransform: 'uppercase', color: 'var(--orange)', marginBottom: 14 }}>
-            СМЕЖНЫЕ И БЛИЗЛЕЖАЩИЕ СЕКТОРЫ
+            {t('atlas.sector.adjacentSectors')}
           </h3>
 
           <div className="sector-adjacent-grid">
@@ -768,7 +770,7 @@ export default function SectorDetailPage({ params }: { params: Promise<{ id: str
               >
                 <div className="sec-id">SEC-{String(adj.id).padStart(2, '0')}</div>
                 <div className="sec-name">{adj.name}</div>
-                <div className="sec-dist">~{adj.distance.toLocaleString('ru-RU')} LY от центра</div>
+                <div className="sec-dist">{t('atlas.sector.lyFromCenter', { value: adj.distance.toLocaleString(locale) })}</div>
               </Link>
             ))}
           </div>

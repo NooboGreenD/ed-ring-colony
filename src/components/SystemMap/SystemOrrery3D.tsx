@@ -23,6 +23,7 @@ import { MOTION_SPEEDS } from '@/lib/orrery3d/motion';
 import { SCENE_COLORS, STRUCTURE_COLORS, formatLightSeconds, formatTons } from '@/lib/orrery3d/palette';
 import type { LayerName } from '@/lib/orrery3d/scene';
 import type { FilterMode, LabelsMode, OrreryViewer, OrreryViewerState } from '@/lib/orrery3d/viewer';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import type { OrreryViewBody, OrreryViewPayload } from '@/lib/orrery3d/types';
 import SystemBodyRail from './SystemBodyRail';
 
@@ -41,27 +42,27 @@ export interface SystemOrrery3DProps {
 }
 
 const LAYER_LABELS: { id: LayerName; label: string; hint: string }[] = [
-  { id: 'grid', label: 'сетка', hint: 'Плоскость эклиптики и круги дистанций' },
-  { id: 'orbits', label: 'орбиты', hint: 'Орбиты планет и звёзд' },
-  { id: 'moonOrbits', label: 'орбиты лун', hint: 'Орбиты лун вокруг планет' },
-  { id: 'zones', label: 'обитаемая зона', hint: 'Зона обитаемости звёзд' },
-  { id: 'rings', label: 'кольца', hint: 'Кольца планет' },
-  { id: 'signals', label: 'сигналы', hint: 'Метки сигналов: биология, геология, следы людей, стражи, таргоиды' },
-  { id: 'structures', label: 'постройки', hint: 'Стройплощадки, станции и поселения' },
-  { id: 'moons', label: 'луны', hint: 'Сами луны' },
+  { id: 'grid', label: 'orrery.layerGrid', hint: 'orrery.layerGridHint' },
+  { id: 'orbits', label: 'orrery.layerOrbits', hint: 'orrery.layerOrbitsHint' },
+  { id: 'moonOrbits', label: 'orrery.layerMoonOrbits', hint: 'orrery.layerMoonOrbitsHint' },
+  { id: 'zones', label: 'orrery.layerZones', hint: 'orrery.layerZonesHint' },
+  { id: 'rings', label: 'orrery.layerRings', hint: 'orrery.layerRingsHint' },
+  { id: 'signals', label: 'orrery.layerSignals', hint: 'orrery.layerSignalsHint' },
+  { id: 'structures', label: 'orrery.layerStructures', hint: 'orrery.layerStructuresHint' },
+  { id: 'moons', label: 'orrery.layerMoons', hint: 'orrery.layerMoonsHint' },
 ];
 
 const VIEW_LABELS: { id: ViewPreset; label: string; hint: string }[] = [
-  { id: 'iso', label: '3D', hint: 'Изометрия — обычный вид' },
-  { id: 'top', label: 'сверху', hint: 'Вид на плоскость системы' },
-  { id: 'side', label: 'сбоку', hint: 'Вид вдоль плоскости системы' },
+  { id: 'iso', label: 'orrery.viewIso', hint: 'orrery.viewIsoHint' },
+  { id: 'top', label: 'orrery.viewTop', hint: 'orrery.viewTopHint' },
+  { id: 'side', label: 'orrery.viewSide', hint: 'orrery.viewSideHint' },
 ];
 
 const LABEL_MODES: { id: LabelsMode; label: string; hint: string }[] = [
-  { id: 'auto', label: 'по ситуации', hint: 'Подписи у важных тел' },
-  { id: 'all', label: 'все', hint: 'Подписи у всех тел' },
-  { id: 'focus', label: 'только фокус', hint: 'Подпись только у выбранного тела' },
-  { id: 'none', label: 'нет', hint: 'Полностью скрыть подписи' },
+  { id: 'auto', label: 'orrery.labelsAuto', hint: 'orrery.labelsAutoHint' },
+  { id: 'all', label: 'orrery.labelsAll', hint: 'orrery.labelsAllHint' },
+  { id: 'focus', label: 'orrery.labelsFocus', hint: 'orrery.labelsFocusHint' },
+  { id: 'none', label: 'orrery.labelsNone', hint: 'orrery.labelsNoneHint' },
 ];
 
 /**
@@ -124,6 +125,7 @@ export default function SystemOrrery3D({
   player = null,
   height = 620,
 }: SystemOrrery3DProps) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<OrreryViewer | null>(null);
   const [ready, setReady] = useState(false);
@@ -266,8 +268,10 @@ export default function SystemOrrery3D({
     if (!state.playing && state.timeDays === 0) return '';
     const days = state.timeDays;
     const abs = Math.abs(days);
-    const text = abs >= 365 ? `${(days / 365.25).toFixed(2)} лет` : abs >= 1 ? `${days.toFixed(1)} сут` : `${(days * 24).toFixed(1)} ч`;
-    return days >= 0 ? `+${text} от сканов` : `${text} до сканов`;
+    const text = abs >= 365
+      ? t('orrery.timeYears', { value: (days / 365.25).toFixed(2) })
+      : abs >= 1 ? t('orrery.timeDays', { value: days.toFixed(1) }) : t('orrery.timeHours', { value: (days * 24).toFixed(1) });
+    return days >= 0 ? t('orrery.timeFromScans', { value: text }) : t('orrery.timeToScans', { value: text });
   }, [state.playing, state.timeDays]);
 
   return (
@@ -292,7 +296,7 @@ export default function SystemOrrery3D({
               <button
                 key={entry.level}
                 type="button"
-                title={entry.hint}
+                title={t(entry.hint)}
                 disabled={entry.level > 0 && !focusName}
                 onClick={() => viewerRef.current?.setZoom(entry.level)}
                 style={{
@@ -300,7 +304,7 @@ export default function SystemOrrery3D({
                   opacity: entry.level > 0 && !focusName ? 0.45 : 1,
                 }}
               >
-                <span aria-hidden>{entry.icon}</span> {entry.label}
+                <span aria-hidden>{entry.icon}</span> {t(entry.label)}
               </button>
             ))}
             <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
@@ -308,87 +312,87 @@ export default function SystemOrrery3D({
               <button
                 key={entry.id}
                 type="button"
-                title={entry.hint}
+                title={t(entry.hint)}
                 onClick={() => viewerRef.current?.setView(entry.id)}
                 style={buttonStyle(state.view === entry.id)}
               >
-                {entry.label}
+                {t(entry.label)}
               </button>
             ))}
             <button
               type="button"
-              title="Показать всю систему"
+              title={t('orrery.fitAllTitle')}
               onClick={() => {
                 viewerRef.current?.fit();
                 onFocusChange?.('');
               }}
               style={buttonStyle(false)}
             >
-              ⤢ вся система
+              {t('orrery.fitAll')}
             </button>
           </div>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-            <button type="button" onClick={() => setLayersOpen((open) => !open)} style={buttonStyle(layersOpen)} title="Слои сцены">
-              ⚙ слои
+            <button type="button" onClick={() => setLayersOpen((open) => !open)} style={buttonStyle(layersOpen)} title={t('orrery.layersTitle')}>
+              {t('orrery.layers')}
             </button>
             <select
               value={filter}
               onChange={(event) => setFilter(event.target.value as FilterMode)}
-              title="Показать только нужные тела — остальные притухают"
+              title={t('orrery.filterTitle')}
               style={{ ...buttonStyle(filter !== 'all'), paddingRight: 4 }}
             >
-              <option value="all">все тела</option>
-              <option value="bodies">без звёзд</option>
-              <option value="sites">со стройками</option>
-              <option value="landable">с посадкой</option>
-              <option value="bio">с био</option>
-              <option value="signals">с сигналами</option>
-              <option value="rings">с кольцами</option>
-              <option value="unscanned">без скана</option>
+              <option value="all">{t('orrery.filterAll')}</option>
+              <option value="bodies">{t('orrery.filterNoStars')}</option>
+              <option value="sites">{t('orrery.filterSites')}</option>
+              <option value="landable">{t('orrery.filterLandable')}</option>
+              <option value="bio">{t('orrery.filterBio')}</option>
+              <option value="signals">{t('orrery.filterSignals')}</option>
+              <option value="rings">{t('orrery.filterRings')}</option>
+              <option value="unscanned">{t('orrery.filterUnscanned')}</option>
             </select>
             <select
               value={labels}
               onChange={(event) => setLabels(event.target.value as LabelsMode)}
-              title="Подписи тел на карте"
+              title={t('orrery.labelsTitle')}
               style={{ ...buttonStyle(labels !== 'auto') }}
             >
               {LABEL_MODES.map((entry) => (
-                <option key={entry.id} value={entry.id}>{`подписи: ${entry.label}`}</option>
+                <option key={entry.id} value={entry.id}>{`${t('orrery.labelsPrefix')} ${t(entry.label)}`}</option>
               ))}
             </select>
             <select
               value={scaleMode}
               onChange={(event) => setScaleMode(event.target.value as 'orrery' | 'linear')}
-              title="Сжатый масштаб делает систему обозримой, линейный сохраняет пропорции"
+              title={t('orrery.scaleTitle')}
               style={{ ...buttonStyle(scaleMode === 'linear') }}
             >
-              <option value="orrery">масштаб: сжатый</option>
-              <option value="linear">масштаб: линейный</option>
+              <option value="orrery">{t('orrery.scaleCompressed')}</option>
+              <option value="linear">{t('orrery.scaleLinear')}</option>
             </select>
             <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
             <button
               type="button"
               onClick={() => viewerRef.current?.setMotion(!state.playing)}
-              title="Движение тел по орбитам: положение на любую дату"
+              title={t('orrery.motionTitle')}
               style={buttonStyle(state.playing)}
             >
-              {state.playing ? '⏸ пауза' : '▶ движение'}
+              {state.playing ? t('orrery.motionPause') : t('orrery.motionPlay')}
             </button>
             {state.playing && (
               <>
                 <select
                   value={state.speed}
                   onChange={(event) => viewerRef.current?.setMotion(true, Number(event.target.value))}
-                  title="Сколько суток проходит за секунду"
+                  title={t('orrery.speedTitle')}
                   style={buttonStyle(false)}
                 >
                   {MOTION_SPEEDS.map((speed) => (
-                    <option key={speed} value={speed}>{`${speed} сут/с`}</option>
+                    <option key={speed} value={speed}>{t('orrery.daysPerSecond', { value: speed })}</option>
                   ))}
                 </select>
-                <button type="button" onClick={() => viewerRef.current?.resetTime()} style={buttonStyle(false)} title="Вернуться к дате сканов">
-                  ⟲ к сканам
+                <button type="button" onClick={() => viewerRef.current?.resetTime()} style={buttonStyle(false)} title={t('orrery.backToScansTitle')}>
+                  {t('orrery.backToScans')}
                 </button>
               </>
             )}
@@ -396,9 +400,9 @@ export default function SystemOrrery3D({
               type="button"
               onClick={() => setRailOpen((open) => !open)}
               style={buttonStyle(railOpen)}
-              title="Список тел и построек"
+              title={t('orrery.listTitle')}
             >
-              ☰ список
+              {t('orrery.list')}
             </button>
           </div>
 
@@ -408,11 +412,11 @@ export default function SystemOrrery3D({
                 <button
                   key={entry.id}
                   type="button"
-                  title={entry.hint}
+                  title={t(entry.hint)}
                   onClick={() => setViewerLayer(entry.id, !state.layers[entry.id])}
                   style={buttonStyle(state.layers[entry.id])}
                 >
-                  {state.layers[entry.id] ? '✓' : '○'} {entry.label}
+                  {state.layers[entry.id] ? '✓' : '○'} {t(entry.label)}
                 </button>
               ))}
             </div>
@@ -435,7 +439,7 @@ export default function SystemOrrery3D({
           >
             {!ready && !webglFailed && (
               <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: 13 }}>
-                Готовим 3D-карту системы…
+                {t('orrery.preparing')}
               </div>
             )}
           </div>
@@ -443,15 +447,15 @@ export default function SystemOrrery3D({
           {/* ── Легенда и подсказка ───────────────────────────────────── */}
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 10.5, color: 'var(--muted)' }}>
-              <Legend color="#ffd166" label="звезда" />
-              <Legend color="#8d99ae" label="планета/луна" />
-              <Legend color={STRUCTURE_COLORS.active} label="стройка в работе" />
-              <Legend color={STRUCTURE_COLORS.complete} label="постройка готова" />
-              <Legend color={SCENE_COLORS.habitableZone} label="обитаемая зона" />
-              <Legend color={SCENE_COLORS.player} label="вы здесь" />
+              <Legend color="#ffd166" label={t('orrery.legendStar')} />
+              <Legend color="#8d99ae" label={t('orrery.legendPlanet')} />
+              <Legend color={STRUCTURE_COLORS.active} label={t('orrery.legendSiteActive')} />
+              <Legend color={STRUCTURE_COLORS.complete} label={t('orrery.legendSiteDone')} />
+              <Legend color={SCENE_COLORS.habitableZone} label={t('orrery.legendHabitable')} />
+              <Legend color={SCENE_COLORS.player} label={t('orrery.legendPlayer')} />
             </div>
             <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>
-              колесо — зум · ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — ближе
+              {t('orrery.controlsHint')}
             </span>
           </div>
         </div>
@@ -477,22 +481,22 @@ export default function SystemOrrery3D({
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, fontSize: 10.5 }}>
                   <Chip>★ {payload.summary.stars}</Chip>
-                  <Chip>планет: {payload.summary.planets}</Chip>
-                  {payload.summary.moons > 0 && <Chip>лун: {payload.summary.moons}</Chip>}
-                  {payload.summary.landable > 0 && <Chip>посадка: {payload.summary.landable}</Chip>}
+                  <Chip>{t('orrery.chipPlanets', { count: payload.summary.planets })}</Chip>
+                  {payload.summary.moons > 0 && <Chip>{t('orrery.chipMoons', { count: payload.summary.moons })}</Chip>}
+                  {payload.summary.landable > 0 && <Chip>{t('orrery.chipLandable', { count: payload.summary.landable })}</Chip>}
                   {SIGNAL_KINDS.filter((kind) => payload.summary.signals[kind] > 0).map((kind) => (
                     <Chip key={kind} color={SIGNAL_META[kind].color}>
                       {SIGNAL_META[kind].icon} {SIGNAL_META[kind].short}: {payload.summary.signals[kind]}
                     </Chip>
                   ))}
-                  {payload.summary.ringed > 0 && <Chip>кольца: {payload.summary.ringed}</Chip>}
+                  {payload.summary.ringed > 0 && <Chip>{t('orrery.chipRings', { count: payload.summary.ringed })}</Chip>}
                   {payload.summary.structures > 0 && (
-                    <Chip color={STRUCTURE_COLORS.active}>строек: {payload.summary.activeSites || payload.summary.structures}</Chip>
+                    <Chip color={STRUCTURE_COLORS.active}>{t('orrery.chipSites', { count: payload.summary.activeSites || payload.summary.structures })}</Chip>
                   )}
                 </div>
                 <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--muted)', lineHeight: 1.45 }}>
-                  Выберите тело на карте или в списке — здесь появятся его факты, орбита и постройки.
-                  {hoveredBody ? ` Сейчас под курсором: ${hoveredBody.shortName}.` : ''}
+                  {t('orrery.pickBody')}
+                  {hoveredBody ? t('orrery.hoverNow', { name: hoveredBody.shortName }) : ''}
                 </p>
               </>
             )}
@@ -515,12 +519,12 @@ export default function SystemOrrery3D({
 
       {timeLabel && (
         <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
-          Время на карте: {timeLabel} · положение рассчитано по настоящим периодам обращения
+          {t('orrery.timeOnMap', { label: timeLabel })}
         </div>
       )}
       {webglFailed && (
         <p style={{ marginTop: 8, fontSize: 11.5, color: '#f0b37e' }}>
-          Похоже, браузер не дал доступ к WebGL: сцена не поднялась. Данные системы ниже — в списках и карточках построек.
+          {t('orrery.webglFailed')}
         </p>
       )}
     </section>
@@ -568,17 +572,18 @@ function FocusCard({
   onZoom: (level: ZoomLevel) => void;
   onClear: () => void;
 }) {
+  const { t } = useI18n();
   const structures = payload.structures.filter((structure) => structure.body === body.name);
   const cluster = payload.clusters.find((candidate) => candidate.bodies.includes(body.name) || candidate.star === body.name);
   const rows: [string, string][] = [];
-  if (body.cls) rows.push(['Класс', body.cls]);
-  if (body.kind !== 'star') rows.push(['Орбита', formatLightSeconds(body.orbitLs)]);
-  rows.push(['От входа', formatLightSeconds(body.distanceLs)]);
-  if (body.elements.real) rows.push(['Эксцентриситет', body.elements.eccentricity.toFixed(4)]);
+  if (body.cls) rows.push([t('orrery.rowClass'), body.cls]);
+  if (body.kind !== 'star') rows.push([t('orrery.rowOrbit'), formatLightSeconds(body.orbitLs)]);
+  rows.push([t('orrery.rowFromEntry'), formatLightSeconds(body.distanceLs)]);
+  if (body.elements.real) rows.push([t('orrery.rowEccentricity'), body.elements.eccentricity.toFixed(4)]);
   if (body.habitableZoneLs && body.habitableBand) {
     rows.push([
-      'Обитаемая зона',
-      body.habitableBand === 'habitable' ? 'тело в зоне' : body.habitableBand === 'inner' ? 'ближе зоны' : 'дальше зоны',
+      t('orrery.rowHabitable'),
+      body.habitableBand === 'habitable' ? t('orrery.bandInside') : body.habitableBand === 'inner' ? t('orrery.bandInner') : t('orrery.bandOuter'),
     ]);
   }
 
@@ -587,13 +592,13 @@ function FocusCard({
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 4 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{body.name}</span>
         <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>
-          {body.kind === 'star' ? 'звезда' : body.kind === 'moon' ? 'луна' : 'планета'}
+          {body.kind === 'star' ? t('orrery.kindStar') : body.kind === 'moon' ? t('orrery.kindMoon') : t('orrery.kindPlanet')}
           {cluster && payload.summary.stars > 1 ? ` · ★ ${cluster.star.replace(`${payload.system} `, '')}` : ''}
         </span>
         <button
           type="button"
           onClick={onClear}
-          title="Снять фокус"
+          title={t('orrery.clearFocus')}
           style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 13 }}
         >
           ✕
@@ -610,23 +615,23 @@ function FocusCard({
       </dl>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
-        {body.landable && <Chip color="#00f3ff">🛬 посадка</Chip>}
+        {body.landable && <Chip color="#00f3ff">{t('orrery.chipLandableShort')}</Chip>}
         {activeSignalKinds(body.signals).map((kind) => (
           <Chip key={kind} color={SIGNAL_META[kind].color}>
             {SIGNAL_META[kind].icon} {SIGNAL_META[kind].label}: {body.signals[kind]}
           </Chip>
         ))}
-        {body.signals.genuses.length > 0 && <Chip color="#22c55e">роды: {body.signals.genuses.slice(0, 3).join(', ')}</Chip>}
-        {body.rings.length > 0 && <Chip color="#9fd8ef">💍 колец: {body.rings.length}</Chip>}
-        {body.mapped && <Chip color="#ffd166">🗺 нанесено на карту</Chip>}
+        {body.signals.genuses.length > 0 && <Chip color="#22c55e">{t('orrery.chipGenuses', { list: body.signals.genuses.slice(0, 3).join(', ') })}</Chip>}
+        {body.rings.length > 0 && <Chip color="#9fd8ef">{t('orrery.chipRingsShort', { count: body.rings.length })}</Chip>}
+        {body.mapped && <Chip color="#ffd166">{t('orrery.chipMapped')}</Chip>}
         {body.firstDiscoveredBy && <Chip>🧭 {body.firstDiscoveredBy}</Chip>}
         {body.firstFootfallBy && <Chip>👣 {body.firstFootfallBy}</Chip>}
       </div>
 
       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: structures.length ? 8 : 0 }}>
         {ZOOM_LABELS.filter((entry) => entry.level > 0).map((entry) => (
-          <button key={entry.level} type="button" onClick={() => onZoom(entry.level)} style={buttonStyle(zoom === entry.level)} title={entry.hint}>
-            {entry.icon} {entry.label}
+          <button key={entry.level} type="button" onClick={() => onZoom(entry.level)} style={buttonStyle(zoom === entry.level)} title={t(entry.hint)}>
+            {entry.icon} {t(entry.label)}
           </button>
         ))}
       </div>
@@ -636,7 +641,7 @@ function FocusCard({
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5, color: 'var(--text)' }}>
             <span>{structure.name}</span>
             <b style={{ color: structure.complete ? STRUCTURE_COLORS.complete : STRUCTURE_COLORS.active }}>
-              {structure.complete ? 'готово' : `${Math.round(structure.progress)}%`}
+              {structure.complete ? t('orrery.structureDone') : `${Math.round(structure.progress)}%`}
             </b>
           </div>
           <div style={{ height: 5, background: 'var(--line)', borderRadius: 3, marginTop: 4, overflow: 'hidden' }}>
@@ -650,7 +655,7 @@ function FocusCard({
           </div>
           <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 3 }}>
             {structure.requiredTons > 0
-              ? `доставлено ${formatTons(structure.providedTons)} из ${formatTons(structure.requiredTons)} · осталось ${formatTons(structure.remainingTons)}`
+              ? t('orrery.structureTons', { provided: formatTons(structure.providedTons), required: formatTons(structure.requiredTons), remaining: formatTons(structure.remainingTons) })
               : structure.type}
           </div>
         </div>

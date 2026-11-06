@@ -55,29 +55,32 @@ export function formatCredits(value?: number | null): string {
 }
 
 /** Дата вида «12.03.2026, 18:40»; некорректную строку не ломает. */
-export function formatDateTime(value?: string | null): string {
+export function formatDateTime(value?: string | null, locale = 'ru-RU'): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString('ru-RU', {
+  return date.toLocaleString(locale, {
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 }
 
 /** «5 минут назад» для истории поисков. */
-export function relativeTime(value?: string | null, now: Date = new Date()): string {
+type TimeLabels = (key: string, params?: Record<string, string | number>) => string;
+
+export function relativeTime(value?: string | null, now: Date = new Date(), t?: TimeLabels): string {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   const diffMs = now.getTime() - date.getTime();
-  if (diffMs < 0) return 'только что';
+  const justNow = t ? t('atlas.ui.timeJustNow') : 'только что';
+  if (diffMs < 0) return justNow;
   const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return 'только что';
-  if (minutes < 60) return `${minutes} мин назад`;
+  if (minutes < 1) return justNow;
+  if (minutes < 60) return t ? t('atlas.ui.timeMinutesAgo', { count: minutes }) : `${minutes} мин назад`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} ч назад`;
+  if (hours < 24) return t ? t('atlas.ui.timeHoursAgo', { count: hours }) : `${hours} ч назад`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} дн назад`;
+  if (days < 30) return t ? t('atlas.ui.timeDaysAgo', { count: days }) : `${days} дн назад`;
   return formatDateTime(value);
 }
 

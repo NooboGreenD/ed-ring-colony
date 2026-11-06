@@ -134,6 +134,7 @@ export async function renderOrreryMap(props = {}) {
   writeFileSync(
     entry,
     "export { default as SystemOrrery3D } from '@/components/SystemMap/SystemOrrery3D';\n"
+    + "export { I18nProvider } from '@/lib/i18n/I18nContext';\n"
     + "export { calls, stub, resetStub, emitHover, emitSelect, emitState, currentState } from './viewer-stub';\n"
     + "export { buildOrreryView } from '@/lib/orrery3d/payload';\n"
     + "export { buildOrreryLayout, toStructures } from '@/lib/systemOrrery';\n",
@@ -191,11 +192,17 @@ export async function renderOrreryMap(props = {}) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
   };
   await act(async () => {
-    root.render(React.createElement(mod.SystemOrrery3D, {
-      systemName: 'Sol',
-      ...componentProps,
-      ...(preparedStructures ? { structures: preparedStructures } : {}),
-    }));
+    // Подписи панели берутся из словаря: без провайдера `t()` вернул бы
+    // ключи, и тесты искали бы кнопки по «orrery.fitAll» вместо текста.
+    root.render(React.createElement(
+      mod.I18nProvider,
+      null,
+      React.createElement(mod.SystemOrrery3D, {
+        systemName: 'Sol',
+        ...componentProps,
+        ...(preparedStructures ? { structures: preparedStructures } : {}),
+      }),
+    ));
   });
   await flush(30);
 
