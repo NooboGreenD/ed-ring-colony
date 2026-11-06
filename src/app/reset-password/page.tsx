@@ -2,8 +2,10 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { passwordError } from '@/lib/passwordPolicy';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 export default function ResetPasswordPage() {
+  const { t } = useI18n();
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [password, setPassword] = useState('');
@@ -17,42 +19,42 @@ export default function ResetPasswordPage() {
       const result = await response.json();
       if (active) {
         if (response.ok && result.valid) setReady(true);
-        else setError(result.error || 'Запросите новую ссылку восстановления.');
+        else setError(result.error || t('pw2.requestNew'));
       }
-    }).catch(() => { if (active) setError('Не удалось проверить сессию. Обновите страницу.'); });
+    }).catch(() => { if (active) setError(t('pw2.sessionCheckFailed')); });
     return () => { active = false; };
   }, []);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); setError('');
     const problem = passwordError(password);
     if (problem) { setError(problem); return; }
-    if (password !== confirm) { setError('Пароли не совпадают.'); return; }
+    if (password !== confirm) { setError(t('pw2.mismatch')); return; }
     setBusy(true);
     try {
       const response = await fetch('/api/auth/password', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }),
       });
       const result = await response.json();
-      if (!response.ok) { setError(result.error || 'Не удалось изменить пароль.'); return; }
+      if (!response.ok) { setError(result.error || t('pw2.changeFailed')); return; }
       setPassword(''); setConfirm(''); setWarning(result.warning || ''); setDone(true);
-    } catch { setError('Ошибка соединения. Попробуйте ещё раз.'); }
+    } catch { setError(t('pw2.connectionError')); }
     finally { setBusy(false); }
   };
   return <main className="card auth-card">
-    <h1>Новый пароль</h1>
+    <h1>{t('pw2.title')}</h1>
     {done ? <div role="status">
-      <p>Пароль изменён. Войдите с новым паролем. Для Uploader создайте новый API-токен.</p>
+      <p>{t('pw2.done')}</p>
       {warning && <p role="alert" className="auth-error">{warning}</p>}
-      <a href="/login">Войти</a>
+      <a href="/login">{t('pw2.login')}</a>
     </div> : <>
-      <p>Ссылка даёт 10 минут на смену пароля. Прежние сеансы обновления и токены Uploader будут отозваны; история и досье сохранятся. Привязанные Discord/Google/GitHub остаются — проверьте их в аккаунте, если подозреваете чужой доступ.</p>
+      <p>{t('pw2.intro')}</p>
       {error && <p role="alert" className="auth-error">{error}</p>}
       {ready && <form className="auth-form" onSubmit={submit}>
-        <label>Пароль (не менее 12 символов)<input type="password" autoComplete="new-password" required value={password} onChange={event => setPassword(event.target.value)} /></label>
-        <label>Повтор пароля<input type="password" autoComplete="new-password" required value={confirm} onChange={event => setConfirm(event.target.value)} /></label>
-        <button disabled={busy}>{busy ? 'Сохранение…' : 'Изменить пароль и отозвать токены'}</button>
+        <label>{t('pw2.passwordLabel')}<input type="password" autoComplete="new-password" required value={password} onChange={event => setPassword(event.target.value)} /></label>
+        <label>{t('pw2.repeatPassword')}<input type="password" autoComplete="new-password" required value={confirm} onChange={event => setConfirm(event.target.value)} /></label>
+        <button disabled={busy}>{busy ? t('pw2.saving') : t('pw2.submit')}</button>
       </form>}
-      <p><Link href="/forgot-password">Запросить новую ссылку</Link></p>
+      <p><Link href="/forgot-password">{t('pw2.requestLink')}</Link></p>
     </>}
   </main>;
 }

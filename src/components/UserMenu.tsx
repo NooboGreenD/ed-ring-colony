@@ -78,7 +78,7 @@ export default function UserMenu() {
         const squadron = squadronResponse.ok ? squadronData.squadron : null;
         setMySquadron(squadron?.id ? {
           id: Number(squadron.id),
-          name: String(squadron.name || "Эскадрилья"),
+          name: String(squadron.name || t('um.squadronFallback')),
           tag: squadron.tag ?? null,
         } : null);
       } catch {
@@ -183,10 +183,10 @@ export default function UserMenu() {
 
   const roleLabel = useMemo(() => {
     const role = profile?.role || "";
-    if (role === "admin") return t("account.admin") || "Админ-панель";
-    if (role === "moderator") return "Модератор";
-    if (role === "support_manager") return t("support.title") || "Техподдержка";
-    return profile?.cmdr_name ? "Командир" : t("account.profile") || "Профиль";
+    if (role === "admin") return t('account.admin');
+    if (role === "moderator") return t('um.roleModerator');
+    if (role === "support_manager") return t('support.title');
+    return profile?.cmdr_name ? t('um.roleCommander') : t('account.profile');
   }, [profile?.cmdr_name, profile?.role, t]);
 
   if (!ready) {
@@ -236,7 +236,7 @@ export default function UserMenu() {
         <IconChevronDown size={12} className="user-menu-chevron" />
       </button>
       {open && (
-        <div className="user-menu-drop" role="menu" ref={dropRef} aria-label={t('account.title') || 'Личный кабинет'}>
+        <div className="user-menu-drop" role="menu" ref={dropRef} aria-label={t('account.title')}>
           <div className="user-menu-head">
             <div className="user-menu-head-avatar">
               {cosmetics?.frame ? (
@@ -287,7 +287,7 @@ export default function UserMenu() {
                   {friendRequestCount > 0 && (
                     <span
                       className="user-menu-badge requests"
-                      title={t('account.friends') || 'Друзья'}
+                      title={t('account.friends')}
                     >
                       {friendRequestCount > 99 ? "99+" : friendRequestCount}
                     </span>
@@ -295,7 +295,7 @@ export default function UserMenu() {
                   {msgCount > 0 && (
                     <span
                       className="user-menu-badge messages"
-                      title={t('account.messages') || 'Сообщения'}
+                      title={t('account.messages')}
                     >
                       {msgCount > 99 ? "99+" : msgCount}
                     </span>
