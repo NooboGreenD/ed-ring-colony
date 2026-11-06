@@ -223,6 +223,6 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     adjacentSectors,
     path: region.path,
     pathGalactic,
-    source: 'База данных Atlas & Codex Galactic Regions Registry',
+    source: t('atlas.regionSource'),
   });
 }

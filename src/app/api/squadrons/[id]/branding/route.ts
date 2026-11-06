@@ -75,7 +75,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     storage = 'database';
     url = `/api/squadrons/${squadronId}/images/${kind}?v=${hash}`;
-    warning = 'Supabase Storage недоступен или отклонил загрузку — изображение сохранено в базе сайта. Администратору нужно проверить Storage.';
+    warning = t('sq.brandingStorageFallback');
     console.warn('[squadron branding] fallback to database:', stored.error);
   }
   const column = kind === 'logo' ? 'logo_url' : 'banner_url';

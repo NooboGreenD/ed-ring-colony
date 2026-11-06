@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { manifestForChannel, normalizeChannel, readManifest } from '@/lib/uploaderStore';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,6 +18,7 @@ export const runtime = 'nodejs';
  * подписан не нашим ключом, кем бы этот ответ ни был отдан.
  */
 export async function GET(request: NextRequest) {
+  const t = await apiTranslate();
   const url = new URL(request.url);
   const channel = normalizeChannel(url.searchParams.get('channel'));
   const version = (url.searchParams.get('version') ?? '').trim();
@@ -27,8 +29,8 @@ export async function GET(request: NextRequest) {
       {
         ok: false,
         error: version
-          ? `Версия ${version} не опубликована`
-          : `В канале «${channel}» пока нет опубликованных сборок`,
+          ? t('up.versionNotPublished', { version })
+          : t('up.channelEmpty', { channel }),
         channel,
       },
       { status: 404, headers: { 'Cache-Control': 'no-store' } },

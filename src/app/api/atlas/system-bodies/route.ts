@@ -5,6 +5,7 @@ import { signalsFromRecord, signalsToColumns } from '@/lib/bodySignals';
 import { compareBodySources, normalizeEdsmBody, normalizeSpanshBody } from '@/lib/architect/bodySync';
 import { findSystemByName } from '@/lib/galaxySystemsDb';
 import { spanshSystemDump } from '@/lib/spanshClient';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,6 +73,7 @@ function latestUpdate(rows: any[]): string | null {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const system = (searchParams.get('system') || searchParams.get('name') || '').trim();
@@ -110,7 +112,7 @@ export async function GET(req: Request) {
         const id64 = await resolveId64(system, edsm.id64);
         if (!id64) {
           spanshStatus = 'skipped';
-          spanshNote = 'id64 системы неизвестен';
+          spanshNote = t('atlas.id64Unknown');
         } else {
           const dump = await spanshSystemDump(id64);
           if (dump.ok) {
@@ -245,6 +247,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     let body: any = {};
     try {

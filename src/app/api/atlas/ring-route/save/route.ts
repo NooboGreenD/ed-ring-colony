@@ -124,7 +124,7 @@ export async function POST(req: Request) {
         sort_order: rows.length + 1,
         planned_status: 'planned',
         priority: 1,
-        notes: `Atlas: галактическое кольцо${ringRadius ? `, радиус ${Math.round(ringRadius)} св.л.` : ''}`,
+        notes: ringRadius ? t('atlas.ringNotesRadius', { radius: Math.round(ringRadius) }) : t('atlas.ringNotes'),
         x: Number(point.x),
         y: Number(point.y),
         z: Number(point.z),

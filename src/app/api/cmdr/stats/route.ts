@@ -7,6 +7,7 @@ import { assessProfileBinding } from '@/lib/capi/profileBinding';
 import { isPlausibleMercenaryCoins } from '@/lib/journalTelemetry';
 import { mergePilotStats } from '@/lib/pilotDossier';
 import { upsertResilient, updateResilient, schemaWarning } from '@/lib/capi/persist';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +16,7 @@ function hashToken(token: string): string {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   try {
     const { searchParams } = new URL(req.url);
     const cmdr = (searchParams.get('cmdr') || searchParams.get('name') || '').trim();
@@ -98,6 +100,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const t = await apiTranslate();
   try {
     let body: any = {};
     try {
@@ -256,7 +259,7 @@ export async function POST(req: Request) {
       // machine-readable причина, если запись защищена источником
       pilotStatsSkipped: statsSkipped,
       ...(statsSkipped
-        ? { warning: 'Статистика пилота не записана: приоритет у данных, загруженных через сайт. Повторная загрузка журналов на сайте снимает защиту.' }
+        ? { warning: t('cmdr.statsSitePriority') }
         : {}),
       binding: {
         status: binding.status,

@@ -106,7 +106,7 @@ export async function POST(req: Request) {
     }
 
     const visibility = isPlanVisibility(record.visibility) ? (record.visibility as PlanVisibility) : 'private';
-    const profile = await loadAuthorName(supabase, user.id);
+    const profile = await loadAuthorName(supabase, user.id, t);
 
     const { data: inserted, error } = await supabase
       .from(PLAN_TABLE)
@@ -134,6 +134,7 @@ export async function POST(req: Request) {
 async function loadAuthorName(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
 ): Promise<string> {
   const { data } = await supabase
     .from('profiles')
@@ -141,5 +142,5 @@ async function loadAuthorName(
     .eq('id', userId)
     .maybeSingle();
   const row = data as { cmdr_name?: string | null } | null;
-  return row?.cmdr_name || 'Командир';
+  return row?.cmdr_name || t('cmdr.default');
 }

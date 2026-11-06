@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            'Укажите корректный товар/тип стройплощадки и радиус 10–500 св.л.',
+            t('market.badQuery'),
         },
         { status: 400 }
       );

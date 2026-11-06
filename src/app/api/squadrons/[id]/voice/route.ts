@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabaseServer'
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
 // GET — список комнат и участников
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)
@@ -72,7 +74,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         joined_at: p.joined_at,
         is_muted: p.is_muted,
         is_deafened: p.is_deafened,
-        cmdr_name: memberMap.get(p.user_id)?.cmdr_name || 'Неизвестный',
+        cmdr_name: memberMap.get(p.user_id)?.cmdr_name || t('sq.unknownPilot'),
         avatar_url: memberMap.get(p.user_id)?.avatar_url || null,
       }))
 
@@ -100,6 +102,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 // POST — отправить сигнал или управлять комнатой
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   try {
     const squadronId = parseInt(resolvedParams.id)

@@ -270,8 +270,7 @@ export async function GET(req: Request) {
     {
       error: t('api.galaxyCatalogEmpty'),
       hint:
-        'Запустите импорт дампа Spansh — Админка → «Каталог систем» (или POST /api/cron/galaxy-import ' +
-        'с секретом CRON_SECRET); на машине с доступом к downloads.spansh.co.uk — npm run spansh:import.',
+        t('galaxy.importHint'),
       catalog: {
         systems_count: stats?.systems_count ?? 0,
         imported_at: stats?.imported_at ?? null,

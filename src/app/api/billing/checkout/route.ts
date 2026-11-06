@@ -70,13 +70,13 @@ export async function POST(req: Request) {
       amountRub = pack.price_rub;
       amountCredits = Math.round(pack.credits * (1 + (pack.bonus_pct || 0) / 100));
       targetId = pack.id;
-      description = `ED Ring Colony: ${amountCredits} кредитов`;
+      description = t('billing.descCredits', { credits: amountCredits });
     } else if (purpose === 'subscription') {
       const plan = await billingRepo.getPlanById(String(body.planId || ''));
       if (!plan || !plan.is_active || !plan.price_rub) return NextResponse.json({ error: t('api.planNotPayable') }, { status: 400 });
       amountRub = plan.price_rub;
       targetId = plan.id;
-      description = `ED Ring Colony: подписка «${plan.name}» ${plan.period_days} дн`;
+      description = t('billing.descSubscription', { plan: plan.name, days: plan.period_days });
     } else {
       const item = await billingRepo.getShopItemById(String(body.itemId || ''));
       if (!item || !item.is_active) return NextResponse.json({ error: t('api.shopItemMissing') }, { status: 400 });

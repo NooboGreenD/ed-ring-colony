@@ -167,7 +167,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         await supabase.from('user_notifications').insert({
           user_id: m.user_id,
           type: 'squadron_chat_mention',
-          title: `Упоминание в чате эскадрильи`,
+          title: t('sq.chatMentionTitle'),
           body: `${senderName}: ${content.trim().slice(0, 120)}`,
           href: `/squadrons/${squadronId}?tab=chat`,
           metadata: { squadron_id: squadronId, message_id: message.id, chat_type },

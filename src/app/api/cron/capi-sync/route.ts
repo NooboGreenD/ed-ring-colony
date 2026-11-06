@@ -2,6 +2,7 @@ import { runCronTask } from '@/lib/cronAuth';
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,7 @@ export const dynamic = 'force-dynamic';
  * дней, после чего нужна повторная авторизация.
  */
 async function handle() {
+  const t = await apiTranslate();
   const svc = createServiceClient();
   const { data: tokens, error: tokenError } = await svc
     .from('capi_tokens')
@@ -53,7 +55,7 @@ async function handle() {
     console.error(`[Cron CAPI] User ${token.user_id}:`, result.error);
     if (result.needsReauth) {
       needsReauth += 1;
-      await markCapiTokenBroken(svc, token.user_id, result.error || 'Frontier отклонил токен');
+      await markCapiTokenBroken(svc, token.user_id, result.error || t('capi.tokenRejected'));
     }
   }
 
@@ -65,6 +67,7 @@ async function handle() {
 }
 
 export async function GET(req: Request) {
+  const t = await apiTranslate();
   return runCronTask(req, 'capi-sync', handle);
 }
 

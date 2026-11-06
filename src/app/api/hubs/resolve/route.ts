@@ -17,7 +17,7 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         error:
-          'Координаты системы не найдены в EDSM и Spansh либо источники недоступны.',
+          t('hubs.coordsMissing'),
         warnings: resolved.warnings,
       },
       { status: resolved.warnings.length ? 503 : 404 }

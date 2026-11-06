@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest } from '@/lib/supabaseServer';
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   const { supabase } = await authFromRequest(request);
 
@@ -71,6 +73,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   const { user, supabase } = await authFromRequest(request);
   
@@ -94,7 +97,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ sl
     content: current.content,
     editor_id: user.id,
     revision_number: current.version,
-    change_summary: change_summary || 'Редактирование',
+    change_summary: change_summary || t('wiki.changeSummaryDefault'),
   });
 
   // Update article
@@ -117,6 +120,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ sl
 }
 
 export async function DELETE(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const t = await apiTranslate();
   const resolvedParams = await params;
   const { user, supabase } = await authFromRequest(request);
   

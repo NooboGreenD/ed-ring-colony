@@ -300,7 +300,7 @@ export async function POST(req: Request) {
         to: { name: to_system, ...toCoords },
         direct_distance: Math.round(directDist * 100) / 100,
         systems_scanned: systems.length,
-        suggestion: 'Увеличьте радиус сканирования или проверьте дальность корабля.',
+        suggestion: t('atlas.widenSearch'),
       }, { status: 404 });
     }
     if (!route) {

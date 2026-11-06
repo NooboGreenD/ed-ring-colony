@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authFromRequest, createServiceClient } from "@/lib/supabaseServer";
+import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = "force-dynamic";
 
@@ -285,6 +286,7 @@ async function hydrateFriends(supabase: any, userId: string, rows: FriendRow[], 
 }
 
 export async function GET(req: NextRequest) {
+  const t = await apiTranslate();
   try {
     const { user, supabase } = await getFriendsRequestContext(req);
     if (!user || !supabase) return apiError("Unauthorized", 401);
@@ -303,6 +305,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const t = await apiTranslate();
   try {
     const { user, supabase } = await getFriendsRequestContext(req);
     if (!user || !supabase) return apiError("Unauthorized", 401);
@@ -361,8 +364,8 @@ export async function POST(req: NextRequest) {
     const { error: notificationError } = await supabase.from("user_notifications").insert({
       user_id: addresseeId,
       type: "friend_request",
-      title: "Запрос в друзья",
-      body: `${requesterProfile?.cmdr_name || "Пилот"} хочет добавить вас в друзья`,
+      title: t('fr.requestTitle'),
+      body: t('fr.requestBody', { name: requesterProfile?.cmdr_name || t('sq.pilotDefault') }),
       href: "/account/friends",
       metadata: { requester_id: user.id, friend_id: data.id },
     });
@@ -379,6 +382,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  const t = await apiTranslate();
   try {
     const { user, supabase } = await getFriendsRequestContext(req);
     if (!user || !supabase) return apiError("Unauthorized", 401);
@@ -436,6 +440,7 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  const t = await apiTranslate();
   try {
     const { user, supabase } = await getFriendsRequestContext(req);
     if (!user || !supabase) return apiError("Unauthorized", 401);

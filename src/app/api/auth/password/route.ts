@@ -42,14 +42,14 @@ export async function POST(request: Request) {
       if (revokeError) throw revokeError;
     } catch {
       console.error('[auth/password] Could not revoke uploader tokens');
-      warning = 'Не удалось отозвать токены Uploader. После входа отзовите их вручную в аккаунте или обратитесь к администратору.';
+      warning = t('auth.revokeTokensWarning');
     }
     try {
       const { error: signOutError } = await client.auth.signOut({ scope: 'global' });
       if (signOutError) throw signOutError;
     } catch {
       console.error('[auth/password] Could not revoke refresh sessions');
-      warning = [warning, 'Пароль изменён, но отзыв прежних сеансов завершился не полностью. Обратитесь к администратору.'].filter(Boolean).join(' ');
+      warning = [warning, t('auth.sessionsWarning')].filter(Boolean).join(' ');
     }
     const response = authJson({ ok: true, warning });
     response.cookies.delete(RECOVERY_COOKIE);
