@@ -554,6 +554,41 @@ class TranslationTests(unittest.TestCase):
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "обмен настройками: " + "; ".join(missing))
 
+    def test_system_map_strings_are_in_the_catalog(self):
+        """Карта системы: подписи объектов, сводка для чата, строка состояния."""
+        import system_map
+
+        missing = [f"system_map.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "system_map.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in system_map.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "карта системы: " + "; ".join(missing))
+
+    def test_system_view_strings_are_in_the_catalog(self):
+        """Карточка тела на карте: единицы измерения и подписи."""
+        import system_view
+
+        missing = [f"system_view.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "system_view.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in system_view.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "карточка тела: " + "; ".join(missing))
+
+    def test_map_png_keeps_russian_for_the_bitmap_font(self):
+        """PNG рисуется шрифтом без умлаутов и CJK — на картинке текст русский.
+
+        Проверяем не «перевод есть», а обратное: подписи PNG намеренно не
+        переводятся, поэтому они перечислены в `NON_UI_LITERALS`. Сводка в
+        окне при этом переведена — её можно испортить, сняв ограничение.
+        """
+        import map_export
+
+        missing = [f"map_export.py:{line}: {text!r}"
+                   for line, text in russian_literals(UPLOADER / "map_export.py")
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in map_export.NON_UI_LITERALS]
+        self.assertEqual(missing, [], "карта в PNG: " + "; ".join(missing))
+
     def test_ship_tracker_notes_are_in_the_catalog(self):
         """Лента событий корабля в блоке SHIP."""
         import ship_tracker

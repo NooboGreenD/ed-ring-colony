@@ -21,8 +21,10 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import i18n
 import orrery
 import system_map as system_map_module
+from i18n import tr
 from system_map import (
     KIND_MOON,
     KIND_STAR,
@@ -35,6 +37,11 @@ from system_map import (
 # Версия контракта пакета данных (см. `ORRERY_VIEW_VERSION` в types.ts).
 # 4 — у тел появились сигналы всех видов, а не только биологические.
 VIEW_VERSION = 4
+
+#: Русские строки, которые не подписи: старые значения вида проекции в
+#: конфиге оверлея («плоско»/«сверху»). Их читают ради совместимости.
+NON_UI_LITERALS = frozenset({"плоско", "сверху"})
+
 
 #: Виды сигналов тела в порядке важности — как `SIGNAL_KINDS` на сайте.
 _SIGNAL_KINDS = ("bio", "geo", "human", "thargoid", "guardian", "other")
@@ -186,7 +193,17 @@ def format_tons(value: Any) -> str:
     number = _as_float(value, float("nan"))
     if math.isnan(number):
         return "—"
-    return f"{round(number):,} т".replace(",", " ")
+    return tr("{value} т", value=_decimal(number, 0))
+
+
+def _decimal(number: float, digits: int) -> str:
+    """Число с разделителем дробной части языка интерфейса.
+
+    Русский пишет «2,50», остальные языки — «2.50»; разряды отделяются
+    пробелом, чтобы длинные расстояния читались и без моноширинного шрифта.
+    """
+    text = f"{number:,.{digits}f}".replace(",", " ")
+    return text.replace(".", ",") if i18n.current_locale() == "ru" else text
 
 
 def format_distance(distance_ls: float) -> str:
@@ -195,11 +212,14 @@ def format_distance(distance_ls: float) -> str:
     if distance <= 0:
         return "—"
     if distance < 0.1:
-        return f"{distance * 299792.458:,.0f} км".replace(",", " ")
+        return tr("{distance} км", distance=_decimal(distance * 299792.458, 0))
     if distance < 1000:
-        return f"{distance:,.1f} св. с ({distance * 299792.458:,.0f} км)".replace(",", " ")
+        return tr("{seconds} св. с ({kilometers} км)",
+                  seconds=_decimal(distance, 1),
+                  kilometers=_decimal(distance * 299792.458, 0))
     au = distance / 499.00478
-    return f"{distance:,.0f} св. с ({au:.2f} а.е.)".replace(",", " ")
+    return tr("{seconds} св. с ({au} а.е.)", seconds=_decimal(distance, 0),
+              au=_decimal(au, 2))
 
 
 def format_radius(radius_m: float) -> str:
@@ -208,8 +228,10 @@ def format_radius(radius_m: float) -> str:
     if radius_km <= 0:
         return "—"
     if radius_km >= 696340:
-        return f"{radius_km / 696340.0:.2f} R☉ ({radius_km:,.0f} км)".replace(",", " ")
-    return f"{radius_km:,.0f} км".replace(",", " ")
+        return tr("{radius} R☉ ({kilometers} км)",
+                  radius=_decimal(radius_km / 696340.0, 2),
+                  kilometers=_decimal(radius_km, 0))
+    return tr("{distance} км", distance=_decimal(radius_km, 0))
 
 
 def format_temp(temp_k: float) -> str:
@@ -225,7 +247,8 @@ def format_gravity(gravity: float) -> str:
     value = _as_float(gravity, 0.0)
     if value <= 0:
         return "—"
-    return f"{value:.2f} м/с² ({value / 9.80665:.2f} g)"
+    return tr("{value} м/с² ({g} g)", value=_decimal(value, 2),
+              g=_decimal(value / 9.80665, 2))
 
 
 def format_period(days: float) -> str:
@@ -234,10 +257,10 @@ def format_period(days: float) -> str:
     if value <= 0:
         return "—"
     if value >= 365.25:
-        return f"{value / 365.25:.2f} лет".replace(".", ",")
+        return tr("{value} лет", value=_decimal(value / 365.25, 2))
     if value >= 1:
-        return f"{value:.1f} сут".replace(".", ",")
-    return f"{value * 24:.1f} ч".replace(".", ",")
+        return tr("{value} сут", value=_decimal(value, 1))
+    return tr("{value} ч", value=_decimal(value * 24, 1))
 
 
 def build_progress_bar(progress_pct: float, length: int = 12) -> str:
@@ -364,7 +387,7 @@ def build_view_payload(
         structure = {
             "id": str(getattr(station, "build_id", "") or f"station-{len(view_structures)}"),
             "name": str(getattr(station, "title", "") or getattr(station, "name", "")
-                        or getattr(station, "build_name", "") or "Объект"),
+                        or getattr(station, "build_name", "") or tr("Объект")),
             "type": str(getattr(station, "build_type", "") or getattr(station, "station_type", "") or ""),
             "body": str(placement.get("anchor") or ""),
             "position": _round3(placement["position"]),
@@ -444,7 +467,7 @@ def build_view_payload(
             "scanned": bool(view.get("scanned", True)),
             "rings": [
                 {
-                    "name": str(ring.get("name") or "Кольцо"),
+                    "name": str(ring.get("name") or tr("Кольцо")),
                     "ringClass": str(ring.get("class") or "Icy"),
                     "innerKm": round(_as_float(ring.get("inner_km")), 2),
                     "outerKm": round(_as_float(ring.get("outer_km")), 2),
@@ -550,7 +573,7 @@ def _station_resources(station: Optional[MapStation]) -> List[Dict[str, Any]]:
         rows.append({
             # Ключи Raven — «слепые» строчные имена (`liquidoxygen`); в карточке
             # и подсказке показываем человеческое название, как в сводке.
-            "name": str(labels.get(key.lower(), key)),
+            "name": tr(str(labels.get(key.lower(), key))),
             "key": key,
             "required": round(_as_float(remaining), 2),
             "provided": 0.0,
@@ -584,7 +607,7 @@ def _player_payload(player: Optional[PlayerPosition], plan: Dict[str, Any]) -> O
     if position is None:
         position = (0.0, 0.0, 0.0)
     return {
-        "name": player.station_name or player.ship_name or body_name or "Вы здесь",
+        "name": player.station_name or player.ship_name or body_name or tr("Вы здесь"),
         "position": _round3(position),
         "body": body_name or "",
         "station": player.station_name or "",

@@ -56,6 +56,7 @@ async function loadLib() {
       "export * from '@/lib/outfitting/fdnames';",
       "export * from '@/lib/outfitting/merccoin';",
       "export * from '@/lib/outfitting/specs';",
+      "export { issueText } from '@/lib/i18n/exchangeText';",
       '',
     ].join('\n'),
   );
@@ -311,7 +312,7 @@ maybe('код Coriolis переживает круг «сборка → код �
   assert.deepEqual(result.build.hardpoints, build.hardpoints);
   assert.deepEqual(result.build.internal, build.internal);
   assert.ok(
-    result.issues.some((issue) => /инженери/i.test(issue.text)),
+    result.issues.some((issue) => /инженери/i.test(lib.issueText(issue, 'ru'))),
     'пользователя предупредили, что инженерия не переносится',
   );
 
@@ -340,8 +341,12 @@ maybe('разбор вставленного текста узнаёт ссыл�
 
   const fromEdsy = lib.parseImport(data, 'https://edsy.org/#/L=Jl00000H4C0S00,Jpq8-');
   assert.equal(fromEdsy.build, null);
-  assert.match(fromEdsy.issues[0].text, /EDSY/);
-  assert.match(fromEdsy.issues[0].text, /SLEF/);
+  // Сообщение приходит кодом, текст подставляет интерфейс на своём языке.
+  assert.equal(fromEdsy.issues[0].code, 'exchange.edsyLink');
+  const edsyText = lib.issueText(fromEdsy.issues[0], 'ru');
+  assert.match(edsyText, /EDSY/);
+  assert.match(edsyText, /SLEF/);
+  assert.match(lib.issueText(fromEdsy.issues[0], 'en'), /EDSY/);
 
   assert.equal(lib.parseImport(data, '').issues[0].level, 'error');
 });
@@ -406,7 +411,7 @@ maybe('SLEF переносит корабль и его модули', async () 
 
   const back = lib.fromSlef(data, payload);
   const strictBack = lib.fromSlef(data, payload, { strict: true });
-  assert.deepEqual(strictBack.issues, [], `точный режим должен однозначно восстановить типы модулей: ${strictBack.issues.map((issue) => issue.text).join('; ')}`);
+  assert.deepEqual(strictBack.issues, [], `точный режим должен однозначно восстановить типы модулей: ${strictBack.issues.map((issue) => lib.issueText(issue, 'ru')).join('; ')}`);
   assert.ok(back.build, 'SLEF разобрался');
   assert.equal(back.build.ship, 'cobra_mk_iii');
   assert.equal(back.build.bulkhead, 2);

@@ -15,7 +15,7 @@ import {
   updateResilient,
   upsertResilient,
 } from '../../src/lib/capi/persist.ts';
-import { capiReasonText } from '../../src/lib/capi/messages.ts';
+import { CAPI_REASON_KEYS, REASONS, capiReasonText } from '../../src/lib/capi/messages.ts';
 
 /* ── Cookie потока авторизации ──────────────────────────────────────────
    Колбэк читал cookie регуляркой по всему заголовку: чужое имя с нужным
@@ -103,6 +103,17 @@ test('у каждой причины есть текст для пилота', (
     assert.ok(text.hint.length > 10, reason);
   }
   assert.equal(capiReasonText('что-то новое').title, capiReasonText('unknown').title);
+});
+
+test('ключи каталога покрывают ровно те же причины, что и русский оригинал', () => {
+  // Страница /account/capi печатает текст по ключу из CAPI_REASON_KEYS. Если
+  // причина появилась только в REASONS, пилот увидит русский текст на любом
+  // языке; если только в ключах — каталог будет обещать несуществующий ответ.
+  assert.deepEqual(Object.keys(CAPI_REASON_KEYS).sort(), Object.keys(REASONS).sort());
+  for (const [reason, keys] of Object.entries(CAPI_REASON_KEYS)) {
+    assert.match(keys.titleKey, /^capi\.reason\.[a-z_]+\.title$/, reason);
+    assert.match(keys.hintKey, /^capi\.reason\.[a-z_]+\.hint$/, reason);
+  }
 });
 
 /* ── Запись при отставшей схеме базы ────────────────────────────────────

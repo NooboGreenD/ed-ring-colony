@@ -88,6 +88,10 @@ export interface PrimaryPortCargo {
   approximate?: boolean;
   /** Происхождение чисел — одна строка для подсказки в интерфейсе. */
   note: string;
+  /** Ключ перевода этой строки; без него показывается `note`. */
+  noteKey?: string;
+  /** Подстановки ключа: коэффициент подорожания `{factor}`. */
+  noteParams?: Record<string, string | number>;
 }
 
 /** Одна постройка из каталога. */

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import AtlasRouteFinder from './AtlasRouteFinder';
 import { fromSlef } from '@/lib/outfitting/exchange';
+import { issueText } from '@/lib/i18n/exchangeText';
 import { computeStats } from '@/lib/outfitting/calc';
 import { profileAt } from '@/lib/outfitting/analysis';
 import type { OutfittingData } from '@/lib/outfitting/types';
@@ -46,13 +47,13 @@ export default function AtlasShipRouteFinder({ initialTo = '', onRouteFound }: {
         const state = stateData.state;
         if (!state?.loadout) throw new Error(t('atlas.ui.shipNoLoadout'));
         const imported = fromSlef(data, state.loadout, { strict: true });
-        if (!imported.build) throw new Error(imported.issues.map((issue) => issue.text).join('; ') || t('atlas.ui.shipBuildError'));
+        if (!imported.build) throw new Error(imported.issues.map((issue) => issueText(issue, locale)).join('; ') || t('atlas.ui.shipBuildError'));
         const stats = computeStats(data, imported.build);
         const cargo = Math.max(0, Number(state.cargo_count) || 0);
         const fuel = Math.max(0, Number(state.fuel_level) || 0);
         const profile = profileAt(data, imported.build, stats, cargo, fuel);
         if (!(profile.jumpRange > 0)) throw new Error(t('atlas.ui.shipRangeError'));
-        const unknownIssues = imported.issues.filter((issue) => issue.level !== 'error').map((issue) => issue.text);
+        const unknownIssues = imported.issues.filter((issue) => issue.level !== 'error').map((issue) => issueText(issue, locale));
         if (unknownIssues.length > 0) {
           throw new Error(t('atlas.ui.shipUnknownLoadout', { issues: unknownIssues.slice(0, 5).join(' · ') }));
         }

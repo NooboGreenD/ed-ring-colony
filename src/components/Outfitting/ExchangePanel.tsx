@@ -12,6 +12,7 @@ import React, { useMemo, useState } from 'react';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { coriolisUrl, parseImport, toSlef, nativeUrl } from '@/lib/outfitting/exchange';
 import type { ImportIssue } from '@/lib/outfitting/exchange';
+import { issueText } from '@/lib/i18n/exchangeText';
 import type { OutfittingData, ShipBuild } from '@/lib/outfitting/types';
 import { IconAlert, IconCopy, IconExternalLink, IconX } from '@/components/Icons';
 import { LABEL, MONO, PANEL, button } from './styles';
@@ -24,6 +25,7 @@ interface ExchangePanelProps {
 }
 
 function IssueList({ issues }: { issues: ImportIssue[] }) {
+  const { locale } = useI18n();
   if (issues.length === 0) return null;
   return (
     <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -40,7 +42,7 @@ function IssueList({ issues }: { issues: ImportIssue[] }) {
           }}
         >
           <IconAlert size={11} color={issue.level === 'error' ? 'var(--red)' : '#f0b37e'} />
-          <span>{issue.text}</span>
+          <span>{issueText(issue, locale)}</span>
         </div>
       ))}
     </div>

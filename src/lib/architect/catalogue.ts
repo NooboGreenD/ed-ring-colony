@@ -2368,58 +2368,78 @@ const PRIMARY_PORT_DATA: Record<string, PrimaryPortCargo> = {
   no_truss: {
     cargo: CORIOLIS_PRIMARY_CARGO,
     note: 'Скан основного порта (ED Wiki): ≈69 000 т против 53 723 т у обычного Кориолиса',
+    noteKey: 'arch.primary.scanCoriolis',
   },
   asteroid: {
     cargo: CORIOLIS_PRIMARY_CARGO,
     note: 'База стоит как Кориолис, поэтому основной порт взят по списку Кориолиса (≈69 000 т)',
+    noteKey: 'arch.primary.estimateCoriolis',
   },
   apollo: {
     cargo: ORBIS_PRIMARY_CARGO,
     note: 'Скан основного порта (ED Wiki): ≈242 000 т против 209 122 т у обычного Орбиса',
+    noteKey: 'arch.primary.scanOrbis',
   },
   ocellus: {
     cargo: ORBIS_PRIMARY_CARGO,
     note: 'Оцеллус стоит как Орбис, поэтому основной порт взят по списку Орбиса (≈242 000 т)',
+    noteKey: 'arch.primary.estimateOrbis',
   },
   dodec: {
     cargo: scaledPrimaryCargo(rawCargo('dodec'), T3_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${T3_PRIMARY_FACTOR} — точного скана основного Додекаэдра нет`,
+    noteKey: 'arch.primary.estimateDodec',
+    noteParams: { factor: T3_PRIMARY_FACTOR },
   },
   zeus: {
     cargo: scaledPrimaryCargo(rawCargo('zeus'), T3_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${T3_PRIMARY_FACTOR} — точного скана основного планетарного порта нет`,
+    noteKey: 'arch.primary.estimatePlanetary',
+    noteParams: { factor: T3_PRIMARY_FACTOR },
   },
   plutus: {
     cargo: scaledPrimaryCargo(rawCargo('plutus'), OUTPOST_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+    noteKey: 'arch.primary.estimateOutpost',
+    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
   },
   vulcan: {
     cargo: scaledPrimaryCargo(rawCargo('vulcan'), OUTPOST_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+    noteKey: 'arch.primary.estimateOutpost',
+    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
   },
   dysnomia: {
     cargo: scaledPrimaryCargo(rawCargo('dysnomia'), OUTPOST_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+    noteKey: 'arch.primary.estimateOutpost',
+    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
   },
   vesta: {
     cargo: scaledPrimaryCargo(rawCargo('vesta'), OUTPOST_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+    noteKey: 'arch.primary.estimateOutpost',
+    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
   },
   prometheus: {
     cargo: scaledPrimaryCargo(rawCargo('prometheus'), OUTPOST_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+    noteKey: 'arch.primary.estimateOutpost',
+    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
   },
   nemesis: {
     cargo: scaledPrimaryCargo(rawCargo('nemesis'), OUTPOST_PRIMARY_FACTOR),
     approximate: true,
     note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — военный аванпост везёт другой набор грузов`,
+    noteKey: 'arch.primary.estimateMilitary',
+    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
   },
 };
 

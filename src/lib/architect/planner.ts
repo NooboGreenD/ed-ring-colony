@@ -48,6 +48,25 @@ import type {
   SystemEconomy,
 } from './types.ts';
 
+/**
+ * Сообщение пилоту: перевод по ключу, а без перевода — русский оригинал.
+ *
+ * `planner.ts` — чистый модуль без React: активную локаль ему отдаёт
+ * `formatTranslate`, её выставляет `I18nProvider` (см. `src/lib/i18n/format.ts`).
+ * В тестах и CLI локали нет, поэтому строки остаются русскими.
+ */
+/** Русский текст сообщения, если перевода ключа ещё нет. */
+function issueLabel(issue: PlanIssue): string {
+  if (!issue.key) return issue.message;
+  const translated = formatTranslate(issue.key, issue.params);
+  return translated === issue.key ? issue.message : translated;
+}
+
+function planMessage(key: string, fallback: string, params?: Record<string, string | number>): string {
+  const translated = formatTranslate(key, params);
+  return translated === key ? fallback : translated;
+}
+
 /** Версия формата плана: меняется, если меняется структура `ArchitectPlan`. */
 export const PLAN_FORMAT_VERSION = 3;
 
@@ -971,21 +990,25 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
     try {
       record = asRecord(JSON.parse(raw));
     } catch {
-      return { plan: null, error: 'Файл не является JSON' };
+      return { plan: null, error: planMessage('pl.json', 'Файл не является JSON') };
     }
   }
-  if (!record) return { plan: null, error: 'Ожидался объект плана' };
+  if (!record) return { plan: null, error: planMessage('pl.expectObject', 'Ожидался объект плана') };
   if (Array.isArray(record.sites) === false && record.sites !== undefined) {
-    return { plan: null, error: 'Поле sites должно быть списком' };
+    return { plan: null, error: planMessage('pl.sitesList', 'Поле sites должно быть списком') };
   }
 
   const warnings: string[] = [];
   const version = num(record.version);
   if (version && version !== PLAN_FORMAT_VERSION) {
-    warnings.push(`Файл сохранён в формате v${version}, текущий v${PLAN_FORMAT_VERSION} — часть полей могла измениться`);
+    warnings.push(planMessage('pl.formatVersion',
+      `Файл сохранён в формате v${version}, текущий v${PLAN_FORMAT_VERSION} — часть полей могла измениться`,
+      { version, current: PLAN_FORMAT_VERSION }));
   }
   if (num(record.catalogue) && num(record.catalogue) !== CATALOGUE_VERSION) {
-    warnings.push(`План считался по каталогу v${num(record.catalogue)}, сейчас v${CATALOGUE_VERSION}: стоимости могли измениться`);
+    warnings.push(planMessage('pl.catalogueVersion',
+      `План считался по каталогу v${num(record.catalogue)}, сейчас v${CATALOGUE_VERSION}: стоимости могли измениться`,
+      { version: num(record.catalogue), current: CATALOGUE_VERSION }));
   }
 
   const sites: PlannedSite[] = [];
@@ -996,13 +1019,16 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
     const bodyName = str(site.bodyName ?? site.body_name);
     if (!installationId || !bodyName) continue;
     if (!getInstallation(installationId)) {
-      warnings.push(`Неизвестная постройка «${installationId}» пропущена`);
+      warnings.push(planMessage('pl.unknownInstallationSkipped',
+        `Неизвестная постройка «${installationId}» пропущена`, { id: installationId }));
       continue;
     }
     const status = str(site.status);
     const primary = site.primary === true;
     if (primary && !canBePrimary(installationId)) {
-      warnings.push(`Пометка «основной порт» снята с постройки «${getInstallation(installationId)?.nameRu ?? installationId}»: основным портом бывает только порт`);
+      const name = getInstallation(installationId)?.nameRu ?? installationId;
+      warnings.push(planMessage('pl.primaryNotPort',
+        `Пометка «основной порт» снята с постройки «${name}»: основным портом бывает только порт`, { name }));
     }
     sites.push({
       id: str(site.id) || nextSiteId(),
@@ -1020,7 +1046,10 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
   if (primaryIndex >= 0) {
     for (let index = primaryIndex + 1; index < sites.length; index += 1) {
       if (sites[index].primary) {
-        warnings.push(`Основным портом остаётся только «${getInstallation(sites[primaryIndex].installationId)?.nameRu}» — пометка с «${getInstallation(sites[index].installationId)?.nameRu}» снята`);
+        const keep = getInstallation(sites[primaryIndex].installationId)?.nameRu ?? '';
+        const dropped = getInstallation(sites[index].installationId)?.nameRu ?? '';
+        warnings.push(planMessage('pl.primarySingle',
+          `Основным портом остаётся только «${keep}» — пометка с «${dropped}» снята`, { keep, dropped }));
         sites[index] = { ...sites[index], primary: undefined };
       }
     }
@@ -1033,11 +1062,12 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
     const firstPort = sites.find((site) => getInstallation(site.installationId)?.buildClass === 'starport');
     if (firstPort) {
       firstPort.primary = true;
-      warnings.push('План сохранён в старом формате: первый звёздный порт отмечен основным, тоннаж пересчитан по списку материалов основного порта');
+      warnings.push(planMessage('pl.legacyPrimary',
+        'План сохранён в старом формате: первый звёздный порт отмечен основным, тоннаж пересчитан по списку материалов основного порта'));
     }
   }
 
-  const system = str(record.system ?? record.systemName) || 'Неизвестная система';
+  const system = str(record.system ?? record.systemName) || planMessage('pl.unknownSystem', 'Неизвестная система');
   const orbitalSlots: Record<string, number> = {};
   const rawOrbitalSlots = asRecord(record.orbitalSlots ?? record.orbital_slots);
   for (const [rawName, rawSlots] of Object.entries(rawOrbitalSlots ?? {})) {
@@ -1135,13 +1165,25 @@ export function formatTons(tons: number): string {
 export function summarizePlan(plan: ArchitectPlan, evaluation: PlanEvaluation): string {
   const lines: string[] = [];
   const sitesById = new Map(plan.sites.map((site) => [site.id, site]));
-  lines.push(`План застройки: ${plan.system}${plan.architect ? ` (архитектор ${plan.architect})` : ''}`);
-  lines.push(`Построек: ${plan.sites.length}, тоннаж: ${formatTons(evaluation.haulTons)}, оценка системы: ${evaluation.score}`);
-  lines.push(`Очки системы: T2 ${evaluation.tierPoints.tier2 >= 0 ? '+' : ''}${evaluation.tierPoints.tier2}, T3 ${evaluation.tierPoints.tier3 >= 0 ? '+' : ''}${evaluation.tierPoints.tier3}`);
+  lines.push(plan.architect
+    ? planMessage('pl.summary.titleArchitect',
+      `План застройки: ${plan.system} (архитектор ${plan.architect})`,
+      { system: plan.system, architect: plan.architect })
+    : planMessage('pl.summary.title', `План застройки: ${plan.system}`, { system: plan.system }));
+  lines.push(planMessage('pl.summary.totals',
+    `Построек: ${plan.sites.length}, тоннаж: ${formatTons(evaluation.haulTons)}, оценка системы: ${evaluation.score}`,
+    { count: plan.sites.length, tons: formatTons(evaluation.haulTons), score: evaluation.score }));
+  const tier2 = `${evaluation.tierPoints.tier2 >= 0 ? '+' : ''}${evaluation.tierPoints.tier2}`;
+  const tier3 = `${evaluation.tierPoints.tier3 >= 0 ? '+' : ''}${evaluation.tierPoints.tier3}`;
+  lines.push(planMessage('pl.summary.tiers',
+    `Очки системы: T2 ${tier2}, T3 ${tier3}`, { t2: tier2, t3: tier3 }));
 
   if (evaluation.primaryPort) {
     const installation = getInstallation(evaluation.primaryPort.installationId);
-    lines.push(`Основной порт: ${installation?.nameRu ?? evaluation.primaryPort.installationId} — ${evaluation.primaryPort.bodyName} (${formatTons(evaluation.primaryPort.tons)})`);
+    const portName = installation?.nameRu ?? evaluation.primaryPort.installationId;
+    lines.push(planMessage('pl.summary.primaryPort',
+      `Основной порт: ${portName} — ${evaluation.primaryPort.bodyName} (${formatTons(evaluation.primaryPort.tons)})`,
+      { name: portName, body: evaluation.primaryPort.bodyName, tons: formatTons(evaluation.primaryPort.tons) }));
   }
 
   const orderLines = evaluation.order
@@ -1154,22 +1196,23 @@ export function summarizePlan(plan: ArchitectPlan, evaluation: PlanEvaluation): 
     })
     .filter((line): line is string => Boolean(line));
   if (orderLines.length) {
-    lines.push('', 'Порядок стройки:');
+    lines.push('', planMessage('pl.summary.order', 'Порядок стройки:'));
     lines.push(...orderLines);
   }
 
   const cargo = cargoList(evaluation).slice(0, 10);
   if (cargo.length) {
-    lines.push('', 'Основные грузы:');
+    lines.push('', planMessage('pl.summary.cargo', 'Основные грузы:'));
     lines.push(...cargo.map((item) => `${item.label}: ${formatTons(item.tons)}`));
   }
 
   const errors = evaluation.issues.filter((issue) => issue.level === 'error');
   if (errors.length) {
-    lines.push('', 'Ошибки плана:');
-    lines.push(...errors.map((issue) => `• ${issue.message}`));
+    lines.push('', planMessage('pl.summary.errors', 'Ошибки плана:'));
+    lines.push(...errors.map((issue) => `• ${issueLabel(issue)}`));
   }
 
-  lines.push('', `Сформировано в ED Ring Colony, каталог v${CATALOGUE_VERSION}.`);
+  lines.push('', planMessage('pl.summary.footer',
+    `Сформировано в ED Ring Colony, каталог v${CATALOGUE_VERSION}.`, { version: CATALOGUE_VERSION }));
   return lines.join('\n');
 }
