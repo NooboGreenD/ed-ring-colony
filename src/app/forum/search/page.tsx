@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { ForumBreadcrumbs } from '@/components/Forum/ForumBreadcrumbs';
 import { IconSearch } from '@/components/Icons';
+import { useI18n } from '@/lib/i18n/I18nContext';
 
 interface SearchResult {
   id: number;
@@ -19,6 +20,7 @@ interface SearchResult {
 }
 
 export default function ForumSearchPage() {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -61,19 +63,19 @@ export default function ForumSearchPage() {
   return (
     <main className="forum-layout" style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
       <ForumBreadcrumbs items={[
-        { label: 'Форум', href: '/forum' },
-        { label: 'Поиск' },
+        { label: t('fsearch.crumbsForum'), href: '/forum' },
+        { label: t('fsearch.crumbsSearch') },
       ]} />
 
       <h1 style={{ margin: '0 0 20px', fontSize: 20, color: 'var(--orange)', letterSpacing: 3, textTransform: 'uppercase' }}>
-        Поиск по форуму
+        {t('fsearch.title')}
       </h1>
 
       <div className="card" style={{ padding: 20, marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12 }}>
           <input
             type="text"
-            placeholder="Введите запрос (мин. 2 символа)…"
+            placeholder={t('fsearch.placeholder')}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && search()}
@@ -81,14 +83,14 @@ export default function ForumSearchPage() {
           />
           <button onClick={search} disabled={loading} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <IconSearch size={14} />
-            {loading ? 'Поиск…' : 'Найти'}
+            {loading ? t('fsearch.searching') : t('fsearch.search')}
           </button>
         </div>
       </div>
 
       {searched && results.length === 0 && !loading && (
         <div className="card" style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>
-          Ничего не найдено
+          {t('fsearch.nothing')}
         </div>
       )}
 
@@ -97,9 +99,9 @@ export default function ForumSearchPage() {
           <table className="forum-table">
             <thead>
               <tr>
-                <th className="col-topic">Результат</th>
-                <th className="col-replies">Автор</th>
-                <th className="col-last">Дата</th>
+                <th className="col-topic">{t('fsearch.colResult')}</th>
+                <th className="col-replies">{t('fsearch.colAuthor')}</th>
+                <th className="col-last">{t('fsearch.colDate')}</th>
               </tr>
             </thead>
             <tbody>
@@ -111,7 +113,7 @@ export default function ForumSearchPage() {
                         <Link href={`/forum/thread/${r.id}`} className="forum-topic-title">
                           {r.title}
                         </Link>
-                        <span style={{ color: 'var(--orange)', fontSize: 11, marginLeft: 8 }}>Тема</span>
+                        <span style={{ color: 'var(--orange)', fontSize: 11, marginLeft: 8 }}>{t('fsearch.badgeThread')}</span>
                         {r.category_name && (
                           <div className="forum-cat-desc">
                             <Link href={`/forum/${r.category_slug}`} style={{ color: 'var(--orange)' }}>{r.category_name}</Link>
@@ -123,7 +125,7 @@ export default function ForumSearchPage() {
                         <Link href={`/forum/thread/${r.thread_id}#post-${r.id}`} className="forum-topic-title">
                           {r.thread_title || '…'}
                         </Link>
-                        <span style={{ color: 'var(--muted)', fontSize: 11, marginLeft: 8 }}>Пост</span>
+                        <span style={{ color: 'var(--muted)', fontSize: 11, marginLeft: 8 }}>{t('fsearch.badgePost')}</span>
                         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
                           {r.content?.slice(0, 200)}{r.content && r.content.length > 200 ? '…' : ''}
                         </div>
