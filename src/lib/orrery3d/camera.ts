@@ -278,8 +278,8 @@ function slerp(a: Vec3, b: Vec3, t: number): Vec3 {
 
 /** Подпись уровня приближения — одна на все интерфейсы. */
 export const ZOOM_LABELS: { level: ZoomLevel; label: string; hint: string; icon: string }[] = [
-  { level: 0, label: 'Система', hint: 'Вся система целиком', icon: '🌌' },
-  { level: 1, label: 'Кластер', hint: 'Тела выбранной звезды', icon: '⭐' },
-  { level: 2, label: 'Окрестность', hint: 'Тело и его соседи', icon: '🛰' },
-  { level: 3, label: 'Поверхность', hint: 'Постройки на поверхности тела', icon: '🏗' },
+  { level: 0, label: 'orrery.zoomSystem', hint: 'orrery.zoomSystemHint', icon: '🌌' },
+  { level: 1, label: 'orrery.zoomCluster', hint: 'orrery.zoomClusterHint', icon: '⭐' },
+  { level: 2, label: 'orrery.zoomNeighbourhood', hint: 'orrery.zoomNeighbourhoodHint', icon: '🛰' },
+  { level: 3, label: 'orrery.zoomSurface', hint: 'orrery.zoomSurfaceHint', icon: '🏗' },
 ];
