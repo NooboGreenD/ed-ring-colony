@@ -380,7 +380,7 @@ export default function PowerplayAdminTab() {
           : t('ppAdmin.cancelNothing'));
       } else if (action === 'cleanup') {
         setMessage(payload?.removed
-          ? t('ppAdmin.cleanupDone', { freed: formatPowerplayBytes(payload?.freed) })
+          ? t('ppAdmin.cleanupDone', { bytes: formatPowerplayBytes(payload?.freed) })
           : t('ppAdmin.cleanupNothing'));
       } else if (action === 'eddn-start') {
         setMessage(t('ppAdmin.eddnOn'));

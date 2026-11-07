@@ -47,7 +47,15 @@ function fakeDocker(state) {
     '    if printf \'%s\' "$*" | grep -q -- "{{.Status}}"; then',
     '      echo "supabase-db Up 3 hours"',
     '      echo "supabase-rest Up 3 hours"',
+    '      echo "supabase-storage Up 2 hours"',
     '      echo "web Up 4 minutes"',
+    // Фильтр по имени — как у настоящего docker: иначе `docker ps -aq --filter
+    // name=^/supabase-storage$` возвращал бы первый контейнер из списка, и
+    // проверка Storage осматривала бы чужой контейнер.
+    '    elif printf \'%s\' "$*" | grep -q \'name=^/supabase-storage$\'; then',
+    '      echo storage0001',
+    '    elif printf \'%s\' "$*" | grep -q \'name=^/supabase-db$\'; then',
+    '      echo db0001',
     '    else',
     '      echo supabase-db',
     '      echo supabase-rest',
@@ -56,6 +64,9 @@ function fakeDocker(state) {
     '    exit 0 ;;',
     '  inspect)',
     '    case "$*" in',
+    // Состояние контейнера в формате `--format`: так его спрашивают
+    // storage-repair.sh и проверка контейнеров.
+    '      *State.Status*) echo "running|healthy|0|0|false|2026-11-01T00:00:00Z" ;;',
     `      *Config.Env*) echo "APP_GIT_SHA=${sha}"; echo "NODE_ENV=production" ;;`,
     '      *NetworkSettings.Networks*)',
     state.network === 'ok'
@@ -69,6 +80,11 @@ function fakeDocker(state) {
     state.network === 'ok'
       ? '      echo "172.18.0.5  db"; exit 0'
       : '      exit 2',
+    '    fi',
+    // Проверка Storage изнутри контейнера (`node -e` c /bucket) — на здоровом
+    // стенде отвечает 200, иначе диагностика считала бы живой Storage сломанным.
+    '    if printf \'%s\' "$*" | grep -q "/bucket"; then',
+    '      echo 200; exit 0',
     '    fi',
     '    if printf \'%s\' "$*" | grep -q "fetch("; then',
     `      if printf '%s' "$*" | grep -q "/api/health"; then echo ${state.health}; else echo ${state.rest}; fi`,

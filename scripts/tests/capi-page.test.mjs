@@ -7,6 +7,7 @@ import { JSDOM } from 'jsdom';
 import { build } from 'esbuild';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BINDING = { linked: true, tokenActive: true, platform: 'epic', status: 'missing',
@@ -15,12 +16,19 @@ const BINDING = { linked: true, tokenActive: true, platform: 'epic', status: 'mi
 async function renderCapi({ binding = BINDING, query = '', api } = {}) {
   const dir = mkdtempSync(join(ROOT, '.tmp-capi-page-'));
   writeFileSync(join(dir, 'auth.mjs'), 'export const authFetch = (url, init) => globalThis.fetch(url, init);');
+  // Страница подписывает кнопки через `t()`: без заглушки контекста в кнопках
+  // были ключи (`capi.syncNow`), а не текст.
+  writeFileSync(join(dir, 'i18n-context.tsx'), I18N_CONTEXT_STUB);
   const bundle = join(dir, 'page.mjs');
   await build({
     entryPoints: [join(ROOT, 'src/app/account/capi/page.tsx')], outfile: bundle,
     bundle: true, format: 'esm', platform: 'node', jsx: 'automatic',
     external: ['react', 'react-dom', 'react-dom/client'],
-    alias: { '@/lib/supabaseClient': join(dir, 'auth.mjs'), '@': join(ROOT, 'src') },
+    alias: {
+      '@/lib/supabaseClient': join(dir, 'auth.mjs'),
+      '@/lib/i18n/I18nContext': join(dir, 'i18n-context.tsx'),
+      '@': join(ROOT, 'src'),
+    },
     logLevel: 'silent',
   });
   const dom = new JSDOM('<!doctype html><div id="root"></div>', {

@@ -29,6 +29,7 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { PGlite } from '@electric-sql/pglite';
 import { TEST_ROOT, bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 import { JOBS } from '../job-schedule.mjs';
 
 const ARCHIVE_DIR = mkdtempSync(join(tmpdir(), 'pp-admin-archive-'));
@@ -123,7 +124,9 @@ export const supabase = {};
 `;
 const panelBundle = await bundleFile({
   entrySource: PANEL_ENTRY,
-  stubs: { '@/lib/supabaseClient': SUPABASE_CLIENT_STUB },
+  // Панель печатает подписи через `t()`: без заглушки контекста сравнивать
+  // пришлось бы с ключами (`ppAdmin.runningFull`) вместо русского текста.
+  stubs: { '@/lib/supabaseClient': SUPABASE_CLIENT_STUB, '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB },
   external: ['react', 'react-dom', 'react-dom/client'],
 });
 

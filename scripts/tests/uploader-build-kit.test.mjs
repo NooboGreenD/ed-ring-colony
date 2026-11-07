@@ -172,9 +172,16 @@ maybePython('встроенный bundle.py исполняется Python и о�
   const dir = join(work, 'python-check');
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'bundle.py');
-  writeFileSync(path, files.get('ColonialHelper-build/bundle.py'));
+  // bundle.py берёт подписи через `i18n.tr`, а тот — каталоги и локаль:
+  // без соседних модулей импорт падает, и собранный EXE тоже не запустился бы.
+  for (const name of ['bundle.py', 'i18n.py', 'i18n_catalogs.py', 'locale_config.py']) {
+    assert.ok(files.has(`ColonialHelper-build/${name}`), `в комплекте есть ${name}`);
+    writeFileSync(join(dir, name), files.get(`ColonialHelper-build/${name}`));
+  }
   const script = [
-    'import importlib.util, json, sys',
+    'import importlib.util, json, os, sys',
+    // Модули рядом (i18n.py и др.) импортируются по имени — каталог в sys.path.
+    'sys.path.insert(0, os.path.dirname(sys.argv[1]))',
     'spec = importlib.util.spec_from_file_location("kit_bundle", sys.argv[1])',
     'module = importlib.util.module_from_spec(spec)',
     'spec.loader.exec_module(module)',

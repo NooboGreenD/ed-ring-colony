@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
+
 const NEXT_LINK_STUB = `
 import * as React from 'react';
 export default function Link(props: any) {
@@ -42,6 +44,9 @@ async function renderStats(options = {}) {
   const entry = join(dir, 'entry.tsx');
   const bundle = join(dir, 'bundle.mjs');
   writeFileSync(join(dir, 'next-link.tsx'), NEXT_LINK_STUB);
+  // Блоки подписываются через `t()`: без заглушки контекста в разметку уходили
+  // ключи (`lbs.topSystems`) вместо текста.
+  writeFileSync(join(dir, 'i18n-context.tsx'), I18N_CONTEXT_STUB);
   writeFileSync(entry, "export { default as LeaderboardStats } from '@/components/LeaderboardStats';\n");
 
   await esbuild.build({
@@ -54,6 +59,7 @@ async function renderStats(options = {}) {
     external: ['react', 'react-dom', 'react-dom/client'],
     alias: {
       'next/link': join(dir, 'next-link.tsx'),
+      '@/lib/i18n/I18nContext': join(dir, 'i18n-context.tsx'),
       '@': join(ROOT, 'src'),
     },
     loader: { '.tsx': 'tsx', '.ts': 'ts' },

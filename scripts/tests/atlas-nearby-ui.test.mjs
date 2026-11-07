@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 
 test('nearby UI: 20,051-row complete list, last page, global search, full CSV, cube radius and cancellation', async () => {
   const bundle = await bundleFile({
     entry: 'src/components/Atlas/AtlasNearbySearch.tsx',
     external: ['react', 'react-dom', 'react-dom/client'],
     stubs: {
+      '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB,
       '@/lib/atlas': `export function downloadCsv(name,rows){globalThis.__nearbyCsv={name,rows};}`,
       '@/lib/atlasSearchProgress': `export const finishAtlasSearchProgress=()=>{};export const publishAtlasSearchPoints=()=>{};export const startAtlasSearchProgress=()=>{};`,
       '@/components/Atlas/SystemSearchInput': `import React from 'react';export function SystemSearchInput({label,value,onChange,disabled}){return React.createElement('label',null,label,React.createElement('input',{value,disabled,onChange:event=>onChange(event.target.value)}));}`,

@@ -72,6 +72,14 @@ async function buy(body) {
     method: 'POST', body: JSON.stringify({ providerId: 'tbank', ...body }), headers: { 'Content-Type': 'application/json' },
   }));
 }
+/**
+ * Кредиты и премиум-магазин открыты только с активной подпиской
+ * (`hasPremiumShopAccess` в `src/lib/billing/shopAccess.ts`), поэтому пополнение
+ * в тестах оформляется от подписчика — как на живом сайте.
+ */
+async function grantShopAccess(userId = 'user-1') {
+  return repo.grantSubscription({ userId, cmdrName: 'CMDR Test', planId: 'pioneer', durationDays: 30 });
+}
 beforeEach(async () => {
   globalThis.fetch = async () => { throw new Error('Unexpected network access'); };
   process.env.NEXT_PUBLIC_SITE_URL = 'https://shop.example.com';
@@ -161,6 +169,7 @@ test('only signed successful CONFIRMED fulfils; holds, refunds and reversals do 
 });
 
 test('checkout uses server catalogue prices; confirmed webhook issues credits and replies exactly OK', async () => {
+  await grantShopAccess();
   mockBank();
   const response = await buy({ purpose: 'credit_topup', packId: 'pack-500', amountRub: 0.01, amountCredits: 999999 });
   assert.equal(response.status, 200);
@@ -268,6 +277,7 @@ test('partial fulfilment failure keeps the claim, never marks paid or silently r
 });
 
 test('live checkout is blocked on file storage and API errors leave an unfulfilled intent', async () => {
+  await grantShopAccess();
   await repo.updateProvider('tbank', { test_mode: false, config: { ...provider.config, terminal_key: '123', external_receipts_confirmed: true } });
   assert.equal((await buy({ purpose: 'credit_topup', packId: 'pack-500' })).status, 503);
   await repo.updateProvider('tbank', provider);

@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 
 test('Atlas single search offers all goods; build mode keeps its site lists and submits the selected recipe', async () => {
   const bundle = await bundleFile({
     entry: 'src/components/Atlas/AtlasMarketSearch.tsx',
     external: ['react', 'react-dom', 'react-dom/client'],
     stubs: {
+      '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB,
       '@/components/ui/Toaster': `export const toast=()=>{};`,
       '@/lib/atlasSearchProgress': `export const finishAtlasSearchProgress=()=>{};export const publishAtlasSearchPoints=()=>{};export const publishAtlasSearchProgress=()=>{};export const startAtlasSearchProgress=()=>{};`,
       '@/components/Atlas/SystemSearchInput': `import React from 'react';export function SystemSearchInput({label,value,onChange}) {return React.createElement('label',null,label,React.createElement('input',{value,onChange:e=>onChange(e.target.value)}));}`,

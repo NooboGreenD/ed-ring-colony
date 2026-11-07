@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 
 const NEXT_LINK_STUB = `
 import * as React from 'react';
@@ -43,7 +44,7 @@ const station = (name, overrides = {}) => ({
 async function renderPage({ search, searchResponse } = {}) {
   const bundle = await bundleFile({
     entry: 'src/app/station-search/page.tsx',
-    stubs: { 'next/link': NEXT_LINK_STUB, '@/components/Atlas/SystemSearchInput': SYSTEM_INPUT_STUB },
+    stubs: { '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB, 'next/link': NEXT_LINK_STUB, '@/components/Atlas/SystemSearchInput': SYSTEM_INPUT_STUB },
     external: ['react', 'react-dom', 'react-dom/client'],
   });
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -208,14 +209,14 @@ test('results are a list of stations; a row expands to show prices, stock and li
     await ui.submit();
     assert.equal(ui.document.querySelectorAll('.station-row').length, 2);
     assert.equal(ui.document.querySelector('.station-result-card'), null, 'no tiles any more');
-    assert.match(ui.document.querySelector('.station-results-heading').textContent, /Найдено 51 станция · страница 1 из 2/);
+    assert.match(ui.document.querySelector('.station-results-heading').textContent, /Найдено: 51 · страница 1 из 2/);
     const [first, second] = ui.document.querySelectorAll('.station-row-head');
     assert.equal(first.getAttribute('aria-expanded'), 'false');
     assert.match(first.textContent, /Galileo/);
     assert.match(first.textContent, /Coriolis Starport/);
     assert.match(first.textContent, /4,38 св\. л\./);
     assert.match(first.textContent, /3 ч назад/);
-    assert.match(second.textContent, /3 товара · от 10 CR/);
+    assert.match(second.textContent, /3 поз\. · от 10 CR/);
     assert.match(second.textContent, /5 мин назад/);
     assert.equal(ui.document.querySelector('.station-row-panel'), null, 'rows start collapsed');
 
@@ -238,7 +239,7 @@ test('results are a list of stations; a row expands to show prices, stock and li
     await ui.click(ui.button('Развернуть все'));
     assert.equal(ui.document.querySelectorAll('.station-row-panel').length, 2);
     assert.ok(ui.button('Координаты системы неизвестны').disabled);
-    assert.match(ui.document.body.textContent, /И ещё 1 товар/);
+    assert.match(ui.document.body.textContent, /И ещё 1 поз\./);
     await ui.click(ui.button('Свернуть все'));
     assert.equal(ui.document.querySelectorAll('.station-row-panel').length, 0);
 

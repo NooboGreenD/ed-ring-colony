@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const read = (path) => readFileSync(join(ROOT, path), 'utf8');
@@ -48,7 +49,7 @@ async function setup() {
   const { JSDOM } = await import('jsdom');
   const bundle = await bundleFile({
     entrySource: ENTRY,
-    stubs: { 'next/link': NEXT_LINK_STUB, '@/lib/supabaseClient': SUPABASE_CLIENT_STUB },
+    stubs: { '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB, 'next/link': NEXT_LINK_STUB, '@/lib/supabaseClient': SUPABASE_CLIENT_STUB },
     external: ['react', 'react-dom', 'react-dom/client'],
   });
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { pretendToBeVisual: true, url: 'http://localhost/atlas' });
@@ -502,7 +503,7 @@ test('позиции 3D-слоя «Фракции» — тот же кадр к�
 
 test('подключение: вкладка Atlas, слой карты, админка, кабинет, Colonial Helper, схема, задача', () => {
   const page = read('src/app/atlas/page.tsx');
-  assert.match(page, /\{ id: 'factions', label: 'Фракции'/);
+  assert.match(page, /\{ id: 'factions', labelKey: 'atlas\.tabFactions'/);
   assert.match(page, /useAtlasFactions\(\{ tabActive: activeTab === 'factions' \}\)/);
   assert.match(page, /<AtlasFactionsPanel factions=\{factions\} \/>/);
   assert.match(page, /factions=\{factionsLayer\}/);
@@ -523,7 +524,7 @@ test('подключение: вкладка Atlas, слой карты, адм�
   const nav = read('src/components/Admin/AdminNavigation.tsx');
   assert.match(nav, /'powerplay', 'factions', 'community-goals', 'backup'/);
   assert.match(nav, /ADMIN_ONLY_TABS: AdminTab\[\] = \[[^\]]*'factions'/);
-  assert.match(nav, /\{ id: 'factions', label: 'Фракции', icon: IconShieldHalf \}/);
+  assert.match(nav, /\{ id: 'factions', label: t\('anav\.factions'\), icon: IconShieldHalf \}/);
   assert.match(read('src/app/admin/page.tsx'), /tab === 'factions' && role === 'admin' && <FactionsAdminTab \/>/);
 
   const account = read('src/app/account/page.tsx');
@@ -551,5 +552,6 @@ test('подключение: вкладка Atlas, слой карты, адм�
   assert.match(read('deploy/crontab.example'), /--once factions-sync/);
 
   // Fallback-ссылки и тексты сайта не обещают несуществующего.
-  assert.match(read('src/components/Atlas/AtlasFactionsPanel.tsx'), /Админка → Игровые данные → Фракции/);
+  // Подсказка живёт в словаре: `atlas.ui.bgsAdminHint`.
+  assert.match(read('src/components/Atlas/AtlasFactionsPanel.tsx'), /t\('atlas\.ui\.bgsAdminHint'\)/);
 });
