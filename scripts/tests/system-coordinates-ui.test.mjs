@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 const supabase = `
 export const supabase={auth:{getUser:async()=>({data:{user:{id:'admin'}}})},from(table){
  let from=0,to=999,mode='read',value,id;
  const query={select(){return query;},order(){return query;},eq(_,next){id=next;return query;},range(start,end){from=start;to=end;return query;},
-  single:async()=>({data:{id:'admin',role:'admin'}}),maybeSingle:async()=>({data:null}),
+  single:async()=>({data:{id:'admin',role:'admin'}}),maybeSingle:async()=>({data:{id:'admin',role:'admin'},error:null}),
   update(data){mode='update';value=data;return query;},insert(data){mode='insert';value=data;return query;},
   then(resolve,reject){
    const state=globalThis.__coordinateUi;
@@ -30,6 +31,9 @@ test('coordinate buttons update only missing hubs/route rows and every project r
     external: ['react', 'react-dom', 'react-dom/client'],
     loader: { '.css': 'empty' },
     stubs: {
+      // Страница проекта рендерится без провайдера локали: без заглушки в
+      // кнопках оставались ключи (`project.tabRoute`) вместо подписей.
+      '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB,
       '@/lib/supabaseClient': supabase,
       'next/dynamic': `export default function dynamic(){return ()=>null;}`,
       'next/navigation': `export const useParams=()=>({id:'7'});export const useRouter=()=>({push(){},refresh(){}});export const usePathname=()=>'/admin';`,

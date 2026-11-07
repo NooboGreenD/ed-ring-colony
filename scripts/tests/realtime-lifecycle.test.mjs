@@ -6,12 +6,16 @@ import { build } from 'esbuild';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 
 mkdirSync('.cache', { recursive: true });
 const dir = mkdtempSync(join(process.cwd(), '.cache/realtime-test-'));
 after(() => rmSync(dir, { recursive: true, force: true }));
 writeFileSync(join(dir, 'supabase.mjs'), 'export const supabase = globalThis.__realtimeTestClient;');
 writeFileSync(join(dir, 'navigation.mjs'), 'export const useRouter = () => ({push(){}});');
+// Значок подписывает счётчик через `t()`: без заглушки локали там оставался
+// ключ `ub.messages` вместо «Сообщения: 2».
+writeFileSync(join(dir, 'i18n-context.tsx'), I18N_CONTEXT_STUB);
 writeFileSync(join(dir, 'link.mjs'), `import React from 'react'; export default function Link(props) {return React.createElement('a',props);}`);
 writeFileSync(join(dir, 'entry.tsx'), `export {default as Bell} from '@/components/NotificationBell';
 export {default as Badge} from '@/components/UnreadBadge';`);
@@ -38,7 +42,7 @@ globalThis.__realtimeTestClient = client;
 await build({entryPoints:[join(dir,'entry.tsx')],outfile:join(dir,'bundle.mjs'),bundle:true,platform:'node',format:'esm',jsx:'automatic',
   external:['react','react/*','react-dom/*'],logLevel:'silent',alias:{
     '@/lib/supabaseClient':join(dir,'supabase.mjs'),'next/navigation':join(dir,'navigation.mjs'),
-    'next/link':join(dir,'link.mjs'),'@':join(process.cwd(),'src'),
+    'next/link':join(dir,'link.mjs'),'@/lib/i18n/I18nContext':join(dir,'i18n-context.tsx'),'@':join(process.cwd(),'src'),
   }});
 const { Bell, Badge } = await import(join(dir,'bundle.mjs'));
 function deferred() {let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};}

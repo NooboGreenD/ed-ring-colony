@@ -16,6 +16,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 import { EMPTY_POWERPLAY_META, encodePowerplayLayer } from '../../src/lib/powerplay.ts';
 import { EMPTY_BGS_META, encodeBgsLayer } from '../../src/lib/bgs.ts';
 
@@ -91,6 +92,10 @@ async function renderAtlas(ui, options = {}) {
       'next/link': NEXT_LINK_STUB,
       'next/navigation': NEXT_NAV_STUB,
       'next/dynamic': NEXT_DYNAMIC_STUB,
+      // Страница печатает подписи через `t()`: без заглушки контекста в разметке
+      // оказывались ключи (`atlas.ui.sortDistance`), и проверки по русскому
+      // тексту не находили элементов.
+      '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB,
     },
     external: ['react', 'react-dom', 'react-dom/client'],
   });
@@ -444,10 +449,10 @@ test('страница Atlas: вкладки, панель поиска и пе�
     await ui.render(ui.React.createElement(ui.mod.AtlasPage));
 
     const tabs = Array.from(ui.document.querySelectorAll('[role="tab"]'));
-    assert.equal(tabs.length, 8, 'в панели восемь разделов');
+    assert.equal(tabs.length, 9, 'в панели девять разделов');
     assert.deepEqual(
       tabs.map((tab) => (tab.textContent || '').trim()),
-      ['Поиск', 'Маршрут', 'Маршрут A→B', 'Кольцо', 'Рынок', 'Поблизости', 'PowerPlay', 'Фракции'],
+      ['Поиск', 'Маршрут', 'Колонизация A→B', 'Маршрут корабля', 'Кольцо', 'Рынок', 'Поблизости', 'PowerPlay', 'Фракции'],
       'подписи и порядок вкладок',
     );
     assert.match(tabs[7].getAttribute('title'), /Alt\+8/);
@@ -754,7 +759,7 @@ test('страница Atlas: вкладка «Фракции» — все на�
     assert.match(selected.textContent, /систем 2 · у власти 1/);
     assert.match(doc.querySelector('[data-bgs-picker]').textContent, /выбрано 1 из 12/);
     assert.deepEqual(rows(), ['Col 285 Sector AB-C d14-3', 'Achenar'], 'сначала «у власти»');
-    assert.match(doc.querySelector('[data-bgs-row="Col 285 Sector AB-C d14-3"]').textContent, /Ring Colony Pioneers 85,0 % \(у власти\), экспансия/);
+    assert.match(doc.querySelector('[data-bgs-row="Col 285 Sector AB-C d14-3"]').textContent, /Ring Colony Pioneers 85,0 % \(у власти\), Экспансия/);  // состояние печатается подписью игры: `bgs.stateExpansion`
     assert.match(doc.querySelector('.powerplay-summary').textContent, /На карте: 2 систем выбранных фракций/);
     const stored = JSON.parse(ui.dom.window.localStorage.getItem('atlas-factions-v1')).selection;
     assert.deepEqual(stored.map((item) => [item.id, item.name]), [[3, 'Ring Colony Pioneers']], 'выбор запомнен');

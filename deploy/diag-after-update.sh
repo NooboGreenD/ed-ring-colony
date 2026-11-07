@@ -270,10 +270,17 @@ if [ -f "$STORAGE_SCRIPT" ]; then
     ok "Storage работает: список бакетов читается"
     RUNTIME=$((RUNTIME + 1))
   elif printf '%s\n' "$storage_out" | grep -q '"problem":true'; then
-    bad "Storage не обслуживает запросы"
-    RUNTIME=$((RUNTIME + 1))
+    storage_state="$(printf '%s\n' "$storage_out" | grep -o '"state":"[^"]*"' | head -n1 | cut -d'"' -f4 || true)"
     storage_reason="$(printf '%s\n' "$storage_out" | grep -o '"reason":"[^"]*"' | head -n1 | cut -d'"' -f4 || true)"
-    critical "Supabase Storage не работает${storage_reason:+ ($storage_reason)}: сайт жив, но загрузки файлов уходят в резервную таблицу. Лечение: Админка → Мониторинг → «Хранилище файлов» → «Перезапустить Storage», либо sudo bash $STORAGE_SCRIPT --restart"
+    if [ "$storage_state" = "unknown" ]; then
+      # Нет доступа к docker — это не поломка Storage, а непроверенное
+      # состояние: «не проверено» нельзя выдавать за «сломано».
+      warn "Storage не проверен${storage_reason:+: $storage_reason}"
+    else
+      bad "Storage не обслуживает запросы"
+      RUNTIME=$((RUNTIME + 1))
+      critical "Supabase Storage не работает${storage_reason:+ ($storage_reason)}: сайт жив, но загрузки файлов уходят в резервную таблицу. Лечение: Админка → Мониторинг → «Хранилище файлов» → «Перезапустить Storage», либо sudo bash $STORAGE_SCRIPT --restart"
+    fi
   else
     warn "проверка Storage не дала вердикта"
   fi

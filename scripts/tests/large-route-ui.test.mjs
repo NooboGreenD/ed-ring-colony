@@ -13,7 +13,9 @@ export const supabase = {
       select() { return query; }, order() { return query; }, eq(_, next) { id = next; return query; },
       range(from,to) { offset = from; end = to; return query; },
       single: async () => ({data:{id:'admin',role:'admin'}}),
-      maybeSingle: async () => ({data:null}),
+      // Профиль нужен проверке доступа админки: без строки профиля страница
+      // честно закрывается («Доступ запрещён»), а тест проверяет таблицу.
+      maybeSingle: async () => ({data:{id:'admin',role:'admin'},error:null}),
       update(data) { mode='update';value=data;return query; },
       delete() { mode='delete';return query; },
       insert(rows) { mode='insert';value=rows;return query; },

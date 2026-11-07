@@ -894,10 +894,11 @@ test('панель: журнал не мигает, а устаревший аг
   assert.match(route, /agent: update\.agent/, 'роут отдаёт сведения об агенте');
   assert.match(route, /action === 'restart'/, 'роут умеет перезапуск агента');
   assert.match(tab, /agentInfo\?\.outdated === true/, 'панель предупреждает об устаревшем агенте');
-  assert.match(tab, /Перезапустить агент/);
+  // Подписи кнопки и подсказки живут в словаре, а не в разметке.
+  assert.match(tab, /t\('mon\.restartAgent'\)/);
   assert.match(tab, /action: 'restart'/);
   assert.match(tab, /agentInfo\.autoRestart/, 'панель различает автоматический и ручной перезапуск');
-  assert.match(tab, /После этого здесь появится кнопка/, 'для старой версии объяснён единственный ручной переход');
+  assert.match(tab, /t\('mon\.agentNoRestartSupport'\)/, 'для старой версии объяснён единственный ручной переход');
   // Подпись стадии не выдаётся за результат упавшего прогона.
   assert.match(tab, /update\.message && update\.state !== 'failed'/);
 });

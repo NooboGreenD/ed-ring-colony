@@ -16,6 +16,7 @@ import {
   type PowerplayLayerData,
   type PowerplaySystem,
 } from '@/lib/powerplay';
+import { formatTranslate } from '@/lib/i18n/format';
 
 /**
  * Слой «PowerPlay» Atlas: загрузка `GET /api/powerplay/systems`, фильтр
@@ -255,7 +256,9 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
         }
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Не удалось загрузить системы PowerPlay');
+        // Сообщение об ошибке показывает панель Atlas как есть, поэтому запасной
+        // вариант берём из каталога на языке интерфейса, а не русской строкой.
+        setError(err instanceof Error ? err.message : formatTranslate('atlas.ui.ppLoadFailed'));
         setStatus((current) => (current === 'ready' ? current : 'error'));
       }
     };

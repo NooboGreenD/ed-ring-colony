@@ -208,7 +208,7 @@ function formatUtc(value: string | null | undefined, locale: string): string {
 
 type TFn = (key: string, params?: TranslationParams) => string;
 
-function formatBytes(bytes: number | null | undefined, t: TFn): string {
+function formatBytes(bytes: number | null | undefined, t: TFn, locale: string): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return '—';
   const units = [t('mon.unitB'), t('mon.unitKB'), t('mon.unitMB'), t('mon.unitGB'), t('mon.unitTB')];
   let value = bytes;
@@ -217,8 +217,11 @@ function formatBytes(bytes: number | null | undefined, t: TFn): string {
     value /= 1024;
     unit += 1;
   }
-  const digits = unit === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
-  return `${value.toFixed(digits)} ${units[unit]}`;
+  // Один знак после запятой, как у общих форматеров импорта (`formatImportBytes`):
+  // иначе «2,93 КБ» рядом с «3,5 МБ» в том же окне.
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  // `toFixed` пишет точку в любой локали: русский пилот видел «80.0 ГБ».
+  return `${value.toLocaleString(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${units[unit]}`;
 }
 
 function formatDuration(ms: number | null | undefined, t: TFn): string {
@@ -378,7 +381,7 @@ export default function FactionsAdminTab() {
         setMessage(payload?.cancelled ? t('bgsAdmin.cancelStopping') : t('bgsAdmin.cancelNotRun'));
       } else if (action === 'cleanup') {
         setMessage(payload?.removed
-          ? t('bgsAdmin.cleanupRemoved', { size: formatBytes(payload?.freed ?? 0, t) })
+          ? t('bgsAdmin.cleanupRemoved', { size: formatBytes(payload?.freed ?? 0, t, locale) })
           : t('bgsAdmin.cleanupNothing'));
       } else if (action === 'download') {
         setMessage(t('bgsAdmin.downloadStarted', { connections }));
@@ -570,18 +573,18 @@ export default function FactionsAdminTab() {
                 archive.complete ? (
                   <div style={{ color: '#22c55e' }} data-bgs-admin-archive-state={archive.uploaded ? 'uploaded' : 'complete'}>
                     {archive.uploaded
-                      ? <>{t('bgsAdmin.archiveUploaded', { size: formatBytes(archive.bytes, t), name: archive.uploadName ? ` (${archive.uploadName})` : '' })}</>
-                      : <>{t('bgsAdmin.archiveDownloaded', { size: formatBytes(archive.bytes, t), name: archive.lastModified ? ` (${t('bgsAdmin.archiveDumpFrom', { date: archive.lastModified })})` : '' })}</>}
+                      ? <>{t('bgsAdmin.archiveUploaded', { size: formatBytes(archive.bytes, t, locale), name: archive.uploadName ? ` (${archive.uploadName})` : '' })}</>
+                      : <>{t('bgsAdmin.archiveDownloaded', { size: formatBytes(archive.bytes, t, locale), name: archive.lastModified ? ` (${t('bgsAdmin.archiveDumpFrom', { date: archive.lastModified })})` : '' })}</>}
                   </div>
                 ) : archive.manual ? (
                   <div style={{ color: '#fbbf24' }} data-bgs-admin-archive-state="manual">
-                    {t('bgsAdmin.archiveManual', { size: formatBytes(archive.bytes, t) })}
+                    {t('bgsAdmin.archiveManual', { size: formatBytes(archive.bytes, t, locale) })}
                   </div>
                 ) : (
                   <>
                     <div style={{ color: running ? RUN : '#fbbf24' }}>
-                      {running ? t('bgsAdmin.archiveDownloading') : t('bgsAdmin.archivePartial')}: {formatBytes(archiveDownloaded, t)}
-                      {archiveTotal ? t('bgsAdmin.archiveOfTotal', { total: formatBytes(archiveTotal, t), percent: Math.floor((archiveDownloaded / Math.max(1, archiveTotal)) * 100) }) : ''}
+                      {running ? t('bgsAdmin.archiveDownloading') : t('bgsAdmin.archivePartial')}: {formatBytes(archiveDownloaded, t, locale)}
+                      {archiveTotal ? t('bgsAdmin.archiveOfTotal', { total: formatBytes(archiveTotal, t, locale), percent: Math.floor((archiveDownloaded / Math.max(1, archiveTotal)) * 100) }) : ''}
                       {running ? '' : t('bgsAdmin.archiveNextRun')}
                     </div>
                     {archiveTotal ? (
@@ -596,7 +599,7 @@ export default function FactionsAdminTab() {
               )}
               <div style={{ marginTop: 2 }}>
                 {t('bgsAdmin.archiveLimits', { connections, mb: pieceMb })}
-                {archive.freeBytes != null ? t('bgsAdmin.archiveFree', { size: formatBytes(archive.freeBytes, t) }) : ''}
+                {archive.freeBytes != null ? t('bgsAdmin.archiveFree', { size: formatBytes(archive.freeBytes, t, locale) }) : ''}
               </div>
               <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{archive.path}</code></div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
@@ -648,7 +651,7 @@ export default function FactionsAdminTab() {
             {shards?.exists && (shards.shards > 0 || shards.complete) ? (
               <>
                 <div style={{ color: shards.complete ? TEXT : splitting ? RUN : '#fbbf24' }}>
-                  {t('bgsAdmin.shardsSummary', { shards: formatBgsCount(shards.shards), systems: formatBgsCount(shards.systems), size: formatBytes(shards.bytes, t) })}
+                  {t('bgsAdmin.shardsSummary', { shards: formatBgsCount(shards.shards), systems: formatBgsCount(shards.systems), size: formatBytes(shards.bytes, t, locale) })}
                   {shards.complete
                     ? t('bgsAdmin.shardsComplete')
                     : splitting
@@ -777,7 +780,7 @@ export default function FactionsAdminTab() {
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-bgs-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
                 {progress.mode === 'download'
-                  ? <>{t('bgsAdmin.resultDownload', { size: formatBytes(progress.result.archiveBytes, t), duration: formatDuration(progress.result.durationMs, t) })}</>
+                  ? <>{t('bgsAdmin.resultDownload', { size: formatBytes(progress.result.archiveBytes, t, locale), duration: formatDuration(progress.result.durationMs, t) })}</>
                   : <>{t('bgsAdmin.resultSplit', { shards: formatBgsCount(progress.result.shards), systems: formatBgsCount(progress.result.systems), duration: formatDuration(progress.result.durationMs, t) })}</>}
               </div>
             )}
@@ -825,7 +828,7 @@ export default function FactionsAdminTab() {
           {shortRequests === 'off'
             ? t('bgsAdmin.noteShortOff')
             : typeof shortRequests === 'number'
-              ? t('bgsAdmin.noteShortNumber', { size: formatBytes(shortRequests, t) })
+              ? t('bgsAdmin.noteShortNumber', { size: formatBytes(shortRequests, t, locale) })
               : t('bgsAdmin.noteShortAuto')}
           {t('bgsAdmin.noteSplit', { count: formatBgsCount(shardSystems) })}
           {status?.config.archiveKeep ? t('bgsAdmin.noteKeepArchive') : t('bgsAdmin.noteKeepDelete')}.

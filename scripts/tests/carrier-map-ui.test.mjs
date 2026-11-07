@@ -10,6 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 import {
   DEFAULT_CARRIER_FILTER,
   countMapCarriers,
@@ -69,7 +70,7 @@ async function setup() {
   const { JSDOM } = await import('jsdom');
   const bundle = await bundleFile({
     entrySource: ENTRY,
-    stubs: { 'next/link': NEXT_LINK_STUB },
+    stubs: { '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB, 'next/link': NEXT_LINK_STUB },
     external: ['react', 'react-dom', 'react-dom/client'],
   });
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { pretendToBeVisual: true, url: 'http://localhost/map' });

@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { bundleFile } from './helpers/bundle.mjs';
+import { I18N_CONTEXT_STUB } from './helpers/i18nStub.mjs';
 import { powerplayInfluenceAt } from '../../src/lib/powerplay.ts';
 import { JOBS, DEFAULT_JOBS } from '../job-schedule.mjs';
 
@@ -46,7 +47,9 @@ async function setup() {
   const { JSDOM } = await import('jsdom');
   const bundle = await bundleFile({
     entrySource: ENTRY,
-    stubs: { 'next/link': NEXT_LINK_STUB },
+    // Карточка печатает подписи через `t()`: без заглушки контекста `t`
+    // возвращал бы ключ, и проверки сравнивали бы текст с `pp.state…`.
+    stubs: { 'next/link': NEXT_LINK_STUB, '@/lib/i18n/I18nContext': I18N_CONTEXT_STUB },
     external: ['react', 'react-dom', 'react-dom/client'],
   });
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { pretendToBeVisual: true, url: 'http://localhost/atlas' });
@@ -198,7 +201,9 @@ test('позиции 3D-слоя — тот же кадр карты, что eli
 
 test('подключение: вкладка и слой — в Atlas, клик — через MapClickLayer, импорт — задача и API', () => {
   const page = read('src/app/atlas/page.tsx');
-  assert.match(page, /\{ id: 'powerplay', label: 'PowerPlay'/, 'седьмая вкладка');
+  // Подпись вкладки — ключ каталога: `atlas.tabPowerplay`. Раньше здесь
+  // проверялось русское слово, и пропажа ключа из словарей тест не ловила.
+  assert.match(page, /\{ id: 'powerplay', labelKey: 'atlas\.tabPowerplay'/, 'восьмая вкладка');
   assert.match(page, /useAtlasPowerplay\(\{ tabActive: activeTab === 'powerplay' \}\)/);
   assert.match(page, /<AtlasPowerplayPanel powerplay=\{powerplay\} \/>/);
   assert.match(page, /powerplay=\{powerplayLayer\}/, 'страница отдаёт слой карте');
