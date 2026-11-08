@@ -12,14 +12,19 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QWheelEvent
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSlider,
+    QAbstractSpinBox,
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -156,6 +161,85 @@ QFrame#cardAccent {{ border: none; border-radius: 2px; }}
 """
 
 
+#: Виджеты, которые меняют значение от колеса мыши, даже когда на них не
+#: нажимали: колесо доставляется виджету под курсором, а фокус ему для этого
+#: не нужен. Именно из-за этого «прокрутка страницы» молча меняла язык,
+#: план площадки, экран оверлея или размер шрифта.
+WHEEL_SENSITIVE = (QComboBox, QAbstractSpinBox, QAbstractSlider, QTabBar)
+
+
+class WheelGuard(QObject):
+    """Не даёт колесу менять значения виджетов, на которые не нажимали.
+
+    Правило простое: колесо листает страницу, а значение виджета меняет только
+    после осознанного клика (то есть когда у виджета есть фокус). Событие при
+    этом не пропадает — оно уходит ближайшей прокручиваемой области, поэтому
+    страница под курсором продолжает прокручиваться как обычно.
+
+    Фильтр ставится на приложение целиком (`ensure_app`): тогда правило
+    действует и для страниц Helper, и для лаунчера, и для Setup, не требуя
+    трогать каждую страницу отдельно.
+    """
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self.suppressed = 0          # сколько событий колеса перехвачено (тесты)
+
+    @staticmethod
+    def scroll_ancestor(widget: QWidget) -> Optional[QWidget]:
+        """Ближайшая прокручиваемая область вокруг виджета (или `None`)."""
+        parent = widget.parentWidget() if isinstance(widget, QWidget) else None
+        while parent is not None:
+            if isinstance(parent, QAbstractScrollArea):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+    @staticmethod
+    def scroll_by(area: QWidget, event: QWheelEvent) -> bool:
+        """Прокрутить область на величину колеса. `False` — прокручивать нечего.
+
+        Считаем сами, а не пересылаем событие: Qt применяет «плавную»
+        прокрутку только к событиям от настоящей мыши, поэтому пересланное
+        событие страницу не двигало бы (и колесо над списком просто пропадало).
+        Три строки за щелчок — то же, что делает Qt по умолчанию.
+        """
+        bar = area.verticalScrollBar() if isinstance(area, QAbstractScrollArea) else None
+        if bar is None:
+            return False
+        pixels = int(event.pixelDelta().y())
+        if pixels:
+            bar.setValue(bar.value() - pixels)
+            return True
+        angle = int(event.angleDelta().y())
+        if not angle:
+            return False
+        bar.setValue(int(bar.value() - angle / 120.0 * bar.singleStep() * 3))
+        return True
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, WHEEL_SENSITIVE):
+            if not obj.hasFocus():
+                self.suppressed += 1
+                area = self.scroll_ancestor(obj)
+                if area is not None:
+                    # Страница листается, значение виджета остаётся прежним.
+                    self.scroll_by(area, event)
+                return True
+        return super().eventFilter(obj, event)
+
+
+def install_wheel_guard(app: Optional[QApplication] = None) -> WheelGuard:
+    """Включить правило «колесо не меняет значения без клика» (один раз)."""
+    target = app or ensure_app()
+    guard = getattr(target, "_edrc_wheel_guard", None)
+    if guard is None:
+        guard = WheelGuard(target)
+        target._edrc_wheel_guard = guard          # держим ссылку: фильтр без неё умрёт
+        target.installEventFilter(guard)
+    return guard
+
+
 def ensure_app() -> QApplication:
     """Return the single QApplication instance, creating it on first use."""
     app = QApplication.instance()
@@ -164,6 +248,7 @@ def ensure_app() -> QApplication:
     app.setApplicationName("Colonial Helper")
     app.setApplicationDisplayName("ED Ring Colony — Colonial Helper")
     app.setQuitOnLastWindowClosed(True)
+    install_wheel_guard(app)
     return app
 
 

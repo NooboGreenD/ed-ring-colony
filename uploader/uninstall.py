@@ -360,7 +360,7 @@ def deferred_delete_script(targets: Iterable[Path], *, wait_pid: Optional[int] =
             lines.append(f'rmdir /s /q "{path}" 2>nul')
     checks = " ".join(f'"{str(Path(target))}"' for target in targets)
     lines += [
-        f"set left=0",
+        "set left=0",
         f"for %%P in ({checks}) do if exist %%P set left=1",
         "if %left%==0 goto done",
         "set /a tries+=1",

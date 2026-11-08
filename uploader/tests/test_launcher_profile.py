@@ -241,7 +241,12 @@ class LauncherHeaderTests(ProfileTests):
         self.app.processEvents()
         try:
             badge = window.profile_badge
-            self.assertIsInstance(badge, launcher_profile.ProfileBadge)
+            # Класс берём у самого значка, а не из модуля, импортированного
+            # тестом: `launcher` перезагружает пакет кода и подменяет
+            # `launcher_profile` в `sys.modules`, поэтому сравнение
+            # `isinstance` со «старой» копией класса ложно падало.
+            self.assertEqual(type(badge).__name__, "ProfileBadge")
+            self.assertTrue(hasattr(badge, "name_label"))
             self.assertEqual(badge.name_label.text(), "Лаунчер не привязан")
             # Правая сторона шапки: значок стоит за серединой окна.
             self.assertGreater(badge.mapTo(window, badge.rect().center()).x(),

@@ -128,13 +128,16 @@ NON_UI_LITERALS = frozenset({
     "' (ожидался '", "'). Доставки из ", " пропущены.", "t на маршрут)",
     # шапка журнала падений (`crash_log`): диагностика, а не подписи окна
     "версия пакета ", "запуск из исходников", "лаунчер ",
+    # хронология запуска и выхода: строки журнала, а не подписи окна
+    "старт: создаю окно Helper", "интерфейс собран, показываю окно",
+    "критическая ошибка запуска: ", "окно уже уничтожено при выходе",
     # консоль и файл аварийного журнала: окно ещё не существует
     "Лог очищен", "ОШИБКА: не найден модуль 'requests'",
     "Решение: pip install requests", "КРИТИЧЕСКАЯ ОШИБКА при запуске:\n",
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.27.0"
+VERSION = "2.27.1"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -4084,20 +4087,6 @@ class ColonialHelperApp:
             "selected": selected,
         }
 
-    def _copy_map_text(self, text: str, hint: str = ""):
-        try:
-            import pyperclip
-
-            pyperclip.copy(text)
-        except Exception:
-            try:
-                self.root.clipboard_clear()
-                self.root.clipboard_append(text)
-            except Exception:
-                pass
-        if hint is not None:
-            self._map_set_hint(hint or tr("Скопировано"))
-
     def _build_tab_log(self):
         """Лог на чистом Qt: цветные уровни и кнопка очистки без Tk-виджетов."""
         self.log_page = None
@@ -4906,24 +4895,45 @@ class ColonialHelperApp:
         )
 
     def _on_close(self):
-        self.overlay_manager.stop()
+        """Закрыть программу: остановить фон, сохранить настройки, выйти.
+
+        Каждый шаг в своём `try`: раньше исключение в сохранении настроек
+        (например, диск занят антивирусом) оставляло окно закрытым, а процесс
+        живым — «программа закрылась, но висит в диспетчере». Выход из
+        программы выполняется в `finally`, что бы ни случилось выше.
+        """
+        if getattr(self, "_close_started", False):
+            return
+        self._close_started = True
+        try:
+            self.overlay_manager.stop()
+        except Exception as exc:
+            self.log(f"Остановка оверлея при выходе: {exc}", "warn")
         try:
             self.dispatcher.stop(wait=False)
+        except Exception as exc:
+            self.log(f"Остановка диспетчера при выходе: {exc}", "warn")
+        for name in ("_carrier_sync", "_bgs_sync"):
+            module = getattr(self, name, None)
+            if module is None:
+                continue
             try:
-                if getattr(self, "_carrier_sync", None) is not None:
-                    self._carrier_sync.save()
-            except Exception:
-                pass
+                # Неотправленные наблюдения пилота переживают перезапуск.
+                module.save()
+            except Exception as exc:
+                self.log(f"Сохранение {name} при выходе: {exc}", "warn")
+        try:
+            self.save_config()
+        except Exception as exc:
+            self.log(f"Не удалось сохранить настройки при выходе: {exc}", "warn")
+        finally:
             try:
-                # Неотправленные наблюдения фракций переживают перезапуск.
-                if getattr(self, "_bgs_sync", None) is not None:
-                    self._bgs_sync.save()
+                self.root.destroy()
             except Exception:
-                pass
-        except Exception:
-            pass
-        self.save_config()
-        self.root.destroy()
+                # Окно уже могло быть уничтожено — выйти всё равно нужно.
+                from helper_window import journal
+
+                journal("окно уже уничтожено при выходе")
 
     # ============================================================
     #  Обработчики: Подключение
@@ -5790,7 +5800,7 @@ class ColonialHelperApp:
             self.root.after(
                 0,
                 lambda e=error_text, ins=inserted: self.log(
-                    f"Ошибка загрузки"
+                    "Ошибка загрузки"
                     + (f" (частично загружено {ins} записей)" if ins else "")
                     + f": {e}",
                     "error",
@@ -8769,6 +8779,16 @@ class ColonialHelperApp:
         self.root.after(ms, callback)
 
 
+def _journal(message: str) -> None:
+    """Строка в журнал падений из стартового кода (до окна журнала ещё нет)."""
+    try:
+        import crash_log
+
+        crash_log.note(None, message)
+    except Exception:
+        pass
+
+
 def _install_crash_log():
     """Включить журнал падений до всего остального (см. `crash_log`).
 
@@ -8793,6 +8813,7 @@ def _install_crash_log():
 
 def main():
     crash_file, crash_previous = _install_crash_log()
+    _journal("старт: создаю окно Helper")
     try:
         try:
             import requests
@@ -8805,6 +8826,7 @@ def main():
 
         root = HelperWindow(f"{APP_NAME} v{VERSION}")
         app = ColonialHelperApp(root)
+        _journal("интерфейс собран, показываю окно")
         if crash_file:
             app.crash_log_path = crash_file
             app.log(tr("Журнал падений: {path}", path=crash_file), "info")
@@ -8815,10 +8837,12 @@ def main():
                     "warn")
         root.run()
     except Exception as e:
+        _journal(f"критическая ошибка запуска: {type(e).__name__}: {e}\n"
+                 f"{traceback.format_exc()}")
         error_file = Path.home() / "colonial_helper_error.log"
         with open(error_file, "w", encoding="utf-8") as f:
             f.write("=" * 60 + "\n")
-            f.write(f"КРИТИЧЕСКАЯ ОШИБКА при запуске:\n")
+            f.write("КРИТИЧЕСКАЯ ОШИБКА при запуске:\n")
             f.write(f"  {type(e).__name__}: {e}\n")
             f.write("-" * 60 + "\n")
             traceback.print_exc(file=f)

@@ -2295,14 +2295,6 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "ja": "○ 待機",
     },
     # ------------------------------------------- выгрузка маршрута в CSV
-    "Текущая": {
-        "en": "Current",
-        "de": "Aktuell",
-        "it": "Attuale",
-        "ko": "현재",
-        "zh": "当前",
-        "ja": "現在",
-    },
     "Ожидает": {
         "en": "Pending",
         "de": "Ausstehend",

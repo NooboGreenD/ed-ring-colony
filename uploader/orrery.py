@@ -70,8 +70,6 @@ def star_designation(name: str, system: str = "") -> str:
     return match.group(1) if match else ""
 
 
-import re  # noqa: E402  (после star_designation — только для регулярки выше)
-
 _STAR_PREFIX_RE = re.compile(r"^\s*([A-Z]{1,3})(?=\s|$)")
 
 

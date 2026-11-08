@@ -630,7 +630,6 @@ def _habitable_band(orbit_ls: float, zone: Optional[Tuple[float, float]]) -> Opt
 
 def _parent_name(plan: Dict[str, Any], view: Dict[str, Any]) -> str:
     """Имя родителя: у луны — планета, у планеты — звезда."""
-    by_name = plan["by_name"]
     for parent_id in view.get("parent_ids") or []:
         parent = plan.get("by_id", {}).get(parent_id) if isinstance(plan.get("by_id"), dict) else None
         if parent is None:
