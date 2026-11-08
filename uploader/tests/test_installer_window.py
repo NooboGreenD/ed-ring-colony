@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -198,6 +199,100 @@ class SetupWindowTests(unittest.TestCase):
         self.assertIn("УСТАНОВКА", window.install_button.text())
         release.set()
         self.assertTrue(wait_until(self.app, lambda: window.result is not None))
+        window.close()
+
+    # ------------------------------------------------------ install location
+    def test_install_folder_is_editable_and_install_goes_where_the_user_asked(self):
+        window = self._window()
+        self.assertEqual(window.path_label.text(), str(self.install_root))
+        self.assertEqual(window.browse_button.text(), "ИЗМЕНИТЬ…")
+        chosen = self.root / "Elsewhere" / "Colonial Helper"
+        chosen.mkdir(parents=True)
+
+        with mock.patch.object(installer_window, "ask_directory", return_value=str(chosen)):
+            window.choose_folder()
+
+        self.assertEqual(window.install_root, chosen)
+        self.assertEqual(window.path_label.text(), str(chosen))
+        window.install_button.click()
+        self.assertTrue(wait_until(self.app, lambda: window.result is not None))
+        self.assertEqual(self.calls[0]["kwargs"]["install_root"], chosen)
+        window.close()
+
+    def test_setup_remembers_the_folder_from_the_previous_install(self):
+        previous = self.root / "Previous"
+        (previous / "app").mkdir(parents=True)
+        with mock.patch.object(installer_window, "install_root_default", return_value=previous):
+            window = installer_window.SetupWindow(self.source)
+
+        window.show()
+        self.app.processEvents()
+        self.assertEqual(window.install_root, previous)
+        self.assertEqual(window.path_label.text(), str(previous))
+        window.close()
+
+    def test_system_folder_is_refused_with_a_reason(self):
+        window = self._window()
+
+        with mock.patch.object(installer_window, "ask_directory",
+                               return_value=str(Path.home())):
+            window.choose_folder()
+
+        self.assertEqual(window.install_root, self.install_root)
+        self.assertIn("домашняя папка", window.status.text())
+        self.assertEqual(self.calls, [])
+        window.close()
+
+    def test_cancelled_folder_dialog_changes_nothing(self):
+        window = self._window()
+
+        with mock.patch.object(installer_window, "ask_directory", return_value=""):
+            window.choose_folder()
+
+        self.assertEqual(window.install_root, self.install_root)
+        window.close()
+
+    def test_after_moving_to_empty_folder_install_button_returns_to_first_install(self):
+        self.install_root.mkdir(parents=True)
+        (self.install_root / "ColonialHelper.exe").write_bytes(b"old")
+        window = self._window()
+        self.assertEqual(window.install_button.text(), "ПЕРЕУСТАНОВИТЬ")
+        empty = self.root / "Empty"
+        empty.mkdir()
+
+        with mock.patch.object(installer_window, "ask_directory", return_value=str(empty)):
+            window.choose_folder()
+
+        self.assertFalse(window.existing_install)
+        self.assertEqual(window.install_button.text(), "УСТАНОВИТЬ И ЗАПУСТИТЬ")
+        self.assertFalse(window.remove_button.isVisible())
+        window.close()
+
+    # ------------------------------------------------------------- uninstall
+    def test_delete_button_is_offered_only_for_an_installed_program(self):
+        window = self._window()
+        self.assertIn(window.remove_button, window._buttons())
+        self.assertFalse(window.remove_button.isVisible())
+        window.close()
+
+        self.install_root.mkdir(parents=True)
+        (self.install_root / "ColonialHelper.exe").write_bytes(b"old")
+        installed = self._window()
+        self.assertTrue(installed.remove_button.isVisible())
+        self.assertEqual(installed.remove_button.text(), "УДАЛИТЬ")
+        installed.close()
+
+    def test_delete_opens_the_uninstall_window_for_the_same_folder(self):
+        self.install_root.mkdir(parents=True)
+        (self.install_root / "ColonialHelper.exe").write_bytes(b"old")
+        window = self._window()
+
+        with mock.patch("uninstall_window.UninstallWindow") as dialog:
+            window.remove()
+
+        dialog.assert_called_once()
+        self.assertEqual(dialog.call_args[0][0], self.install_root)
+        dialog.return_value.show.assert_called_once_with()
         window.close()
 
 

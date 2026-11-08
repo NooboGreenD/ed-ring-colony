@@ -544,6 +544,68 @@ class LauncherTests(unittest.TestCase):
             while str(self.embedded) in sys.path:
                 sys.path.remove(str(self.embedded))
 
+    # -- «программа не запускается»: понятное объяснение -------------------
+    def test_missing_module_is_named_from_the_import_error(self):
+        try:
+            import definitely_missing_module_for_test  # noqa: F401
+        except ImportError as exc:
+            self.assertEqual(launcher.missing_module(exc), "definitely_missing_module_for_test")
+        self.assertEqual(launcher.missing_module(
+            ImportError("No module named 'tkinter'")), "tkinter")
+        self.assertEqual(launcher.missing_module(
+            ModuleNotFoundError("No module named 'PySide6.QtWidgets'",
+                                name="PySide6")), "PySide6")
+        self.assertEqual(launcher.missing_module(RuntimeError("что-то другое")), "")
+
+    def test_tkinter_gets_a_legacy_build_explanation(self):
+        message = launcher.legacy_bundle_message("tkinter")
+
+        self.assertIn("tkinter", message)
+        self.assertIn("старая сборка", message)
+        self.assertIn("Переустановить", message)
+        self.assertNotIn("{module}", message)
+
+    def test_other_missing_module_names_the_module(self):
+        message = launcher.legacy_bundle_message("pyperclip")
+
+        self.assertIn("pyperclip", message)
+        self.assertIn("Переустановить", message)
+
+    def test_install_marker_is_written_next_to_the_executable(self):
+        exe_dir = self.work / "installed-exe"
+        exe_dir.mkdir()
+        with mock.patch.object(bundle, "executable_dir", return_value=exe_dir):
+            launcher.ensure_install_marker(self.root)
+
+        marker = bundle.read_install_marker(exe_dir)
+        self.assertIsNotNone(marker)
+        self.assertEqual(marker.get("launcher_version"), launcher.LAUNCHER_VERSION)
+
+    def test_marker_is_not_rewritten_when_it_is_current(self):
+        exe_dir = self.work / "installed-exe"
+        exe_dir.mkdir()
+        bundle.write_install_marker(self.root, launcher_version=launcher.LAUNCHER_VERSION)
+        with mock.patch.object(bundle, "executable_dir", return_value=exe_dir), \
+                mock.patch.object(bundle, "write_install_marker") as writer:
+            launcher.ensure_install_marker(self.root)
+
+        writer.assert_not_called()
+
+    def test_uninstall_flag_goes_to_the_uninstaller(self):
+        with mock.patch("uninstall.main", return_value=0) as main:
+            code = launcher.main(["--uninstall", "--silent"])
+
+        self.assertEqual(code, 0)
+        main.assert_called_once_with(["--uninstall", "--silent"])
+
+    def test_broken_uninstaller_is_reported_instead_of_crashing(self):
+        with mock.patch("uninstall.main", side_effect=RuntimeError("нет Qt")), \
+                mock.patch.object(launcher, "report_failure") as report:
+            code = launcher.main(["--uninstall"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("окно удаления", report.call_args[0][1])
+
     def test_log_is_written_next_to_the_installation(self):
         launcher.log(self.root, "проверка журнала")
         self.assertIn("проверка журнала",

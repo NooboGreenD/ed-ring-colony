@@ -117,6 +117,18 @@ class BuildBundleTests(unittest.TestCase):
         self.assertFalse(any(name.startswith("tests/") for name in names))
         self.assertNotIn("requirements.txt", names)
 
+    def test_installer_and_uninstaller_never_ship_in_the_package(self):
+        """Установка и удаление — часть Setup/лаунчера, а не обновляемого пакета.
+
+        Иначе обновление привезло бы свою копию `uninstall.py` со старыми
+        правилами удаления, и кнопка «Удалить» зависела бы от версии пакета.
+        """
+        self.build()
+        names = {item["path"] for item in self.manifest()["files"]}
+        for module in ("installer.py", "installer_window.py", "uninstall.py",
+                       "uninstall_window.py"):
+            self.assertNotIn(module, names)
+
     def test_crash_log_ships_with_the_program(self):
         """Журнал падений — часть программы, а не сборки.
 

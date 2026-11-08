@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -311,6 +312,24 @@ class InstallLayoutTests(unittest.TestCase):
         finally:
             os.environ.pop(bundle.ACTIVE_ENV, None)
         self.assertIn("1.0.1", set(bundle.installed_versions(self.root)))
+
+    def test_install_root_falls_back_to_the_exe_folder_when_marker_is_stale(self):
+        exe_dir = self.work / "moved-here"
+        exe_dir.mkdir()
+        bundle.write_install_marker_at(exe_dir, self.work / "deleted-long-ago")
+        with mock.patch.object(bundle, "executable_dir", return_value=exe_dir), \
+                mock.patch.dict(os.environ, {bundle.HOME_ENV: ""}):
+            self.assertEqual(bundle.install_root(), exe_dir)
+
+    def test_install_root_uses_the_marker_when_the_folder_exists(self):
+        exe_dir = self.work / "exe"
+        exe_dir.mkdir()
+        chosen = self.work / "chosen"
+        chosen.mkdir()
+        bundle.write_install_marker_at(exe_dir, chosen)
+        with mock.patch.object(bundle, "executable_dir", return_value=exe_dir), \
+                mock.patch.dict(os.environ, {bundle.HOME_ENV: ""}):
+            self.assertEqual(bundle.install_root(), chosen)
 
     def test_install_root_respects_environment(self):
         os.environ[bundle.HOME_ENV] = str(self.work / "elsewhere")

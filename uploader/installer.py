@@ -16,10 +16,45 @@ from typing import Callable, Dict, List, Optional
 from i18n import tr
 
 import bundle
+import uninstall
 
 APP_NAME = "ED Ring Colony — Colonial Helper"
 EXECUTABLE = "ColonialHelper.exe"
 PAYLOAD_DIR = "payload"
+
+#: Предел длины пути: Windows с длинными путями не везде включён, а `app/<версия>`
+#: добавляет к папке ещё десяток символов и файлы в две сотни.
+MAX_ROOT_LENGTH = 180
+
+
+def validate_install_dir(path) -> str:
+    """Можно ли ставить программу в эту папку. Пустая строка — можно.
+
+    Проверяем то, что действительно мешает: корень диска и системные папки
+    (там нужны права администратора, а обновления пишут в `app/`), слишком
+    длинный путь и отсутствие прав на запись. Папку пользователя вроде
+    `D:\\Games\\ColonialHelper` установщик принимает: именно этого и просили.
+    """
+    folder = Path(path).expanduser()
+    if not str(folder).strip():
+        return tr("Выберите папку для установки")
+    if not folder.is_absolute():
+        return tr("Нужен полный путь к папке установки")
+    reason = uninstall.protected_reason(folder)
+    if reason:
+        return reason
+    if len(str(folder)) > MAX_ROOT_LENGTH:
+        return tr("Путь длиннее {limit} символов — Windows не откроет часть файлов",
+                  limit=MAX_ROOT_LENGTH)
+    candidate = folder
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    if not candidate.is_dir():
+        return tr("Папка {path} недоступна", path=str(folder))
+    if not os.access(candidate, os.W_OK):
+        return tr("Нет прав на запись в {path} — выберите другую папку",
+                  path=str(candidate))
+    return ""
 
 
 def payload_executable() -> Path:
@@ -39,6 +74,15 @@ def has_existing_install(install_root: Optional[Path] = None) -> bool:
         or bundle.state_path(root).is_file()
         or bundle.versions_dir(root).is_dir()
     )
+
+
+def install_root_default() -> Path:
+    """Куда ставить по умолчанию: прошлая папка, иначе системная папка Helper.
+
+    Программу можно поставить куда угодно, поэтому «прошлую папку» Setup берёт
+    из записи в «Программах и компонентах», а не угадывает по `%LOCALAPPDATA%`.
+    """
+    return uninstall.registered_install_root() or bundle.install_root()
 
 
 def create_shortcut(shortcut_path: Path, target_path: Path) -> None:
@@ -116,7 +160,8 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
                      launch: bool = True, repair: bool = False,
                      reinstall: bool = False,
                      shortcut_writer: Optional[Callable] = None,
-                     process_launcher: Optional[Callable] = None) -> Dict[str, object]:
+                     process_launcher: Optional[Callable] = None,
+                     register: bool = True) -> Dict[str, object]:
     """Install/repair the launcher, add shortcuts, and optionally start it.
 
     Repair fetches a clean current application bundle; reinstall uses the bundle
@@ -129,6 +174,11 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
     if not source.is_file() or source.stat().st_size <= 0:
         raise FileNotFoundError(tr("Не найден файл лаунчера: {path}", path=source))
     root = Path(install_root or bundle.install_root()).expanduser()
+    # Единственная точка проверки: и окно, и `--install-dir`, и будущие вызовы
+    # получают один и тот же отказ на корень диска и системные папки.
+    reason = validate_install_dir(root)
+    if reason:
+        raise ValueError(reason)
     root.mkdir(parents=True, exist_ok=True)
     target = root / EXECUTABLE
     temporary = target.with_name(f".{EXECUTABLE}.{os.getpid()}.tmp")
@@ -142,6 +192,13 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+    # Маркер рядом с exe: по нему лаунчер находит выбранную папку, а удаление
+    # понимает, что это именно установка Helper, а не случайная папка.
+    try:
+        bundle.write_install_marker(root, silent=True)
+    except OSError:
+        pass
 
     warnings: List[str] = []
     shortcuts: List[Path] = []
@@ -162,19 +219,46 @@ def install_launcher(source_exe: Path, install_root: Optional[Path] = None,
             except Exception as exc:
                 warnings.append(str(exc))
 
+    registered: List[str] = []
+    if register:
+        registered = uninstall.register_uninstall(root, target)
+        warnings += registered
+
     process = _launch(
         target, root, process_launcher, repair=repair, reinstall=reinstall,
     ) if launch else None
     return {"executable": target, "shortcuts": shortcuts, "warnings": warnings,
-            "process": process, "install_root": root}
+            "process": process, "install_root": root,
+            "registered": not registered}
+
+
+def _argument(args: List[str], name: str) -> str:
+    """Значение флага `--name значение` (без падения на неполном списке)."""
+    try:
+        index = args.index(name)
+    except ValueError:
+        return ""
+    return args[index + 1] if index + 1 < len(args) else ""
 
 
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if "--uninstall" in args:
+        # Удаление живёт отдельным модулем, но вызывается и из Setup: у
+        # пользователя может быть только установщик, а Helper уже нет.
+        return uninstall.main(args)
     source = payload_executable()
+    install_root = _argument(args, "--install-dir")
     if "--silent" in args:
         try:
-            install_launcher(source, create_links=True, desktop_shortcut="--desktop" in args,
+            root = Path(install_root).expanduser() if install_root else None
+            if root is not None:
+                reason = validate_install_dir(root)
+                if reason:
+                    print(reason, file=sys.stderr)
+                    return 1
+            install_launcher(source, install_root=root, create_links=True,
+                             desktop_shortcut="--desktop" in args,
                              launch="--no-launch" not in args)
             return 0
         except Exception as exc:
@@ -186,7 +270,10 @@ def main(argv=None) -> int:
         from ui_qt import ensure_app
 
         app = ensure_app()
-        window = SetupWindow(source)
+        if install_root:
+            window = SetupWindow(source, install_root=Path(install_root).expanduser())
+        else:
+            window = SetupWindow(source)
         window.show()
         app.exec()
         return 0
