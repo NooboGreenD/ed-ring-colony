@@ -1,10 +1,15 @@
 """Колесо мыши не должно менять значения без клика.
 
 Проблема, которую держат эти тесты: колесо доставляется виджету под курсором,
-а `QComboBox`, `QSlider` и `QTabBar` меняют значение от колеса **без фокуса**.
-Пилот листает страницу вниз, курсор на мгновение проходит над выпадающим
-списком — и молча меняются язык, план площадки, экран оверлея или размер
-шрифта. Выглядит как «программа сама переключила настройку».
+и часть настроек меняет значение от колеса сама. Пилот листает страницу
+вниз — и молча меняются язык, план площадки, экран оверлея или размер шрифта.
+Выглядит как «программа сама переключила настройку».
+
+Правила два:
+
+* выпадающие списки (`QComboBox`) колесо не листают **никогда** — ни без фокуса,
+  ни после клика, ни в открытом попапе: выбор делается только нажатием;
+* ползунки, счётчики и вкладки меняются от колеса только в фокусе.
 """
 import os
 import sys
@@ -136,15 +141,93 @@ class WheelGuardTests(unittest.TestCase):
 
         self.assertEqual(self.tabs.currentIndex(), before)
 
-    # ------------------------------------------------- после клика работает как раньше
-    def test_combo_changes_after_an_explicit_click(self):
+    # ------------------------------------------- список колесом не листается вовсе
+    def test_combo_ignores_the_wheel_even_after_a_click(self):
+        """Клик даёт списку фокус — но выбор всё равно только нажатием по строке.
+
+        Раньше правило было «до клика не менять»: кликнув по списку, пилот
+        получал фокус, и следующее движение колеса переключало значение. С
+        экрана это выглядело как «само прокрутилось».
+        """
         self.combo.setFocus()
         self.app.processEvents()
+        self.assertTrue(self.combo.hasFocus())
         before = self.combo.currentIndex()
+
+        wheel(self.combo, notches=3)
+
+        self.assertEqual(self.combo.currentIndex(), before)
+
+    def test_page_scrolls_even_when_the_combo_is_focused(self):
+        self.combo.setFocus()
+        self.app.processEvents()
+        bar = self.page.verticalScrollBar()
+        bar.setValue(0)
 
         wheel(self.combo)
 
-        self.assertNotEqual(self.combo.currentIndex(), before)
+        self.assertGreater(bar.value(), 0, "страница листается и с фокусом на списке")
+
+    def test_wheel_over_the_open_list_does_not_change_the_choice(self):
+        """Колесо над открытым меню листает пункты, но не выбор и не страницу."""
+        from PySide6.QtWidgets import QComboBox as _Combo
+
+        combo = _Combo()
+        combo.addItems([f"пункт {index}" for index in range(40)])
+        self.layout.insertWidget(0, combo)
+        self.app.processEvents()
+        combo.setCurrentIndex(5)
+        combo.showPopup()
+        self.app.processEvents()
+        self.addCleanup(combo.hidePopup)
+        view = combo.view()
+        self.assertTrue(view.isVisible())
+        items_bar = view.verticalScrollBar()
+
+        before = combo.currentIndex()
+        page_value = self.page.verticalScrollBar().value()
+
+        wheel(view.viewport(), notches=3)
+
+        self.assertEqual(combo.currentIndex(), before, "выбор — только нажатием")
+        self.assertGreater(items_bar.value(), 0, "само меню листается")
+        self.assertEqual(self.page.verticalScrollBar().value(), page_value,
+                         "страница под открытым меню не должна уезжать")
+
+    def test_wheel_on_the_popup_scrollbar_does_not_change_the_choice(self):
+        from PySide6.QtWidgets import QComboBox as _Combo
+
+        combo = _Combo()
+        combo.addItems([f"пункт {index}" for index in range(40)])
+        self.layout.insertWidget(0, combo)
+        self.app.processEvents()
+        combo.setCurrentIndex(3)
+        combo.showPopup()
+        self.app.processEvents()
+        self.addCleanup(combo.hidePopup)
+        before = combo.currentIndex()
+
+        wheel(combo.view().verticalScrollBar(), notches=3)
+
+        self.assertEqual(combo.currentIndex(), before)
+
+    def test_editable_combo_ignores_the_wheel_over_its_field(self):
+        """У редактируемого списка колесо над полем ввода — тот же список."""
+        from PySide6.QtWidgets import QComboBox as _Combo
+
+        combo = _Combo()
+        combo.setEditable(True)
+        combo.addItems([f"пункт {index}" for index in range(40)])
+        self.layout.insertWidget(0, combo)
+        self.app.processEvents()
+        combo.setFocus()
+        self.app.processEvents()
+        field = combo.lineEdit()
+        before = combo.currentIndex()
+
+        wheel(field, notches=3)
+
+        self.assertEqual(combo.currentIndex(), before)
 
     def test_slider_changes_after_an_explicit_click(self):
         self.slider.setFocus()
@@ -163,6 +246,25 @@ class WheelGuardTests(unittest.TestCase):
         self.assertIs(first, second)
         self.assertIs(getattr(self.app, "_edrc_wheel_guard"), first)
 
+    def test_combo_subclass_is_covered(self):
+        """Свои списки страниц (`RefreshingCombo` и подобные) — те же правила."""
+        from PySide6.QtWidgets import QComboBox as _Combo
+
+        class OwnCombo(_Combo):
+            pass
+
+        combo = OwnCombo()
+        combo.addItems(["a", "b", "c"])
+        self.layout.insertWidget(0, combo)
+        self.app.processEvents()
+        combo.setFocus()
+        self.app.processEvents()
+        before = combo.currentIndex()
+
+        wheel(combo, notches=2)
+
+        self.assertEqual(combo.currentIndex(), before)
+
     def test_guard_counts_what_it_swallowed(self):
         guard = ui_qt.install_wheel_guard()
         before = guard.suppressed
@@ -175,6 +277,18 @@ class WheelGuardTests(unittest.TestCase):
     def test_scroll_ancestor_is_the_page(self):
         self.assertIs(ui_qt.WheelGuard.scroll_ancestor(self.combo), self.page)
         self.assertIsNone(ui_qt.WheelGuard.scroll_ancestor(QWidget()))
+
+    def test_inside_popup_is_told_apart_from_the_combo(self):
+        combo = self.combo
+        self.assertFalse(ui_qt.inside_combo_popup(combo, combo))
+        self.assertFalse(ui_qt.inside_combo_popup(None, combo))
+
+    def test_combo_is_found_around_its_popup_and_field(self):
+        self.assertIs(ui_qt.enclosing_combo(self.combo), self.combo)
+        editable = QComboBox()
+        editable.setEditable(True)
+        self.assertIs(ui_qt.enclosing_combo(editable.lineEdit()), editable)
+        self.assertIsNone(ui_qt.enclosing_combo(QWidget()))
 
     def test_plain_widgets_are_not_intercepted(self):
         """Обычные подписи и поля колесо не перехватывают — это лишний шум."""
