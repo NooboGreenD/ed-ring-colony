@@ -163,18 +163,71 @@ QFrame#cardAccent {{ border: none; border-radius: 2px; }}
 
 #: Виджеты, которые меняют значение от колеса мыши, даже когда на них не
 #: нажимали: колесо доставляется виджету под курсором, а фокус ему для этого
-#: не нужен. Именно из-за этого «прокрутка страницы» молча меняла язык,
-#: план площадки, экран оверлея или размер шрифта.
-WHEEL_SENSITIVE = (QComboBox, QAbstractSpinBox, QAbstractSlider, QTabBar)
+#: не нужен. Именно из-за этого «прокрутка страницы» молча меняла план
+#: площадки, экран оверлея или размер шрифта.
+#:
+#: Списки (`QComboBox`) сюда не входят: у них правило строже — колесо не меняет
+#: выбор никогда, даже когда список в фокусе (см. :class:`WheelGuard`).
+WHEEL_SENSITIVE = (QAbstractSpinBox, QAbstractSlider, QTabBar)
+
+
+def enclosing_combo(widget: Optional[QObject]) -> Optional[QComboBox]:
+    """Ближайший выпадающий список вокруг виджета: он сам, его попап или поле.
+
+    Колесо над открытым списком приходит не в `QComboBox`, а в его попап —
+    отдельное окно с `QListView`. Родитель попапа в Qt — сам список, поэтому
+    подъём по `parentWidget()` находит владельца в обоих случаях.
+    """
+    current = widget if isinstance(widget, QWidget) else None
+    for _step in range(8):                    # глубина дерева попапа невелика
+        if current is None:
+            return None
+        if isinstance(current, QComboBox):
+            return current
+        current = current.parentWidget()
+    return None
+
+
+def combo_popup_open(combo: QComboBox) -> bool:
+    """Открыт ли список выбора у этого `QComboBox`."""
+    view = combo.view()
+    return view is not None and view.isVisible()
+
+
+def inside_combo_popup(widget: Optional[QObject], combo: QComboBox) -> bool:
+    """Лежит ли виджет внутри открытого попапа этого списка (view или скроллбар)."""
+    current = widget if isinstance(widget, QWidget) else None
+    view = combo.view()
+    for _step in range(8):
+        if current is None or view is None:
+            return False
+        if current is view:
+            return True
+        current = current.parentWidget()
+    return False
 
 
 class WheelGuard(QObject):
-    """Не даёт колесу менять значения виджетов, на которые не нажимали.
+    """Колесо мыши не меняет значения настроек само по себе.
 
-    Правило простое: колесо листает страницу, а значение виджета меняет только
-    после осознанного клика (то есть когда у виджета есть фокус). Событие при
-    этом не пропадает — оно уходит ближайшей прокручиваемой области, поэтому
-    страница под курсором продолжает прокручиваться как обычно.
+    Два правила, оба про «случайное движение руки»:
+
+    * **Выпадающие списки колесо не листают никогда** — ни до клика, ни после,
+      когда список уже в фокусе, ни в открытом попапе. Значение меняется
+      только осознанным выбором: открыть список и нажать строку. Раньше клик по
+      списку давал ему фокус, и следующее движение колеса молча переключало
+      язык, план площадки или экран оверлея — со стороны это выглядело так,
+      будто программа «сама прокрутила» настройку. Открытый попап при этом
+      листается колесом сам (длинный список из девяти пунктов иначе не
+      достать), но двигаются только пункты меню: ни выбор, ни страница под
+      меню не меняются.
+    * **Ползунки, счётчики и вкладки** меняются от колеса только в фокусе:
+      колесо листает страницу, а не значение.
+
+    Событие при этом не пропадает — оно уходит ближайшей прокручиваемой
+    области, поэтому страница под курсором продолжает прокручиваться как
+    обычно. Исключение — открытый попап списка: страницу под ним не двигаем,
+    иначе меню уезжает из-под курсора.
 
     Фильтр ставится на приложение целиком (`ensure_app`): тогда правило
     действует и для страниц Helper, и для лаунчера, и для Setup, не требуя
@@ -218,14 +271,27 @@ class WheelGuard(QObject):
         return True
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
-        if event.type() == QEvent.Type.Wheel and isinstance(obj, WHEEL_SENSITIVE):
-            if not obj.hasFocus():
-                self.suppressed += 1
-                area = self.scroll_ancestor(obj)
-                if area is not None:
-                    # Страница листается, значение виджета остаётся прежним.
-                    self.scroll_by(area, event)
-                return True
+        if event.type() != QEvent.Type.Wheel:
+            return super().eventFilter(obj, event)
+        combo = enclosing_combo(obj)
+        if combo is not None:
+            if combo_popup_open(combo) and inside_combo_popup(obj, combo):
+                # Открытое меню листает само себя: пункты едут, выбор — нет.
+                return False
+            # Закрытый список значение от колеса не меняет ни в каком состоянии.
+            self.suppressed += 1
+            area = self.scroll_ancestor(combo)
+            if area is not None:
+                # Страница листается, выбранное значение остаётся прежним.
+                self.scroll_by(area, event)
+            return True
+        if isinstance(obj, WHEEL_SENSITIVE) and not obj.hasFocus():
+            self.suppressed += 1
+            area = self.scroll_ancestor(obj)
+            if area is not None:
+                # Страница листается, значение виджета остаётся прежним.
+                self.scroll_by(area, event)
+            return True
         return super().eventFilter(obj, event)
 
 
