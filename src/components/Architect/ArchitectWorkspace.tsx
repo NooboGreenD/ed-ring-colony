@@ -572,16 +572,20 @@ export default function ArchitectWorkspace() {
    *
    * Теперь при открытии системы сайт сам отдаёт карточки строек
    * (`/api/architect/existing` → `projects`: учёт сайта + кэш Raven + депоты
-   * из журналов), и совпадающие с планом записи получают фактический статус.
-   * Добавлять в план постройки, которых в нём нет, автоматически нельзя —
-   * это решение архитектора, для него есть кнопка в панели факта.
+   * из журналов), и значения применяются без нажатий:
+   *
+   *   * пустой план заполняется существующей застройкой системы целиком —
+   *     очки тиров, «первый порт бесплатно» и налог на порты считаются от
+   *     реального состояния, а не от пустой системы;
+   *   * если в плане уже есть записи, факт только уточняет их статус:
+   *     добавление недостающих построек остаётся решением архитектора
+   *     (кнопка «Применить к плану» в панели факта).
    *
    * Одна попытка на систему и набор тел: иначе обновление плана запускало бы
    * эффект заново и он зацикливался.
    */
   useEffect(() => {
     if (!plan || !systemName || bodies.length === 0) return;
-    if (plan.sites.length === 0) return;
     const marker = `${systemName}|${bodies.length}`;
     if (autoAdoptRef.current === marker) return;
     autoAdoptRef.current = marker;
@@ -596,24 +600,46 @@ export default function ArchitectWorkspace() {
         const data = await response.json().catch(() => null);
         const structures = parseExistingStructures(data, { bodies, system: systemName });
         if (cancelled || structures.length === 0) return;
+        // Пустой план — заполняем застройкой системы целиком; непустой — только
+        // уточняем статусы уже запланированного.
         const planned = new Set(plan.sites.map((site) => structureKey(site.bodyName, site.installationId)));
         const keys = structures
           .filter((structure) => (structure.buildId
             ? plan.sites.some((site) => site.ravenBuildId === structure.buildId)
             : planned.has(structureKey(structure.bodyName, structure.installationId))))
           .map((structure) => structure.key);
-        if (keys.length === 0) return;
+        const targets = plan.sites.length === 0
+          ? structures.map((structure) => structure.key)
+          : keys;
+        if (targets.length === 0) return;
         const result = adoptExisting(plan, structures, {
-          keys,
+          keys: targets,
           bodies,
           index: bodyIndex,
           system: systemName,
         });
-        if (cancelled || result.updated.length === 0) return;
+        if (cancelled) return;
+        if (result.updated.length === 0 && result.added.length === 0) return;
         setPlan(result.plan);
+        setCollapsedBodies((list) => list.filter((name) => !result.touchedBodies.includes(name)));
         setFlashIds(result.touchedSiteIds);
         window.setTimeout(() => setFlashIds([]), 2600);
-        setNotice(t('arch.factAutoApplied', { count: result.updated.length }));
+        const applied = result.added.length + result.updated.length;
+        // Перенос автоматический, но проблемы называем так же честно, как в
+        // панели факта: тело вне каталога — это то, что пользователю придётся
+        // поправить руками.
+        const notes: string[] = [t('arch.factAutoApplied', { count: applied })];
+        if (result.unmatchedBodies.length > 0) {
+          const names = result.unmatchedBodies
+            .map((item) => item.rawBodyName || item.name)
+            .slice(0, 3)
+            .join(', ');
+          notes.push(t('arch.factUnmatched', { count: result.unmatchedBodies.length, names }));
+        }
+        if (result.unknown.length > 0) {
+          notes.push(t('arch.factUnknown', { count: result.unknown.length }));
+        }
+        setNotice(notes.join(' · '));
       } catch {
         // Сеть недоступна — остаётся ручная панель факта, ошибку не шумим.
       }
