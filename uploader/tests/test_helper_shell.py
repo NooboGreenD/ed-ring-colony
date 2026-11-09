@@ -23,6 +23,23 @@ except (ImportError, OSError) as exc:  # pragma: no cover - depends on the machi
     QT_ERROR = str(exc)
 
 
+class SidebarWidthTests(unittest.TestCase):
+    """Ширина боковой колонки считается от окна, а не зашита числом."""
+
+    def test_wide_window_keeps_the_full_sidebar(self):
+        self.assertEqual(helper_shell.sidebar_width_for(1400), helper_shell.SIDEBAR_WIDTH)
+
+    def test_window_gets_narrower_sidebar_with_it(self):
+        self.assertEqual(helper_shell.sidebar_width_for(1000),
+                         helper_shell.SIDEBAR_WIDTH_COMPACT)
+        self.assertEqual(helper_shell.sidebar_width_for(760),
+                         helper_shell.SIDEBAR_WIDTH_NARROW)
+
+    def test_sidebar_never_takes_more_than_a_quarter_of_a_small_window(self):
+        for width in (760, 900, 1000, 1280):
+            self.assertLess(helper_shell.sidebar_width_for(width), width / 3)
+
+
 @unittest.skipIf(QT_ERROR is not None, f"Qt runtime unavailable: {QT_ERROR}")
 class HelperShellTests(unittest.TestCase):
     @classmethod
@@ -53,6 +70,30 @@ class HelperShellTests(unittest.TestCase):
         self.assertIsInstance(self.shell.title_label, QLabel)
         self.assertIsInstance(self.shell.bottom_status, QLabel)
         self.assertIn("v2.18.12", self.shell.version_label.text())
+
+    def test_sidebar_follows_the_window_width(self):
+        self.shell.resize(1400, 800)
+        self.shell.apply_adaptive_widths()
+        self.assertEqual(self.shell.sidebar_frame.width(), helper_shell.SIDEBAR_WIDTH)
+        self.shell.resize(900, 700)
+        self.shell.apply_adaptive_widths()
+        self.assertEqual(self.shell.sidebar_frame.width(),
+                         helper_shell.SIDEBAR_WIDTH_COMPACT)
+        self.shell.resize(780, 600)
+        self.shell.apply_adaptive_widths()
+        self.assertEqual(self.shell.sidebar_frame.width(),
+                         helper_shell.SIDEBAR_WIDTH_NARROW)
+
+    def test_decorative_labels_leave_a_narrow_window(self):
+        self.shell.resize(1400, 800)
+        self.shell.apply_adaptive_widths()
+        self.assertTrue(self.shell.header_subtitle.isVisibleTo(self.shell))
+        self.assertTrue(self.shell.workspace_status.isVisibleTo(self.shell))
+        self.shell.resize(760, 600)
+        self.shell.apply_adaptive_widths()
+        self.assertFalse(self.shell.header_subtitle.isVisibleTo(self.shell))
+        self.assertFalse(self.shell.workspace_status.isVisibleTo(self.shell))
+        self.assertFalse(self.shell.sidebar_hint.isVisibleTo(self.shell))
 
     def test_pages_are_registered_in_a_native_stack_with_navigation_buttons(self):
         first, second = self._page("auth"), self._page("pilot")

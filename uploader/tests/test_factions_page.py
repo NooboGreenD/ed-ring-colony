@@ -78,7 +78,9 @@ class FactionInfographicTests(unittest.TestCase):
         details = next(text for text in texts if "Влияние" in text)
         self.assertIn("58.0%", details)
         self.assertIn("Federation", details)
-        self.assertIn("Активно: Boom, Expansion", details)
+        # Состояния — теми же словами, что в игре: «Boom» не читается по-русски.
+        self.assertIn("Бум", details)
+        self.assertIn("Активно: Бум, Экспансия", details)
 
     def test_new_snapshot_replaces_the_previous_cards(self):
         self.widget.set_snapshot("Sol", "", FACTIONS)
@@ -122,6 +124,99 @@ class FactionInfographicTests(unittest.TestCase):
         self.widget.set_snapshot("Sol", "", FACTIONS)
         self.assertTrue(all(isinstance(card, QFrame)
                             for card in self.widget._card_widgets()))
+
+    # ------------------------------------------------- репутация и состояния
+    def test_reputation_is_named_like_in_the_game(self):
+        row = dict(FACTIONS[0], reputation=0.55)
+        self.widget.set_snapshot("Sol", "", [row])
+        texts = [label.text() for label
+                 in self.widget._card_widgets()[0].findChildren(QLabel)]
+        self.assertIn("Репутация у фракций", texts)
+        self.assertIn("Приветливая", texts)
+        self.assertIsNotNone(getattr(self.widget._card_widgets()[0], "_reputation_bar", None))
+
+    def test_missing_reputation_leaves_no_empty_bar(self):
+        self.widget.set_snapshot("Sol", "", [FACTIONS[0]])
+        self.assertIsNone(getattr(self.widget._card_widgets()[0], "_reputation_bar", None))
+
+    def test_reputation_steps_and_garbage(self):
+        self.assertEqual(qt_factions.reputation_label(0.95), "Союзная")
+        self.assertEqual(qt_factions.reputation_label(0.0), "Нейтральная")
+        self.assertEqual(qt_factions.reputation_label(-0.9), "Враждебная")
+        self.assertEqual(qt_factions.reputation_label(None), "")
+        self.assertEqual(qt_factions.reputation_label("много"), "")
+
+    def test_state_names_are_translated(self):
+        self.assertEqual(qt_factions.state_title("Boom"), "Бум")
+        self.assertEqual(qt_factions.state_title("CivilUnrest"), "Гражданские беспорядки")
+        self.assertEqual(qt_factions.state_title("SomeNewState"), "SomeNewState")
+
+    def test_state_chips_list_pending_and_recovering_states(self):
+        row = dict(FACTIONS[0], pending_states=["Election"], recovering_states=["Lockdown"])
+        self.widget.set_snapshot("Sol", "", [row])
+        texts = [label.text() for label
+                 in self.widget._card_widgets()[0].findChildren(QLabel)]
+        self.assertIn("Бум", texts)
+        self.assertIn("→ Выборы", texts)
+        self.assertIn("↻ Изоляция", texts)
+
+    def test_state_description_explains_what_is_happening(self):
+        row = dict(FACTIONS[0], state="Famine")
+        self.widget.set_snapshot("Sol", "", [row])
+        texts = [label.text() for label
+                 in self.widget._card_widgets()[0].findChildren(QLabel)]
+        self.assertTrue(any("Голод" in text and "продовольствие" in text for text in texts))
+
+    # ------------------------------------------------------- тенденции влияния
+    def test_second_observation_draws_the_trend_chart(self):
+        self.widget.set_snapshot("Sol", "", [FACTIONS[0]], observed_at="2026-11-01T10:00:00Z")
+        self.assertIsNone(getattr(self.widget._card_widgets()[0], "_trend_chart", None))
+        moved = [dict(FACTIONS[0], influence=0.62)]
+        self.widget.set_snapshot("Sol", "", moved, observed_at="2026-11-02T10:00:00Z")
+        chart = getattr(self.widget._card_widgets()[0], "_trend_chart", None)
+        self.assertIsNotNone(chart)
+        self.assertEqual(len(chart.values), 2)
+        self.assertAlmostEqual(chart.values[-1], 0.62, places=3)
+
+    def test_same_observation_is_not_recorded_twice(self):
+        for _ in range(3):
+            self.widget.set_snapshot("Sol", "", [FACTIONS[0]],
+                                     observed_at="2026-11-01T10:00:00Z")
+        self.assertEqual(len(self.widget.history_for(FACTIONS[0]["name"])), 1)
+
+    def test_history_is_reset_when_the_system_changes(self):
+        self.widget.set_snapshot("Sol", "", [FACTIONS[0]], observed_at="2026-11-01T10:00:00Z")
+        self.widget.set_snapshot("Kuma", "", [FACTIONS[0]], observed_at="2026-11-02T10:00:00Z")
+        self.assertEqual(len(self.widget.history_for(FACTIONS[0]["name"])), 1)
+
+    def test_trend_text_talks_in_arrows_and_percent(self):
+        self.assertEqual(qt_factions._trend_text([0.4]), "одно наблюдение")
+        self.assertEqual(qt_factions._trend_text([0.4, 0.4]), "без изменений")
+        self.assertIn("▲", qt_factions._trend_text([0.40, 0.45]))
+        self.assertIn("▼", qt_factions._trend_text([0.45, 0.40]))
+
+    # ----------------------------------------------- экономика и безопасность
+    def test_system_info_strip_shows_economy_security_and_population(self):
+        self.widget.set_snapshot("Sol", "", FACTIONS,
+                                 system_info={"economy": "HighTech", "security": "High",
+                                              "population": 22700000000})
+        self.assertTrue(self.widget.system_card.isVisibleTo(self.widget))
+        text = self.widget.system_info_label.text()
+        self.assertIn("HighTech", text)
+        self.assertIn("High", text)
+        self.assertIn("22,7 млрд", text)
+        self.assertIn("Высокие технологии", self.widget.system_hint_label.text())
+
+    def test_system_info_without_data_hides_the_strip(self):
+        self.widget.set_snapshot("Sol", "", FACTIONS)
+        self.assertFalse(self.widget.system_card.isVisibleTo(self.widget))
+        self.assertEqual(self.widget.system_info_label.text(), "")
+
+    def test_population_is_shortened_for_reading(self):
+        self.assertEqual(qt_factions._population_text(22700000000), "22,7 млрд")
+        self.assertEqual(qt_factions._population_text(1500000), "1,5 млн")
+        self.assertEqual(qt_factions._population_text(0), "0")
+        self.assertEqual(qt_factions._population_text("много"), "много")
 
     # -------------------------------------------------------------- atlas link
     def test_atlas_link_carries_the_locale(self):

@@ -39,7 +39,24 @@ from ui_qt import (
     label,
 )
 
+#: Ширина боковой колонки на большом окне.
 SIDEBAR_WIDTH = 224
+#: Уже окно — уже колонка: на 1366×768 пиксели нужны рабочей области, а не
+#: подписям разделов.
+SIDEBAR_WIDTH_COMPACT = 196
+SIDEBAR_WIDTH_NARROW = 176
+#: С какого размера окна колонка считается «узкой» и прячет подсказку внизу.
+SIDEBAR_HINT_MIN_WIDTH = 900
+
+
+def sidebar_width_for(window_width: int) -> int:
+    """Ширина боковой колонки под ширину окна Helper."""
+    width = int(window_width or 0)
+    if width >= 1100:
+        return SIDEBAR_WIDTH
+    if width >= 900:
+        return SIDEBAR_WIDTH_COMPACT
+    return SIDEBAR_WIDTH_NARROW
 
 
 class PageHost(QWidget):
@@ -127,9 +144,10 @@ class HelperShell(QWidget):
         titles_layout.setContentsMargins(0, 10, 0, 10)
         titles_layout.setSpacing(2)
         titles_layout.addWidget(label("◆  ED RING COLONY", size=15, bold=True, color=ORANGE))
-        titles_layout.addWidget(label(
+        self.header_subtitle = label(
             tr("ПАНЕЛЬ УПРАВЛЕНИЯ  ·  F12 — показать или скрыть оверлей"),
-            role="muted", size=9))
+            role="muted", size=9)
+        titles_layout.addWidget(self.header_subtitle)
         layout.addWidget(titles)
         layout.addStretch(1)
         self.version_label = label(f"v{self.version}" if self.version else "",
@@ -139,6 +157,7 @@ class HelperShell(QWidget):
 
     def _sidebar(self) -> QWidget:
         side = panel(QWidget(), "panel")
+        self.sidebar_frame = side
         side.setFixedWidth(SIDEBAR_WIDTH)
         layout = QVBoxLayout(side)
         layout.setContentsMargins(12, 16, 12, 12)
@@ -195,7 +214,9 @@ class HelperShell(QWidget):
         self.title_label.setObjectName("pageTitle")
         row_layout.addWidget(self.title_label)
         row_layout.addStretch(1)
-        row_layout.addWidget(label("LIVE  /  COMMAND DECK", role="mono", size=8, color=CYAN))
+        self.workspace_status = label("LIVE  /  COMMAND DECK", role="mono", size=8,
+                                      color=CYAN)
+        row_layout.addWidget(self.workspace_status)
         heading_layout.addWidget(row)
         heading_layout.addWidget(label(tr("ED RING COLONY   /   ПАНЕЛЬ УПРАВЛЕНИЯ"),
                                        role="mono", size=8, color=MUTED))
@@ -296,6 +317,42 @@ class HelperShell(QWidget):
         сравнение с русским словом сломалось бы на любом другом языке.
         """
         return (bool(getattr(self, "_online", False)), self.status_detail.text())
+
+    # ------------------------------------------------------------- адаптивность
+    #: Ниже этой ширины окна второстепенные подписи убираются: они отнимают
+    #: место у рабочей области, а смысла в них на узком экране нет.
+    COMPACT_HEADER_WIDTH = 980
+    NARROW_HEADER_WIDTH = 820
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self.apply_adaptive_widths()
+
+    def apply_adaptive_widths(self) -> None:
+        """Подогнать ширину колонки и число подписей под размер окна.
+
+        Раньше боковая колонка была ровно 224 пикселя на любом экране: на
+        1024×600 рабочей области оставалось меньше половины окна, и таблицы
+        начинали прокручиваться вбок. Теперь колонка ужимается вместе с окном,
+        а на совсем узком окне пропадают подписи-украшения.
+        """
+        width = int(self.width())
+        sidebar = getattr(self, "sidebar_frame", None)
+        if sidebar is not None:
+            side_width = sidebar_width_for(width)
+            if int(sidebar.width()) != side_width or sidebar.minimumWidth() != side_width:
+                sidebar.setMinimumWidth(side_width)
+                sidebar.setMaximumWidth(side_width)
+            hint = getattr(self, "sidebar_hint", None)
+            if hint is not None:
+                hint.setMaximumWidth(max(80, side_width - 24))
+                hint.setVisible(width >= SIDEBAR_HINT_MIN_WIDTH)
+        subtitle = getattr(self, "header_subtitle", None)
+        if subtitle is not None:
+            subtitle.setVisible(width >= self.NARROW_HEADER_WIDTH)
+        status = getattr(self, "workspace_status", None)
+        if status is not None:
+            status.setVisible(width >= self.COMPACT_HEADER_WIDTH)
 
     def _pack_into_root(self) -> None:
         """Attach the shell to the window created by the bootstrapper."""

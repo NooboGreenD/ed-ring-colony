@@ -55,6 +55,31 @@ SHORTCUT_KEYS = {
 }
 
 
+#: Минимальный размер окна Helper на большом экране.
+MIN_WIDTH = 980
+MIN_HEIGHT = 630
+#: Пол: ниже этого окно не собрать из панели, заголовка и рабочей области.
+FLOOR_WIDTH = 720
+FLOOR_HEIGHT = 480
+#: Поля по краям экрана, внутри которых окно обязано поместиться.
+SCREEN_MARGIN = 32
+
+
+def window_limits(available_width: int, available_height: int, *,
+                  margin: int = SCREEN_MARGIN) -> "tuple[int, int]":
+    """Минимальный размер окна Helper под свободное место экрана.
+
+    ``980×630`` — разумный минимум для 1920×1080, но на ноутбуке 1366×768 или
+    мониторе 1024×600 окно с таким минимумом не помещается: часть панели
+    уходит под панель задач, а растянуть окно нельзя — Qt держит минимум.
+    Считаем минимум от свободного места и не опускаемся ниже ``FLOOR_*``.
+    """
+    width = max(FLOOR_WIDTH, min(MIN_WIDTH, int(available_width) - int(margin)))
+    height = max(FLOOR_HEIGHT,
+                 min(MIN_HEIGHT, int(available_height) - int(margin) * 2))
+    return width, height
+
+
 class HelperWindow(FramelessWindow):
     """Main window: custom frame, timers, clipboard and a close hook."""
 
@@ -81,9 +106,50 @@ class HelperWindow(FramelessWindow):
         self._quit_by_us = False          # выход попросили мы сами
         self._quit_noted = False
         self._started_at = time.monotonic()
-        self.setMinimumSize(980, 630)
+        self.apply_screen_limits()
 
     # ------------------------------------------------------------------ window
+    def apply_screen_limits(self) -> None:
+        """Подогнать минимальный размер окна под текущий экран.
+
+        ``setMinimumSize(980, 630)`` — разумный минимум для 1920×1080, но на
+        ноутбуке 1366×768 или на мониторе 1024×600 окно с таким минимумом не
+        помещается: часть панели уходит под панель задач, а растянуть окно
+        нельзя — Qt держит минимум. Считаем минимум от свободного места
+        экрана и не опускаемся ниже ``FLOOR_*``.
+        """
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:                      # pragma: no cover - без экрана
+            self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
+            return
+        available = screen.availableGeometry()
+        width, height = window_limits(available.width(), available.height())
+        self.setMinimumSize(int(width), int(height))
+        if not self.isMaximized():
+            self.fit_to_screen()
+
+    def fit_to_screen(self) -> None:
+        """Не дать окну оказаться больше экрана или за его пределами."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:                      # pragma: no cover - без экрана
+            return
+        available = screen.availableGeometry()
+        width = min(max(int(self.width()), self.minimumWidth()),
+                    max(self.minimumWidth(), available.width()))
+        height = min(max(int(self.height()), self.minimumHeight()),
+                     max(self.minimumHeight(), available.height()))
+        if (width, height) != (int(self.width()), int(self.height())):
+            self.resize(width, height)
+        frame = self.frameGeometry()
+        if not available.contains(frame):
+            # Окно запомнило позицию с другого монитора: возвращаем на экран.
+            self.move(available.x() + max(0, (available.width() - width) // 2),
+                      available.y() + max(0, (available.height() - height) // 2))
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self.fit_to_screen()
+
     def run(self) -> int:
         """Show the window and enter the Qt event loop.
 

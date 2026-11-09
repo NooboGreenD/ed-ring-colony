@@ -271,6 +271,50 @@ class RenderingParityTests(unittest.TestCase):
         self.assertIn("ВЫКЛ", critical)
         self.assertIn("ЗАП 12", critical)
 
+    def test_module_table_keeps_the_columns_in_one_place(self):
+        """Список модулей — таблица: шкалы и проценты в одних столбцах.
+
+        Разные по длине имена сдвигали шкалу и процент у каждой строки, и
+        список читался как текст, а не как таблица.
+        """
+        rows = [
+            {"slot": "04/S2", "name": "shield generator", "percent": 87,
+             "on": False, "priority": 2},
+            {"slot": "03/S5", "name": "frame shift drive", "percent": 100, "on": True},
+            {"slot": "", "name": "beam laser", "percent": 31, "on": True,
+             "priority": 3, "ammo": "12"},
+            {"slot": "ENG", "name": "ЩИТ", "percent": 70, "on": True, "priority": 1},
+        ]
+        lines = hud.modules_table_lines(rows, 40)
+        self.assertEqual(len(lines), len(rows))
+        self.assertTrue(all(line.count(hud.FILLED) + line.count(hud.EMPTY) >= 2
+                            for line in lines), "шкала у каждой строки")
+        # Шкала начинается там же, где у самой длинной строки: колонки общие.
+        starts = {line.index(hud.FILLED) if hud.FILLED in line else line.index(hud.EMPTY)
+                  for line in lines}
+        self.assertEqual(len(starts), 1, lines)
+        ends = {line.rstrip().index("%") for line in lines}
+        self.assertEqual(len(ends), 1, lines)
+
+    def test_module_table_keeps_full_names_when_it_can(self):
+        rows = [{"slot": "03/S5", "name": "frame shift drive", "percent": 100,
+                 "on": True},
+                {"slot": "", "name": "beam laser", "percent": 31, "on": True}]
+        lines = hud.modules_table_lines(rows, 40)
+        self.assertIn("frame shift drive", lines[0])
+        self.assertNotIn("…", lines[0])
+
+    def test_module_table_never_exceeds_the_budget(self):
+        rows = [{"slot": "MainEngines", "name": "thrusters", "percent": 62},
+                {"slot": "Slot03_Size5", "name": "frame shift drive", "percent": 100}]
+        for budget in (20, 26, 30, 34, 40):
+            for line in hud.modules_table_lines(rows, budget):
+                self.assertLessEqual(len(line), budget, f"{budget}: {line!r}")
+                self.assertIn("%", line, f"{budget}: процент обязан остаться")
+
+    def test_module_table_of_an_empty_list_is_empty(self):
+        self.assertEqual(hud.modules_table_lines([], 30), [])
+
     def test_slot_label_collapses_named_slots(self):
         self.assertEqual(hud.slot_label("Slot04_Size2"), "04/S2")
         self.assertEqual(hud.slot_label("FrameShiftDrive"), "",

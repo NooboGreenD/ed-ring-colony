@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -42,6 +41,7 @@ from hud_icons import HudIcon
 from i18n import tr
 from ui_qt import (
     CYAN,
+    DIALOG_ACCEPTED,
     GREEN,
     LINE,
     MUTED,
@@ -50,6 +50,7 @@ from ui_qt import (
     PANEL_ALT,
     RED,
     TEXT,
+    FramedDialog,
     action_button,
     heading,
     label,
@@ -836,7 +837,7 @@ class RoutePage(QWidget):
         return self.counter.text()
 
 
-class RouteExportDialog(QDialog):
+class RouteExportDialog(FramedDialog):
     """Мини-меню «Экспорт CSV»: какие данные о маршруте попадут в файл.
 
     Раньше кнопка писала фиксированные четыре столбца. Теперь командир сам
@@ -847,59 +848,74 @@ class RouteExportDialog(QDialog):
 
     «Система» отмечена всегда и не снимается: по ней же маршрут импортируется
     обратно, и файл без имени системы — это не маршрут.
+
+    Это окно рисуется тем же ``FramelessWindow``, что и остальные окна
+    программы: своя шапка с крестиком, тёмный фон и растягивание за края.
+    Системный заголовок ``QDialog`` выглядел в Helper чужеродно.
     """
 
     def __init__(self, parent: _Optional[QWidget] = None, keys=None,
                  systems: int = 0) -> None:
-        super().__init__(parent)
+        super().__init__(tr("Выгрузка маршрута в CSV"), resizable=True,
+                         parent=parent)
         self.setObjectName("routeExportDialog")
-        self.setWindowTitle(tr("Выгрузка маршрута в CSV"))
-        self.setMinimumWidth(560)
+        self.setMinimumSize(560, 380)
+        self.resize(640, 460)
         self.chosen: List[str] = route_export.normalize_keys(keys)
+        self._systems = max(0, int(systems or 0))
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
+        layout = self.body_layout
+        layout.setContentsMargins(18, 14, 18, 16)
         layout.setSpacing(8)
-        layout.addWidget(heading(tr("Что выгрузить в файл"), size=13))
+        layout.addWidget(heading(tr("Что выгрузить в файл"), size=14))
         layout.addWidget(label(
             tr("Отметьте столбцы. «Система» нужна всегда: по ней маршрут "
                "импортируется обратно."),
-            role="muted", size=9, wrap=True))
+            role="muted", size=9, wrap=True, word_wrap_width=560))
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 4, 0, 4)
+        # Галочки живут в карточке: так список не сливается с фоном окна,
+        # а растягивание окна увеличивает саму карточку, а не зазор.
+        card = QFrame()
+        card.setObjectName("routeExportOptions")
+        card.setStyleSheet(
+            f"QFrame#routeExportOptions {{ background: {PANEL_ALT};"
+            f" border: 1px solid {LINE}; border-radius: 8px; }}")
+        grid = QGridLayout(card)
+        grid.setContentsMargins(14, 12, 14, 12)
         grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(4)
+        grid.setVerticalSpacing(6)
         self._boxes: Dict[str, QCheckBox] = {}
+        fields = list(route_export.FIELDS)
         # Два столбца галочек: так окно не растягивается на весь экран.
-        half = (len(route_export.FIELDS) + 1) // 2
-        for position, field in enumerate(route_export.FIELDS):
+        half = (len(fields) + 1) // 2
+        for position, field in enumerate(fields):
             box = QCheckBox(tr(field.title))
             box.setChecked(field.key in self.chosen)
             if field.key in route_export.REQUIRED_KEYS:
                 box.setEnabled(False)
+                box.setToolTip(tr("Этот столбец выгружается всегда."))
             self._boxes[field.key] = box
             grid.addWidget(box, position % half, position // half)
-        layout.addLayout(grid)
+        for column in (0, 1):
+            grid.setColumnStretch(column, 1)
+        layout.addWidget(card, 1)
 
-        note = label(
+        layout.addWidget(label(
             tr("Тела, картография, первооткрыватель, стройка и координаты "
                "приходят из базы проекта: для них нужно соединение с сайтом."),
-            role="muted", size=9, wrap=True)
-        layout.addWidget(note)
+            role="muted", size=9, wrap=True, word_wrap_width=560))
         self.summary = label("", role="muted", size=9, wrap=True)
         layout.addWidget(self.summary)
-        self._systems = max(0, int(systems or 0))
         self._update_summary()
 
-        buttons = row(
-            action_button(tr("Все столбцы"), self._select_all, height=30),
-            action_button(tr("Основные"), self._select_defaults, height=30),
-            None,
-            action_button(tr("Отмена"), self.reject, height=30),
-            action_button(tr("Выгрузить"), self._accept, variant="primary", height=30),
-        )
-        layout.addWidget(buttons)
+        self.all_button = action_button(tr("Все столбцы"), self._select_all, height=30)
+        self.defaults_button = action_button(tr("Основные"), self._select_defaults,
+                                             height=30)
+        self.cancel_button = action_button(tr("Отмена"), self.reject, height=30)
+        self.export_button = action_button(tr("Выгрузить"), self._accept,
+                                           variant="primary", height=30)
+        layout.addWidget(row(self.all_button, self.defaults_button, None,
+                             self.cancel_button, self.export_button))
         for box in self._boxes.values():
             box.toggled.connect(lambda _checked=False: self._update_summary())
 
@@ -940,7 +956,7 @@ class RouteExportDialog(QDialog):
         if not DIALOGS_ENABLED:
             return route_export.normalize_keys(keys)
         dialog = cls(parent=parent, keys=keys, systems=systems)
-        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+        if dialog.exec() != DIALOG_ACCEPTED:
             return None
         return list(dialog.chosen)
 
@@ -1891,17 +1907,15 @@ class OverlayPage(QWidget):
             self.block_widgets[block.key] = widgets
         grid.setColumnStretch(7, 1)
 
-        # Таблица блоков не прокручивается сама: вкладка уже в скролле, а два
-        # вложенных скролла путают колесо мыши. По высоте таблица занимает
-        # ровно свои строки, по ширине — уезжает вбок, если окно узкое.
-        self.blocks_scroll = QScrollArea()
-        self.blocks_scroll.setWidgetResizable(True)
-        self.blocks_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.blocks_scroll.setWidget(self.block_table)
-        grid.activate()
-        table_height = self.block_table.sizeHint().height() + 18
-        self.blocks_scroll.setFixedHeight(max(120, table_height))
-        self.layout_.addWidget(self.blocks_scroll)
+        # Таблица блоков лежит прямо на вкладке: раньше она стояла в отдельном
+        # скролле с фиксированной высотой, посчитанной до показа окна. Высота
+        # выходила меньше настоящей, вертикальная полоса была отключена — и
+        # нижние блоки просто не помещались: до них нельзя было ни долистать,
+        # ни дотянуться. Теперь все строки видны сразу, а прокручивается только
+        # сама вкладка, если её содержимое не влезло в окно.
+        self.block_table.setSizePolicy(QSizePolicy.Policy.Minimum,
+                                       QSizePolicy.Policy.Minimum)
+        self.layout_.addWidget(self.block_table)
 
     def _block_reset_callback(self, key: str):
         return lambda: self._call("block_reset", key)

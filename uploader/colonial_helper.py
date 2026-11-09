@@ -137,7 +137,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.27.1"
+VERSION = "2.28.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -224,11 +224,30 @@ def _screen_label(index) -> str:
 
 
 class ColonialHelperApp:
+    #: Размер окна на большом экране: панель, боковая колонка и рабочая область.
+    START_WIDTH = 1180
+    START_HEIGHT = 790
+
+    @classmethod
+    def _start_geometry(cls) -> str:
+        """Стартовый размер окна, вписанный в свободное место экрана."""
+        from PySide6.QtGui import QGuiApplication
+
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:                      # pragma: no cover - без экрана
+            return f"{cls.START_WIDTH}x{cls.START_HEIGHT}"
+        available = screen.availableGeometry()
+        width = min(cls.START_WIDTH, max(720, available.width() - 60))
+        height = min(cls.START_HEIGHT, max(480, available.height() - 120))
+        return f"{int(width)}x{int(height)}"
+
     def __init__(self, root: HelperWindow):
         self.root = root
         self.root.title(f"{APP_NAME} v{VERSION}")
-        self.root.geometry("1180x790")
-        self.root.minsize(980, 630)
+        # Размер стартового окна — от экрана: на 1366×768 окно 1180×790 не
+        # помещается, и нижняя строка состояния уезжала под панель задач.
+        self.root.geometry(self._start_geometry())
+        self.root.minsize(self.root.minimumWidth(), self.root.minimumHeight())
 
         try:
             self.root.iconbitmap("colonial_helper.ico")
@@ -293,6 +312,8 @@ class ColonialHelperApp:
         self._faction_updated_at = ""
         self._faction_controlling = ""
         self._faction_presence: list = []
+        #: Экономика, безопасность и население системы — блок над карточками.
+        self._faction_system_info: dict = {}
         # Откуда взят снимок вкладки «Фракции»: журнал игры или база проекта.
         self._faction_source = ""
         self._faction_note = ""               # пояснение под списком фракций
@@ -2178,6 +2199,7 @@ class ColonialHelperApp:
             self._faction_updated_at = timestamp or previous_at
             self._faction_controlling = controlling
             self._faction_presence = list(snapshot["factions"]) if snapshot else []
+            self._faction_system_info = dict(snapshot.get("system_info") or {})
             self._faction_source = SOURCE_JOURNAL
             self._faction_note = ""
         if getattr(self, "faction_infographic", None) is not None:
@@ -2287,6 +2309,15 @@ class ColonialHelperApp:
         address = int(result.get("address") or 0)
         journal = result.get("journal") if isinstance(result.get("journal"), dict) else None
         site = result.get("site") if isinstance(result.get("site"), dict) else None
+        if site is not None:
+            # Фон уже разложил ответ сайта в снимок, но вызывать эту функцию
+            # может и тот, кто передал ответ как есть (``{"system": …,
+            # "factions": […]}"``). Без этого у снимка не было ни времени, ни
+            # источника: старый ответ перекрывал свежий журнал, а в подписи
+            # «Источник» стояла пустота.
+            normalized = snapshot_from_site(site)
+            if normalized is not None:
+                site = normalized
         error = str(result.get("site_error") or "").strip()
         current, _current_address = self._faction_tracker_system()
         if system and current and current.casefold() != system.casefold():
@@ -2315,6 +2346,7 @@ class ColonialHelperApp:
                     self._faction_controlling = str(chosen.get("controlling") or "")
                     self._faction_presence = [dict(row) for row in chosen.get("factions") or []
                                               if isinstance(row, dict)]
+                    self._faction_system_info = dict(chosen.get("system_info") or {})
                     self._faction_source = str(chosen.get("source") or "")
                     self._faction_updated_at = chosen_at or previous_at
             self._faction_note = note
@@ -2328,13 +2360,15 @@ class ColonialHelperApp:
             system = self._faction_system
             control = self._faction_controlling
             factions = list(self._faction_presence)
+            system_info = dict(self._faction_system_info)
             source = self._faction_source
             observed_at = self._faction_updated_at
             note = self._faction_note
         if not system and not factions:
             note = note or tr("Система не определена — загрузите журнал игры.")
         widget.set_snapshot(system, control, factions, source=source,
-                            observed_at=observed_at, note=note)
+                            observed_at=observed_at, note=note,
+                            system_info=system_info)
 
     # ============================================================
     #  Вкладка BGS: PowerPlay 2.0

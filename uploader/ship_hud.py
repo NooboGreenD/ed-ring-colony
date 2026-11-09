@@ -499,6 +499,116 @@ def fit_module_line(row: Dict[str, Any], budget: int,
     return percent if len(percent) <= budget else percent.strip()[:budget]
 
 
+#: Колонка имени модуля: одна ширина на весь список, чтобы шкалы стояли в
+#: одном столбце. Уже 8 знаков имя не режем — «ФСД» и «ЩИТ» иначе не узнать,
+#: шире 18 — блок становится простынёй.
+MODULE_NAME_MIN = 8
+MODULE_NAME_MAX = 18
+#: Короче четырёх клеток шкала уже не показывает долю — только факт «есть».
+MODULE_BAR_MIN = 4
+
+
+def module_table_row(row: Dict[str, Any], *, name_width: int, bar_width: int,
+                     budget: int, note: bool = True,
+                     slot_width: int = 6, strict: bool = False) -> Optional[str]:
+    """Строка модуля колонками: метка | слот | имя | шкала | процент | заметка.
+
+    Раньше строка собиралась «как получится», и колонки разъезжались: у
+    «power plant» шкала начиналась раньше, чем у «frame shift drive», а
+    процент прыгал влево-вправо. Теперь имя добивается пробелами до общей
+    ширины, пустой слот остаётся пробелами, поэтому шкалы и проценты стоят
+    ровно друг под другом — список читается как таблица, а не как текст.
+
+    ``strict=True`` — колонки не выбрасываются: строка либо влезает в бюджет
+    целиком, либо возвращается ``None`` (тогда вызывающий сужает колонку
+    имени). Иначе сначала уходит заметка, потом слот и только потом шкала.
+
+    ``None`` — строка не влезла в бюджет: вызывающий берёт компактный вариант
+    (:func:`fit_module_line`).
+    """
+    percent = f"{int(row.get('percent') or 0):>3}%"
+    name = str(row.get("name") or "—")
+    if len(name) > name_width:
+        name = name[:max(1, name_width - 1)].rstrip() + "…"
+    name = name.ljust(name_width)
+
+    def compose(with_note: bool, with_slot: bool, bar_width: int) -> str:
+        pieces = [module_mark(row)]
+        if with_slot and slot_width:
+            # Пустой слот остаётся пробелами: иначе у модуля без метки шкала
+            # уезжает на семь знаков влево и колонки рассыпаются.
+            slot_text = f"{row['slot']:>6}" if row.get("slot") else " " * int(slot_width)
+            pieces.append(slot_text)
+        pieces.append(name.rstrip() if not bar_width else name)
+        if bar_width > 0:
+            scale = bar(row.get("percent"), bar_width)
+            if scale:
+                pieces.append(scale)
+        pieces.append(percent)
+        line = " ".join(pieces)
+        if with_note:
+            tail = module_note(row)
+            if tail:
+                line = f"{line} {tail}"
+        return line
+
+    if strict:
+        line = compose(bool(note), True, int(bar_width))
+        return line if len(line) <= budget else None
+
+    for bar_width_try in (bar_width, 0):
+        for with_note in (True, False):
+            for with_slot in (True, False):
+                line = compose(with_note and note, with_slot, bar_width_try)
+                if len(line) <= budget:
+                    return line
+    return None
+
+
+def modules_table_lines(rows: Sequence[Dict[str, Any]], budget: int,
+                        bar_limit: Optional[int] = None) -> List[str]:
+    """Строки списка модулей одной таблицей: общая шкала и общая колонка имени.
+
+    Ширина колонки имени подбирается один раз на весь список — от самой
+    длинной подписи вниз, пока все строки не влезут в бюджет. Если и на
+    минимальной ширине таблица не помещается, заметки уходят первыми, а в
+    самом крайнем случае строки собираются по одной компактно: лучше честная
+    строка, чем вылезшая за край таблица.
+    """
+    rows = list(rows)
+    budget = int(budget)
+    if not rows:
+        return []
+    if bar_limit is None:
+        bar_limit = module_bar_limit(rows, budget)
+    longest = max((len(str(row.get("name") or "—")) for row in rows), default=0)
+    widest = max(MODULE_NAME_MIN, min(MODULE_NAME_MAX, longest))
+    # Колонка слотов — тоже общая: у части модулей слот не имеет метки.
+    slot_width = 6 if any(row.get("slot") for row in rows) else 0
+
+    # Имя жалко резать: сначала укорачиваем шкалу (она остаётся целой, просто
+    # короче), потом уже жертвуем заметкой и только затем буквами имени.
+    candidates = [(bar_width, note)
+                  for note in (True, False)
+                  for bar_width in range(int(bar_limit), 1, -1)]
+    # Заметка («ВЫКЛ», «ЗАП 12») важнее длины шкалы, но шкала из трёх клеток
+    # уже не шкала: сначала пробуем читаемые, потом совсем короткие.
+    candidates.sort(key=lambda item: (item[1], item[0] >= MODULE_BAR_MIN, item[0]),
+                    reverse=True)
+    for name_width in range(widest, MODULE_NAME_MIN - 1, -1):
+        for bar_width, note in candidates:
+            aligned = [
+                module_table_row(row, name_width=name_width,
+                                 bar_width=int(bar_width), budget=budget,
+                                 note=note, slot_width=slot_width, strict=True)
+                for row in rows
+            ]
+            if all(line is not None for line in aligned):
+                return aligned
+    # Не влезло даже самой узкой таблицей — компактные строки по одной.
+    return [fit_module_line(row, budget, bar_limit=int(bar_limit)) for row in rows]
+
+
 def modules_table_line(row: Dict[str, Any], *, width: int = 34) -> str:
     """Одна строка списка модулей: метка слота, имя, шкала, процент, заметка.
 
@@ -915,12 +1025,11 @@ def hud_rows(hud: Dict[str, Any], max_chars: Optional[int] = None) -> List[Dict[
         for packed in texts:
             rows.append({"kind": "text", "text": clip(packed, budget), "tone": "muted"})
     module_list = list(modules.get("rows") or [])
-    # Одна ширина шкалы на весь список: иначе колонка процентов «пляшет».
+    # Одна ширина шкалы и одна ширина имени на весь список: иначе колонки
+    # процентов и шкал «пляшут» и список модулей выглядит как текст.
     bar_limit = module_bar_limit(module_list, budget)
-    for row in module_list:
-        rows.append({"kind": "mod",
-                     "text": fit_module_line(row, budget, bar_limit=bar_limit),
-                     "tone": row.get("tone", "ok")})
+    for row, text in zip(module_list, modules_table_lines(module_list, budget, bar_limit)):
+        rows.append({"kind": "mod", "text": text, "tone": row.get("tone", "ok")})
     tail_bits = []
     if modules.get("hidden"):
         tail_bits.append(tr("ещё {count}", count=modules["hidden"]))

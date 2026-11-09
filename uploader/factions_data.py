@@ -69,6 +69,104 @@ def _sort_factions(rows: Iterable[dict]) -> List[dict]:
     return sorted(rows, key=lambda item: (-item["influence"], item["name"].casefold()))
 
 
+def _as_reputation(value: Any) -> Optional[float]:
+    """``MyReputation`` из журнала: доля -1…1 (``None``, если её нет).
+
+    Репутация есть только у событий журнала — сайт её не хранит. Ноль — это
+    «нейтрально», и он отличается от «неизвестно», поэтому пустое значение
+    остаётся ``None``.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:                       # NaN из битого JSON
+        return None
+    return max(-1.0, min(1.0, number))
+
+
+#: Состояния экономики, которые игра пишет в ``SystemEconomy``/``Economies``.
+ECONOMY_STATES = ("Boom", "Bust", "CivilUnrest", "Famine", "Investment", "None")
+#: Состояния безопасности из ``SystemSecurity``/``Security``.
+SECURITY_STATES = ("Low", "Medium", "High", "Anarchy", "Lawless", "None")
+
+#: Поля события журнала с экономикой и безопасностью системы.
+EVENT_SYSTEM_FIELDS = (
+    ("economy", "SystemEconomy", "Economies"),
+    ("second_economy", "SystemSecondEconomy", None),
+    ("security", "SystemSecurity", "Security"),
+    ("allegiance", "SystemAllegiance", None),
+    ("government", "SystemGovernment", None),
+)
+
+
+def _first_state(value: Any) -> str:
+    """Первое состояние из списка ``Economies``/``Security`` или строка как есть."""
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text = _state_title(item)
+            if text:
+                return text
+        return ""
+    return _state_title(value)
+
+
+def _system_info_from_event(event: Mapping[str, Any]) -> dict:
+    """Экономика, безопасность и население системы из события журнала.
+
+    Журнал отдаёт их и строкой (``SystemEconomy: "$economy_Agri;"``), и списком
+    (``Economies``, ``Security``); берём первое осмысленное значение. Без этого
+    блока карточке фракции нечего сказать про экономику и безопасность системы.
+    """
+    info: dict = {}
+    for key, source_key, list_key in EVENT_SYSTEM_FIELDS:
+        text = _first_state(event.get(source_key))
+        if not text and list_key:
+            text = _first_state(event.get(list_key))
+        if text:
+            info[key] = text
+    population = event.get("Population")
+    if isinstance(population, int) and not isinstance(population, bool) and population > 0:
+        info["population"] = population
+    return info
+
+
+def _system_info_from_site(system: Mapping[str, Any]) -> dict:
+    """Тот же блок из ответа ``GET /api/factions/system``."""
+    info: dict = {}
+    for key in ("economy", "second_economy", "security", "state",
+                "allegiance", "government"):
+        text = _text(system.get(key))
+        if text:
+            info[key] = text
+    population = system.get("population")
+    try:
+        number = int(population)
+    except (TypeError, ValueError):
+        number = 0
+    if number > 0:
+        info["population"] = number
+    return info
+
+
+def _state_title(value: Any) -> str:
+    """``"$economy_Agri;"`` и ``"Agri"`` → ``"Agri"``: игра пишет ключ в ``$…;``."""
+    if isinstance(value, Mapping):
+        value = value.get("State") or value.get("Name")
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if text.startswith("$"):
+        text = text.strip("$").strip(";")
+        for prefix in ("economy_", "security_", "state_"):
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):]
+                break
+    return "" if text.lower() == "none" else text
+
+
 def snapshot_from_event(event: Mapping[str, Any], source: str = SOURCE_JOURNAL) -> Optional[dict]:
     """Снимок фракций из события журнала (``FSDJump``/``Location``/``CarrierJump``).
 
@@ -79,6 +177,14 @@ def snapshot_from_event(event: Mapping[str, Any], source: str = SOURCE_JOURNAL) 
     projected = project_bgs_event(event)
     if not projected:
         return None
+    #: Репутация командира у фракции есть только в исходном событии: проекция
+    #: для сервера её не несёт (сайту она не нужна). Сопоставляем по имени.
+    reputation = {}
+    for faction in event.get("Factions") or []:
+        if isinstance(faction, Mapping):
+            key = _text(faction.get("Name")).casefold()
+            if key:
+                reputation[key] = _as_reputation(faction.get("MyReputation"))
     rows: List[dict] = []
     for faction in projected.get("Factions") or []:
         name = _text(faction.get("Name"))
@@ -91,6 +197,10 @@ def snapshot_from_event(event: Mapping[str, Any], source: str = SOURCE_JOURNAL) 
             "government": _text(faction.get("Government")),
             "state": _text(faction.get("FactionState")),
             "active_states": _state_names(faction.get("ActiveStates")),
+            "pending_states": _state_names(faction.get("PendingStates")),
+            "recovering_states": _state_names(faction.get("RecoveringStates")),
+            "happiness": _text(faction.get("Happiness")),
+            "reputation": reputation.get(name.casefold()),
             "is_player": False,
         })
     if not rows:
@@ -102,6 +212,7 @@ def snapshot_from_event(event: Mapping[str, Any], source: str = SOURCE_JOURNAL) 
         "controlling": _text(controlling.get("Name")) if isinstance(controlling, Mapping) else "",
         "observed_at": _text(projected.get("timestamp")),
         "source": source,
+        "system_info": _system_info_from_event(projected),
         "factions": _sort_factions(rows),
     }
 
@@ -132,6 +243,9 @@ def snapshot_from_site(payload: Mapping[str, Any]) -> Optional[dict]:
             "government": _text(faction.get("government")),
             "state": _text(faction.get("state")),
             "active_states": _state_names(faction.get("active_states")),
+            "pending_states": _state_names(faction.get("pending_states")),
+            "recovering_states": _state_names(faction.get("recovering_states")),
+            "happiness": _text(faction.get("happiness")),
             "is_player": bool(faction.get("is_player")),
         })
     if not name and not rows:
@@ -142,6 +256,7 @@ def snapshot_from_site(payload: Mapping[str, Any]) -> Optional[dict]:
         "controlling": _text(system.get("controlling_faction")) or _text(system.get("controlling")),
         "observed_at": _text(system.get("observed_at")),
         "source": SOURCE_SITE,
+        "system_info": _system_info_from_site(system),
         "factions": _sort_factions(rows),
     }
 
