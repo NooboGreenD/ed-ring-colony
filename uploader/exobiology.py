@@ -1014,20 +1014,6 @@ GENUS_ALIASES: Dict[str, str] = {
 }
 
 
-def normalize_genus(name: object) -> str:
-    """Привести название рода к каноническому."""
-    text = str(name or "").strip()
-    if not text or text in GENUS_RULES:
-        return text
-    alias = GENUS_ALIASES.get(text.lower())
-    if alias:
-        return alias
-    words = text.split()
-    if not words:
-        return text
-    return GENUS_ALIASES.get(words[0].lower(), text)
-
-
 # Веса совпадений (сумма даёт «уверенность» предсказания).
 WEIGHT_ATMOSPHERE = 3.0
 WEIGHT_GEOLOGY = 2.0

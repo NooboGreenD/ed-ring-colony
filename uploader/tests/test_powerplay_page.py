@@ -245,6 +245,73 @@ class PowerplayPanelTests(unittest.TestCase):
             source="journal-archive")))
         self.assertIn("архив", self.widget.source_label.text())
 
+    # ------------------------------------------ состояние по референсу игры
+    def test_state_badge_carries_the_state_colour_and_title(self):
+        self.widget.set_state(commander_state(system=system_state()))
+        badge = self.widget.state_badge
+        self.assertIn("Оплот", badge.text())
+        # Цвет состояния берётся из справочника, даже если наблюдение его не
+        # принесло: белый бейдж на белом тексте не читался бы вовсе.
+        self.assertIn(powerplay_data.SYSTEM_STATES["Stronghold"]["color"],
+                      badge.styleSheet())
+
+    def test_state_badge_explains_what_the_state_gives(self):
+        self.widget.set_state(commander_state(system=system_state()))
+        self.assertIn("30 св. лет", self.widget.state_hint.text())
+        self.widget.set_state(commander_state(system=system_state(
+            state="Exploited", state_info={"name": "Exploited", "title": "Эксплуатируемая"})))
+        self.assertIn("эксплуатируемых", self.widget.state_hint.text())
+
+    def test_balance_bar_shows_undermining_and_reinforcement(self):
+        self.widget.set_state(commander_state(system=system_state()))
+        bar = self.widget.balance_bar
+        self.assertTrue(self.visible(bar))
+        self.assertEqual((bar.undermining, bar.reinforcement), (380, 1240))
+        self.assertIn("380", self.widget.undermine_label.text())
+        self.assertIn("1 240", self.widget.reinforce_label.text())
+
+    def test_balance_bar_hides_without_numbers(self):
+        self.widget.set_state(commander_state(system=system_state(
+            reinforcement=None, undermining=None)))
+        self.assertFalse(self.visible(self.widget.balance_bar))
+        self.assertFalse(self.visible(self.widget.balance_header))
+
+    def test_control_point_line_names_the_share(self):
+        self.widget.set_state(commander_state(system=system_state()))
+        self.assertIn("62 %", self.widget.point_label.text())
+
+    def test_state_scale_marks_the_current_state(self):
+        self.widget.set_state(commander_state(system=system_state()))
+        self.assertEqual(self.widget.state_scale.state, "Stronghold")
+        self.assertTrue(self.visible(self.widget.state_scale))
+        self.widget.set_state(commander_state(system=system_state(
+            state="Unoccupied", state_info={"name": "Unoccupied",
+                                            "title": "Свободная система"})))
+        self.assertEqual(self.widget.state_scale.state, "Unoccupied")
+
+    def test_state_legend_has_the_four_game_states(self):
+        names = [name for name, _title, _color in qt_powerplay.STATE_LEGEND]
+        self.assertEqual(names, ["Unoccupied", "Exploited", "Fortified", "Stronghold"])
+
+    def test_activity_multiplier_is_shown_when_the_site_sends_it(self):
+        self.widget.set_state(commander_state(system=system_state(activity_multiplier=0.15)))
+        self.assertIn("+15 %", self.widget.multiplier_label.text())
+        self.widget.set_state(commander_state(system=system_state()))
+        self.assertFalse(self.visible(self.widget.multiplier_label))
+
+    def test_penalties_are_shown_only_when_known(self):
+        self.widget.set_state(commander_state(system=system_state(
+            penalty_system="Стандартный")))
+        self.assertIn("Стандартный", self.widget.penalty_label.text())
+        self.widget.set_state(commander_state(system=system_state()))
+        self.assertFalse(self.visible(self.widget.penalty_label))
+
+    def test_empty_state_hides_the_new_system_rows(self):
+        self.widget.set_state(commander_state(system=None))
+        for widget in (self.widget.state_badge, self.widget.state_scale,
+                       self.widget.balance_bar, self.widget.multiplier_label):
+            self.assertFalse(self.visible(widget))
+
     # ---------------------------------------------------------------- notes
     def test_note_reaches_the_window(self):
         self.widget.set_state(commander_state(

@@ -42,7 +42,10 @@ REASON_CHARS = 240
 #: показать пилоту) собирается из `tr()`-ключей в `colonial_helper.py`.
 NON_UI_LITERALS = frozenset({
     "исключение: ", "исключение:", "поток «", "проглоченное исключение",
-    "запуск Helper ",
+    "запуск Helper ", "выход Helper, код ", "окно закрыто",
+    # причины выхода (см. closing_note): их читают в журнале, а не в окне
+    "цикл событий завершился без закрытия окна", "программный выход",
+    "окно закрыто пользователем",
 })
 
 _state: Dict[str, Any] = {"installed": False, "path": None, "stream": None,
@@ -161,11 +164,60 @@ def install(root=None, *, version: str = "", extra: str = "") -> Optional[Path]:
     _state["hooks"] = (prev_excepthook, prev_threadhook, prev_unraisablehook,
                        excepthook, threadhook, unraisablehook)
 
+    install_qt_messages()
     banner = f"запуск Helper {version}".strip()
     if extra:
         banner = f"{banner} ({extra})"
     note(root, banner)
     return path
+
+
+def install_qt_messages() -> bool:
+    """Писать предупреждения Qt в тот же журнал. `True` — обработчик стоит.
+
+    Зачем: Qt ругается в stderr, а у оконной сборки stderr нет. Именно там
+    появляются строки вроде «QWidget: Cannot create a QWidget without
+    QApplication», «QObject::setParent: … different thread», ошибки отрисовки —
+    то есть то, что предшествует закрытию окна без исключения Python. Без этих
+    строк «программа закрылась» невозможно объяснить.
+    """
+    try:
+        from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+    except Exception:
+        return False
+
+    def handler(mode, context, message) -> None:
+        if mode == QtMsgType.QtDebugMsg:
+            return                      # отладочный шум Qt в журнале не нужен
+        try:
+            kind = {QtMsgType.QtInfoMsg: "info", QtMsgType.QtWarningMsg: "warning",
+                    QtMsgType.QtCriticalMsg: "critical",
+                    QtMsgType.QtFatalMsg: "fatal"}.get(mode, "?")
+            where = ""
+            if context is not None and getattr(context, "file", None):
+                where = f" ({context.file}:{context.line})"
+            note(None, f"Qt {kind}{where}: {str(message).strip()}")
+        except Exception:
+            pass
+
+    try:
+        qInstallMessageHandler(handler)
+        _state["qt_handler"] = handler
+        return True
+    except Exception:
+        return False
+
+
+def closing_note(code: int = 0, *, reason: str = "") -> None:
+    """Отметка «программа вышла штатно» — по ней видно, что падения не было.
+
+    `reason` — кто именно завершил программу: «окно закрыто пользователем»,
+    «программный выход» (перезапуск после обновления, смена сервера) или
+    «цикл событий завершился без закрытия окна» — последнее и есть загадочное
+    «закрылось само».
+    """
+    text = str(reason or "окно закрыто")
+    note(None, f"выход Helper, код {code} ({text})")
 
 
 def uninstall() -> None:

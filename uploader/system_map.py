@@ -31,7 +31,7 @@ import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from colonisation import (
     default_project_name,
@@ -953,7 +953,6 @@ class SystemMapBuilder:
             return False
 
         changed = False
-        existing = self._bodies.get(system, {})
 
         for entry in bodies:
             if not isinstance(entry, dict):

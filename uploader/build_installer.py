@@ -14,10 +14,13 @@ HERE = Path(__file__).resolve().parent
 LAUNCHER_EXE = HERE / "dist" / "ColonialHelper.exe"
 
 #: Модули установщика, которые PyInstaller должен забрать явно.
-SETUP_MODULES = ("ui_qt", "installer_window", "installer", "bundle")
+SETUP_MODULES = ("ui_qt", "installer_window", "installer", "bundle",
+                # Удаление вызывается из Setup: у пользователя может
+                # остаться только установщик.
+                "uninstall", "uninstall_window")
 
 #: Проверка настоящего импорта Qt перед упаковкой (отдельный процесс).
-GUI_PREFLIGHT = ("ui_qt", "installer_window")
+GUI_PREFLIGHT = ("ui_qt", "installer_window", "uninstall_window")
 
 
 def main() -> int:

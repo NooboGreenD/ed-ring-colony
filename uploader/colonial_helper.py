@@ -128,13 +128,16 @@ NON_UI_LITERALS = frozenset({
     "' (ожидался '", "'). Доставки из ", " пропущены.", "t на маршрут)",
     # шапка журнала падений (`crash_log`): диагностика, а не подписи окна
     "версия пакета ", "запуск из исходников", "лаунчер ",
+    # хронология запуска и выхода: строки журнала, а не подписи окна
+    "старт: создаю окно Helper", "интерфейс собран, показываю окно",
+    "критическая ошибка запуска: ", "окно уже уничтожено при выходе",
     # консоль и файл аварийного журнала: окно ещё не существует
     "Лог очищен", "ОШИБКА: не найден модуль 'requests'",
     "Решение: pip install requests", "КРИТИЧЕСКАЯ ОШИБКА при запуске:\n",
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.26.0"
+VERSION = "2.28.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -221,11 +224,30 @@ def _screen_label(index) -> str:
 
 
 class ColonialHelperApp:
+    #: Размер окна на большом экране: панель, боковая колонка и рабочая область.
+    START_WIDTH = 1180
+    START_HEIGHT = 790
+
+    @classmethod
+    def _start_geometry(cls) -> str:
+        """Стартовый размер окна, вписанный в свободное место экрана."""
+        from PySide6.QtGui import QGuiApplication
+
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:                      # pragma: no cover - без экрана
+            return f"{cls.START_WIDTH}x{cls.START_HEIGHT}"
+        available = screen.availableGeometry()
+        width = min(cls.START_WIDTH, max(720, available.width() - 60))
+        height = min(cls.START_HEIGHT, max(480, available.height() - 120))
+        return f"{int(width)}x{int(height)}"
+
     def __init__(self, root: HelperWindow):
         self.root = root
         self.root.title(f"{APP_NAME} v{VERSION}")
-        self.root.geometry("1180x790")
-        self.root.minsize(980, 630)
+        # Размер стартового окна — от экрана: на 1366×768 окно 1180×790 не
+        # помещается, и нижняя строка состояния уезжала под панель задач.
+        self.root.geometry(self._start_geometry())
+        self.root.minsize(self.root.minimumWidth(), self.root.minimumHeight())
 
         try:
             self.root.iconbitmap("colonial_helper.ico")
@@ -290,6 +312,8 @@ class ColonialHelperApp:
         self._faction_updated_at = ""
         self._faction_controlling = ""
         self._faction_presence: list = []
+        #: Экономика, безопасность и население системы — блок над карточками.
+        self._faction_system_info: dict = {}
         # Откуда взят снимок вкладки «Фракции»: журнал игры или база проекта.
         self._faction_source = ""
         self._faction_note = ""               # пояснение под списком фракций
@@ -2175,6 +2199,7 @@ class ColonialHelperApp:
             self._faction_updated_at = timestamp or previous_at
             self._faction_controlling = controlling
             self._faction_presence = list(snapshot["factions"]) if snapshot else []
+            self._faction_system_info = dict(snapshot.get("system_info") or {})
             self._faction_source = SOURCE_JOURNAL
             self._faction_note = ""
         if getattr(self, "faction_infographic", None) is not None:
@@ -2284,6 +2309,15 @@ class ColonialHelperApp:
         address = int(result.get("address") or 0)
         journal = result.get("journal") if isinstance(result.get("journal"), dict) else None
         site = result.get("site") if isinstance(result.get("site"), dict) else None
+        if site is not None:
+            # Фон уже разложил ответ сайта в снимок, но вызывать эту функцию
+            # может и тот, кто передал ответ как есть (``{"system": …,
+            # "factions": […]}"``). Без этого у снимка не было ни времени, ни
+            # источника: старый ответ перекрывал свежий журнал, а в подписи
+            # «Источник» стояла пустота.
+            normalized = snapshot_from_site(site)
+            if normalized is not None:
+                site = normalized
         error = str(result.get("site_error") or "").strip()
         current, _current_address = self._faction_tracker_system()
         if system and current and current.casefold() != system.casefold():
@@ -2312,6 +2346,7 @@ class ColonialHelperApp:
                     self._faction_controlling = str(chosen.get("controlling") or "")
                     self._faction_presence = [dict(row) for row in chosen.get("factions") or []
                                               if isinstance(row, dict)]
+                    self._faction_system_info = dict(chosen.get("system_info") or {})
                     self._faction_source = str(chosen.get("source") or "")
                     self._faction_updated_at = chosen_at or previous_at
             self._faction_note = note
@@ -2325,13 +2360,15 @@ class ColonialHelperApp:
             system = self._faction_system
             control = self._faction_controlling
             factions = list(self._faction_presence)
+            system_info = dict(self._faction_system_info)
             source = self._faction_source
             observed_at = self._faction_updated_at
             note = self._faction_note
         if not system and not factions:
             note = note or tr("Система не определена — загрузите журнал игры.")
         widget.set_snapshot(system, control, factions, source=source,
-                            observed_at=observed_at, note=note)
+                            observed_at=observed_at, note=note,
+                            system_info=system_info)
 
     # ============================================================
     #  Вкладка BGS: PowerPlay 2.0
@@ -4084,20 +4121,6 @@ class ColonialHelperApp:
             "selected": selected,
         }
 
-    def _copy_map_text(self, text: str, hint: str = ""):
-        try:
-            import pyperclip
-
-            pyperclip.copy(text)
-        except Exception:
-            try:
-                self.root.clipboard_clear()
-                self.root.clipboard_append(text)
-            except Exception:
-                pass
-        if hint is not None:
-            self._map_set_hint(hint or tr("Скопировано"))
-
     def _build_tab_log(self):
         """Лог на чистом Qt: цветные уровни и кнопка очистки без Tk-виджетов."""
         self.log_page = None
@@ -4906,24 +4929,45 @@ class ColonialHelperApp:
         )
 
     def _on_close(self):
-        self.overlay_manager.stop()
+        """Закрыть программу: остановить фон, сохранить настройки, выйти.
+
+        Каждый шаг в своём `try`: раньше исключение в сохранении настроек
+        (например, диск занят антивирусом) оставляло окно закрытым, а процесс
+        живым — «программа закрылась, но висит в диспетчере». Выход из
+        программы выполняется в `finally`, что бы ни случилось выше.
+        """
+        if getattr(self, "_close_started", False):
+            return
+        self._close_started = True
+        try:
+            self.overlay_manager.stop()
+        except Exception as exc:
+            self.log(f"Остановка оверлея при выходе: {exc}", "warn")
         try:
             self.dispatcher.stop(wait=False)
+        except Exception as exc:
+            self.log(f"Остановка диспетчера при выходе: {exc}", "warn")
+        for name in ("_carrier_sync", "_bgs_sync"):
+            module = getattr(self, name, None)
+            if module is None:
+                continue
             try:
-                if getattr(self, "_carrier_sync", None) is not None:
-                    self._carrier_sync.save()
-            except Exception:
-                pass
+                # Неотправленные наблюдения пилота переживают перезапуск.
+                module.save()
+            except Exception as exc:
+                self.log(f"Сохранение {name} при выходе: {exc}", "warn")
+        try:
+            self.save_config()
+        except Exception as exc:
+            self.log(f"Не удалось сохранить настройки при выходе: {exc}", "warn")
+        finally:
             try:
-                # Неотправленные наблюдения фракций переживают перезапуск.
-                if getattr(self, "_bgs_sync", None) is not None:
-                    self._bgs_sync.save()
+                self.root.destroy()
             except Exception:
-                pass
-        except Exception:
-            pass
-        self.save_config()
-        self.root.destroy()
+                # Окно уже могло быть уничтожено — выйти всё равно нужно.
+                from helper_window import journal
+
+                journal("окно уже уничтожено при выходе")
 
     # ============================================================
     #  Обработчики: Подключение
@@ -5790,7 +5834,7 @@ class ColonialHelperApp:
             self.root.after(
                 0,
                 lambda e=error_text, ins=inserted: self.log(
-                    f"Ошибка загрузки"
+                    "Ошибка загрузки"
                     + (f" (частично загружено {ins} записей)" if ins else "")
                     + f": {e}",
                     "error",
@@ -8769,6 +8813,16 @@ class ColonialHelperApp:
         self.root.after(ms, callback)
 
 
+def _journal(message: str) -> None:
+    """Строка в журнал падений из стартового кода (до окна журнала ещё нет)."""
+    try:
+        import crash_log
+
+        crash_log.note(None, message)
+    except Exception:
+        pass
+
+
 def _install_crash_log():
     """Включить журнал падений до всего остального (см. `crash_log`).
 
@@ -8793,6 +8847,7 @@ def _install_crash_log():
 
 def main():
     crash_file, crash_previous = _install_crash_log()
+    _journal("старт: создаю окно Helper")
     try:
         try:
             import requests
@@ -8805,6 +8860,7 @@ def main():
 
         root = HelperWindow(f"{APP_NAME} v{VERSION}")
         app = ColonialHelperApp(root)
+        _journal("интерфейс собран, показываю окно")
         if crash_file:
             app.crash_log_path = crash_file
             app.log(tr("Журнал падений: {path}", path=crash_file), "info")
@@ -8815,10 +8871,12 @@ def main():
                     "warn")
         root.run()
     except Exception as e:
+        _journal(f"критическая ошибка запуска: {type(e).__name__}: {e}\n"
+                 f"{traceback.format_exc()}")
         error_file = Path.home() / "colonial_helper_error.log"
         with open(error_file, "w", encoding="utf-8") as f:
             f.write("=" * 60 + "\n")
-            f.write(f"КРИТИЧЕСКАЯ ОШИБКА при запуске:\n")
+            f.write("КРИТИЧЕСКАЯ ОШИБКА при запуске:\n")
             f.write(f"  {type(e).__name__}: {e}\n")
             f.write("-" * 60 + "\n")
             traceback.print_exc(file=f)

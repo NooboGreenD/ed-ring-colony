@@ -39,7 +39,7 @@ from i18n import tr
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.4.1"
+LAUNCHER_VERSION = "1.5.0"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
@@ -332,6 +332,45 @@ def activate_path(root, version: str) -> Path:
     return folder
 
 
+def missing_module(exc: BaseException) -> str:
+    """Имя модуля, которого не хватило запускаемой копии программы.
+
+    Так выглядит главная поломка «программа не запускается»: в папке установки
+    лежит пакет, собранный под другую базовую сборку (`No module named
+    'tkinter'` у старых версий с интерфейсом Tk). Сообщение об этом должно быть
+    не трассировкой Python, а объяснением, что делать.
+    """
+    name = getattr(exc, "name", "") or ""
+    if isinstance(exc, ImportError) and name:
+        return str(name).split(".")[0]
+    text = str(exc or "")
+    marker = "No module named "
+    if marker in text:
+        tail = text.split(marker, 1)[1].strip().strip("'\"")
+        return tail.split(".")[0]
+    return ""
+
+
+def ensure_install_marker(root) -> None:
+    """Освежить маркер установки рядом с exe: папку могли выбрать свою.
+
+    Заодно маркер появляется у старых установок, которым он не достался:
+    после этого и обновление, и удаление находят `app/` в той же папке, а не
+    в `%LOCALAPPDATA%`.
+    """
+    folder = bundle.executable_dir()
+    if folder is None:
+        return
+    marker = bundle.read_install_marker(folder)
+    if marker is not None and marker.get("launcher_version") == LAUNCHER_VERSION:
+        return
+    try:
+        bundle.write_install_marker_at(folder, root, launcher_version=LAUNCHER_VERSION,
+                                       silent=True)
+    except OSError:
+        pass
+
+
 def entry_module(manifest: Optional[Dict[str, Any]]) -> str:
     entry = str((manifest or {}).get("entry") or bundle.DEFAULT_ENTRY)
     return Path(entry).stem or "colonial_helper"
@@ -362,6 +401,22 @@ def apply_saved_locale() -> None:
         pass
 
 
+def legacy_bundle_message(module: str) -> str:
+    """Что сказать, если установленная копия собрана под другую базу.
+
+    `tkinter` — точный признак старых сборок (до перехода на PySide6): у них
+    был оконный интерфейс на Tk, и новый лаунчер такой код запустить не может.
+    Замена пары слов в переводе тут не поможет — пакет надо переустановить.
+    """
+    if module == "tkinter":
+        return tr("В папке установки лежит старая сборка Helper с интерфейсом "
+                  "tkinter — она не работает с этим лаунчером. Запустите Setup "
+                  "и нажмите «Переустановить»: он поставит текущую версию.")
+    return tr("В папке установки не хватает модуля {module} — код программы "
+              "не совпадает с лаунчером. Запустите Setup и нажмите "
+              "«Переустановить».", module=module)
+
+
 def report_failure(root, message: str, details: str = "") -> None:
     """Рассказать пользователю, почему не запустилось, и записать в журнал."""
     log(root, message)
@@ -384,6 +439,7 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
     """Запустить Colonial Helper через прежний проверенный bootstrap-поток."""
     args = list(sys.argv[1:] if argv is None else argv)
     root = bundle.install_root()
+    ensure_install_marker(root)
     embedded_dir, embedded_manifest = embedded_bundle()
     use_fallback(embedded_dir)
 
@@ -452,6 +508,10 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
         except Exception as exc:
             log(root, f"версия {version} не запустилась: {exc}")
             log(root, traceback.format_exc())
+            missing = missing_module(exc)
+            if missing:
+                log(root, f"версии {version} не хватает модуля {missing} — "
+                          f"похоже, это старая сборка")
             # Падение на старте — повод откатиться: отметку «здорова» ставит
             # сама программа, значит, до неё дело не дошло.
             previous = bundle.rollback(root)
@@ -468,8 +528,13 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
             log(root, "запуск встроенной копии программы")
             return run_module(entry_module(embedded_manifest))
         except Exception as exc:
-            report_failure(root, tr("Программа не запускается: {error}", error=exc),
-                           traceback.format_exc())
+            missing = missing_module(exc)
+            if missing:
+                report_failure(root, legacy_bundle_message(missing),
+                               traceback.format_exc())
+            else:
+                report_failure(root, tr("Программа не запускается: {error}", error=exc),
+                               traceback.format_exc())
             return 1
 
     report_failure(root, tr("Не найден код программы: ни установленного пакета, "
@@ -670,18 +735,39 @@ def run_dashboard_loop(root, embedded_dir, embedded_manifest,
                 else "причина падения не записана — журнала Helper нет")
 
 
+def run_uninstall(args: Optional[List[str]] = None) -> int:
+    """Удалить программу: окно с выбором берётся из exe, а не из пакета.
+
+    Удаление обязано работать, даже когда пакет кода сломан или отсутствует —
+    иначе «удалить» перестаёт работать ровно тогда, когда оно нужнее всего.
+    """
+    root = bundle.install_root()
+    try:
+        import uninstall
+
+        return int(uninstall.main(list(args or [])) or 0)
+    except Exception as exc:
+        log(root, f"окно удаления не открылось: {exc}")
+        report_failure(root, tr("Не удалось открыть окно удаления: {error}",
+                                error=exc), traceback.format_exc())
+        return 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     # До первого сообщения пользователю: язык из настроек и диалог ошибки
     # лежат в пакете кода, поэтому запасной каталог нужен уже здесь.
     use_fallback(fallback_dir())
     apply_saved_locale()
     args = list(sys.argv[1:] if argv is None else argv)
+    if "--uninstall" in args:
+        return run_uninstall(args)
     direct_flags = {"--run-helper", "--repair", "--reinstall", "--launcher-version", "--bundle-info"}
     if any(flag in args for flag in direct_flags):
         helper_args = [arg for arg in args if arg != "--run-helper"]
         return run_helper(helper_args)
 
     root = bundle.install_root()
+    ensure_install_marker(root)
     embedded_dir, embedded_manifest = embedded_bundle()
     use_fallback(embedded_dir)
     return run_dashboard_loop(root, embedded_dir, embedded_manifest, args)

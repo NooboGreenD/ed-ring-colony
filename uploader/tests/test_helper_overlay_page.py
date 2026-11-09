@@ -352,16 +352,33 @@ class OverlayPageStructureTests(unittest.TestCase):
             self.assertIsInstance(self.page.tabs.widget(index), QScrollArea,
                                   "каждый раздел прокручивается сам")
 
-    def test_block_table_has_no_nested_scroll(self):
+    def test_block_table_has_no_scroll_of_its_own(self):
+        """Таблица блоков не прячет строки в своём скролле.
+
+        Раньше она жила в ``QScrollArea`` с фиксированной высотой и выключенной
+        вертикальной полосой: высота считалась до показа окна, выходила меньше
+        настоящей, и нижние блоки было не видно и не долистать. Теперь таблица
+        лежит прямо на вкладке — прокручивается только сама вкладка.
+        """
         from PySide6.QtWidgets import QScrollArea
 
         page = self.page.tabs.widget(self.page.tab_index("blocks")).widget()
         inner = [area for area in page.findChildren(QScrollArea)
                  if area.isAncestorOf(self.page.block_table)]
-        self.assertEqual(len(inner), 1)
-        self.assertEqual(inner[0].verticalScrollBarPolicy(),
-                         Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
-                         "вложенный вертикальный скролл перехватывал бы колесо мыши")
+        self.assertEqual(inner, [], "у таблицы блоков не должно быть своего скролла")
+
+    def test_every_block_row_is_laid_out_at_once(self):
+        """Все блоки — в таблице, и таблица занимает высоту всех строк."""
+        layout = self.page.block_table.layout()
+        self.assertEqual(layout.rowCount(), len(self.page.state.rows) + 1)
+        self.page.block_table.adjustSize()
+        row_height = layout.cellRect(1, 0).height()
+        self.assertGreater(row_height, 0)
+        self.assertGreaterEqual(self.page.block_table.height(),
+                                row_height * len(self.page.state.rows))
+        for index, block in enumerate(self.page.state.rows, start=1):
+            self.assertFalse(layout.itemAtPosition(index, 0) is None,
+                             f"строка блока {block.key} не создана")
 
 
 class OverlayPageHostTests(unittest.TestCase):

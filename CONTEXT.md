@@ -1,8 +1,8 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: **2026-11-06** (checked against the code).
-> Web release: **2.27.9** · Colonial Helper: **2.26.0** (`PARSER_VERSION = 6`, launcher 1.4.1).
+> Last updated: **2026-11-08** (checked against the code).
+> Web release: **2.27.9** · Colonial Helper: **2.28.0** (`PARSER_VERSION = 6`, launcher 1.5.0).
 > 105 SQL migrations · 249 API routes · 60 pages · 179 site test files · Helper tests: 2077.
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).

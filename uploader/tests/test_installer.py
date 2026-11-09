@@ -128,6 +128,37 @@ class InstallerTests(unittest.TestCase):
         bundle.state_path(self.install_root).write_text("{}", encoding="utf-8")
         self.assertTrue(installer.has_existing_install(self.install_root))
 
+    def test_default_folder_follows_the_previous_install(self):
+        with mock.patch.object(installer.uninstall, "registered_install_root",
+                               return_value=self.install_root):
+            self.assertEqual(installer.install_root_default(), self.install_root)
+
+    def test_default_folder_is_the_system_one_without_a_previous_install(self):
+        with mock.patch.object(installer.uninstall, "registered_install_root", return_value=None), \
+                mock.patch.object(installer.bundle, "install_root",
+                                  return_value=Path("/opt/example")):
+            self.assertEqual(installer.install_root_default(), Path("/opt/example"))
+
+    def test_install_refuses_protected_folders(self):
+        with self.assertRaises(ValueError) as raised:
+            installer.install_launcher(self.source, install_root=Path.home(), launch=False)
+        self.assertIn("домашняя папка", str(raised.exception))
+
+    def test_install_refuses_drive_root(self):
+        with self.assertRaises(ValueError):
+            installer.install_launcher(self.source, install_root=Path(self.root.anchor),
+                                       launch=False)
+
+    def test_install_into_a_custom_folder_works(self):
+        custom = self.root / "My Games" / "EDRC"
+
+        result = installer.install_launcher(self.source, install_root=custom, create_links=False,
+                                            launch=False, register=False)
+
+        self.assertTrue((custom / installer.EXECUTABLE).is_file())
+        self.assertEqual(Path(result["install_root"]), custom)
+        self.assertEqual(bundle.read_install_marker(custom)["root"], str(custom))
+
     def test_missing_payload_fails_before_creating_install(self):
         missing = self.root / "missing.exe"
         with self.assertRaises(FileNotFoundError):

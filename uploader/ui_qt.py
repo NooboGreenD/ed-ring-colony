@@ -12,14 +12,19 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QWheelEvent
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSlider,
+    QAbstractSpinBox,
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QTabBar,
     QVBoxLayout,
     QWidget,
 )
@@ -156,6 +161,85 @@ QFrame#cardAccent {{ border: none; border-radius: 2px; }}
 """
 
 
+#: Виджеты, которые меняют значение от колеса мыши, даже когда на них не
+#: нажимали: колесо доставляется виджету под курсором, а фокус ему для этого
+#: не нужен. Именно из-за этого «прокрутка страницы» молча меняла язык,
+#: план площадки, экран оверлея или размер шрифта.
+WHEEL_SENSITIVE = (QComboBox, QAbstractSpinBox, QAbstractSlider, QTabBar)
+
+
+class WheelGuard(QObject):
+    """Не даёт колесу менять значения виджетов, на которые не нажимали.
+
+    Правило простое: колесо листает страницу, а значение виджета меняет только
+    после осознанного клика (то есть когда у виджета есть фокус). Событие при
+    этом не пропадает — оно уходит ближайшей прокручиваемой области, поэтому
+    страница под курсором продолжает прокручиваться как обычно.
+
+    Фильтр ставится на приложение целиком (`ensure_app`): тогда правило
+    действует и для страниц Helper, и для лаунчера, и для Setup, не требуя
+    трогать каждую страницу отдельно.
+    """
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self.suppressed = 0          # сколько событий колеса перехвачено (тесты)
+
+    @staticmethod
+    def scroll_ancestor(widget: QWidget) -> Optional[QWidget]:
+        """Ближайшая прокручиваемая область вокруг виджета (или `None`)."""
+        parent = widget.parentWidget() if isinstance(widget, QWidget) else None
+        while parent is not None:
+            if isinstance(parent, QAbstractScrollArea):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+    @staticmethod
+    def scroll_by(area: QWidget, event: QWheelEvent) -> bool:
+        """Прокрутить область на величину колеса. `False` — прокручивать нечего.
+
+        Считаем сами, а не пересылаем событие: Qt применяет «плавную»
+        прокрутку только к событиям от настоящей мыши, поэтому пересланное
+        событие страницу не двигало бы (и колесо над списком просто пропадало).
+        Три строки за щелчок — то же, что делает Qt по умолчанию.
+        """
+        bar = area.verticalScrollBar() if isinstance(area, QAbstractScrollArea) else None
+        if bar is None:
+            return False
+        pixels = int(event.pixelDelta().y())
+        if pixels:
+            bar.setValue(bar.value() - pixels)
+            return True
+        angle = int(event.angleDelta().y())
+        if not angle:
+            return False
+        bar.setValue(int(bar.value() - angle / 120.0 * bar.singleStep() * 3))
+        return True
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, WHEEL_SENSITIVE):
+            if not obj.hasFocus():
+                self.suppressed += 1
+                area = self.scroll_ancestor(obj)
+                if area is not None:
+                    # Страница листается, значение виджета остаётся прежним.
+                    self.scroll_by(area, event)
+                return True
+        return super().eventFilter(obj, event)
+
+
+def install_wheel_guard(app: Optional[QApplication] = None) -> WheelGuard:
+    """Включить правило «колесо не меняет значения без клика» (один раз)."""
+    target = app or ensure_app()
+    guard = getattr(target, "_edrc_wheel_guard", None)
+    if guard is None:
+        guard = WheelGuard(target)
+        target._edrc_wheel_guard = guard          # держим ссылку: фильтр без неё умрёт
+        target.installEventFilter(guard)
+    return guard
+
+
 def ensure_app() -> QApplication:
     """Return the single QApplication instance, creating it on first use."""
     app = QApplication.instance()
@@ -164,6 +248,7 @@ def ensure_app() -> QApplication:
     app.setApplicationName("Colonial Helper")
     app.setApplicationDisplayName("ED Ring Colony — Colonial Helper")
     app.setQuitOnLastWindowClosed(True)
+    install_wheel_guard(app)
     return app
 
 
@@ -342,6 +427,7 @@ class _TitleBar(QWidget):
         super().__init__(window)
         self._window = window
         self.setObjectName("titlebar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(34)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 6, 0)
@@ -393,6 +479,47 @@ class _TitleBar(QWidget):
         super().mouseDoubleClickEvent(event)
 
 
+#: Коды WM_NCHITTEST для растягивания окна за края (Windows). Нужны, потому
+#: что у рамки нет системного заголовка: без них окно нельзя растянуть мышью.
+HT_LEFT, HT_RIGHT, HT_TOP, HT_TOPLEFT = 10, 11, 12, 13
+HT_TOPRIGHT, HT_BOTTOM, HT_BOTTOMLEFT, HT_BOTTOMRIGHT = 14, 15, 16, 17
+WM_NCHITTEST = 0x0084
+
+
+def native_hit_test_enabled(platform: str, *, resizable: bool, maximized: bool) -> bool:
+    """Нужно ли отвечать на ``WM_NCHITTEST`` самим.
+
+    Только Windows: на Linux и macOS рамку окна растягивает сама система, а
+    Qt присылает окну обычные события края.
+    """
+    return str(platform) == "win32" and bool(resizable) and not bool(maximized)
+
+
+def hit_test_code(edges) -> int:
+    """Края окна → код ``WM_NCHITTEST`` (0 — обычная точка)."""
+    left = bool(edges & Qt.Edge.LeftEdge)
+    right = bool(edges & Qt.Edge.RightEdge)
+    top = bool(edges & Qt.Edge.TopEdge)
+    bottom = bool(edges & Qt.Edge.BottomEdge)
+    if left and top:
+        return HT_TOPLEFT
+    if right and top:
+        return HT_TOPRIGHT
+    if left and bottom:
+        return HT_BOTTOMLEFT
+    if right and bottom:
+        return HT_BOTTOMRIGHT
+    if left:
+        return HT_LEFT
+    if right:
+        return HT_RIGHT
+    if top:
+        return HT_TOP
+    if bottom:
+        return HT_BOTTOM
+    return 0
+
+
 class FramelessWindow(QWidget):
     """Dark frameless window with a custom title bar and draggable edges.
 
@@ -408,6 +535,9 @@ class FramelessWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(str(title))
         self.setObjectName("shell")
+        # Фон окна и шапки рисуется таблицей стилей — только при этом флаге:
+        # иначе по краям окна просвечивал системный светлый цвет.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(WINDOW_STYLE)
         self.setMouseTracking(True)
         self._resizable = bool(resizable)
@@ -421,6 +551,9 @@ class FramelessWindow(QWidget):
         shell.addWidget(self.titlebar)
         self.body = QWidget()
         self.body.setObjectName("body")
+        # Без этого флага Qt не рисует фон из таблицы стилей для обычного
+        # QWidget: между панелями просвечивал системный светлый цвет окна.
+        self.body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.body_layout = QVBoxLayout(self.body)
         self.body_layout.setContentsMargins(20, 18, 20, 18)
         self.body_layout.setSpacing(12)
@@ -483,6 +616,133 @@ class FramelessWindow(QWidget):
                     event.accept()
                     return
         super().mousePressEvent(event)
+
+    def nativeEvent(self, event_type, message):  # noqa: N802 - Qt API
+        """Растягивание за края там, где клики до окна не доходят.
+
+        У окна нет системной рамки, а содержимое (панели, таблицы, боковая
+        колонка) занимает всю площадь — курсор у края попадает в дочерний
+        виджет, и Qt не присылает окну ни ``mouseMove``, ни ``mousePress``.
+        На Windows поэтому отвечаем на ``WM_NCHITTEST`` сами: система получает
+        «здесь левый край» и тянет окно нативно, как за обычную рамку.
+        """
+        if (native_hit_test_enabled(sys.platform, resizable=self._resizable,
+                                    maximized=self.isMaximized())
+                and event_type in (b"windows_generic_MSG", b"windows_dispatcher_MSG")):
+            try:
+                from ctypes import wintypes
+
+                msg = wintypes.MSG.from_address(int(message))
+                if msg.message == WM_NCHITTEST:
+                    local = self.mapFromGlobal(_point(msg.pt.x, msg.pt.y))
+                    code = hit_test_code(self._edges_at(local))
+                    if code:
+                        return True, code
+            except Exception:
+                # Не наша платформа или Qt без доступа к MSG: обычная обработка.
+                pass
+        return super().nativeEvent(event_type, message)
+
+
+#: Коды результата у :class:`FramedDialog` — те же числа, что у ``QDialog``,
+#: поэтому вызывающий код читает их так же, как раньше.
+DIALOG_REJECTED = 0
+DIALOG_ACCEPTED = 1
+
+
+class FramedDialog(FramelessWindow):
+    """Модальное окно в оформлении приложения: своя шапка, рамка и ресайз.
+
+    ``QDialog`` на Windows рисует системный заголовок и системную рамку, и
+    такое окно выпадает из тёмного интерфейса Helper. Здесь тот же
+    ``FramelessWindow``, что у лаунчера, плюс поведение диалога: модальность,
+    ``accept()``/``reject()`` и ``exec()`` с вложенным циклом событий, который
+    возвращает код результата.
+    """
+
+    def __init__(self, title: str, *, resizable: bool = True,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(tr(title), resizable=resizable, parent=parent)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._result = DIALOG_REJECTED
+        self._loop = None
+
+    # ---------------------------------------------------------------- результат
+    def result(self) -> int:
+        return int(self._result)
+
+    def accept(self) -> None:
+        self._result = DIALOG_ACCEPTED
+        self._finish()
+
+    def reject(self) -> None:
+        self._result = DIALOG_REJECTED
+        self._finish()
+
+    def _finish(self) -> None:
+        """Спрятать окно и вернуть управление вызывающему ``exec()``."""
+        loop = self._loop
+        self.hide()
+        if loop is not None and loop.isRunning():
+            loop.exit(self._result)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        # Крестик и Esc — это отказ, а не «закрылось, ничего не выбрав».
+        if self._result != DIALOG_ACCEPTED:
+            self._result = DIALOG_REJECTED
+        super().closeEvent(event)
+        if self._loop is not None and self._loop.isRunning():
+            self._loop.exit(int(self._result))
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        if not getattr(self, "_centered", False):
+            self._centered = True
+            self.center_on_parent()
+
+    def center_on_parent(self) -> None:
+        """Поставить окно по центру родителя, а без него — по центру экрана."""
+        parent = self.parentWidget()
+        if parent is not None and parent.isVisible():
+            anchor = parent.frameGeometry()
+            frame = self.frameGeometry()
+            self.move(anchor.center().x() - frame.width() // 2,
+                      anchor.center().y() - frame.height() // 2)
+            return
+        center_on_screen(self)
+
+    # --------------------------------------------------------------- цикл окна
+    def exec(self) -> int:  # noqa: A003 - имя намеренно как у QDialog
+        """Показать окно модально и дождаться ответа; вернуть код результата."""
+        from PySide6.QtCore import QEventLoop
+
+        # `ensure_app()` заодно включает «выход по последнему окну» — а Helper
+        # живёт с выключенной политикой. Если приложение уже есть, не трогаем её.
+        if QApplication.instance() is None:
+            ensure_app()
+        self._result = DIALOG_REJECTED
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._loop = QEventLoop(self)
+        try:
+            self._loop.exec()
+        finally:
+            self._loop = None
+        return self.result()
+
+
+def _point(x: int, y: int):
+    """Точка Qt из экранных координат Windows (без зависимости от QPoint)."""
+    from PySide6.QtCore import QPoint
+
+    return QPoint(int(x), int(y))
 
 
 def show_error_dialog(title: str, message: str, *, guard: Optional[QWidget] = None) -> None:

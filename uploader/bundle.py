@@ -69,6 +69,10 @@ MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 #: Имена служебных файлов.
 MANIFEST_NAME = "manifest.json"
 STATE_NAME = "state.json"
+#: Маркер установки рядом с exe: в какой папке живёт эта копия программы.
+#: Появился вместе с установкой в произвольную папку — без него лаунчер
+#: искал бы `app/` только в `%LOCALAPPDATA%\\ColonialHelper`.
+MARKER_NAME = "install.json"
 
 #: Сколько версий держим на диске: текущая + предыдущая (для отката).
 KEEP_VERSIONS = 2
@@ -489,11 +493,105 @@ def sign_manifest(manifest: Dict[str, Any], secret: bytes, key_id: str) -> Dict[
 # ---------------------------------------------------------------------------
 #  Раскладка установки
 # ---------------------------------------------------------------------------
+def executable_dir() -> Optional[Path]:
+    """Каталог, из которого запущен собранный exe; `None` для запуска из исходников.
+
+    По нему находится папка установки, выбранная пользователем: exe лежит
+    ровно в ней, и маркер `install.json` рядом сообщает остальным копиям
+    программы (обновлению, журналам, удалению), где искать `app/` и `state.json`.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        return Path(sys.executable).resolve().parent
+    except OSError:
+        return None
+
+
+def install_marker_path(folder) -> Path:
+    return Path(folder) / MARKER_NAME
+
+
+def read_install_marker(folder) -> Optional[Dict[str, Any]]:
+    """Маркер установки рядом с exe: `{"root": "<папка установки>", ...}`."""
+    try:
+        data = json.loads(install_marker_path(folder).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    root = str(data.get("root") or "").strip()
+    if not root or not Path(root).expanduser().is_absolute():
+        return None
+    data["root"] = str(Path(root).expanduser())
+    return data
+
+
+def write_install_marker(root, *, launcher_version: str = "",
+                         silent: bool = False) -> Optional[Path]:
+    """Записать маркер установки (атомарно). Ошибка записи не мешает установке."""
+    return write_install_marker_at(root, root, launcher_version=launcher_version,
+                                   silent=silent)
+
+
+def write_install_marker_at(folder, root, *, launcher_version: str = "",
+                            silent: bool = False) -> Optional[Path]:
+    """Записать маркер в `folder`, указав в нём папку установки `root`.
+
+    Нужно, когда exe лежит не в папке установки: старая установка могла держать
+    `app/` в `%LOCALAPPDATA%`, а сам exe — в выбранной пользователем папке.
+    """
+    folder = Path(folder).expanduser()
+    marker = install_marker_path(folder)
+    payload = {
+        "product": "ED Ring Colony — Colonial Helper",
+        "schema": SCHEMA,
+        "root": str(Path(root).expanduser()),
+        "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "launcher_version": str(launcher_version or ""),
+    }
+    temporary = marker.with_suffix(".json.tmp")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        os.replace(temporary, marker)
+        return marker
+    except OSError:
+        if not silent:
+            raise
+        return None
+
+
+def remove_install_marker(root) -> bool:
+    """Убрать маркер: после этого каталог не считается установкой Helper."""
+    try:
+        install_marker_path(root).unlink()
+        return True
+    except OSError:
+        return False
+
+
 def install_root() -> Path:
-    """Каталог установки: `%LOCALAPPDATA%\\ColonialHelper` или аналог."""
+    """Каталог установки: выбранная папка, `%LOCALAPPDATA%\\ColonialHelper` или аналог.
+
+    Порядок: `COLONIAL_HELPER_HOME` (тесты, портативный запуск) → маркер рядом
+    с exe (пользователь выбрал свою папку при установке) → папка по умолчанию.
+    """
     override = os.environ.get(HOME_ENV, "").strip()
     if override:
         return Path(override).expanduser()
+    folder = executable_dir()
+    if folder is not None:
+        marker = read_install_marker(folder)
+        if marker is not None:
+            recorded = Path(marker["root"])
+            # Папку могли перенести или удалить вручную: мёртвый путь в маркере
+            # хуже, чем папка, где реально лежит exe, — иначе launcher ищет
+            # `app/` там, где ничего нет, и программа «не запускается».
+            if recorded.is_dir():
+                return recorded
+            return folder
     if sys.platform.startswith("win"):
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
