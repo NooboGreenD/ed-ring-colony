@@ -88,6 +88,8 @@ from powerplay_data import (PowerplayTracker, scan_journal_for_powerplay,
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
+from site_projects import (merge_projects, need_from_project, project_label,
+                           projects_payload, raven_project_payload)
 from colony_build_types import (BUILD_TYPES, BUILD_TYPE_CODES, build_type_label,
                                 normalize_build_type)
 # Пакетное обновление кода: программа запускается лаунчером (ColonialHelper.exe),
@@ -137,7 +139,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.28.1"
+VERSION = "2.28.2"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -357,6 +359,11 @@ class ColonialHelperApp:
         # поэтому груз, который завезли другие командиры, должен уменьшать
         # «осталось завезти» и у нас. Журнал этого не знает.
         self.site_project: dict = {}
+        # Откуда взялась карточка `site_project`: "raven" — живой ответ Raven,
+        # "site" — сайт проекта (депот из журнала), "" — источника нет.
+        # Блок CARRIER подписывает источник, иначе «осталось завезти» без
+        # пометки выглядит одинаково, хотя точность у источников разная.
+        self._site_project_source = ""
         self._site_remote_market = 0           # по какой площадке уже спросили Raven
         self._site_remote_at = 0.0             # когда последний раз спрашивали
         self._carrier_remote_at = 0.0          # когда последний раз брали груз FC
@@ -1237,6 +1244,10 @@ class ColonialHelperApp:
         self.colony_autofill_check = self.colony_page.autofill_check
         self.colony_open_page_check = self.colony_page.open_page_check
         self._colony_site_plans: list = []
+        # Проекты, которые сайт отдал последним: по ним вкладка строит таблицу,
+        # а фоновая перечитка досылает в Raven те, что ещё без buildId.
+        self._site_projects: list = []
+        self._site_projects_raven_try: dict = {}   # key -> когда последний раз пробовали
 
         self._update_colony_key_label()
         self._colony_form_baseline = self._colony_form_snapshot()
@@ -1281,8 +1292,10 @@ class ColonialHelperApp:
         if self.raven_api.is_connected:
             self.colony_page.set_key_status(tr("RCC ключ задан"), COLOR_GREEN)
         else:
-            self.colony_page.set_key_status(tr("RCC ключ не задан — только просмотр"),
-                                            COLOR_ORANGE)
+            # Без RCC проект всё равно создаётся — на сайте. Менять формулировку
+            # «только просмотр» пришлось вместе с порядком источников.
+            self.colony_page.set_key_status(
+                tr("RCC ключ не задан — Raven не синхронизируется"), COLOR_ORANGE)
 
     def _selected_colony_project(self) -> Optional[dict]:
         if getattr(self, "colony_page", None) is None:
@@ -1301,7 +1314,9 @@ class ColonialHelperApp:
 
     def _on_colony_select(self):
         project = self._selected_colony_project()
-        self.colony_page.set_actions_enabled(bool(project and project["buildId"]))
+        # Проект, который есть только на сайте (Raven недоступен), тоже можно
+        # выбрать основным — оверлею нужен остаток потребности, а не buildId.
+        self.colony_page.set_actions_enabled(bool(project))
         if project:
             self.colony_page.set_status(f"{project['systemName']}: {project['buildName']} "
                      f"({project['buildType']}) — {project['progress']}"
@@ -1325,28 +1340,134 @@ class ColonialHelperApp:
         if not cmdr:
             self.log("Укажите имя командира для поиска проектов.", "warn")
             return
-        self._set_colony_busy(True, tr("Загружаю проекты Raven Colonial…"))
+        self._set_colony_busy(True, tr("Загружаю проекты: сайт и Raven Colonial…"))
         threading.Thread(target=self._colony_refresh_thread, args=(cmdr,), daemon=True).start()
 
     def _colony_refresh_thread(self, cmdr: str):
-        result = self.raven_api.get_cmdr_active(cmdr)
-        primary = self.raven_api.get_primary(cmdr) if result.get("ok") else {"ok": False}
-        self.after(0, lambda: self._colony_refresh_done(result, primary))
+        """Список проектов: сначала сайт, потом Raven Colonial (если доступен).
 
-    def _colony_refresh_done(self, result: dict, primary: dict):
+        Сайт — первичный источник. Raven Colonial отвечает 503 и тогда раньше
+        список становился пустым, хотя проекты существовали: Helper сам их
+        регистрировал на сайте. Теперь отказ Raven только дописывается в
+        статус, а не отменяет загрузку.
+
+        Здесь же досылаются проекты, которые сайт знает, а Raven ещё нет
+        (`buildId` пуст): после восстановления Raven они появятся на обеих
+        сторонах без ручных действий.
+        """
+        site_result: dict
+        try:
+            site_result = self.api.fetch_site_projects(cmdr=cmdr) if self.api.token else {
+                "ok": False, "projects": [], "error": tr("Сайт не подключён")}
+        except Exception as exc:                     # noqa: BLE001 — сеть любая
+            site_result = {"ok": False, "projects": [], "error": str(exc)}
+
+        if self.raven_api.is_connected:
+            raven_result = self.raven_api.get_cmdr_active(cmdr)
+        else:
+            raven_result = {"ok": False, "no_key": True,
+                            "error": tr("RCC ключ не задан")}
+        primary = (self.raven_api.get_primary(cmdr)
+                   if raven_result.get("ok") else {"ok": False})
+
+        site_projects = projects_payload(site_result)
+        raven_projects = (self._extract_colony_projects(raven_result.get("data"))
+                          if raven_result.get("ok") else [])
+        merged = merge_projects(site_projects, raven_projects)
+
+        # Проект создан при недоступном Raven: пробуем дослать его сейчас.
+        merged = self._push_site_projects_to_raven(merged, cmdr)
+
+        self.after(0, lambda: self._colony_refresh_done(merged, site_result,
+                                                        raven_result, primary))
+
+    def _colony_refresh_done(self, projects: list, site_result: dict,
+                             raven_result: dict, primary: dict):
         self._set_colony_busy(False)
-        if not result.get("ok"):
+        self._site_projects = list(projects)
+        site_ok = bool(site_result.get("ok"))
+        raven_ok = bool(raven_result.get("ok"))
+        if not site_ok and not raven_ok:
+            reason = (site_result.get("error") or raven_result.get("error")
+                      or tr("нет ответа"))
             self.colony_page.set_status(
-                tr("Не удалось загрузить проекты: {error}", error=result.get("error")))
-            self.log(f"Raven Colonial: не удалось получить проекты — {result.get('error')}", "error")
+                tr("Не удалось загрузить проекты: {error}", error=reason))
+            self.log(f"Проекты не загружены: сайт — {site_result.get('error') or 'нет ответа'}; "
+                     f"Raven Colonial — {raven_result.get('error') or 'нет ответа'}", "error")
             return
 
-        data = result.get("data")
-        projects = self._extract_colony_projects(data)
         primary_id = self._extract_primary_id(primary)
         self._fill_colony_tree(projects, primary_id)
-        self.colony_page.set_status(tr("Проектов: {count}", count=len(projects)))
-        self.log(f"Raven Colonial: загружено проектов — {len(projects)}", "success")
+        if site_ok and raven_ok:
+            status = tr("Проектов: {count} (сайт и Raven)", count=len(projects))
+        elif site_ok:
+            status = tr("Проектов: {count} (сайт; Raven недоступен)",
+                        count=len(projects))
+        else:
+            status = tr("Проектов: {count} (только Raven)", count=len(projects))
+        self.colony_page.set_status(status)
+
+        if site_ok:
+            self.log(f"Сайт проекта: загружено проектов — {len(projects)}", "success")
+        if raven_ok:
+            self.log(f"Raven Colonial: загружено проектов — {len(projects)}", "success")
+        else:
+            self.log(f"Raven Colonial: {raven_result.get('error') or 'нет ответа'} — "
+                     f"список проектов взят с сайта", "warn")
+
+    def _push_site_projects_to_raven(self, projects: list, cmdr: str) -> list:
+        """Дослать в Raven проекты, которые сайт знает без `buildId`.
+
+        Вызывается из фонового потока перечитки списка. Каждый проект
+        пробуем не чаще раза в `PROJECT_RAVEN_RETRY_SECONDS`, чтобы 503 не
+        превращался в поток запросов: до трёх проектов за проход.
+        """
+        if not self.raven_api.is_connected:
+            return projects
+        now = time.monotonic()
+        budget = 3
+        for project in projects:
+            if project.get("buildId") or budget <= 0:
+                continue
+            key = str(project.get("key") or project.get("marketId") or "")
+            last = float(self._site_projects_raven_try.get(key) or 0.0)
+            if last and now - last < self.PROJECT_RAVEN_RETRY_SECONDS:
+                continue
+            payload = raven_project_payload(project, cmdr=cmdr)
+            if not payload.get("marketId") or not payload.get("systemAddress") \
+                    or not payload.get("buildName"):
+                # Raven требует эти три поля; без них ждём данных из журнала.
+                continue
+            budget -= 1
+            self._site_projects_raven_try[key] = now
+            result = self.raven_api.create_project(payload)
+            build_id = self._build_id_from_result(result)
+            if not build_id:
+                continue
+            if cmdr:
+                self.raven_api.link_cmdr(build_id, cmdr, True)
+            project["buildId"] = build_id
+            project["rcState"] = "ok"
+            if self.api.token:
+                # Досылаем в сайт: теперь проект связан с Raven.
+                self.api.register_site_project(
+                    {**payload, "buildId": build_id}, cmdr, rc_state="ok")
+            self.after(0, lambda name=project_label(project): self.log(
+                tr("Raven Colonial снова доступен: проект отправлен — {name}", name=name),
+                "success"))
+        return projects
+
+    @staticmethod
+    def _build_id_from_result(result: dict) -> str:
+        """`buildId` из ответа `PUT /api/project` (объект или голая строка)."""
+        if not isinstance(result, dict) or not result.get("ok"):
+            return ""
+        data = result.get("data")
+        if isinstance(data, dict):
+            return str(data.get("buildId") or "")
+        if isinstance(data, str):
+            return data.strip().strip('"')
+        return ""
 
     @staticmethod
     def _extract_colony_projects(data) -> list:
@@ -1599,6 +1720,16 @@ class ColonialHelperApp:
         # проекта, не дожидаясь ответа сервера и обновления списка.
         cached = (getattr(self, "_colony_projects_cache", {}) or {}).get(project["buildId"])
         self.colony_primary_project = dict(cached or project)
+        if not project["buildId"]:
+            # Проект знает только сайт: основным он становится локально, а в
+            # Raven пометку отправим, когда проект там появится.
+            self._set_colony_busy(False)
+            self.colony_page.set_status(
+                tr("Основной проект: {name}", name=project["buildName"]))
+            self.log(tr("Основной проект выбран локально — {name}; "
+                        "в Raven отправим после синхронизации",
+                        name=project["buildName"]), "warn")
+            return
         threading.Thread(target=self._colony_simple_call_thread,
                          args=("set_primary", (cmdr, project["buildId"]),
                                tr("Основной проект: {name}", name=project["buildName"])),
@@ -1618,6 +1749,10 @@ class ColonialHelperApp:
     def _on_colony_complete(self):
         project = self._selected_colony_project()
         if not project:
+            return
+        if not project["buildId"]:
+            self.log(tr("Проект ещё не синхронизирован с Raven Colonial: "
+                        "завершить его можно после синхронизации."), "warn")
             return
         if not ask_yes_no(
             tr("Завершить проект"),
@@ -1994,8 +2129,13 @@ class ColonialHelperApp:
         return result
 
     def _on_colony_create(self):
-        if not self.raven_api.is_connected:
-            self.log("Для создания проекта нужен RCC ключ (вкладка «Подключение»).", "error")
+        # Проект создаётся на САЙТЕ проекта: ключ RCC для этого больше не нужен.
+        # Raven — необязательное зеркало, его отсутствие (нет ключа или 503)
+        # больше не блокирует создание стройки.
+        if not self.api.token:
+            self.log("Для создания проекта подключите Colonial Helper к сайту проекта.",
+                     "error")
+            self.colony_page.set_status(tr("Нет токена сайта — проект не создать"))
             return
         site = getattr(self, "_colony_draft_site", None)
         build_name = self.colony_page.value("buildName").strip()
@@ -2010,7 +2150,7 @@ class ColonialHelperApp:
             hint = ""
             if site is None and {"Market ID", "System address"} & set(missing):
                 hint = tr("Пристыкуйтесь к стройплощадке и нажмите «Заполнить из журнала».")
-            self.log(f"Raven Colonial требует заполнить: {', '.join(missing)}. {hint}", "warn")
+            self.log(f"Для проекта нужно заполнить: {', '.join(missing)}. {hint}", "warn")
             self.colony_page.set_status(tr(
                 "Не заполнены обязательные поля: {fields}",
                 fields=", ".join(tr(title) for title in missing)))
@@ -2018,8 +2158,8 @@ class ColonialHelperApp:
 
         build_code = self._colony_build_type_code()
         if not build_code:
-            self.log("Выберите тип постройки из списка: только такие коды открываются "
-                     "на Raven Colonial.", "warn")
+            self.log("Выберите тип постройки из списка: по коду тип опознаётся "
+                     "и на сайте, и в Raven Colonial.", "warn")
             self.colony_page.set_status(tr("Не выбран тип постройки"))
             return
         self._colony_sync_body_num()
@@ -2083,55 +2223,101 @@ class ColonialHelperApp:
                          args=(project, cmdr, open_page), daemon=True).start()
 
     def _colony_create_thread(self, project: dict, cmdr: str, open_page: bool = True):
-        result = self.raven_api.create_project(project)
-        build_id = ""
-        data = result.get("data")
-        if isinstance(data, dict):
-            build_id = str(data.get("buildId", "") or "")
-        if isinstance(data, str):
-            build_id = data.strip().strip('"')
-        if result.get("ok") and build_id and cmdr:
-            # Сразу привязываем проект к командиру, иначе он не попадёт в
-            # список «моих проектов» на сайте и в этой вкладке.
-            link = self.raven_api.link_cmdr(build_id, cmdr, True)
-            if not link.get("ok"):
-                result["link_error"] = link.get("error")
-        self.after(0, lambda: self._colony_create_done(result, build_id, cmdr, open_page))
+        """Создать проект: сначала на сайте, затем — в Raven Colonial.
 
-    def _colony_create_done(self, result: dict, build_id: str, cmdr: str, open_page: bool = True):
-        self._set_colony_busy(False)
-        if result.get("ok"):
-            # Проект только что создан: кэш поиска «проекта нет» нужно сбросить,
-            # иначе доставки ближайших минут продолжат отбрасываться с
-            # «проект не найден», хотя buildId уже существует.
-            site = self.construction.site
-            invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
-            if callable(invalidate):
-                invalidate(int(site.system_address or 0) if site else 0,
-                           int(site.market_id or 0) if site else 0)
-            self.site_project = {}
-            system = self.colony_page.value("systemName")
-            name = f"{system}: {self.colony_page.value('buildName')}".strip(": ")
-            message = tr("Raven Colonial: проект создан — {name}", name=name)
-            if build_id:
-                message += f" (buildId {build_id})"
-            self.log(message, "success")
-            if result.get("link_error"):
-                self.log(
-                    f"Raven Colonial: проект создан, но не привязан к командиру — "
-                    f"{result['link_error']}", "warn",
-                )
-            self.colony_page.set_status(
-                tr("Проект создан, buildId: {build_id}", build_id=build_id or "—"))
-            if build_id and open_page:
-                self._colony_open_url(project_url(build_id), tr("Проект {name}", name=name))
-            if cmdr:
-                self._on_colony_refresh()
+        Порядок принципиален. Раньше первым был Raven: его 503 означал «проект
+        не создан», и стройка пропадала из оверлея вместе с потребностью.
+        Теперь сайт сохраняет проект всегда (он и есть первичный источник), а
+        Raven получает копию следом, если ключ задан и сервис отвечает.
+        Неудачу Raven фиксируем в `rcState` и повторяем при следующей перечитке
+        списка (`_push_site_projects_to_raven`).
+        """
+        site_result = self.api.register_site_project(project, cmdr, rc_state="unknown")
+
+        result: dict
+        build_id = ""
+        rc_state = "no_key"
+        if self.raven_api.is_connected:
+            result = self.raven_api.create_project(project)
+            build_id = self._build_id_from_result(result)
+            rc_state = "ok" if build_id else "unavailable"
+            if result.get("ok") and build_id and cmdr:
+                # Сразу привязываем проект к командиру, иначе он не попадёт в
+                # список «моих проектов» и в этой вкладке.
+                link = self.raven_api.link_cmdr(build_id, cmdr, True)
+                if not link.get("ok"):
+                    result["link_error"] = link.get("error")
         else:
-            error = result.get("error") or tr("неизвестная ошибка")
+            result = {"ok": False, "no_key": True, "error": tr("RCC ключ не задан")}
+
+        # Второй заход на сайт: с buildId и состоянием синхронизации. Первый
+        # мог пройти, когда Raven ещё не ответил, — карточка не должна
+        # остаться «неизвестной» навсегда.
+        if site_result.get("ok"):
+            self.api.register_site_project(
+                {**project, "buildId": build_id}, cmdr, rc_state=rc_state)
+
+        self.after(0, lambda: self._colony_create_done(result, build_id, cmdr,
+                                                       open_page, site_result))
+
+    def _colony_create_done(self, result: dict, build_id: str, cmdr: str,
+                            open_page: bool = True, site_result: Optional[dict] = None):
+        """Итог создания: сайт и Raven считаются отдельно.
+
+        Успех сайта — это успех: проект существует, попадает в список вкладки,
+        в оверлей и в Архитектор. Отказ Raven (503, пустой ключ) только
+        откладывает зеркало и повторяется автоматически.
+        """
+        self._set_colony_busy(False)
+        site_result = site_result if isinstance(site_result, dict) else {}
+        site_ok = bool(site_result.get("ok"))
+        raven_ok = bool(result.get("ok") and build_id)
+        system = self.colony_page.value("systemName")
+        name = f"{system}: {self.colony_page.value('buildName')}".strip(": ")
+
+        if not site_ok and not raven_ok:
+            error = (site_result.get("error") or result.get("error")
+                     or tr("неизвестная ошибка"))
             self.colony_page.set_status(
                 tr("Создать проект не удалось: {error}", error=error))
-            self.log(f"Raven Colonial: проект не создан — {error}", "error")
+            self.log(f"Проект не создан: сайт — {site_result.get('error') or 'нет ответа'}; "
+                     f"Raven Colonial — {result.get('error') or 'нет ответа'}", "error")
+            return
+
+        # Проект только что создан: кэш поиска «проекта нет» нужно сбросить,
+        # иначе доставки ближайших минут продолжат отбрасываться с
+        # «проект не найден», хотя buildId уже существует.
+        site = self.construction.site
+        invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
+        if callable(invalidate):
+            invalidate(int(site.system_address or 0) if site else 0,
+                       int(site.market_id or 0) if site else 0)
+        self.site_project = {}
+
+        if raven_ok:
+            message = tr("Проект создан на сайте и в Raven Colonial — {name}", name=name)
+            self.log(message + f" (buildId {build_id})", "success")
+        elif site_ok:
+            reason = result.get("error") or tr("нет ответа")
+            self.log(tr("Проект создан на сайте проекта — {name}", name=name), "success")
+            self.log(tr("Raven Colonial недоступен ({error}) — проект отправлю позже",
+                        error=reason), "warn")
+        else:
+            # Сайт отказал, Raven принял: проект существует и связан.
+            self.log(tr("Проект создан только в Raven Colonial — {name}", name=name),
+                     "warn")
+
+        if result.get("link_error"):
+            self.log(
+                f"Raven Colonial: проект создан, но не привязан к командиру — "
+                f"{result['link_error']}", "warn",
+            )
+        self.colony_page.set_status(
+            tr("Проект создан, buildId: {build_id}", build_id=build_id or "—"))
+        if build_id and open_page:
+            self._colony_open_url(project_url(build_id), tr("Проект {name}", name=name))
+        if cmdr:
+            self._on_colony_refresh()
 
 
     # ============================================================
@@ -7598,9 +7784,11 @@ class ColonialHelperApp:
            `commodities` в Raven Colonial — это актуальный остаток потребности,
            который видят все клиенты: и то, что завезли вы, и то, что завезли
            другие командиры. Именно этот список просил показывать пользователь.
-        2. **Проект стройплощадки, у которой стоит игрок**, перечитанный из
-           Raven Colonial (`site_project`). Тоже знает чужие доставки, но не
-           требует отмечать проект основным.
+        2. **Проект стройплощадки, у которой стоит игрок** (`site_project`).
+           Источник — Raven Colonial, а если он отвечает 503 — сайт проекта:
+           там остаток считается из точных ресурсов депота
+           (`RequiredAmount - ProvidedAmount`), присланных из журнала. Тоже
+           знает чужие доставки, но не требует отмечать проект основным.
         3. **Стройплощадка из журнала** (`ColonisationConstructionDepot`).
            Работает без ключа RCC, но знает только то, что написано в журнале:
            если часть груза сдал другой командир, остаток будет завышен.
@@ -7628,8 +7816,11 @@ class ColonialHelperApp:
         # 2. Проект стройплощадки, у которой стоит игрок, перечитанный из Raven
         #    Colonial. В отличие от журнала он знает и чужие доставки: если
         #    часть груза сдал другой командир, «осталось завезти» уменьшится.
+        # Карточка могла прийти и с сайта проекта, когда Raven недоступен:
+        # тогда `buildId` нет, но `commodities` посчитаны из депотов журналов.
         site_project = self.site_project or {}
-        if isinstance(site_project, dict) and site_project.get("buildId"):
+        site_from_web = getattr(self, "_site_project_source", "") == "site"
+        if isinstance(site_project, dict) and (site_project.get("buildId") or site_from_web):
             commodities = site_project.get("commodities")
             if isinstance(commodities, dict) and commodities:
                 need = {}
@@ -7643,7 +7834,8 @@ class ColonialHelperApp:
                 if need:
                     label = (f"{site_project.get('buildName') or tr('стройплощадка')}"
                              f" · {site_project.get('systemName') or ''}").strip(" ·")
-                    return need, label, "site_project"
+                    return need, label, ("site_project_web" if site_from_web
+                                         else "site_project")
 
         # 3. Журнал: работает без ключа RCC, но знает только ваши доставки.
         site = self.construction.site
@@ -7793,6 +7985,11 @@ class ColonialHelperApp:
     #: Как часто перечитываем ОСНОВНОЙ проект колонизатора по таймеру.
     PRIMARY_PROJECT_REFRESH_SECONDS = 300.0
 
+    #: Как часто повторять отправку в Raven проекта, который сайт уже знает.
+    #: Пока Raven отвечает 503, без паузы каждая перечитка списка превращалась
+    #: бы в поток запросов к недоступному сервису.
+    PROJECT_RAVEN_RETRY_SECONDS = 120.0
+
     def _refresh_primary_project(self, force: bool = False):
         """Перечитать основной проект колонизатора из Raven Colonial.
 
@@ -7804,7 +8001,13 @@ class ColonialHelperApp:
         момент назначения.
         """
         build_id = str(self.colony_primary_project.get("buildId") or "")
-        if not build_id or not self.raven_api.is_connected:
+        if not self.raven_api.is_connected:
+            # Raven недоступен — остаток берём с сайта проекта. Без этого
+            # блок CARRIER показывал потребность на момент назначения проекта.
+            self._refresh_primary_project_from_site(force=force)
+            return
+        if not build_id:
+            self._refresh_primary_project_from_site(force=force)
             return
         now = time.monotonic()
         same = build_id == self._primary_remote_id
@@ -7816,6 +8019,44 @@ class ColonialHelperApp:
         self._primary_remote_at = now
         threading.Thread(target=self._load_primary_project,
                          args=(build_id,), daemon=True).start()
+
+    def _refresh_primary_project_from_site(self, force: bool = False):
+        """Перечитать остаток основного проекта с сайта проекта.
+
+        Путь для случая «Raven Colonial отвечает 503»: сайт знает и проект
+        (`construction_projects`), и точные ресурсы депотов из журналов.
+        """
+        project = self.colony_primary_project or {}
+        market_id = int(project.get("marketId") or 0) if project else 0
+        if not market_id or not self.api.token:
+            return
+        now = time.monotonic()
+        if (not force and now - float(self._primary_remote_at or 0.0)
+                < self.PRIMARY_PROJECT_REFRESH_SECONDS):
+            return
+        self._primary_remote_at = now
+        threading.Thread(target=self._load_primary_project_from_site,
+                         args=(market_id,), daemon=True).start()
+
+    def _load_primary_project_from_site(self, market_id: int):
+        card = self._site_card_for_market(0, market_id)
+        if not card:
+            return
+
+        def apply():
+            current = self.colony_primary_project or {}
+            if int(current.get("marketId") or 0) != int(market_id):
+                return
+            # Обновляем только то, что относится к потребности: имя, система и
+            # основность остаются такими, какими их выбрал пилот.
+            updated = dict(current)
+            updated["commodities"] = dict(card.get("commodities") or {})
+            updated["sumNeed"] = card.get("sumNeed") or sum(updated["commodities"].values())
+            if card.get("sumTotal"):
+                updated["sumTotal"] = card["sumTotal"]
+            self.colony_primary_project = updated
+
+        self.after(0, apply)
 
     def _load_primary_project(self, build_id: str):
         project = self.raven_api.resolve_project_by_id(build_id)
@@ -7945,7 +8186,10 @@ class ColonialHelperApp:
             address = int(site.system_address or 0)
         except (TypeError, ValueError):
             return
-        if market_id <= 0 or address <= 0 or not self.raven_api.is_connected:
+        if market_id <= 0 or address <= 0:
+            return
+        # Без ключа RCC и без подключения к сайту спрашивать некого.
+        if not self.raven_api.is_connected and not self.api.token:
             return
         now = time.monotonic()
         fresh = now - float(self._site_remote_at or 0.0)
@@ -7966,19 +8210,35 @@ class ColonialHelperApp:
         ).start()
 
     def _load_site_project(self, address: int, market_id: int):
-        """Фоновый запрос: проект стройплощадки из Raven Colonial.
+        """Фоновый запрос: проект стройплощадки — сначала Raven, потом сайт.
 
         Ищем тем же путём, что и для отправки доставок (привязка площадки ->
         market_id -> система), иначе «осталось завезти» показывало бы не тот
         проект, которому зачисляются тонны.
+
+        Когда Raven отвечает 503 (или проекта там ещё нет), потребность берём
+        с сайта проекта: Helper уже прислал туда и черновик проекта, и снимки
+        `ColonisationConstructionDepot`, поэтому остаток считается по точным
+        `RequiredAmount`/`ProvidedAmount` из журнала.
         """
-        project, _note = self._resolve_site_project(address, market_id)
+        if self.raven_api.is_connected:
+            project, _note = self._resolve_site_project(address, market_id)
+        else:
+            project = None
         if not isinstance(project, dict) or not project.get("buildId"):
-            # Площадка есть в журнале, но проекта на Raven ещё нет (никто не
-            # создал) — это не ошибка, а состояние. Молча остаёмся на журнале.
+            fallback = self._site_card_for_market(address, market_id)
+            if fallback:
+                self.site_project = fallback
+                self._site_project_source = "site"
+                self._log_site_project_need(fallback, source=tr("сайт проекта"))
+                return
+            # Площадка есть в журнале, но проекта нет ни на сайте, ни в Raven —
+            # это состояние, а не ошибка. Остаёмся на данных журнала.
             self.site_project = {}
+            self._site_project_source = ""
             return
         self.site_project = dict(project)
+        self._site_project_source = "raven"
         self._maybe_confirm_project_complete(project)
         commodities = project.get("commodities")
         if isinstance(commodities, dict):
@@ -7988,20 +8248,77 @@ class ColonialHelperApp:
                 if isinstance(value, (int, float)) and not isinstance(value, bool)
             }
             self._check_raven_credit(market_id, remaining)
-            left = sum(remaining.values())
-            # Пишем строку только когда остаток действительно изменился:
-            # опрос идёт по таймеру каждые пять минут, и одинаковое
-            # «осталось завезти» на каждом опросе — просто шум.
-            signature = (market_id, tuple(sorted(remaining.items())))
-            if signature != self._site_project_log_sig:
-                self._site_project_log_sig = signature
-                # Тысячи разделяем пробелом, но только в самом числе: глобальный
-                # .replace(",", " ") по всей строке съел бы запятую после «позиц.».
-                tons = f"{left:,}".replace(",", " ")
-                self.log(
-                    f"Стройплощадка {market_id}: осталось завезти {tons} t "
-                    f"({len(remaining)} позиц., данные Raven Colonial)",
-                    "info")
+            self._log_site_project_need(project, source="Raven Colonial")
+
+    def _log_site_project_need(self, project: dict, source: str = "") -> None:
+        """Записать в лог остаток потребности площадки, если он изменился.
+
+        Опрос идёт по таймеру каждые пять минут, и одинаковое «осталось
+        завезти» на каждом опросе — просто шум. Подпись включает источник:
+        после переключения с Raven на сайт цифры того же размера не должны
+        выглядеть «ничего не изменилось».
+        """
+        commodities = project.get("commodities") if isinstance(project, dict) else None
+        if not isinstance(commodities, dict) or not commodities:
+            return
+        try:
+            market_id = int(project.get("marketId") or 0)
+        except (TypeError, ValueError):
+            market_id = 0
+        remaining = {
+            canonical_commodity(key): int(float(value))
+            for key, value in commodities.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        if not remaining:
+            return
+        left = sum(remaining.values())
+        signature = (market_id, tuple(sorted(remaining.items())), source)
+        if signature == self._site_project_log_sig:
+            return
+        self._site_project_log_sig = signature
+        # Тысячи разделяем пробелом, но только в самом числе: глобальный
+        # .replace(",", " ") по всей строке съел бы запятую после «позиц.».
+        tons = f"{left:,}".replace(",", " ")
+        self.log(
+            f"Стройплощадка {market_id or '—'}: осталось завезти {tons} t "
+            f"({len(remaining)} позиц., данные {source or 'журнала'})",
+            "info")
+
+    def _site_card_for_market(self, address: int, market_id: int) -> dict:
+        """Карточка площадки с сайта проекта — когда Raven недоступен.
+
+        Возвращает проект в форме Raven (`buildId` может быть пустым):
+        остаток потребности уже посчитан сайтом из депотов в журналах.
+        """
+        if not self.api.token:
+            return {}
+        try:
+            result = self.api.fetch_site_projects(
+                system_address=int(address or 0), market_id=int(market_id or 0))
+        except Exception as exc:                     # noqa: BLE001 — сеть любая
+            self.log(f"Сайт проекта: не удалось получить площадку {market_id} — {exc}",
+                     "warn")
+            return {}
+        if not result.get("ok"):
+            return {}
+        for raw in projects_payload(result):
+            if not isinstance(raw, dict):
+                continue
+            card = merge_projects([raw], [])
+            if not card:
+                continue
+            project = card[0]
+            card_market = project.get("marketId")
+            try:
+                if int(card_market or 0) != int(market_id or 0):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if not need_from_project(project):
+                continue
+            return project
+        return {}
 
     #: Сколько снимков потребности ждём, прежде чем сказать «тонны не зачтены».
     #: Raven может применить вклад не мгновенно, а первый снимок делается сразу

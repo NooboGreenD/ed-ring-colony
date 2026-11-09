@@ -26,7 +26,11 @@ import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
 import { buildBodyIndex, resolveBodyName } from '@/lib/architect/bodyNames';
 import { parseSyncReport, type SyncSourceState, type SystemSyncReport } from '@/lib/architect/bodySync';
 import { auditBodyRows, auditPlanData } from '@/lib/architect/dataQuality';
-import { adoptExisting, type ExistingStructure } from '@/lib/architect/existing';
+import {
+  adoptExisting,
+  parseExistingStructures,
+  type ExistingStructure,
+} from '@/lib/architect/existing';
 import {
   matchProgress,
   parseActualSites,
@@ -511,6 +515,16 @@ export default function ArchitectWorkspace() {
   );
 
   /**
+   * Какие системы уже получили автоматический перенос факта.
+   *
+   * Одна попытка на систему и набор тел: эффект ниже меняет план, а его
+   * изменение запускает эффект снова — без метки это был бы цикл. Ручное
+   * «Применить к плану» ставит ту же метку: пользователь уже перенёс всё сам,
+   * и вторая, автоматическая, попытка только переписала бы сводку.
+   */
+  const autoAdoptRef = useRef('');
+
+  /**
    * Перенос реальной застройки в план.
    *
    * Ничего не удаляет и не создаёт дублей: уже имеющимся записям только
@@ -518,6 +532,7 @@ export default function ArchitectWorkspace() {
    */
   const applyExisting = useCallback((structures: ExistingStructure[]) => {
     if (!plan) return;
+    autoAdoptRef.current = `${systemName}|${bodies.length}`;
     // Каталог тел передаётся внутрь: имена из источников приводятся к нему,
     // иначе перенесённые записи не попадали бы на карточки тел и выглядели
     // бы как «ничего не изменилось».
@@ -547,6 +562,66 @@ export default function ArchitectWorkspace() {
     if (result.unknown.length > 0) parts.push(t('arch.factUnknown', { count: result.unknown.length }));
     setNotice(parts.length > 0 ? t('arch.factApplied', { parts: parts.join(', ') }) : t('arch.factNothing'));
   }, [plan, bodies, bodyIndex, systemName]);
+
+  /**
+   * Автоматический перенос факта в план.
+   *
+   * Раньше статусы «построено» / «строится» появлялись только после того, как
+   * архитектор откроет панель факта и нажмёт «Применить». Из-за этого очки
+   * тиров считались от пустой системы, а уже стоящий порт выглядел планом.
+   *
+   * Теперь при открытии системы сайт сам отдаёт карточки строек
+   * (`/api/architect/existing` → `projects`: учёт сайта + кэш Raven + депоты
+   * из журналов), и совпадающие с планом записи получают фактический статус.
+   * Добавлять в план постройки, которых в нём нет, автоматически нельзя —
+   * это решение архитектора, для него есть кнопка в панели факта.
+   *
+   * Одна попытка на систему и набор тел: иначе обновление плана запускало бы
+   * эффект заново и он зацикливался.
+   */
+  useEffect(() => {
+    if (!plan || !systemName || bodies.length === 0) return;
+    if (plan.sites.length === 0) return;
+    const marker = `${systemName}|${bodies.length}`;
+    if (autoAdoptRef.current === marker) return;
+    autoAdoptRef.current = marker;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(
+          `/api/architect/existing?system=${encodeURIComponent(systemName)}`,
+          { cache: 'no-store' },
+        );
+        if (!response.ok) return;
+        const data = await response.json().catch(() => null);
+        const structures = parseExistingStructures(data, { bodies, system: systemName });
+        if (cancelled || structures.length === 0) return;
+        const planned = new Set(plan.sites.map((site) => structureKey(site.bodyName, site.installationId)));
+        const keys = structures
+          .filter((structure) => (structure.buildId
+            ? plan.sites.some((site) => site.ravenBuildId === structure.buildId)
+            : planned.has(structureKey(structure.bodyName, structure.installationId))))
+          .map((structure) => structure.key);
+        if (keys.length === 0) return;
+        const result = adoptExisting(plan, structures, {
+          keys,
+          bodies,
+          index: bodyIndex,
+          system: systemName,
+        });
+        if (cancelled || result.updated.length === 0) return;
+        setPlan(result.plan);
+        setFlashIds(result.touchedSiteIds);
+        window.setTimeout(() => setFlashIds([]), 2600);
+        setNotice(t('arch.factAutoApplied', { count: result.updated.length }));
+      } catch {
+        // Сеть недоступна — остаётся ручная панель факта, ошибку не шумим.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [plan, systemName, bodies, bodyIndex, t]);
 
   const exportPlan = useCallback(() => {
     if (!plan) return;

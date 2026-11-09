@@ -23,7 +23,7 @@ import { normalizeBuildType } from './progress.ts';
 import type { ArchitectBody, ArchitectPlan, PlannedSiteStatus } from './types.ts';
 
 /** Откуда узнали о постройке. */
-export type ExistingSource = 'raven' | 'edsm';
+export type ExistingSource = 'raven' | 'edsm' | 'site';
 
 /** Одна реально существующая постройка системы. */
 export interface ExistingStructure {
@@ -218,6 +218,18 @@ export function parseExistingStructures(
           bodyMatch: entry.bodyName ? entry.bodyMatch : hit.bodyMatch,
           buildId: entry.buildId ?? hit.buildId ?? null,
         });
+      } else if (hit.source === 'site' && entry.source === 'raven') {
+        // Учёт сайта первичен, но `buildId` знает только Raven: без него
+        // запись плана не свяжется с проектом и статус не обновится при
+        // следующей синхронизации.
+        hit.buildId = hit.buildId ?? entry.buildId ?? null;
+        if (!hit.bodyName && entry.bodyName) {
+          hit.bodyName = entry.bodyName;
+          hit.rawBodyName = entry.rawBodyName;
+          hit.bodyMatch = entry.bodyMatch;
+        }
+        if (!hit.rawType && entry.rawType) hit.rawType = entry.rawType;
+        if (!hit.installationId && entry.installationId) hit.installationId = entry.installationId;
       } else if (!hit.bodyName && entry.bodyName) {
         hit.bodyName = entry.bodyName;
         hit.rawBodyName = entry.rawBodyName;
@@ -230,6 +242,36 @@ export function parseExistingStructures(
     for (const key of keys) byDedupe.set(key, entry);
     out.push(entry);
   };
+
+  // 0. Собственный учёт сайта: `projects` — уже слитые карточки строек
+  //    (`src/lib/siteProjects.ts`). Они обрабатываются первыми, потому что это
+  //    первичный источник: он остаётся, даже когда Raven Colonial отвечает
+  //    503, и знает точный остаток из депотов в журналах. Raven и EDSM потом
+  //    только дополняют карточку (`buildId`, имя тела).
+  const siteProjects = Array.isArray(record?.projects) ? (record!.projects as unknown[]) : [];
+  siteProjects.forEach((raw, position) => {
+    if (!raw || typeof raw !== 'object') return;
+    const card = raw as Record<string, unknown>;
+    const rawType = typeof card.buildType === 'string' ? card.buildType : null;
+    const progress = num(card.progress);
+    const body = resolve(card.bodyName, card.bodyNum);
+    push({
+      key: `site:${String(card.key ?? card.marketId ?? card.buildId ?? position)}`,
+      name: typeof card.buildName === 'string' && card.buildName.trim()
+        ? card.buildName
+        : (rawType ?? 'Постройка'),
+      rawType,
+      installationId: normalizeBuildType(rawType),
+      bodyName: body.name,
+      rawBodyName: body.rawName,
+      bodyMatch: body.kind,
+      status: statusOf(card.status, card.status === 'complete', progress),
+      progress,
+      primary: card.primary === true,
+      source: 'site',
+      buildId: str(card.buildId) || null,
+    });
+  });
 
   const ravenSites = Array.isArray(record?.sites) ? (record!.sites as unknown[]) : [];
   ravenSites.forEach((raw, position) => {

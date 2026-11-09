@@ -1,9 +1,9 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: **2026-11-08** (checked against the code).
-> Web release: **2.27.9** · Colonial Helper: **2.28.1** (`PARSER_VERSION = 6`, launcher 1.5.0).
-> 105 SQL migrations · 249 API routes · 60 pages · 179 site test files · Helper tests: 2077.
+> Last updated: **2026-11-09** (checked against the code).
+> Web release: **2.27.9** · Colonial Helper: **2.28.2** (`PARSER_VERSION = 6`, launcher 1.5.0).
+> 106 SQL migrations · 251 API routes · 60 pages · 185 site test files · Helper tests: 2077.
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -296,6 +296,7 @@ named in brackets introduced the group; everything else comes from
 | Users and access | `profiles` (+ view `public_profiles`), `api_tokens`, `vk_identities`, `yandex_identities`, `profile_avatars`, `location_privacy`, `user_pois`, `app_flags` (maintenance flag) |
 | Squadrons | `squadrons`, `squadron_members`, `squadron_ranks`, `squadron_chat_messages`, `squadron_voice_rooms`, `squadron_voice_participants`, `squadron_voice_signals`, `squadron_member_locations`, `squadron_carriers` (legacy) |
 | Squadron projects and the ring route | `projects`, `project_members`, `project_systems`, `project_build_plans`, `hubs`, `hub_goals`, `route_systems`, `route_tracks`, `system_progress` (Raven cache), `system_coords`, `colonisation_market_systems` |
+| Construction projects (site is the source of truth) | `construction_projects` (`project_key` = `address:marketId` / `rc:<buildId>` / `m:<marketId>`, RPC `construction_project_register`, migration `20261106090000_construction_projects.sql`), read by `/api/projects/active`, `?name=` of `/api/systems/progress` and `/api/architect/existing` |
 | Journals and dossier | `deliveries` (`source`, `is_construction`, `market_id`, `source_hash`), `journal_imports`, `colonisation_sites` (one row per site, `20261009010000`), `construction_depot_snapshots`, `colonisation_events` (legacy), `system_scans`, `pilot_stats` (`stats_source`), `capi_profiles`, `capi_tokens`, `inara_profiles` |
 | Achievements | `achievement_ranks`, `achievement_tracks`, `badges`, `hero_badges`, `user_badges`, `user_hero_badges`, `user_achievements` |
 | Architect | `system_plans` (`20260929000000`), `system_architects` (`20261006000000`), `architect_systems`, `raven_keys` (`20261010020000`), `raven_sync_log`, `architect_projects`, `architect_project_members`, `architect_project_systems`, `architect_project_carriers` (`20261017120000`) |
@@ -467,6 +468,8 @@ checks itself:
 | `/api/architect/raven-key` | GET/PUT/DELETE · сессия | Ключ Raven Colonial пилота: статус (маска), сохранить, удалить |
 | `/api/architect/raven-project` | POST · сессия | Создать проект Raven Colonial для постройки плана от имени пилота |
 | `/api/architect/sourcing` | POST · — | «Где купить» материалы плана по рынкам базы EDDN |
+| `/api/projects/register` | POST · Helper (`Bearer rc_…` или `token`) | Регистрация стройки от Helper в `construction_projects` — первичная запись, до любого обращения к Raven |
+| `/api/projects/active` | GET · — / Helper | Действующие стройки для оверлея: сайт → кэш Raven → снимки депотов (`?system=`, `?system_address=`, `?market_id=`, `?cmdr=`+токен) |
 | `/api/projects` | GET · —<br>POST · сессия | Проекты эскадрилий: список, создание |
 | `/api/projects/[id]` | GET/PATCH/DELETE · сессия | Проект: карточка, правка, удаление |
 | `/api/projects/[id]/assign` | POST/DELETE · сессия | Назначить/снять пилота на систему проекта |
@@ -931,6 +934,15 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
   details in ATLAS-SEARCH-REWORK.md.
 
 ### 8.5 Raven Colonial
+- **The project site is the source of truth.** Helper registers a construction
+  project in `construction_projects` first (`POST /api/projects/register`,
+  `rc_state = "unknown"`), then syncs it to Raven Colonial and repeats the
+  registration with the resulting `buildId`. A failing Raven (503 on the RCC key
+  check, timeouts) no longer hides anything: the overlay reads
+  `/api/projects/active` (site → Raven cache → depot snapshots), and the system
+  page reads `construction_projects` in parallel with Raven — site cards win,
+  Raven-only cards are appended (`src/lib/siteProjects.ts`). Deliveries stay
+  queued and are retried (`PROJECT_RAVEN_RETRY_SECONDS = 120`).
 - Progress of hubs and route systems: job `update-progress` (every 30 min,
   `scripts/lib/progress-sync.mjs` → `system_progress`), manual
   `POST /api/ravencolonial/sync` (admin/moderator), `/sync/single`, log
@@ -942,8 +954,8 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
   cargo — since 2.14.0 only live deltas for carriers Raven knows, corrected by
   set-values from the carrier market (8.18, FLEET-CARRIERS.md)
 
-### 8.6 Colonial Helper (uploader) 2.17.0
-- Source: `uploader/colonial_helper.py` (`VERSION = "2.17.0"`), launcher
+### 8.6 Colonial Helper (uploader) 2.28.2
+- Source: `uploader/colonial_helper.py` (`VERSION = "2.28.2"`), launcher
   `uploader/launcher.py` (`LAUNCHER_VERSION = "1.0.0"`), parser
   `uploader/journal_parser.py` (`PARSER_VERSION = 5`). Release notes —
   `uploader/CHANGES.md`, user docs — `uploader/README.md`, update channel —

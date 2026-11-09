@@ -3,6 +3,11 @@
 /**
  * «Проект в Raven Colonial» — создание проекта постройки плана прямо с сайта.
  *
+ * Проект сохраняется на сайте (`construction_projects`) — это первичный
+ * источник, — а Raven Colonial синхронизируется следом, если он доступен.
+ * Поэтому форма создания видна и без RCC-ключа: ключ нужен только для
+ * синхронизации, и его отсутствие больше не блокирует работу.
+ *
  * Тот же проект можно создать и в Colonial Helper: связь хранится в плане
  * (`ravenBuildId`), поэтому обе стороны не создают вторую запись.
  * RCC-ключ пользователя хранится на сервере в зашифрованном виде; в браузере
@@ -121,9 +126,15 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || t('rvcp.error', { status: res.status }));
-      onLinked(site.id, String(data.buildId));
-      setMessage(t('rvcp.created', { id: data.buildId })
-        + (data.linkError ? t('rvcp.linkFailed', { error: data.linkError }) : ''));
+      if (data.buildId) {
+        // Raven ответил: постройка узнаёт свой проект и больше не дублируется.
+        onLinked(site.id, String(data.buildId));
+        setMessage(t('rvcp.created', { id: data.buildId })
+          + (data.linkError ? t('rvcp.linkFailed', { error: data.linkError }) : ''));
+      } else {
+        // Сайт проекта — источник истины: проект сохранён, Raven догонит позже.
+        setMessage(t('rvcp.savedSite', { detail: data.warning ? ` ${data.warning}` : '' }));
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -137,75 +148,75 @@ export default function RavenCreatePanel({ system, plan, bodiesByName, onLinked 
         <h3 style={sectionTitle}>{t('rvcp.title')}</h3>
       </div>
 
-      {!keyState.connected ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-          <div style={mutedText}>
-            {t('rvcp.keyIntro')}
-          </div>
-          <input
-            type="password"
-            value={keyInput}
-            onChange={(event) => setKeyInput(event.target.value)}
-            placeholder={t('rvcp.keyPlaceholder')}
-            style={inputStyle}
-            autoComplete="off"
-          />
-          <button type="button" onClick={saveKey} disabled={keyBusy || keyInput.trim().length < 8} style={primaryButton}>
-            {keyBusy ? t('rvcp.checking') : t('rvcp.saveKey')}
-          </button>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+        <div style={mutedText}>{t('rvcp.siteIntro')}</div>
+
+        {keyState.connected ? (
           <div style={{ ...mutedText, display: 'flex', gap: 8, alignItems: 'center' }}>
             <span>{t('rvcp.keyLine', { mask: keyState.mask ?? '' })}{keyState.cmdrName ? t('rvcp.cmdrSuffix', { name: keyState.cmdrName }) : ''}</span>
             <button type="button" onClick={removeKey} disabled={keyBusy} style={ghostButton}>{t('rvcp.removeKey')}</button>
           </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={mutedText}>{t('rvcp.keyIntro')}</div>
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(event) => setKeyInput(event.target.value)}
+              placeholder={t('rvcp.keyPlaceholder')}
+              style={inputStyle}
+              autoComplete="off"
+            />
+            <button type="button" onClick={saveKey} disabled={keyBusy || keyInput.trim().length < 8} style={ghostButton}>
+              {keyBusy ? t('rvcp.checking') : t('rvcp.saveKey')}
+            </button>
+          </div>
+        )}
 
-          {unlinked.length === 0 ? (
-            <div style={mutedText}>{t('rvcp.allLinked')}</div>
-          ) : (
-            <>
-              <label style={mutedText}>
-                {t('rvcp.build')}
-                <select
-                  value={site?.id ?? ''}
-                  onChange={(event) => { setSiteId(event.target.value); setBuildName(''); }}
-                  style={{ ...inputStyle, marginLeft: 8 }}
-                >
-                  {unlinked.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {installationName(getInstallation(item.installationId), locale) || item.installationId} · {item.bodyName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label style={mutedText}>
-                {t('rvcp.marketId')}
-                <input value={marketId} onChange={(e) => setMarketId(e.target.value.replace(/\D/g, ''))} style={{ ...inputStyle, marginLeft: 8 }} />
-              </label>
-              <label style={mutedText}>
-                {t('rvcp.systemAddress')}
-                <input value={systemAddress} onChange={(e) => setSystemAddress(e.target.value.replace(/\D/g, ''))} style={{ ...inputStyle, marginLeft: 8 }} />
-              </label>
-              <label style={mutedText}>
-                {t('rvcp.projectName')}
-                <input value={buildName} onChange={(e) => setBuildName(e.target.value)} style={{ ...inputStyle, marginLeft: 8 }} />
-              </label>
-              <button
-                type="button"
-                onClick={create}
-                disabled={busy || !site || !marketId || !systemAddress || !buildName.trim()}
-                style={primaryButton}
+        {unlinked.length === 0 ? (
+          <div style={mutedText}>{t('rvcp.allLinked')}</div>
+        ) : (
+          <>
+            <label style={mutedText}>
+              {t('rvcp.build')}
+              <select
+                value={site?.id ?? ''}
+                onChange={(event) => { setSiteId(event.target.value); setBuildName(''); }}
+                style={{ ...inputStyle, marginLeft: 8 }}
               >
-                {busy ? t('rvcp.creating') : t('rvcp.create')}
-              </button>
-              <div style={mutedText}>
-                {t('rvcp.hint')}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+                {unlinked.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {installationName(getInstallation(item.installationId), locale) || item.installationId} · {item.bodyName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label style={mutedText}>
+              {t('rvcp.marketId')}
+              <input value={marketId} onChange={(e) => setMarketId(e.target.value.replace(/\D/g, ''))} style={{ ...inputStyle, marginLeft: 8 }} />
+            </label>
+            <label style={mutedText}>
+              {t('rvcp.systemAddress')}
+              <input value={systemAddress} onChange={(e) => setSystemAddress(e.target.value.replace(/\D/g, ''))} style={{ ...inputStyle, marginLeft: 8 }} />
+            </label>
+            <label style={mutedText}>
+              {t('rvcp.projectName')}
+              <input value={buildName} onChange={(e) => setBuildName(e.target.value)} style={{ ...inputStyle, marginLeft: 8 }} />
+            </label>
+            <button
+              type="button"
+              onClick={create}
+              disabled={busy || !site || !marketId || !systemAddress || !buildName.trim()}
+              style={primaryButton}
+            >
+              {busy ? t('rvcp.creating') : t('rvcp.create')}
+            </button>
+            <div style={mutedText}>
+              {t('rvcp.hint')}
+            </div>
+          </>
+        )}
+      </div>
 
       {keyError && <div style={{ ...errorText, marginTop: 6 }}>{keyError}</div>}
       {error && <div style={{ ...errorText, marginTop: 6 }}>{error}</div>}

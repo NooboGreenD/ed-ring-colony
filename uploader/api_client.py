@@ -610,6 +610,78 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def fetch_site_projects(self, *, cmdr: str = "", system: str = "",
+                            system_address: int = 0, market_id: int = 0) -> dict:
+        """Действующие проекты строительства с сайта проекта.
+
+        Сайт — первичный источник: он отдаёт и то, что Helper зарегистрировал
+        сам (`construction_projects`), и кэш Raven, и точные ресурсы депотов из
+        журналов. Поэтому вкладка «Колонизатор» и оверлей продолжают работать,
+        когда Raven Colonial отвечает 503.
+
+        Возвращает `{ok, projects: [...], sources, raven, error}`.
+        """
+        if not self.token:
+            return {"ok": False, "error": tr("Нет токена"), "projects": []}
+        params = {}
+        if cmdr:
+            params["cmdr"] = cmdr
+        if system:
+            params["system"] = system
+        if system_address:
+            params["system_address"] = int(system_address)
+        if market_id:
+            params["market_id"] = int(market_id)
+        if not params:
+            return {"ok": False, "error": tr("Не указана система или площадка"), "projects": []}
+        try:
+            resp = _session_for_thread().get(
+                f"{self.api_base}/projects/active",
+                params=params,
+                headers={"Authorization": f"Bearer {self.token}", "Accept-Language": self.locale},
+                allow_redirects=False,
+                timeout=20,
+            )
+            data = _safe_json(resp)
+            if resp.ok and isinstance(data.get("projects"), list):
+                return {"ok": True, **data}
+            return {"ok": False,
+                    "projects": [],
+                    "status": resp.status_code,
+                    "error": data.get("error") or f"HTTP {resp.status_code}"}
+        except Exception as exc:
+            return {"ok": False, "projects": [],
+                    "error": tr("Сетевая ошибка: {error}", error=exc)}
+
+    def register_site_project(self, project: dict, cmdr: str = "",
+                              rc_state: str = "unknown") -> dict:
+        """Зарегистрировать проект на сайте проекта — ДО отправки в Raven.
+
+        `rc_state` — что уже известно про синхронизацию с Raven Colonial:
+        `unknown` (ещё не пробовали), `ok`, `unavailable`, `no_key`. Состояние
+        не влияет на сохранение: проект остаётся на сайте в любом случае.
+        """
+        if not self.token:
+            return {"ok": False, "error": tr("Нет токена")}
+        if not isinstance(project, dict) or not project:
+            return {"ok": False, "error": tr("Пустой проект")}
+        try:
+            resp = _session_for_thread().post(
+                f"{self.api_base}/projects/register",
+                json={"token": self.token, "project": project,
+                      "cmdr": cmdr, "rcState": rc_state},
+                allow_redirects=False,
+                timeout=20,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False,
+                    "status": resp.status_code,
+                    "error": data.get("error") or f"HTTP {resp.status_code}"}
+        except Exception as exc:
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
+
     def upload_station_reports(self, reports: list) -> dict:
         """Complete per-service station snapshots. The collector owns durable retries."""
         if not self.token or not reports:

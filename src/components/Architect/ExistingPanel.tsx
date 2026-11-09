@@ -116,6 +116,16 @@ export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply
           updatedAt: null,
           note: sources.edsm === 'ok' ? null : t('exst.noAnswer'),
         },
+        {
+          id: 'site-projects',
+          label: t('exst.siteProjects'),
+          status: sources.site === 'ok' ? 'ok' : 'unavailable',
+          count: parsed.filter((item) => item.source === 'site').length,
+          updatedAt: null,
+          // Учёт сайта — первичный источник: он работает даже при 503 у Raven
+          // (проекты шлёт сам Helper, ресурсы — из журналов).
+          note: sources.site === 'ok' ? null : t('exst.siteNoProjects'),
+        },
       ]);
     } catch (err) {
       setStructures([]);

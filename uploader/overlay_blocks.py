@@ -1246,7 +1246,9 @@ class CarrierOverlay(HudWindow):
         need_total = int(data.get("need_total") or 0)
         if need_label and need_total > 0:
             kind_label = (tr("Проект (основной)") if need_source == "project"
-                          else tr("Стройплощадка"))
+                          else (tr("Стройплощадка (сайт проекта)")
+                                if need_source == "site_project_web"
+                                else tr("Стройплощадка")))
             self.project_label.setText(tr(
                 "{kind}: {name}\nнужно {tons} t",
                 kind=kind_label, name=need_label, tons=need_total))
