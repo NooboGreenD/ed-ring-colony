@@ -19,6 +19,8 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+
+from site_projects import merge_projects  # noqa: E402
 sys.path.insert(0, str(HERE))
 
 from colonisation import (  # noqa: E402
@@ -319,6 +321,16 @@ class ColonyTabIntegrationTests(unittest.TestCase):
         self.app.raven_api.get_cmdr_active = lambda cmdr: {"ok": True, "data": []}
         self.app.raven_api.get_primary = lambda cmdr: {"ok": True, "data": ""}
         self.app.raven_api.get_project = lambda address, market_id: None
+        # Проект создаётся на сайте ПЕРВЫМ, поэтому токен сайта обязателен.
+        # Сеть в тестах не трогаем: регистрация и список проектов — заглушки.
+        self.app.api.token = "site-token"
+        self.site_calls = []
+        self.app.api.register_site_project = (
+            lambda project, cmdr="", rc_state="unknown": (
+                self.site_calls.append({"project": project, "cmdr": cmdr,
+                                        "rc_state": rc_state})
+                or {"ok": True, "project": {}}))
+        self.app.api.fetch_site_projects = lambda **kwargs: {"ok": True, "projects": []}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -410,6 +422,55 @@ class ColonyTabIntegrationTests(unittest.TestCase):
         self.assertEqual(project["maxNeed"], 9025)
         self.assertEqual(project["commanders"], {"CMDR Test": []})
         self.assertEqual(opened, ["https://ravencolonial.com/#build=build-42"])
+        # Порядок источников: сайт получил проект первым, Raven — вторым.
+        self.assertTrue(self.site_calls, "проект должен уйти на сайт")
+        self.assertEqual(self.site_calls[0]["project"]["marketId"], 3951663874)
+        self.assertEqual(self.site_calls[0]["rc_state"], "unknown")
+        self.assertEqual(self.site_calls[-1]["rc_state"], "ok")
+        self.assertEqual(self.site_calls[-1]["project"]["buildId"], "build-42")
+
+    def test_project_is_created_on_site_when_raven_is_down(self):
+        """Raven 503 не мешает создать проект: сайт — первичный источник."""
+        self._dock_at_site()
+        self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
+        self.app.colony_page.set_value("buildType", "hestia")
+        self.app.colony_cmdr_entry.setText("CMDR Test")
+
+        self.app.raven_api.create_project = lambda project: {
+            "ok": False, "error": "HTTP 503", "status": 503}
+        self.app._colony_open_url = lambda url, what="": self.fail("страницу не открываем")
+        self.app._on_colony_refresh = lambda: None
+
+        with self._run_threads_inline():
+            self.app._on_colony_create()
+
+        self.assertTrue(self.site_calls, "проект всё равно уходит на сайт")
+        self.assertEqual(self.site_calls[-1]["rc_state"], "unavailable")
+        self.assertEqual(self.app.colony_page.status_text(),
+                         "Проект создан, buildId: —")
+
+    def test_create_does_not_require_rcc_key(self):
+        """Без ключа RCC проект создаётся на сайте, Raven просто пропускается."""
+        self._dock_at_site()
+        self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
+        self.app.colony_page.set_value("buildType", "hestia")
+        self.app.raven_api.api_key = ""
+        self.app.raven_api.create_project = lambda project: self.fail(
+            "без ключа RCC запрос в Raven не уходит")
+        self.app._colony_open_url = lambda url, what="": None
+        self.app._on_colony_refresh = lambda: None
+
+        with self._run_threads_inline():
+            self.app._on_colony_create()
+
+        self.assertTrue(self.site_calls)
+        self.assertEqual(self.site_calls[-1]["rc_state"], "no_key")
+
+    def test_create_without_site_token_is_refused(self):
+        self.app.api.token = ""
+        self.app.colony_page.set_status("")
+        self.app._on_colony_create()
+        self.assertEqual(self.site_calls, [])
 
     def test_depot_snapshot_is_dropped_when_market_id_was_edited(self):
         """Чужой snapshot депота не должен уезжать в Raven."""
@@ -429,6 +490,116 @@ class ColonyTabIntegrationTests(unittest.TestCase):
 
         self.assertNotIn("colonisationConstructionDepot", captured["project"])
         self.assertEqual(captured["project"]["marketId"], 999999)
+
+    # ---------- Проекты: сайт первичен, Raven — зеркало ----------
+    def _site_card(self, **overrides):
+        card = {
+            "key": "28682976:128016640",
+            "buildId": "",
+            "systemName": "Ravenless 1",
+            "systemAddress": 28682976,
+            "marketId": 128016640,
+            "buildName": "Первый порт",
+            "buildType": "no_truss",
+            "status": "active",
+            "progress": 40,
+            "commodities": {"steel": 900},
+            "sumNeed": 900,
+            "maxNeed": 5000,
+            "sources": ["site"],
+            "rcState": "unavailable",
+        }
+        card.update(overrides)
+        return card
+
+    def test_colony_list_is_shown_when_raven_is_down(self):
+        """Главный сценарий: Raven 503 — проекты всё равно видны."""
+        self.app.raven_api.get_cmdr_active = lambda cmdr: {
+            "ok": False, "error": "HTTP 503", "status": 503}
+        self.app.api.fetch_site_projects = lambda **kwargs: {
+            "ok": True, "projects": [self._site_card()], "sources": {"site": 1}}
+
+        with self._run_threads_inline():
+            self.app._colony_refresh_thread("CMDR Test")
+
+        self.assertEqual(self.app.colony_page.row_count(), 1)
+        self.assertEqual(self.app.colony_page.row_values(0)[2], "Первый порт")
+        self.assertIn("сайт", self.app.colony_page.status_text())
+        self.assertEqual(self.app._site_projects[0]["buildId"], "")
+
+    def test_colony_list_merges_site_and_raven_without_duplicates(self):
+        self.app.raven_api.get_cmdr_active = lambda cmdr: {
+            "ok": True,
+            "data": [{"buildId": "b-1", "marketId": 128016640,
+                      "systemName": "Ravenless 1", "buildName": "Первый порт",
+                      "commodities": {"steel": 800}, "sumNeed": 800,
+                      "sumTotal": 5000}]}
+        self.app.api.fetch_site_projects = lambda **kwargs: {
+            "ok": True, "projects": [self._site_card()]}
+
+        with self._run_threads_inline():
+            self.app._colony_refresh_thread("CMDR Test")
+
+        self.assertEqual(self.app.colony_page.row_count(), 1, "дубля быть не должно")
+        row = self.app.colony_page.row_values(0)
+        self.assertEqual(row[5], "b-1", "buildId пришёл из Raven")
+        self.assertIn("сайт и Raven", self.app.colony_page.status_text())
+
+    def test_carrier_need_uses_site_card_when_raven_is_down(self):
+        """Оверлей CARRIER берёт остаток с сайта и подписывает источник."""
+        self.app._site_project_source = "site"
+        self.app.site_project = {
+            "buildId": "", "systemName": "Ravenless 1", "buildName": "Первый порт",
+            "commodities": {"steel": 900},
+        }
+
+        need, label, source = self.app._carrier_need_info()
+
+        self.assertEqual(need, {"steel": 900})
+        self.assertIn("Первый порт", label)
+        self.assertEqual(source, "site_project_web")
+
+    def test_pending_project_is_pushed_to_raven_when_it_returns(self):
+        calls = []
+
+        def create_project(payload):
+            calls.append(payload)
+            return {"ok": True, "data": {"buildId": "b-9"}}
+
+        self.app.raven_api.create_project = create_project
+        self.app.raven_api.link_cmdr = lambda *a, **k: {"ok": True}
+        project = merge_projects([self._site_card()], [])[0]
+
+        self.app._push_site_projects_to_raven([project], "CMDR Test")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["marketId"], 128016640)
+        self.assertEqual(calls[0]["buildName"], "Первый порт")
+        self.assertEqual(project["buildId"], "b-9")
+        self.assertEqual(project["rcState"], "ok")
+        # Состояние синхронизации досылается на сайт.
+        self.assertEqual(self.site_calls[-1]["rc_state"], "ok")
+        self.assertEqual(self.site_calls[-1]["project"]["buildId"], "b-9")
+
+    def test_raven_push_is_skipped_for_already_synced_projects(self):
+        self.app.raven_api.create_project = lambda payload: self.fail(
+            "проект уже связан с Raven — повторный PUT не нужен")
+        project = merge_projects(
+            [self._site_card(buildId="b-1")], [])[0]
+        self.app._push_site_projects_to_raven([project], "CMDR Test")
+
+    def test_primary_project_can_be_chosen_locally(self):
+        """Проект без buildId выбирается основным без обращения к Raven."""
+        self.app.colony_page.set_rows([("", "Ravenless 1", "Первый порт",
+                                        "no_truss", "900 / 5000 (18%)", "")])
+        self.app.colony_page.select_row(0)
+        self.app.colony_cmdr_entry.setText("CMDR Test")
+        self.app.raven_api.set_primary = lambda *a, **k: self.fail(
+            "без buildId в Raven не ходим")
+
+        self.app._on_colony_set_primary()
+
+        self.assertEqual(self.app.colony_primary_project["buildName"], "Первый порт")
 
     def test_body_list_comes_from_system_and_fills_body_id(self):
         """Тело выбирается из тел системы, BodyID подставляется сам (руками не нужен)."""

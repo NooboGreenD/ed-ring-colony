@@ -758,10 +758,9 @@ test('перенос фактической застройки виден в п�
     assert.match(text, /Первый порт/, 'список факта загрузился');
     assert.match(text, /имя тела уточнено по каталогу/, 'короткое имя приведено к каталогу');
 
-    await ui.click(ui.buttonByText(/Применить к плану/));
+    // Пустой план заполняется застройкой системы сам — без нажатий.
     text = ui.text();
-
-    assert.match(text, /Факт применён к плану: добавлено 3/, 'сводка переноса честная');
+    assert.match(text, /Факт применён автоматически: обновлено записей — 3/, 'перенос произошёл сам');
     assert.match(text, /в плане: 3/, 'шапка показывает новые записи');
 
     // Главное: записи видны в карточке тела, а не «провалились» мимо интерфейса.
@@ -801,13 +800,15 @@ test('повторное применение факта не плодит ду�
   });
   try {
     await ui.click(ui.buttonByText('Проверить'));
-    await ui.click(ui.buttonByText(/Применить к плану/));
-    assert.match(ui.text(), /Факт применён к плану: добавлено 1/);
+    assert.match(ui.text(), /Факт применён автоматически: обновлено записей — 1/);
+    assert.match(ui.text(), /в плане: 1/);
 
+    // Повторное (ручное) применение не должно плодить записи.
     await ui.click(ui.buttonByText(/Применить к плану/));
     const text = ui.text();
     assert.doesNotMatch(text, /добавлено 2/, 'второй раз ничего не добавляется');
     assert.match(text, /в плане: 1/, 'запись в плане осталась одна');
+    assert.match(text, /уже в плане/, 'панель видит записи плана');
   } finally {
     await ui.cleanup();
   }
@@ -917,6 +918,59 @@ test('панель источников показывает, кто ответ�
     text = ui.text();
     assert.match(text, /Raven Colonial/);
     assert.match(text, /EDSM: станции/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('проект постройки создаётся и без RCC-ключа: сайт первичен', async () => {
+  // Raven Colonial может отвечать 503 на проверку ключа. Раньше панель в этом
+  // случае прятала форму, и создать проект было нельзя вообще.
+  const ui = await renderArchitect({
+    api: (url, init) => {
+      if (url.includes('/api/architect/raven-key')) {
+        return { body: { connected: false, mask: null, cmdrName: null } };
+      }
+      if (url.includes('/api/architect/raven-project') && init?.method === 'POST') {
+        return {
+          body: {
+            ok: true,
+            buildId: null,
+            raven: 'no_key',
+            siteKey: '28682976:128016640',
+            warning: 'Сначала сохраните RCC-ключ.',
+          },
+        };
+      }
+      return null;
+    },
+  });
+  try {
+    // Постройка нужна, чтобы у панели был объект для проекта.
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+
+    const text = ui.text();
+    assert.match(text, /Проект в Raven Colonial/, 'панель на месте');
+    assert.match(text, /Создать проект/, 'форма создания доступна без ключа');
+    assert.match(text, /источник/, 'панель объясняет, что сайт первичен');
+
+    const market = Array.from(ui.document.querySelectorAll('input'))
+      .find((element) => (element.closest('label')?.textContent || '').includes('MarketID'));
+    const address = Array.from(ui.document.querySelectorAll('input'))
+      .find((element) => (element.closest('label')?.textContent || '').includes('SystemAddress'));
+    assert.ok(market && address, 'поля площадки и адреса нашлись');
+    await ui.typeInto(market, '128016640');
+    await ui.typeInto(address, '28682976');
+
+    await ui.click(ui.buttonByText('Создать проект'));
+    const created = ui.text();
+    assert.match(created, /Проект сохранён на сайте проекта/, 'сказано, что проект на сайте');
+    assert.match(created, /Сначала сохраните RCC-ключ/, 'причина, по которой Raven ещё не знает проект');
+    assert.ok(
+      ui.fetchCalls.some((call) => call.startsWith('POST') && call.includes('/api/architect/raven-project')),
+      'запрос ушёл в маршрут создания',
+    );
   } finally {
     await ui.cleanup();
   }

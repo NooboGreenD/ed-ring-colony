@@ -162,3 +162,91 @@ test('связь с Raven переживает сохранение и импо�
   const parsed = parsePlan(JSON.parse(JSON.stringify(plan)));
   assert.equal(parsed.plan.sites[0].ravenBuildId, 'b-40', 'при импорте связь не теряется');
 });
+
+test('учёт сайта: проект без Raven переносится в план со статусом «строится»', () => {
+  const source = {
+    system: SYSTEM,
+    projects: [
+      {
+        key: '1:2',
+        buildId: null,
+        buildName: 'Первый порт',
+        buildType: 'no_truss',
+        bodyName: `${SYSTEM} 2`,
+        status: 'active',
+        progress: 40,
+        sources: ['site'],
+      },
+      {
+        key: '1:3',
+        buildName: 'Готовый аванпост',
+        buildType: 'vulcan',
+        bodyName: `${SYSTEM} 3`,
+        status: 'complete',
+        progress: 100,
+        sources: ['site', 'journal'],
+      },
+    ],
+  };
+
+  const list = parseExistingStructures(source);
+  assert.equal(list.length, 2);
+  assert.deepEqual(list.map((item) => item.source), ['site', 'site']);
+  assert.equal(list[0].installationId, 'no_truss');
+  assert.equal(list[0].status, 'building');
+  assert.equal(list[1].status, 'complete');
+});
+
+test('учёт сайта первичен: Raven дополняет карточку buildId, а не дублирует её', () => {
+  const source = {
+    system: SYSTEM,
+    projects: [{
+      key: '1:2',
+      buildId: null,
+      buildName: 'Первый порт',
+      buildType: 'no_truss',
+      bodyName: `${SYSTEM} 2`,
+      status: 'active',
+      progress: 40,
+      sources: ['site'],
+    }],
+    sites: [ravenSite({
+      buildId: 'b-site-1',
+      buildType: 'no_truss',
+      bodyName: `${SYSTEM} 2`,
+      name: 'Первый порт',
+      status: 'build',
+      progress: 40,
+    })],
+  };
+
+  const list = parseExistingStructures(source);
+  assert.equal(list.length, 1, 'одна постройка — одна запись');
+  assert.equal(list[0].source, 'site', 'источник остаётся учётом сайта');
+  assert.equal(list[0].buildId, 'b-site-1', 'связь с Raven получена из его ответа');
+  assert.equal(list[0].status, 'building');
+});
+
+test('учёт сайта: факт применяется к плану и связывает запись с Raven', () => {
+  let plan = createPlan(SYSTEM, 'CMDR Tester');
+  plan = addSite(plan, `${SYSTEM} 2`, 'no_truss');
+  const structures = parseExistingStructures({
+    system: SYSTEM,
+    projects: [{
+      key: '1:2',
+      buildId: 'b-site-2',
+      buildName: 'Первый порт',
+      buildType: 'no_truss',
+      bodyName: `${SYSTEM} 2`,
+      status: 'complete',
+      progress: 100,
+      sources: ['site'],
+    }],
+  });
+
+  const result = adoptExisting(plan, structures);
+
+  assert.equal(result.plan.sites.length, 1, 'дубля нет');
+  assert.equal(result.plan.sites[0].status, 'complete');
+  assert.equal(result.plan.sites[0].ravenBuildId, 'b-site-2');
+});
