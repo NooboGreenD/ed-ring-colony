@@ -7,6 +7,7 @@ import { outfittingAnalysisTranslations } from "./outfittingAnalysis.ts";
 import { outfittingSpecialsTranslations } from "./outfittingSpecials.ts";
 import { orreryTipTranslations } from "./orreryTips.ts";
 import { planMessageTranslations } from "./planMessages.ts";
+import { carrierJumpTranslations } from "./carrierJumps.ts";
 
 /** Базовый словарь сайта; большие разделы подмешиваются ниже отдельными файлами. */
 const baseTranslations: Record<string, Record<string, string>> = {
@@ -54431,6 +54432,7 @@ const sectionTranslations = [
   architectKindTranslations,
   orreryTipTranslations,
   planMessageTranslations,
+  carrierJumpTranslations,
 ];
 
 export const translations: Record<string, Record<string, string>> = Object.fromEntries(

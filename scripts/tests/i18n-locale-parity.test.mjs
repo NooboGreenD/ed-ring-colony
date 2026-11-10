@@ -39,6 +39,7 @@ const DICTIONARIES = [
   'orreryTips.ts',
   'exchangeText.ts',
   'planMessages.ts',
+  'carrierJumps.ts',
 ];
 
 const LOCALES = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];

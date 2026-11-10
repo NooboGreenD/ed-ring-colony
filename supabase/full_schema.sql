@@ -19226,3 +19226,40 @@ GRANT EXECUTE ON FUNCTION public.carrier_directory_apply(JSONB) TO service_role;
 
 COMMENT ON FUNCTION public.carrier_directory_apply(JSONB) IS
   'Реестр авианосцев из EDDN: локация, службы и след последнего прыжка; имя не трогает.';
+
+-- MIGRATION: 20261110190000_carrier_watch_jump.sql
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Подписка на прыжок авианосца: снимок плана в личной записи.
+--
+-- Страница «Авианосцы перед прыжком» (`/carriers/jumps`) показывает носители
+-- с заказанным прыжком — цель и время вылета. Пилот может подписаться, чтобы
+-- не пропустить, когда и куда носитель прыгнет.
+--
+-- Самой подписки мало: важно, что было обещано в момент подписки. Заказ можно
+-- перенести, отменить или заменить целью, и подписчик должен увидеть именно
+-- это — «план изменился», а не просто «носитель куда-то летит». Поэтому при
+-- подписке пишется снимок: `jump_system_name`, `jump_departure_at` и
+-- `jump_seen_at` (когда снимок сделан).
+--
+-- Обычное избранное Атласа эти колонки не трогает: маршрут
+-- `/api/atlas/carriers/watch` пишет их только когда клиент передал снимок.
+-- Доступ не меняется: RLS по auth.uid(), чужих подписок не видит никто.
+-- ══════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE public.atlas_carrier_watch
+  ADD COLUMN IF NOT EXISTS jump_system_name  TEXT,
+  ADD COLUMN IF NOT EXISTS jump_departure_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS jump_seen_at      TIMESTAMPTZ;
+
+COMMENT ON COLUMN public.atlas_carrier_watch.jump_system_name IS
+  'Куда авианосец собирался прыгнуть в момент подписки (страница /carriers/jumps).';
+COMMENT ON COLUMN public.atlas_carrier_watch.jump_departure_at IS
+  'Время вылета из снимка подписки: с ним сравнивается живой заказ прыжка.';
+COMMENT ON COLUMN public.atlas_carrier_watch.jump_seen_at IS
+  'Когда сделан снимок плана прыжка.';
+
+-- Подписок на прыжок немного, но по ним страница собирает «мои подписки».
+CREATE INDEX IF NOT EXISTS atlas_carrier_watch_jump
+  ON public.atlas_carrier_watch(user_id, jump_departure_at)
+  WHERE jump_departure_at IS NOT NULL;

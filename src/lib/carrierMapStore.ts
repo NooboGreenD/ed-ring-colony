@@ -386,6 +386,98 @@ export async function loadMapCarriers(svc: Svc, viewerId: string | null, options
   return finish(carriers, shown);
 }
 
+/* ── «Авианосцы перед прыжком» (`/carriers/jumps`) ────────────────────────── */
+
+/** Через сколько после заказанного вылета носитель ещё считается «в прыжке». */
+export const JUMP_ROW_LOOKBACK_MS = 30 * 60 * 1000;
+/** Сколько заказов отдаём: страница табличная, ей хватает. */
+export const JUMP_ROWS_LIMIT = 200;
+
+/** Размер ответа и время отсчёта: в тестах и на узких экранах нужен свой. */
+export interface LoadCarrierJumpsOptions extends ResolveOptions {
+  now?: Date;
+  limit?: number;
+}
+
+export interface CarrierJumpsResponse {
+  carriers: MapCarrier[];
+  viewer: { signedIn: boolean };
+  generatedAt: string;
+  /** Сколько заказов в базе попало в окно (до обрезки по лимиту). */
+  total: number;
+  truncated: boolean;
+}
+
+/**
+ * Носители с заказанным прыжком — то, что видит страница `/carriers/jumps`.
+ *
+ * Источник один: учёт сайта. EDDN заказ не приносит (`CarrierJumpRequest` в
+ * поток не ретранслируется), а реестр `carrier_directory` знает только уже
+ * случившиеся прыжки — поэтому реестр сюда не подмешивается.
+ *
+ * Окно: вылет ещё не наступил или наступил не позже получаса назад — так
+ * видно и «готовится», и короткий момент «уже в прыжке, подтверждения нет».
+ * Строки без времени вылета тоже берём: заказ есть, время неизвестно.
+ */
+export async function loadCarrierJumps(
+  svc: Svc,
+  viewerId: string | null,
+  options: LoadCarrierJumpsOptions = {},
+): Promise<CarrierJumpsResponse> {
+  const now = options.now ?? new Date();
+  const since = new Date(now.getTime() - JUMP_ROW_LOOKBACK_MS).toISOString();
+  const limit = Math.max(1, Math.floor(options.limit ?? JUMP_ROWS_LIMIT));
+  const query = (from: number, to: number) => svc
+    .from('fleet_carriers')
+    .select(MAP_CARRIER_COLUMNS)
+    .not('jump_system_name', 'is', null)
+    .gte('jump_departure_at', since)
+    .order('jump_departure_at', { ascending: true })
+    .range(from, to);
+  // Заказы без времени вылета: их немного, но «куда» уже известно.
+  const withoutTime = () => svc
+    .from('fleet_carriers')
+    .select(MAP_CARRIER_COLUMNS)
+    .not('jump_system_name', 'is', null)
+    .is('jump_departure_at', null)
+    .limit(100);
+
+  const [timed, untimed] = await Promise.all([
+    readAllRows<Row>((from, to) => query(from, to)),
+    safeRows(withoutTime()),
+  ]);
+  if (timed.error) throw new Error(timed.error.message);
+
+  const byId = new Map<string, Row>();
+  for (const row of [...timed.data, ...untimed]) {
+    if (row?.carrier_id != null) byId.set(String(row.carrier_id), row);
+  }
+  const rows = Array.from(byId.values()).filter((row) => isMapCarrierRow(row, now));
+  const response: CarrierJumpsResponse = {
+    carriers: [],
+    viewer: { signedIn: Boolean(viewerId) },
+    generatedAt: now.toISOString(),
+    total: 0,
+    truncated: false,
+  };
+  if (!rows.length) return response;
+
+  const carriers = await shapeCarrierRows(svc, rows, viewerId, now, options);
+  // `buildCarrierView` уже решил, есть ли заказ и не прибыл ли носитель.
+  const pending = carriers.filter((carrier) => carrier.jump != null);
+  pending.sort((left, right) => {
+    const leftMs = left.jump?.departureAt ? Date.parse(left.jump.departureAt) : NaN;
+    const rightMs = right.jump?.departureAt ? Date.parse(right.jump.departureAt) : NaN;
+    if (Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs !== rightMs) return leftMs - rightMs;
+    if (Number.isFinite(leftMs) !== Number.isFinite(rightMs)) return Number.isFinite(leftMs) ? -1 : 1;
+    return left.id.localeCompare(right.id);
+  });
+  response.total = pending.length;
+  response.truncated = pending.length > limit;
+  response.carriers = pending.slice(0, limit);
+  return response;
+}
+
 /* ── «Трафик авианосцев»: поиск по реестру ────────────────────────────────── */
 
 export interface CarrierSearchRequest {

@@ -400,7 +400,8 @@ checks itself:
 |---|---|---|
 | `/api/atlas/candidates` | GET · — | Кандидаты поиска миров по `search_id` |
 | `/api/atlas/carriers` | GET · — | «Трафик авианосцев»: поиск по `fleet_carriers` ∪ `carrier_directory` (позывной, имя, система, MarketID); `origin: 'eddn'` у носителей, известных только реестру; `canName` — право уточнить имя; `scope=favorites` — только своё, требует сессии |
-| `/api/atlas/carriers/watch` | GET/PUT/DELETE · сессия | Личное избранное и комментарии к авианосцам (`atlas_carrier_watch`, RLS по `auth.uid()`) |
+| `/api/atlas/carriers/watch` | GET/PUT/DELETE · сессия | Личное избранное, комментарии и подписка на прыжок (`atlas_carrier_watch`, RLS по `auth.uid()`); `jump_*` — снимок плана, пишется только если передан |
+| `/api/carriers/jumps` | GET · — | «Авианосцы перед прыжком» (`/carriers/jumps`): заказы из `fleet_carriers.jump_*`, вылет в будущем или ≤30 мин назад, сортировка по времени, `total`/`truncated` |
 | `/api/atlas/carriers/name` | PUT · сессия | Уточнить имя носителя; право (владелец или визит) проверяет `carrier_directory_set_name`, иначе 403 |
 | `/api/atlas/favorites` | GET/POST/DELETE · сессия | Избранные системы Atlas |
 | `/api/atlas/nearby` | POST · — | Все системы в сфере/кубе 1–50 св. лет вокруг опорной |
@@ -1770,6 +1771,41 @@ Full description: **FLEET-CARRIERS.md** → «Панель слоя — во в�
   timestamp exists in the map data (`system_progress.updated_at` is a sync
   time). Fallback: last `building`, then the end of the route. The button has
   a tooltip (`gmap.lastBuildTitle`).
+
+### 8.28 «Авианосцы перед прыжком» — `/carriers/jumps` — 10.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Страница «Авианосцы перед прыжком»».
+
+- **A table, not a map.** Rows: callsign/name, «откуда → куда», distance in ly,
+  departure time (with a relative label), state (`scheduled` / `jumping`) and a
+  subscribe button. The page is reachable by direct link only — it is not in the
+  menu or the mobile dock. `generateMetadata` is `robots: { index: false }`.
+- **Source is the site account only** (`fleet_carriers.jump_*`). EDDN relays
+  only the completed `CarrierJump`; `CarrierJumpRequest` never reaches the
+  stream, and `carrier_directory` knows past dockings only — so no registry
+  records are mixed in. Orders arrive from Colonial Helper and journal uploads.
+- Window: departure in the future or at most 30 minutes ago
+  (`JUMP_LOOKBACK_MS`); `buildCarrierView` marks a carrier arrived 5 minutes
+  after departure (`JUMP_TRANSIT_MS`) and such orders drop out of the response.
+  `JUMP_ROWS_LIMIT = 200`, sorted by departure, no-time orders last.
+- `GET /api/carriers/jumps` returns `{ carriers, viewer, generatedAt, total,
+  truncated }` with `Cache-Control: no-store`; no cargo, finance or orders.
+- **Subscription = `atlas_carrier_watch` row + plan snapshot** (migration
+  `20261110190000_carrier_watch_jump.sql`): `jump_system_name`,
+  `jump_departure_at`, `jump_seen_at`. The page then reports `same` / `changed`
+  / `arrived` / `gone` (`jumpPlanView`, drift tolerance 1 minute) instead of
+  just «the carrier is flying somewhere». `PUT /api/atlas/carriers/watch`
+  writes `jump_*` only when the client sent them — Atlas favourites never wipe
+  a subscription; unsubscribing sends explicit `null`s and keeps the note.
+  Subscribing does not flip `favorite`: the Atlas favourites list and the jump
+  subscriptions stay separate.
+- Rules live in `src/lib/carrierJumps.ts` (`isJumpPending`, `jumpDistanceLy`,
+  `jumpPlanView`, `buildJumpBoard`, `matchesJumpQuery`, `jumpSnapshot`,
+  `buildJumpWatchRows`); the page and the route use the same functions.
+- Guests subscribe locally (`localStorage`, same `atlas:carrier-watch-local`
+  key) and the record is merged into the server list on sign-in.
+- Before the migration is applied the page still works: the route repeats the
+  watch query without `jump_*` and subscriptions are stored without a snapshot.
 
 ## 9. Background jobs (`jobs`)
 
