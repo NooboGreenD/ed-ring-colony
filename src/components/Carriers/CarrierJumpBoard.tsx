@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { IconRefresh, IconSearch, IconStar, IconX } from '@/components/Icons';
+import { IconCalendar, IconPlus, IconRefresh, IconSearch, IconStar, IconX } from '@/components/Icons';
 import { toast } from '@/components/ui/Toaster';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import {
@@ -107,7 +107,12 @@ interface PersistInput {
  * Личные подписки — тот же серверный список, что у избранного Атласа, а у
  * гостя — localStorage: подписка не должна требовать входа.
  */
-export function CarrierJumpBoard() {
+export interface CarrierJumpBoardProps {
+  /** Кнопка «в расписание»: появляется, когда на странице есть вкладка расписаний. */
+  onScheduleJump?: ((row: JumpBoardRow) => void) | null;
+}
+
+export function CarrierJumpBoard({ onScheduleJump = null }: CarrierJumpBoardProps = {}) {
   const { t, locale } = useI18n();
   const [carriers, setCarriers] = useState<MapCarrier[]>([]);
   const [watches, setWatches] = useState<CarrierWatch[]>([]);
@@ -403,6 +408,7 @@ export function CarrierJumpBoard() {
                   <th scope="col">{t('cj.colDeparture')}</th>
                   <th scope="col">{t('cj.colState')}</th>
                   <th scope="col">{t('cj.colWatch')}</th>
+                  {onScheduleJump ? <th scope="col" className="cj-col-schedule">{t('cjc.tabCalendar')}</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -457,6 +463,19 @@ export function CarrierJumpBoard() {
                           {subscribed ? t('cj.unsubscribe') : t('cj.subscribe')}
                         </button>
                       </td>
+                      {onScheduleJump ? (
+                        <td data-label={t('cjc.tabCalendar')} className="cj-col-schedule">
+                          <button
+                            type="button"
+                            className="cj-icon-btn"
+                            onClick={() => onScheduleJump(row)}
+                            title={t('cjc.fromBoardAdd')}
+                            aria-label={t('cjc.fromBoardAdd')}
+                          >
+                            <IconCalendar size={14} />
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   );
                 })}
