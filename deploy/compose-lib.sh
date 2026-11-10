@@ -270,7 +270,9 @@ edrc_builder_prune() {
 #
 # Режимы: auto (бюджеты из UPDATE_NEXT_CACHE_KEEP/UPDATE_NPM_CACHE_KEEP,
 # по умолчанию 2g каждый) · measure (только померить и доложить) ·
-# wipe (вычистить оба, независимо от размера — для тесного диска и отчёта).
+# wipe (вычистить оба, независимо от размера — для тесного диска и отчёта) ·
+# next (вычистить только кэш Next, npm-кэш оставить в бюджете — повтор
+# сорвавшейся сборки: см. edrc_build_with_retry).
 edrc_trim_cache_mounts() {
   local mode="${1:-auto}"
   command -v docker >/dev/null 2>&1 || return 0
@@ -278,13 +280,17 @@ edrc_trim_cache_mounts() {
   # Кэш-маунты бывают только у BuildKit-сборок: без buildx compose уходит в
   # запасной Dockerfile без --mount — подрезать нечего.
   edrc_compose_uses_buildkit || return 0
-  local next_kb npm_kb wipe
+  local next_kb npm_kb wipe next_wipe
   case "$mode" in
-    measure) next_kb=0; npm_kb=0; wipe=0 ;;
-    wipe)    next_kb=0; npm_kb=0; wipe=1 ;;
+    measure) next_kb=0; npm_kb=0; wipe=0; next_wipe=0 ;;
+    wipe)    next_kb=0; npm_kb=0; wipe=1; next_wipe=1 ;;
+    # Только кэш сборки Next: он и бывает отравлен (Turbopack), а npm-кэш
+    # контент-адресуемый — терять его на каждом повторе незачем.
+    next)    next_kb=0; npm_kb="$(edrc_size_to_kb "${UPDATE_NPM_CACHE_KEEP:-2g}")"
+             wipe=0; next_wipe=1 ;;
     *)       next_kb="$(edrc_size_to_kb "${UPDATE_NEXT_CACHE_KEEP:-2g}")"
              npm_kb="$(edrc_size_to_kb "${UPDATE_NPM_CACHE_KEEP:-2g}")"
-             wipe=0 ;;
+             wipe=0; next_wipe=0 ;;
   esac
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/edrc-cachetrim.XXXXXX" 2>/dev/null)" || return 0
@@ -311,7 +317,7 @@ EDRC_TRIM_SH
   {
     printf 'FROM node:22-alpine\n'
     printf 'COPY edrc-trim.sh /tmp/edrc-trim.sh\n'
-    printf 'RUN --mount=type=cache,target=/app/.next/cache EDRC_KEEP_KB=%s EDRC_WIPE=%s sh /tmp/edrc-trim.sh /app/.next/cache\n' "$next_kb" "$wipe"
+    printf 'RUN --mount=type=cache,target=/app/.next/cache EDRC_KEEP_KB=%s EDRC_WIPE=%s sh /tmp/edrc-trim.sh /app/.next/cache\n' "$next_kb" "$next_wipe"
     printf 'RUN --mount=type=cache,target=/root/.npm EDRC_KEEP_KB=%s EDRC_WIPE=%s sh /tmp/edrc-trim.sh /root/.npm\n' "$npm_kb" "$wipe"
   } > "$tmp/Dockerfile"
   local -a runner=(docker)
@@ -482,6 +488,12 @@ edrc_build_with_retry() {
     # Ход прогонов (предупреждение + ретрай) — в stdout: так сообщения видны
     # и в журнале update-project.sh, и в консоли rebuild-now.sh.
     printf '⚠ сборка не удалась (код %s, попытка %s из %s) — убираю её остатки\n' "$code" "$attempt" "$max_attempts"
+    # Кэш сборки Turbopack переживает падение и повторяется тем же: после
+    # `TurbopackInternalError: read_task_output: task … no longer exists (it was
+    # garbage collected)` следующая попытка падает так же — ещё до разбора
+    # кода. Поэтому перед повтором кэш Next вычищается целиком (npm-кэш
+    # остаётся: перекачивать пакеты на каждом повторе незачем).
+    edrc_trim_cache_mounts next || true
     edrc_cleanup_docker_disk || true
     if [ "$attempt" -ge "$max_attempts" ]; then
       printf 'ОШИБКА: сборка не удалась после %s попыток (последний код %s)\n' "$max_attempts" "$code" >&2

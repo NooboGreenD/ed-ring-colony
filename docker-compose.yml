@@ -28,6 +28,11 @@ services:
         APP_BUILD_TIME: ${APP_BUILD_TIME:-unknown}
         # 0 — пропустить npm test внутри образа (экстренный быстрый режим).
         RUN_TESTS: ${RUN_TESTS:-1}
+        # off — не пользоваться персистентным кэшем сборки Turbopack: сборка
+        # стартует холодной. Нужно, если кэш .next/cache «отравлен» и
+        # TurbopackInternalError (read_task_output … garbage collected)
+        # повторяется даже после чистки.
+        NEXT_BUILD_CACHE: ${NEXT_BUILD_CACHE:-on}
     env_file:
       - .env.production
     environment:

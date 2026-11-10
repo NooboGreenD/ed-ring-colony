@@ -608,6 +608,15 @@ exceeded» около третьей минуты. Теперь `deploy/update-p
 - размеры пишутся в журнал обновления строками
   «`кэш-маунт /app/.next/cache: N КБ (бюджет …)`» — видно, что именно
   занимало место;
+- **повтор после срыва** — `edrc_build_with_retry` вычищает кэш Next целиком
+  (`edrc_trim_cache_mounts next`): кэш Turbopack переживает падение, и повтор
+  с ним падает так же — `TurbopackInternalError: read_task_output: task …
+  no longer exists (it was garbage collected)`. npm-кэш при этом остаётся;
+- **смена версии Next** — перед сборкой `deploy/docker-next-cache-guard.sh`
+  сверяет версию с маркером `.edrc-next-version` в кэше и чистит его, если
+  версия другая; разово кэш Next чистится командой
+  `sudo bash deploy/docker-disk-report.sh --wipe-next`, полностью выключить
+  персистентный кэш можно `NEXT_BUILD_CACHE=off` в `.env.production`;
 - работает это через крошечную синтетическую сборку с теми же `target`:
   кэш-маунты с одним id (= пути) общие для всех сборок одного BuildKit,
   иначе к ним не добраться. Без BuildKit (запасной Dockerfile без

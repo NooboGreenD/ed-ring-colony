@@ -91,6 +91,26 @@ RUN if [ "$RUN_TESTS" = "1" ]; then \
 # Инкрементальный кэш Next.js (.next/cache) живёт между сборками: без маунта
 # он оставался в выброшенном слое образа, и каждая пересборка компилировала
 # проект с нуля. В рантайм-образ кэш не попадает (и не нужен).
+#
+# Кэш Turbopack привязан к версии компилятора, но лежит в кэш-маунте вечно и
+# переживает смену Next. Записи чужой версии Turbopack читает как свои и
+# падает ещё до разбора кода:
+#
+#   Error [TurbopackInternalError]: read_task_output: task TaskId 7 no longer
+#   exists (it was garbage collected).
+#
+# Поэтому версия Next запоминается маркером рядом с кэшем: не совпала
+# (обновили Next) — каталог вычищается ДО сборки, а не после трёх попыток.
+# NEXT_BUILD_CACHE=off выключает персистентный кэш сборки совсем (каждая
+# сборка холодная) — крайняя мера, если кэш отравлен, а разбираться некогда:
+#   docker compose build --build-arg NEXT_BUILD_CACHE=off web
+ARG NEXT_BUILD_CACHE=on
+# ENV, а не переменная на строке RUN: `next build` читает то же значение из
+# окружения (next.config.mjs → turbopackFileSystemCacheForBuild), а строки
+# RUN остаются однострочными — их разбирает запасной Dockerfile без BuildKit.
+ENV NEXT_BUILD_CACHE=$NEXT_BUILD_CACHE
+RUN --mount=type=cache,target=/app/.next/cache sh ./deploy/docker-next-cache-guard.sh
+
 RUN --mount=type=cache,target=/app/.next/cache npm run build
 
 # ── 3. Рантайм ───────────────────────────────────────────────────────
