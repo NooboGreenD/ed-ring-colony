@@ -17,8 +17,15 @@
 
 import { readAllRows } from './readAllRows.ts';
 import { viewerContext } from './fleetCarrierStore';
-import { searchCarrierRegistry } from './carrierRegistryStore';
-import { carrierSystemKey, isMapPoint, type MapCarrier, type MapCarriersResponse, type MapPoint } from './carrierMap.ts';
+import { REGISTRY_STALE_MS, searchCarrierRegistry } from './carrierRegistryStore';
+import {
+  carrierSystemKey,
+  isMapPoint,
+  type MapCarrier,
+  type MapCarriersResponse,
+  type MapDirectoryInfo,
+  type MapPoint,
+} from './carrierMap.ts';
 import {
   CARRIER_QUERY_MIN,
   CARRIER_SEARCH_LIMIT,
@@ -31,10 +38,14 @@ import {
   type CarrierWatchScope,
 } from './carrierDirectory.ts';
 import {
+  DIRECTORY_COLUMNS,
+  DIRECTORY_COLUMNS_BASE,
   MAP_CARRIER_COLUMNS,
   coordinateNamesNeeded,
+  directoryCoordinateNames,
   isMapCarrierRow,
   rowCoordinates,
+  shapeDirectoryCarriers,
   shapeMapCarriers,
 } from './carrierMapView.ts';
 
@@ -49,6 +60,14 @@ const EDSM_TIMEOUT_MS = 5000;
 const HIT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MISS_TTL_MS = 15 * 60 * 1000;
 const CACHE_LIMIT = 5000;
+/**
+ * Сколько записей реестра EDDN кладём на карту. Реестр растёт без ограничений
+ * (каждый прыжок любого носителя), а сцена рисует спрайт на каждую отметку:
+ * 1500 самых свежих — это уже «весь трафик за последние дни», а не свалка.
+ */
+export const MAP_DIRECTORY_LIMIT = 1500;
+/** Сколько систем реестра за один раз искать в каталогах (EDSM и так не больше 50). */
+const DIRECTORY_COORD_NAMES = 200;
 
 const coordinateCache = new Map<string, { point: MapPoint | null; at: number }>();
 
@@ -145,6 +164,12 @@ export interface ResolveOptions {
   /** Подмена `fetch` (тесты); `null` — EDSM не спрашивать. */
   fetchImpl?: typeof fetch | null;
   nowMs?: number;
+  /**
+   * Запоминать ли «систему не нашли». Слою реестра это не нужно: там координаты
+   * почти всегда есть в самой строке, а промах чужого носителя не должен
+   * на 15 минут лишать координат носителя сайта в той же системе.
+   */
+  rememberMisses?: boolean;
 }
 
 /** Координаты систем по `carrierSystemKey` — то, что удалось найти. */
@@ -187,7 +212,7 @@ export async function resolveMapCoordinates(svc: Svc, names: readonly string[], 
     const key = carrierSystemKey(name);
     const point = remote.get(key) ?? null;
     if (point) result.set(key, point);
-    remember(key, point, nowMs);
+    if (point || options.rememberMisses !== false) remember(key, point, nowMs);
   }
   return result;
 }
@@ -228,6 +253,13 @@ async function loadSquadronMates(svc: Svc, squadronIds: number[], viewerId: stri
 
 export interface LoadMapCarriersOptions extends ResolveOptions {
   now?: Date;
+  /**
+   * Подмешать реестр EDDN (`carrier_directory`). По умолчанию да: карта
+   * показывает все известные носители, а не только подтверждённые сайтом.
+   */
+  includeDirectory?: boolean;
+  /** Сколько записей реестра брать (для тестов и узких экранов). */
+  directoryLimit?: number;
 }
 
 /**
@@ -274,20 +306,84 @@ async function shapeCarrierRows(
   });
 }
 
+/**
+ * Строки реестра EDDN для карты: самые свежие, в пределах срока давности.
+ * Таблицы может не быть (старая установка), а колонок `previous_*` — до
+ * миграции `20261110090000`: оба случая дают пустой список, а не ошибку слоя.
+ */
+export async function loadDirectoryRows(svc: Svc, limit: number, since: string): Promise<Row[]> {
+  const query = (columns: string) => svc.from('carrier_directory')
+    .select(columns)
+    .gte('updated_at', since)
+    .order('updated_at', { ascending: false })
+    // +1 строка — чтобы честно понять, обрезали ли мы реестр.
+    .limit(limit + 1);
+  const full = await query(DIRECTORY_COLUMNS);
+  if (!full.error) return Array.isArray(full.data) ? full.data : [];
+  const base = await query(DIRECTORY_COLUMNS_BASE);
+  if (base.error || !Array.isArray(base.data)) return [];
+  return base.data;
+}
+
 export async function loadMapCarriers(svc: Svc, viewerId: string | null, options: LoadMapCarriersOptions = {}): Promise<MapCarriersResponse> {
   const now = options.now ?? new Date();
-  const read = await readAllRows<Row>((from, to) => svc
-    .from('fleet_carriers')
-    .select(MAP_CARRIER_COLUMNS)
-    .order('carrier_id', { ascending: true })
-    .range(from, to));
+  const includeDirectory = options.includeDirectory !== false;
+  const directoryLimit = Math.max(1, Math.floor(options.directoryLimit ?? MAP_DIRECTORY_LIMIT));
+  const since = new Date(now.getTime() - REGISTRY_STALE_MS).toISOString();
+
+  const [read, directoryRows] = await Promise.all([
+    readAllRows<Row>((from, to) => svc
+      .from('fleet_carriers')
+      .select(MAP_CARRIER_COLUMNS)
+      .order('carrier_id', { ascending: true })
+      .range(from, to)),
+    includeDirectory ? loadDirectoryRows(svc, directoryLimit, since) : Promise.resolve([] as Row[]),
+  ]);
   if (read.error) throw new Error(read.error.message);
 
   const rows = read.data.filter((row) => isMapCarrierRow(row, now));
+  const directory = includeDirectory ? directoryRows.slice(0, directoryLimit) : [];
+  const truncated = directoryRows.length > directoryLimit;
   const response: MapCarriersResponse = { carriers: [], viewer: { signedIn: Boolean(viewerId) }, generatedAt: now.toISOString() };
-  if (!rows.length) return response;
-  response.carriers = await shapeCarrierRows(svc, rows, viewerId, now, options);
-  return response;
+
+  const finish = (carriers: MapCarrier[], shown: number) => {
+    response.carriers = carriers;
+    if (includeDirectory) {
+      const info: MapDirectoryInfo = { shown, truncated, since };
+      response.directory = info;
+    }
+    return response;
+  };
+
+  if (!rows.length && !directory.length) return finish([], 0);
+
+  const carriers = rows.length ? await shapeCarrierRows(svc, rows, viewerId, now, options) : [];
+  let shown = 0;
+  if (directory.length) {
+    const known = new Set(carriers.map((carrier) => carrier.id));
+    const knownPoints = new Map<string, MapPoint>();
+    for (const carrier of carriers) {
+      if (carrier.position) knownPoints.set(carrierSystemKey(carrier.system), carrier.position);
+    }
+    const needed = directoryCoordinateNames(directory, knownPoints).slice(0, DIRECTORY_COORD_NAMES);
+    let coordinates = knownPoints;
+    if (needed.length) {
+      const resolved = await resolveMapCoordinates(svc, needed, {
+        fetchImpl: null, // EDSM для реестра не дёргаем: это тысячи систем в минуту
+        nowMs: now.getTime(),
+        rememberMisses: false,
+      });
+      coordinates = new Map([...knownPoints, ...resolved]);
+    }
+    const fromRegistry = shapeDirectoryCarriers(directory, {
+      coordinates,
+      knownIds: known,
+      seenAfter: now.getTime() - REGISTRY_STALE_MS,
+    });
+    shown = fromRegistry.length;
+    carriers.push(...fromRegistry);
+  }
+  return finish(carriers, shown);
 }
 
 /* ── «Трафик авианосцев»: поиск по реестру ────────────────────────────────── */

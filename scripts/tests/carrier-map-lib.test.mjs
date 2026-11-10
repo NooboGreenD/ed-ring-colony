@@ -27,16 +27,20 @@ import {
   countMapCarriers,
   filterMapCarriers,
   groupCarriersBySystem,
+  carrierSourceOf,
   isDefaultCarrierFilter,
   toggleCarrierRelation,
+  toggleCarrierSource,
   toggleCarrierType,
 } from '../../src/lib/carrierMap.ts';
 import {
   SCRAP_AFTER_MS,
   UNBOUND_MAX_AGE_MS,
   coordinateNamesNeeded,
+  directoryCoordinateNames,
   isMapCarrierRow,
   rowCoordinates,
+  shapeDirectoryCarriers,
   shapeMapCarriers,
 } from '../../src/lib/carrierMapView.ts';
 
@@ -178,7 +182,8 @@ test('в ответе карты нет груза, финансов и орде
   }
   assert.deepEqual(Object.keys(carrier).sort(), [
     'body', 'callsign', 'decommission', 'docking', 'estimated', 'id', 'jump', 'locationAt', 'name', 'notorious',
-    'origin', 'owner', 'ownerHidden', 'position', 'previousSystem', 'relation', 'services', 'squadron', 'system', 'type',
+    'origin', 'owner', 'ownerHidden', 'position', 'previousPosition', 'previousSystem', 'relation', 'services',
+    'squadron', 'system', 'type',
   ]);
   // Откуда запись: отметка из учёта сайта, а не из реестра EDDN.
   assert.equal(carrier.origin, 'site');
@@ -219,7 +224,8 @@ test('координаты: из строки (и для соседей по с�
   ];
   const known = rowCoordinates(rows, NOW);
   assert.deepEqual([...known.keys()], ['col 285 sector ab-c d1'], 'после прыжка x/y/z строки не относятся к новой системе');
-  assert.deepEqual(coordinateNamesNeeded(rows, NOW, known), ['Lave', 'HIP 100', 'Achenar']);
+  assert.deepEqual(coordinateNamesNeeded(rows, NOW, known), ['Lave', 'HIP 100', 'Achenar', 'Sol'],
+    'плюс система, откуда носитель пришёл: по ней рисуется линия маршрута');
 
   const carriers = byId(shapeMapCarriers(rows, context({ coordinates: new Map([...known, ['lave', { x: 75, y: 48, z: -12 }]]) })));
   assert.deepEqual(carriers.get('2').position, { x: 1.5, y: 2.5, z: 3.5 }, 'сосед по системе берёт координаты из журнала другого носителя');
@@ -302,6 +308,7 @@ test('фильтр и счётчики слоя', () => {
     total: 4, placed: 3, systems: 3,
     relations: { own: 1, squadron: 1, other: 2 },
     types: { FleetCarrier: 3, SquadronCarrier: 1 },
+    sources: { site: 4, eddn: 0 },
   });
 
   assert.equal(isDefaultCarrierFilter(DEFAULT_CARRIER_FILTER), true);
@@ -312,6 +319,95 @@ test('фильтр и счётчики слоя', () => {
   const onlyDrakes = toggleCarrierType(DEFAULT_CARRIER_FILTER, 'SquadronCarrier');
   assert.deepEqual(filterMapCarriers(list, onlyDrakes).map((item) => item.id), ['1', '3', '4']);
   assert.deepEqual(filterMapCarriers(list, toggleCarrierRelation(noOthers, 'other')).map((item) => item.id), ['1', '2', '3', '4']);
+});
+
+test('источник отметки: сайт или реестр EDDN — отдельный переключатель слоя', () => {
+  const list = [
+    carrier({ id: '1', system: 'Sol' }),
+    carrier({ id: '2', system: 'Lave', origin: 'eddn', relation: 'other', position: { x: 75, y: 48, z: -12 } }),
+  ];
+  assert.equal(carrierSourceOf(list[0]), 'site', 'запись без origin — из учёта сайта');
+  assert.equal(carrierSourceOf(list[1]), 'eddn');
+
+  const counts = countMapCarriers(list);
+  assert.deepEqual(counts.sources, { site: 1, eddn: 1 });
+
+  const noRegistry = toggleCarrierSource(DEFAULT_CARRIER_FILTER, 'eddn');
+  assert.deepEqual(filterMapCarriers(list, noRegistry).map((item) => item.id), ['1'], 'реестр EDDN скрыт');
+  assert.equal(isDefaultCarrierFilter(noRegistry), false);
+  assert.equal(DEFAULT_CARRIER_FILTER.sources.eddn, true, 'исходный фильтр не меняется');
+
+  const onlyRegistry = toggleCarrierSource(DEFAULT_CARRIER_FILTER, 'site');
+  assert.deepEqual(filterMapCarriers(list, onlyRegistry).map((item) => item.id), ['2']);
+  assert.equal(isDefaultCarrierFilter(toggleCarrierSource(onlyRegistry, 'site')), true, 'оба источника снова включены');
+});
+
+test('реестр EDDN: отметка без владельца и прыжка, но со следом последнего прыжка', () => {
+  const coordinates = new Map([
+    ['lave', { x: 75, y: 48, z: -12 }],
+    ['hip 100', { x: 10, y: 1, z: -20 }],
+  ]);
+  const rows = [
+    {
+      carrier_id: 3700000901, callsign: 'K7Q-BQL', name: null, carrier_type: 'FleetCarrier',
+      system_name: 'HIP 100', body_name: 'HIP 100 4', x: 10, y: 1, z: -20, services: ['commodities', 'refuel', 'dock'],
+      updated_at: ago(3 * MIN), last_seen_at: ago(3 * MIN),
+      previous_system_name: 'Lave', previous_x: 75, previous_y: 48, previous_z: -12,
+    },
+    {
+      carrier_id: 3700000902, callsign: 'K7Q-BQ2', name: 'Уточнено пилотом', carrier_type: 'SquadronCarrier',
+      system_name: 'Achenar', x: null, y: null, z: null, services: null,
+      updated_at: ago(MIN), last_seen_at: ago(MIN),
+      // Предыдущей системы нет — так выглядят строки до миграции истории.
+    },
+    {
+      carrier_id: 3700000901, callsign: 'K7Q-BQL', system_name: 'HIP 100', x: 10, y: 1, z: -20,
+      updated_at: ago(MIN), last_seen_at: ago(MIN), previous_system_name: null,
+    },
+    { carrier_id: 3700000903, system_name: null, updated_at: ago(MIN) },
+    { carrier_id: 3700000904, system_name: 'Sol', updated_at: ago(200 * DAY), last_seen_at: ago(200 * DAY) },
+  ];
+  const carriers = shapeDirectoryCarriers(rows, {
+    coordinates,
+    knownIds: new Set(['3700000902']),
+    seenAfter: NOW.getTime() - 90 * DAY,
+  });
+  assert.deepEqual(carriers.map((item) => item.id), ['3700000901'], 'повтор, запись сайта, без системы и слишком старая отсеяны');
+
+  const [carrier] = carriers;
+  assert.equal(carrier.origin, 'eddn');
+  assert.equal(carrier.relation, 'other', 'чужой: владельца у реестра нет');
+  assert.equal(carrier.owner, null);
+  assert.equal(carrier.squadron, null);
+  assert.equal(carrier.jump, null, 'EDDN не приносит заказанный прыжок');
+  assert.equal(carrier.name, null, 'имя из реестра не выдумываем');
+  assert.deepEqual(carrier.services, ['Рынок товаров', 'Заправка'], 'службы — как у носителей сайта');
+  assert.deepEqual(carrier.position, { x: 10, y: 1, z: -20 });
+  assert.equal(carrier.locationAt, ago(3 * MIN));
+
+  assert.equal(carrier.previousSystem, 'Lave');
+  assert.deepEqual(carrier.previousPosition, { x: 75, y: 48, z: -12 }, 'откуда пришёл — для линии маршрута');
+
+  const [group] = groupCarriersBySystem(carriers);
+  assert.equal(group.routes.length, 1);
+  assert.equal(group.routes[0].system, 'Lave');
+  assert.equal(group.routes[0].key, 'lave');
+  assert.deepEqual(group.routes[0].position, { x: 75, y: 48, z: -12 });
+  assert.equal(group.jumps.length, 0, 'запланированных прыжков у реестра нет');
+
+  assert.deepEqual(directoryCoordinateNames(rows, new Map([['lave', { x: 75, y: 48, z: -12 }]])), ['Achenar', 'Sol'],
+    'искать надо и систему стоянки, и систему, откуда носитель пришёл');
+});
+
+test('маршрут в группе: по одной линии на систему-источник, без петли в саму себя', () => {
+  const list = [
+    carrier({ id: '1', system: 'HIP 100', position: { x: 10, y: 1, z: -20 }, previousSystem: 'Lave', previousPosition: { x: 75, y: 48, z: -12 } }),
+    carrier({ id: '2', system: 'hip 100', position: { x: 10, y: 1, z: -20 }, previousSystem: 'lave', previousPosition: { x: 75, y: 48, z: -12 } }),
+    carrier({ id: '3', system: 'HIP 100', previousSystem: 'Achenar', previousPosition: null }),
+    carrier({ id: '4', system: 'HIP 100', position: { x: 10, y: 1, z: -20 }, previousSystem: 'HIP 100', previousPosition: { x: 10, y: 1, z: -20 } }),
+  ];
+  const [group] = groupCarriersBySystem(list);
+  assert.deepEqual(group.routes.map((route) => route.key), ['lave'], 'без координат и без повторов, петля не рисуется');
 });
 
 test('значок группы: класс ведущего носителя, тон, бледность и счётчик', () => {

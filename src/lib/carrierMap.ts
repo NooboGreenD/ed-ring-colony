@@ -16,6 +16,13 @@ import { systemKey } from './systemIdentity.ts';
 
 export type MapCarrierRelation = 'own' | 'squadron' | 'other';
 export type MapCarrierType = 'FleetCarrier' | 'SquadronCarrier';
+/**
+ * Откуда запись: `site` — учёт сайта (`fleet_carriers`: владелец, эскадрилья,
+ * подтверждённая стоянка), `eddn` — живой поток EDDN (`carrier_directory`).
+ * У записи из реестра нет владельца, эскадрильи и прыжка — только факт
+ * «носитель был здесь»; и это честно видно на карте.
+ */
+export type MapCarrierSource = 'site' | 'eddn';
 
 export interface MapPoint {
   x: number;
@@ -53,6 +60,8 @@ export interface MapCarrier {
   /** Прыжок должен был завершиться, подтверждения ещё нет: `system` — цель прыжка. */
   estimated: boolean;
   previousSystem: string | null;
+  /** Координаты системы, откуда носитель пришёл последним прыжком (если известны). */
+  previousPosition?: MapPoint | null;
   jump: MapCarrierJump | null;
   /** Кого пускают на стыковку (подпись по-русски). */
   docking: string | null;
@@ -66,17 +75,29 @@ export interface MapCarrier {
    * `eddn` — только реестр из живого потока EDDN (`carrier_directory`).
    * У записи из EDDN нет владельца, эскадрильи и груза — и это честно видно.
    */
-  origin?: 'site' | 'eddn';
+  origin?: MapCarrierSource;
+}
+
+export interface MapDirectoryInfo {
+  /** Сколько записей реестра EDDN попало в ответ. */
+  shown: number;
+  /** Реестр обрезан: нашлось больше, чем помещается на карту. */
+  truncated: boolean;
+  /** Граница свежести: записи старше этого срока на карту не берутся. */
+  since: string;
 }
 
 export interface MapCarriersResponse {
   carriers: MapCarrier[];
   viewer: { signedIn: boolean };
   generatedAt: string;
+  /** Реестр EDDN: сколько записей подмешано и не обрезали ли мы его. */
+  directory?: MapDirectoryInfo;
 }
 
 export const MAP_CARRIER_RELATIONS: readonly MapCarrierRelation[] = ['own', 'squadron', 'other'];
 export const MAP_CARRIER_TYPES: readonly MapCarrierType[] = ['FleetCarrier', 'SquadronCarrier'];
+export const MAP_CARRIER_SOURCES: readonly MapCarrierSource[] = ['site', 'eddn'];
 
 export const CARRIER_RELATION_LABEL: Record<MapCarrierRelation, string> = {
   own: 'Мой',
@@ -100,6 +121,21 @@ export const CARRIER_TYPE_FULL: Record<MapCarrierType, string> = {
   SquadronCarrier: 'эскадренный (Javelin)',
 };
 
+export const CARRIER_SOURCE_LABEL: Record<MapCarrierSource, string> = {
+  site: 'Сайт',
+  eddn: 'EDDN',
+};
+
+export const CARRIER_SOURCE_COLOR: Record<MapCarrierSource, string> = {
+  site: '#e67e22',
+  eddn: '#60a5fa',
+};
+
+/** Откуда отметка; старая запись без поля — из учёта сайта. */
+export function carrierSourceOf(carrier: Pick<MapCarrier, 'origin'>): MapCarrierSource {
+  return carrier.origin === 'eddn' ? 'eddn' : 'site';
+}
+
 /** Тон значка: чей носитель; списываемый носитель серый, как в игре. */
 export type CarrierTone = MapCarrierRelation | 'decommission';
 
@@ -118,11 +154,16 @@ export const CARRIER_STALE_MS = 14 * 24 * 60 * 60 * 1000;
 export interface CarrierLayerFilter {
   relations: Record<MapCarrierRelation, boolean>;
   types: Record<MapCarrierType, boolean>;
+  /** Источник записи: учёт сайта или реестр EDDN. */
+  sources: Record<MapCarrierSource, boolean>;
 }
 
 export const DEFAULT_CARRIER_FILTER: CarrierLayerFilter = {
   relations: { own: true, squadron: true, other: true },
   types: { FleetCarrier: true, SquadronCarrier: true },
+  // «Все носители» — по умолчанию: карта показывает и подтверждённые стоянки,
+  // и реестр EDDN, а переключатель позволяет оставить только свои.
+  sources: { site: true, eddn: true },
 };
 
 /** Ключ сравнения систем: регистр и лишние пробелы не важны. */
@@ -136,13 +177,16 @@ export function isMapPoint(value: unknown): value is MapPoint {
 }
 
 export function filterMapCarriers(carriers: readonly MapCarrier[], filter: CarrierLayerFilter): MapCarrier[] {
-  return carriers.filter((carrier) => filter.relations[carrier.relation] !== false && filter.types[carrier.type] !== false);
+  return carriers.filter((carrier) => filter.relations[carrier.relation] !== false
+    && filter.types[carrier.type] !== false
+    && filter.sources?.[carrierSourceOf(carrier)] !== false);
 }
 
 /** Фильтр ничего не отсекает. */
 export function isDefaultCarrierFilter(filter: CarrierLayerFilter): boolean {
   return MAP_CARRIER_RELATIONS.every((relation) => filter.relations[relation] !== false)
-    && MAP_CARRIER_TYPES.every((type) => filter.types[type] !== false);
+    && MAP_CARRIER_TYPES.every((type) => filter.types[type] !== false)
+    && MAP_CARRIER_SOURCES.every((source) => filter.sources?.[source] !== false);
 }
 
 export function toggleCarrierRelation(filter: CarrierLayerFilter, relation: MapCarrierRelation): CarrierLayerFilter {
@@ -153,6 +197,10 @@ export function toggleCarrierType(filter: CarrierLayerFilter, type: MapCarrierTy
   return { ...filter, types: { ...filter.types, [type]: !filter.types[type] } };
 }
 
+export function toggleCarrierSource(filter: CarrierLayerFilter, source: MapCarrierSource): CarrierLayerFilter {
+  return { ...filter, sources: { ...filter.sources, [source]: !filter.sources[source] } };
+}
+
 export interface CarrierCounts {
   total: number;
   /** Сколько из них можно поставить на карту (известны координаты системы). */
@@ -161,6 +209,8 @@ export interface CarrierCounts {
   systems: number;
   relations: Record<MapCarrierRelation, number>;
   types: Record<MapCarrierType, number>;
+  /** Сколько отметок пришло из учёта сайта и сколько из реестра EDDN. */
+  sources: Record<MapCarrierSource, number>;
 }
 
 export function countMapCarriers(carriers: readonly MapCarrier[]): CarrierCounts {
@@ -170,6 +220,7 @@ export function countMapCarriers(carriers: readonly MapCarrier[]): CarrierCounts
     systems: 0,
     relations: { own: 0, squadron: 0, other: 0 },
     types: { FleetCarrier: 0, SquadronCarrier: 0 },
+    sources: { site: 0, eddn: 0 },
   };
   const systems = new Set<string>();
   for (const carrier of carriers) {
@@ -177,6 +228,7 @@ export function countMapCarriers(carriers: readonly MapCarrier[]): CarrierCounts
     systems.add(carrierSystemKey(carrier.system));
     counts.relations[carrier.relation] = (counts.relations[carrier.relation] ?? 0) + 1;
     counts.types[carrier.type] = (counts.types[carrier.type] ?? 0) + 1;
+    counts.sources[carrierSourceOf(carrier)] += 1;
   }
   counts.systems = systems.size;
   return counts;
@@ -210,6 +262,12 @@ export interface CarrierSystemGroup {
   relations: Record<MapCarrierRelation, number>;
   /** Прыжки из этой системы (по одной цели на систему назначения). */
   jumps: Array<{ key: string; system: string; position: MapPoint | null; state: 'scheduled' | 'jumping'; departureAt: string | null; carrier: MapCarrier }>;
+  /**
+   * Выполненные прыжки, которые привели носителей сюда: отрезок «откуда →
+   * сюда». Рисуется сплошной бледной линией — в отличие от пунктира
+   * запланированного прыжка. По одной линии на систему-источник.
+   */
+  routes: Array<{ key: string; system: string; position: MapPoint; carrier: MapCarrier }>;
 }
 
 /** Одна отметка на систему: значок ведущего носителя и счётчик остальных. */
@@ -246,7 +304,15 @@ export function groupCarriersBySystem(carriers: readonly MapCarrier[]): CarrierS
         carrier,
       });
     }
-    groups.push({ key, system: lead.system, position, carriers: sorted, lead, relations, jumps });
+    const routes: CarrierSystemGroup['routes'] = [];
+    const seenSources = new Set<string>();
+    for (const carrier of sorted) {
+      const from = carrier.previousSystem ? carrierSystemKey(carrier.previousSystem) : '';
+      if (!from || from === key || seenSources.has(from) || !carrier.previousPosition) continue;
+      seenSources.add(from);
+      routes.push({ key: from, system: String(carrier.previousSystem).trim(), position: carrier.previousPosition, carrier });
+    }
+    groups.push({ key, system: lead.system, position, carriers: sorted, lead, relations, jumps, routes });
   }
 
   return groups.sort((left, right) => RELATION_ORDER[left.lead.relation] - RELATION_ORDER[right.lead.relation]

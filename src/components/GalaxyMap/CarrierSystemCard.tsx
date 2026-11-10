@@ -3,8 +3,9 @@
 /**
  * Карточка системы с авианосцами на карте галактики: какие носители там
  * стоят, чьи, кого пускают на стыковку, какие службы работают, когда их
- * видели и куда они собираются прыгать. Груза и финансов здесь нет — они в
- * профиле (свой носитель) и на странице эскадрильи.
+ * видели, откуда они пришли и куда собираются прыгать. Груза и финансов здесь
+ * нет — они в профиле (свой носитель) и на странице эскадрильи. Носитель из
+ * реестра EDDN помечен честно: владельца и стыковки по нему не знает никто.
  */
 
 import Link from 'next/link';
@@ -12,6 +13,7 @@ import type { ReactNode } from 'react';
 import { IconExternalLink, IconMapPin } from '@/components/Icons';
 import {
   CARRIER_RELATION_HINT,
+  CARRIER_SOURCE_COLOR,
   CARRIER_TONE_COLOR,
   CARRIER_TYPE_FULL,
   CARRIER_TYPE_LABEL,
@@ -19,6 +21,7 @@ import {
   carrierIconVariant,
   carrierJumpText,
   carrierLocationText,
+  carrierSourceOf,
   carrierTitle,
   carrierTone,
   isCarrierStale,
@@ -63,6 +66,7 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
   const services = carrier.services.slice(0, SERVICES_SHOWN);
   const moreServices = carrier.services.length - services.length;
   const javelin = carrier.type === 'SquadronCarrier';
+  const fromRegistry = carrierSourceOf(carrier) === 'eddn';
   // Позывной Javelin — тег его эскадрильи в игре: виден, даже если эскадрильи нет на сайте.
   const gameTag = carrierSquadronTag(carrier);
 
@@ -83,6 +87,7 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
           </div>
           <div style={{ marginTop: 4 }}>
             <Chip color={CARRIER_TONE_COLOR[carrier.relation]}>{CARRIER_RELATION_HINT[carrier.relation]}</Chip>
+            {fromRegistry && <Chip color={CARRIER_SOURCE_COLOR.eddn} title={t('csc.originEddnHint')}>{t('csc.originEddn')}</Chip>}
             {carrier.decommission && <Chip color={CARRIER_TONE_COLOR.decommission} title={t('csc.decommissionTitle')}>{t('csc.decommission')}</Chip>}
             {carrier.estimated && <Chip color="#ffd166" title={t('csc.estimatedTitle')}>{t('csc.estimated')}</Chip>}
             {stale && <Chip color={DIM} title={t('csc.staleTitle')}>{t('csc.stale')}</Chip>}
@@ -93,6 +98,8 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
               <div>{t('csc.owner')}{' '}<Link href={`/cmdr/${encodeURIComponent(carrier.owner)}`} style={{ color: TEXT, textDecoration: 'none' }}>CMDR {carrier.owner}</Link></div>
             ) : carrier.ownerHidden ? (
               <div>{t('csc.ownerHidden')}</div>
+            ) : fromRegistry ? (
+              <div>{t('csc.originEddnOwner')}</div>
             ) : !carrier.squadron && !javelin ? (
               <div>{t('csc.ownerNotLinked')}</div>
             ) : null}
@@ -119,6 +126,9 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
             )}
             {services.length > 0 && (
               <div>{t('csc.services')}{' '}<span style={{ color: TEXT }}>{services.join(', ')}</span>{moreServices > 0 ? t('csc.andMore', { count: moreServices }) : ''}</div>
+            )}
+            {fromRegistry && carrier.previousSystem && (
+              <div data-carrier-route={carrier.previousSystem}>{t('csc.cameFrom', { system: carrier.previousSystem })}</div>
             )}
             <div style={{ color: DIM }}>{carrierLocationText(carrier, now)}</div>
             {jump && <div style={{ color: '#ffd166' }}>{jump}</div>}

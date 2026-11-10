@@ -1,6 +1,6 @@
 /**
- * Слой «Авианосцы» карты в jsdom: панель фильтра (переключатель, «чьи»,
- * «класс», список систем), карточка системы с носителями и значок.
+ * Слой «Авианосцы» карты в jsdom: панель фильтра (переключатель, источник,
+ * «чьи», «класс», список систем), карточка системы с носителями и значок.
  *
  * Компоненты собираются esbuild'ом (`next/link` — заглушка). Данные
  * строятся теми же функциями, что и на карте (`groupCarriersBySystem`,
@@ -45,6 +45,15 @@ function carrier(overrides) {
     ...overrides,
   };
 }
+
+const EDDN_CARRIERS = [
+  carrier({
+    id: '3700000101', callsign: 'EDD-101', origin: 'eddn', system: 'Sol', position: { x: 0, y: 0, z: 0 },
+    locationAt: ago(20 * MIN), previousSystem: 'Lave', previousPosition: { x: 75, y: 48, z: -12 }, services: ['Заправка'],
+    docking: null, notorious: null,
+  }),
+  carrier({ id: '3700000102', callsign: 'EDD-102', origin: 'eddn', system: 'Lave', position: { x: 75, y: 48, z: -12 } }),
+];
 
 const CARRIERS = [
   carrier({
@@ -184,6 +193,72 @@ test('панель слоя: счётчики, фильтр «чьи» и «кл
 
     await ui.render(React.createElement(Harness, { signedIn: false, key: 'guest' }));
     assert.match(ui.text(), /Войдите, чтобы отличать свои носители/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('панель слоя: переключатель источника — подтверждённые сайтом или весь реестр EDDN', async () => {
+  const ui = await setup();
+  try {
+    const { React, mod } = ui;
+    const all = [...CARRIERS, ...EDDN_CARRIERS];
+
+    function Harness() {
+      const [filter, setFilter] = React.useState(DEFAULT_CARRIER_FILTER);
+      const visible = filterMapCarriers(all, filter);
+      return React.createElement(mod.CarrierLayerControls, {
+        show: true,
+        onShowChange: () => {},
+        filter,
+        onFilterChange: setFilter,
+        counts: countMapCarriers(all),
+        visibleCount: visible.length,
+        groups: groupCarriersBySystem(visible),
+        selectedKey: null,
+        onSelectGroup: () => {},
+        status: 'ready',
+        signedIn: false,
+        directory: { shown: EDDN_CARRIERS.length, truncated: true, since: ago(90 * 24 * 60 * MIN) },
+      });
+    }
+
+    await ui.render(React.createElement(Harness));
+    assert.match(ui.text(), /Авианосцы \(7\)/, 'все носители — и сайта, и реестра');
+    assert.ok(ui.button(/^Сайт 5$/), 'источник «Сайт» со счётчиком подтверждённых');
+    assert.ok(ui.button(/^EDDN 2$/), 'источник «EDDN» со счётчиком реестра');
+    assert.equal(ui.button(/^EDDN 2$/).getAttribute('aria-pressed'), 'true', 'по умолчанию видны все');
+    assert.match(ui.text(), /Реестр EDDN: на карте 2 самых свежих носителей/);
+    assert.ok(Array.from(ui.document.querySelectorAll('[data-carrier-system]')).some((row) => /EDDN/.test(row.textContent)),
+      'система, известная только реестру, помечена EDDN');
+
+    await ui.click(ui.button(/^EDDN 2$/));
+    assert.equal(ui.button(/^EDDN 2$/).getAttribute('aria-pressed'), 'false');
+    assert.match(ui.text(), /Авианосцы \(5\/7\)/, 'реестр выключен — видно только подтверждённое');
+    const rows = Array.from(ui.document.querySelectorAll('[data-carrier-system]')).map((row) => row.getAttribute('data-carrier-system'));
+    assert.deepEqual(rows, ['hip 100', 'lave', 'achenar'], 'системы реестра ушли с карты');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('карточка системы: носитель из реестра EDDN — с источником и следом прыжка, без владельца', async () => {
+  const ui = await setup();
+  try {
+    const { React, mod } = ui;
+    const [group] = groupCarriersBySystem([EDDN_CARRIERS[0]]);
+    await ui.render(React.createElement(mod.CarrierSystemCard, {
+      group, now: NOW, onClose: () => {}, onFocus: () => {},
+    }));
+    const item = ui.document.querySelector('li[data-carrier-id="3700000101"]');
+    assert.ok(item, 'отметка реестра в карточке');
+    assert.match(item.textContent, /EDD-101/);
+    assert.match(item.textContent, /EDDN/, 'источник помечен честно');
+    assert.match(item.textContent, /Владелец неизвестен: запись из реестра EDDN/);
+    assert.match(item.textContent, /Пришёл из Lave/);
+    assert.doesNotMatch(item.textContent, /Владелец не привязан на сайте/, 'чужого владельца не выдумываем');
+    assert.doesNotMatch(item.textContent, /Стыковка:/, 'стыковку EDDN не знает');
+    assert.match(item.textContent, /Службы: Заправка/);
   } finally {
     await ui.cleanup();
   }

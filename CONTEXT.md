@@ -436,7 +436,7 @@ checks itself:
 | `/api/galaxy/systems/search` | GET/HEAD · — | Автодополнение по каталогу систем |
 | `/api/hubs` | GET · — | Хабы колонизации для карты |
 | `/api/hubs/resolve` | GET · — | Координаты хабов (EDSM → каталог → Spansh) |
-| `/api/map/carriers` | GET · — (сессия — своё/эскадрилья) | Слой «Авианосцы»: публичные отметки (без груза и финансов), отношение к зрителю |
+| `/api/map/carriers` | GET · — (сессия — своё/эскадрилья) | Слой «Авианосцы»: публичные отметки (без груза и финансов), отношение к зрителю; по умолчанию плюс реестр EDDN (до 1500 свежих), `?directory=0` — только учёт сайта |
 | `/api/map/pilots` | GET · — (с сессией — больше) | Пилоты на карте (только разрешившие показ позиции) |
 | `/api/market/find` | GET · — | Прежний поиск рынка — совместимый ответ из `station_commerce`, без EDSM (`?commodity=&reference_system=&radius=&mode=build`, web 2.25.2) |
 | `/api/market/find/start` | POST · — | Поиск рынка (вкладка «Рынок»): создать задание |
@@ -1525,7 +1525,8 @@ Full description: **FLEET-CARRIERS.md**.
   uploaded both ways does not double the cargo.
 - Map layer «Авианосцы» (`/map` and Atlas): `GET /api/map/carriers` (public
   markers without cargo or finances, relation own/squadron/other for the
-  viewer), `CarrierMarkers`/`CarrierLayerControls`/`CarrierSystemCard`.
+  viewer; since 10.11.2026 also the EDDN registry with its last-jump track —
+  see §8.26), `CarrierMarkers`/`CarrierLayerControls`/`CarrierSystemCard`.
 - Carrier markets move with the carrier: `move_fleet_carrier_station` re-homes
   the `station_commerce` row and drops stale `market_prices` of the old system.
 
@@ -1713,6 +1714,35 @@ Full description: **FLEET-CARRIERS.md** → «Реестр из EDDN: переп
   and has no owner, squadron, cargo or finance. The threshold for stale
   registry rows is 90 days. `canName` in the response is a hint for the UI —
   the SQL function decides.
+
+### 8.26 All carriers on the galaxy map with their jump routes — 10.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Все носители на карте и линии их прыжков».
+
+- `GET /api/map/carriers` now merges the EDDN registry (`carrier_directory`)
+  into the layer: the 1500 freshest rows within the same 90-day window as the
+  Atlas search (`MAP_DIRECTORY_LIMIT`). Site records win on MarketID; a
+  registry-only marker carries `origin: 'eddn'`, `relation: 'other'` and no
+  owner, squadron, docking or scheduled jump. `?directory=0` returns the site
+  account only; the response reports `directory: { shown, truncated, since }`.
+- The layer filter gained `sources: { site, eddn }` (`toggleCarrierSource`,
+  `counts.sources`), both on by default — the panel shows «Сайт» / «EDDN»
+  chips next to «чьи» and «класс», and marks a registry-only system with
+  `EDDN`. The system list is capped at 200 rows.
+- Jump routes are drawn in one style for both sources: dashed in the carrier
+  tone — the scheduled jump (as before); solid and dim — the performed jump
+  «from → here» (`CarrierSystemGroup.routes`, one line per source system).
+  A site carrier gets `previousPosition` from `buildCarrierView`'s
+  `previousSystem`; a registry carrier from the new
+  `previous_system_name`/`previous_x/y/z` columns.
+- Migration `20261110090000_carrier_directory_route.sql` adds those columns and
+  redefines `carrier_directory_apply`: a fresher observation with a real system
+  change moves the old parking spot into `previous_*`. Re-sent or older
+  `CarrierJump` messages do not rewrite the route; `name` is still untouched.
+  Without the migration the map works as before (registry without route lines;
+  the store falls back to the base column set instead of failing).
+- Card: an EDDN marker shows an `EDDN` chip, «Пришёл из …» and, instead of
+  «владелец не привязан», «Владелец неизвестен: запись из реестра EDDN».
 
 ## 9. Background jobs (`jobs`)
 

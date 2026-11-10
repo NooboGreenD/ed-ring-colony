@@ -209,6 +209,7 @@ for (const file of [
   '20261017000000_fleet_carriers.sql',
   '20261018000000_fleet_carrier_squadron_claims.sql',
   '20261108120000_carrier_directory.sql',
+  '20261110090000_carrier_directory_route.sql',
 ]) {
   await db.exec(readFileSync(join(TEST_ROOT, 'supabase', 'migrations', file), 'utf8'));
 }
@@ -279,6 +280,42 @@ test('устаревшее сообщение EDDN не двигает носи�
   assert.equal(rows[0].x, 75);
   const { rows: sightings } = await db.query('SELECT sightings FROM carrier_directory WHERE carrier_id = 3700000302');
   assert.equal(sightings[0].sightings, 2, 'наблюдения считаются и для старых сообщений');
+});
+
+test('след прыжка: смена системы сдвигает прежнюю в previous_*, повтор того же прыжка — нет', async () => {
+  const api = await rpcClient();
+  const now = Date.now();
+  const jump = (minutesAgo, system, pos) => ({
+    event: 'CarrierJump',
+    MarketID: 3700000303,
+    StationName: 'K7Q-BQ3',
+    StarSystem: system,
+    StarPos: pos,
+    timestamp: new Date(now - minutesAgo * 60_000).toISOString(),
+  });
+
+  await mod.registry.applyEddnCarrierMessage(api, jump(30, 'Sol', [0, 0, 0]));
+  let { rows } = await db.query('SELECT system_name, previous_system_name FROM carrier_directory WHERE carrier_id = 3700000303');
+  assert.equal(rows[0].system_name, 'Sol');
+  assert.equal(rows[0].previous_system_name, null, 'первое наблюдение — пришёл «ниоткуда»');
+
+  await mod.registry.applyEddnCarrierMessage(api, jump(10, 'Lave', [75.75, 48.75, -12.5]));
+  ({ rows } = await db.query(`SELECT system_name, previous_system_name, previous_x, previous_y, previous_z
+    FROM carrier_directory WHERE carrier_id = 3700000303`));
+  assert.equal(rows[0].system_name, 'Lave');
+  assert.equal(rows[0].previous_system_name, 'Sol', 'прежняя стоянка стала следом маршрута');
+  assert.equal(rows[0].previous_x, 0);
+
+  // EDDN переотправляет очередь: тот же прыжок не должен затирать след.
+  await mod.registry.applyEddnCarrierMessage(api, jump(11, 'Lave', [75.75, 48.75, -12.5]));
+  ({ rows } = await db.query('SELECT previous_system_name FROM carrier_directory WHERE carrier_id = 3700000303'));
+  assert.equal(rows[0].previous_system_name, 'Sol', 'повтор свежего прыжка не сдвигает маршрут');
+
+  // А вот совсем старое сообщение из другой системы — не повод двигать носитель.
+  await mod.registry.applyEddnCarrierMessage(api, jump(120, 'Achenar', [67.5, -119.47, 24.84]));
+  ({ rows } = await db.query('SELECT system_name, previous_system_name FROM carrier_directory WHERE carrier_id = 3700000303'));
+  assert.equal(rows[0].system_name, 'Lave');
+  assert.equal(rows[0].previous_system_name, 'Sol', 'старое сообщение маршрут не переписывает');
 });
 
 test('имя: без визита — отказ, после визита — запись, владелец — приоритет', async () => {
