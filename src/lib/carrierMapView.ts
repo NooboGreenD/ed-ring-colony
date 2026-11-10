@@ -24,6 +24,7 @@ import { privacyForViewer } from './privacy.ts';
 import {
   carrierSystemKey,
   isMapPoint,
+  type CarrierJumpHistoryEntry,
   type MapCarrier,
   type MapCarrierRelation,
   type MapPoint,
@@ -78,6 +79,11 @@ export interface MapCarrierContext {
   squadrons: ReadonlyMap<number, { name: string | null; tag: string | null }>;
   /** Координаты систем по `carrierSystemKey`. */
   coordinates: ReadonlyMap<string, MapPoint>;
+  /**
+   * История прыжков по MarketID: строки `carrier_jump_history`, свежие сверху.
+   * Носителя без записи здесь нет — карта это переживёт, история просто пустая.
+   */
+  history?: ReadonlyMap<string, readonly CarrierJumpHistoryEntry[]>;
   now: Date;
 }
 
@@ -199,6 +205,7 @@ export function shapeMapCarrier(row: Row, context: MapCarrierContext): MapCarrie
     services: services(view),
     decommission: view.status.pendingDecommission,
     origin: 'site',
+    history: context.history?.get(view.carrierId) ?? [],
   };
 }
 
@@ -247,7 +254,11 @@ function directoryPoint(row: Row, prefix = ''): MapPoint | null {
  * случившийся прыжок). Зато есть след: откуда носитель пришёл, — и по нему
  * карта рисует маршрут.
  */
-export function shapeDirectoryCarrier(row: Row, coordinates: ReadonlyMap<string, MapPoint>): MapCarrier | null {
+export function shapeDirectoryCarrier(
+  row: Row,
+  coordinates: ReadonlyMap<string, MapPoint>,
+  history: ReadonlyMap<string, readonly CarrierJumpHistoryEntry[]> = new Map(),
+): MapCarrier | null {
   const system = typeof row.system_name === 'string' ? row.system_name.trim() : '';
   if (!system) return null;
   const key = carrierSystemKey(system);
@@ -283,6 +294,7 @@ export function shapeDirectoryCarrier(row: Row, coordinates: ReadonlyMap<string,
     services: directoryServices(row.services),
     decommission: false,
     origin: 'eddn',
+    history: history.get(String(row.carrier_id)) ?? [],
   };
 }
 
@@ -292,7 +304,12 @@ export function shapeDirectoryCarrier(row: Row, coordinates: ReadonlyMap<string,
  */
 export function shapeDirectoryCarriers(
   rows: readonly Row[],
-  context: { coordinates: ReadonlyMap<string, MapPoint>; knownIds?: ReadonlySet<string>; seenAfter?: number },
+  context: {
+    coordinates: ReadonlyMap<string, MapPoint>;
+    knownIds?: ReadonlySet<string>;
+    seenAfter?: number;
+    history?: ReadonlyMap<string, readonly CarrierJumpHistoryEntry[]>;
+  },
 ): MapCarrier[] {
   const carriers: MapCarrier[] = [];
   const taken = new Set(context.knownIds ?? []);
@@ -302,7 +319,7 @@ export function shapeDirectoryCarriers(
     if (taken.has(id)) continue;
     const at = Date.parse(String(row.updated_at ?? ''));
     if (context.seenAfter != null && (!Number.isFinite(at) || at < context.seenAfter)) continue;
-    const carrier = shapeDirectoryCarrier(row, context.coordinates);
+    const carrier = shapeDirectoryCarrier(row, context.coordinates, context.history);
     if (!carrier) continue;
     taken.add(id);
     carriers.push(carrier);

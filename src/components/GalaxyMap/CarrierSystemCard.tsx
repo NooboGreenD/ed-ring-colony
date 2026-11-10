@@ -3,15 +3,19 @@
 /**
  * Карточка системы с авианосцами на карте галактики: какие носители там
  * стоят, чьи, кого пускают на стыковку, какие службы работают, когда их
- * видели, откуда они пришли и куда собираются прыгать. Груза и финансов здесь
- * нет — они в профиле (свой носитель) и на странице эскадрильи. Носитель из
- * реестра EDDN помечен честно: владельца и стыковки по нему не знает никто.
+ * видели, откуда они пришли и куда собираются прыгать. У каждого носителя —
+ * прыжки за последнюю неделю (`carrier_jump_history`): те же отрезки, что
+ * нарисованы на карте, только списком и с датами. Груза и
+ * финансов здесь нет — они в профиле (свой носитель) и на странице
+ * эскадрильи. Носитель из реестра EDDN помечен честно: владельца и стыковки
+ * по нему не знает никто.
  */
 
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { IconExternalLink, IconMapPin } from '@/components/Icons';
 import {
+  CARRIER_HISTORY_MAX_PER_CARRIER,
   CARRIER_RELATION_HINT,
   CARRIER_SOURCE_COLOR,
   CARRIER_TONE_COLOR,
@@ -21,14 +25,17 @@ import {
   carrierIconVariant,
   carrierJumpText,
   carrierLocationText,
+  carrierRelativeTime,
   carrierSourceOf,
   carrierTitle,
   carrierTone,
   isCarrierStale,
+  type CarrierJumpHistoryEntry,
   type CarrierSystemGroup,
   type MapCarrier,
 } from '@/lib/carrierMap';
 import { carrierSquadronTag } from '@/lib/carrierTags';
+import { systemPageHref } from '@/lib/systemIdentity';
 import { CarrierGlyph } from './CarrierGlyph';
 import { useI18n } from '@/lib/i18n/I18nContext';
 
@@ -54,6 +61,51 @@ function formatCoordinate(value: number): string {
 function squadronLabel(squadron: NonNullable<MapCarrier['squadron']>, fallback: string): string {
   const tag = squadron.tag ? `[${squadron.tag}]` : '';
   return [tag, squadron.name].filter(Boolean).join(' ') || fallback;
+}
+
+/**
+ * Прыжки носителя за последнюю неделю, свежие сверху.
+ *
+ * Окно то же, что у линий на карте (`CARRIER_HISTORY_WINDOW_MS`): список
+ * повторяет то, что нарисовано, но с датами — линия без подписи читается
+ * только на крупном масштабе. Системы — ссылки, как и маршрут в остальных
+ * карточках; время относительное, полное — в подсказке.
+ */
+function CarrierHistory({ history, now }: {
+  history: readonly CarrierJumpHistoryEntry[];
+  now: number;
+}) {
+  const { t } = useI18n();
+  const rows = history.slice(0, CARRIER_HISTORY_MAX_PER_CARRIER);
+  if (!rows.length) return null;
+  return (
+    <div data-carrier-history={rows.length} style={{ marginTop: 4 }}>
+      <div style={{ color: MUTED }} title={t('csc.historyHint')}>{t('csc.history')}</div>
+      <ol style={{ margin: '2px 0 0', padding: 0, listStyle: 'none' }}>
+        {rows.map((entry, index) => {
+          const when = carrierRelativeTime(entry.jumpedAt, now);
+          const at = entry.jumpedAt ? new Date(entry.jumpedAt) : null;
+          const full = at && Number.isFinite(at.getTime()) ? at.toISOString().slice(0, 16).replace('T', ' ') : '';
+          return (
+            <li
+              key={`${entry.jumpedAt}-${entry.from}-${entry.to}-${index}`}
+              style={{ display: 'flex', flexWrap: 'wrap', gap: '0 6px', alignItems: 'baseline' }}
+            >
+              <span style={{ color: DIM, fontVariantNumeric: 'tabular-nums' }} title={full}>
+                {when || t('csc.historyNoTime')}
+              </span>
+              <span style={{ minWidth: 0 }}>
+                <Link href={systemPageHref(entry.from)} style={{ color: '#c4b5fd', textDecoration: 'none' }}>{entry.from}</Link>
+                <span style={{ color: DIM }} aria-hidden="true"> → </span>
+                <Link href={systemPageHref(entry.to)} style={{ color: '#c4b5fd', textDecoration: 'none' }}>{entry.to}</Link>
+              </span>
+              {entry.source === 'eddn' ? <Chip color={CARRIER_SOURCE_COLOR.eddn} title={t('csc.originEddnHint')}>EDDN</Chip> : null}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
 }
 
 function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
@@ -132,6 +184,7 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
             )}
             <div style={{ color: DIM }}>{carrierLocationText(carrier, now)}</div>
             {jump && <div style={{ color: '#ffd166' }}>{jump}</div>}
+            <CarrierHistory history={carrier.history ?? []} now={now} />
           </div>
 
           {(carrier.relation === 'own' || carrier.squadron?.member) && (

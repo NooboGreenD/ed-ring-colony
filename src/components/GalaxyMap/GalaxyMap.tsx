@@ -22,7 +22,7 @@ import { NEBULA_KIND_ORDER, NEBULA_SHORT_KEYS, NEBULA_KIND_UI_COLOR } from './Ne
 import { GALAXY_NEBULAE, NEBULA_KIND_LABELS, type GalaxyNebula, type NebulaKind } from '@/lib/galaxyNebulae';
 import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
 import { useSystemAutocomplete, type SystemSuggestion } from '@/hooks/useSystemAutocomplete';
-import { type CarrierSystemGroup, type MapPoint } from '@/lib/carrierMap';
+import { carrierHistoryShown, type CarrierSystemGroup, type MapPoint } from '@/lib/carrierMap';
 import { useCarrierLayer, type CarrierLayer } from '@/hooks/useCarrierLayer';
 import { CarrierLayerControls } from './CarrierLayerControls';
 import { GalaxyScene } from './GalaxyScene';
@@ -458,6 +458,9 @@ export default function GalaxyMap({
     selectedKey: selectedCarrierKey,
     selectGroup: selectCarrierGroup,
   } = carrierLayer;
+  // «История недели» — переключатель фильтра: гасит только линии выполненных
+  // прыжков, носители и заказы остаются на карте.
+  const carrierHistory = carrierHistoryShown(carrierFilter);
   const setSelectedCarrierKey = useCallback((key: string | null) => {
     // Сброс выбора (клик по пустому месту, другая карточка) — без камеры.
     if (key == null) selectCarrierGroup(null);
@@ -1470,6 +1473,7 @@ export default function GalaxyMap({
             showNoMarketSystems={!compactMap && showNoMarketSystems}
             carrierGroups={carrierGroups}
             showCarriers={showCarriers}
+            showCarrierHistory={carrierHistory}
             selectedCarrierKey={selectedCarrierGroup?.key ?? null}
             onSelectCarrierGroup={handleSelectCarrierGroup}
             powerplaySystems={powerplaySystems}

@@ -7,7 +7,8 @@
  * EDSM — подставной `fetch`. Проверяется, что видит гость и пилот с
  * эскадрильей, приватность владельцев, отсев списанных и забытых носителей,
  * все источники координат (журнал, каталоги, маршрут, хабы, EDSM), кэш
- * промахов EDSM и подмешивание реестра EDDN — с его следом последнего прыжка.
+ * промахов EDSM, подмешивание реестра EDDN — с его следом последнего прыжка,
+ * и история прыжков носителей (до пяти строк, свежие сверху, с координатами).
  */
 
 import test from 'node:test';
@@ -106,6 +107,7 @@ for (const file of [
   '20261018000000_fleet_carrier_squadron_claims.sql',
   '20261108120000_carrier_directory.sql',
   '20261110090000_carrier_directory_route.sql',
+  '20261113120000_carrier_jump_history.sql',
 ]) {
   await db.exec(readFileSync(join(TEST_ROOT, 'supabase', 'migrations', file), 'utf8'));
 }
@@ -293,6 +295,59 @@ test('реестр EDDN подмешивается: чужие носители,
     assert.equal(guest.body.directory, undefined, 'без реестра и счётчиков реестра нет');
   } finally {
     await db.exec('DELETE FROM public.carrier_directory');
+    mod.resetCarrierMapCache();
+  }
+});
+
+test('история прыжков: только неделя, свежие сверху, с координатами', async () => {
+  const historyRow = (carrierId, from, to, minutesAgo, source = 'site') => `
+    (${carrierId}, '${from}', '${to}', ${at(-minutesAgo)}, '${source}')`;
+  await db.exec(`
+    INSERT INTO public.carrier_jump_history(carrier_id, from_system, to_system, jumped_at, source) VALUES
+      ${historyRow(FC.own, 'Lave', 'Achenar', 10, 'eddn')},
+      ${historyRow(FC.own, 'Achenar', 'Sol', 2 * 60)},
+      ${historyRow(FC.own, 'Sol', 'Lave', 24 * 60)},
+      ${historyRow(FC.own, 'Lave', 'HIP 100', 48 * 60)},
+      ${historyRow(FC.own, 'HIP 100', 'Sol', 72 * 60)},
+      -- Шестой прыжок внутри недели: в истории за неделю остаётся.
+      ${historyRow(FC.own, 'Sol', 'Achenar', 96 * 60)},
+      -- Восьмые сутки: за окном недели, на карту не попадает.
+      ${historyRow(FC.own, 'Achenar', 'Lave', 8 * 24 * 60)},
+      -- Две недели: тоже мимо.
+      ${historyRow(FC.own, 'Sol', 'HIP 100', 14 * 24 * 60)};
+  `);
+  mod.resetCarrierMapCache();
+  edsm.calls.length = 0;
+
+  try {
+    const response = await get(null);
+    assert.equal(response.status, 200, response.text);
+    const carriers = byId(response.body);
+
+    const own = carriers.get(FC.own);
+    assert.equal(own.history.length, 6, 'все прыжки недели, без обрезки по количеству');
+    assert.deepEqual(own.history.map((entry) => [entry.from, entry.to]), [
+      ['Lave', 'Achenar'], ['Achenar', 'Sol'], ['Sol', 'Lave'], ['Lave', 'HIP 100'], ['HIP 100', 'Sol'], ['Sol', 'Achenar'],
+    ], 'свежие сверху; прыжки старше недели отброшены');
+    const oldest = Date.parse(own.history[own.history.length - 1].jumpedAt);
+    assert.ok(Date.now() - oldest <= 7 * 24 * 60 * 60 * 1000, 'ничего старше недели');
+    assert.equal(own.history[0].source, 'eddn');
+    assert.equal(own.history[1].source, 'site');
+    assert.match(own.history[0].jumpedAt, /^\d{4}-\d{2}-\d{2}T/, 'время — ISO, а не Date из драйвера');
+    assert.deepEqual(own.history[0].fromPosition, { x: 75.75, y: 48.75, z: -12.5 }, 'Lave из каталога станций');
+    assert.deepEqual(own.history[0].toPosition, { x: 67.5, y: -119.47, z: 24.84 }, 'Achenar из хабов');
+    assert.deepEqual(own.history[1].toPosition, { x: 0, y: 0, z: 0 }, 'Sol — из строки носителя');
+    assert.deepEqual(own.history[3].toPosition, { x: 10, y: 1, z: -20 }, 'HIP 100 из каталога Spansh');
+
+    assert.deepEqual(carriers.get(FC.mate).history, [], 'у носителя без прыжков истории нет');
+    assert.equal(carriers.get(FC.jump).history.length, 0, 'заказ прыжка — не история');
+
+    // История не зависит от переключателя реестра и не тянет EDSM.
+    const siteOnly = byId((await get(null, '?directory=0')).body);
+    assert.equal(siteOnly.get(FC.own).history.length, 6, 'история есть и без реестра EDDN');
+    assert.equal(edsm.calls.length, 1, 'историю ищем только в локальных каталогах');
+  } finally {
+    await db.exec('DELETE FROM public.carrier_jump_history');
     mod.resetCarrierMapCache();
   }
 });

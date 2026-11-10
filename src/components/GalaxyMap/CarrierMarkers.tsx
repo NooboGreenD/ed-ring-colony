@@ -8,12 +8,13 @@
  * двух и более носителях в системе — бейдж со счётчиком. Значок всегда поверх
  * туманностей и секторов (как метки на карте галактики в игре).
  *
- * Прыжки видны двумя линиями одной палитры, как у остальных слоёв карты:
+ * Прыжки видны тремя линиями одной палитры, как у остальных слоёв карты:
  *   * пунктир в цвет носителя — заказанный прыжок (куда он уйдёт) и бледный
  *     значок в системе назначения;
- *   * сплошная бледная линия — выполненный прыжок, который привёл носитель
- *     сюда («откуда → здесь»). Так маршрут читается и у носителей сайта, и у
- *     реестра EDDN, где заказанного прыжка не бывает вовсе.
+ *   * сплошные бледные линии — выполненные прыжки из истории носителя (до
+ *     пяти): каждый отрезок «откуда → куда», свежий ярче, старые бледнее.
+ *     Так маршрут читается и у носителей сайта, и у реестра EDDN, где
+ *     заказанного прыжка не бывает вовсе.
  * Наведение показывает подпись, клик выбирает систему (карточка — в GalaxyMap).
  */
 
@@ -166,7 +167,16 @@ interface JumpTrail {
   ghost: THREE.SpriteMaterial | null;
 }
 
-/** Выполненный прыжок: сплошная бледная линия «откуда пришёл → здесь». */
+/**
+ * Прозрачность линии выполненного прыжка: свежий ярче, пятый (самый старый на
+ * карте) — почти прозрачный. Ниже 0.1 не опускаемся, иначе линия исчезает
+ * совсем и маршрут перестаёт читаться.
+ */
+function historyOpacity(age: number): number {
+  return Math.max(0.1, 0.34 - Math.max(0, age) * 0.055);
+}
+
+/** Выполненный прыжок: сплошная бледная линия «откуда → куда». */
 interface RouteLine {
   key: string;
   line: THREE.Line;
@@ -176,9 +186,20 @@ export interface CarrierMarkersProps {
   groups: CarrierSystemGroup[];
   selectedKey?: string | null;
   onSelect?: (group: CarrierSystemGroup | null) => void;
+  /**
+   * Рисовать линии выполненных прыжков. Выключается фильтром слоя
+   * («История недели»): на общем плане галактики десятки линий забивают
+   * прыжки ожидающие, и это должно быть выбором пилота.
+   */
+  showHistory?: boolean;
 }
 
-export function CarrierMarkers({ groups, selectedKey = null, onSelect }: CarrierMarkersProps) {
+export function CarrierMarkers({
+  groups,
+  selectedKey = null,
+  onSelect,
+  showHistory = true,
+}: CarrierMarkersProps) {
   const height = useThree((state) => state.size.height);
   const camera = useThree((state) => state.camera);
   const invalidate = useThree((state) => state.invalidate);
@@ -234,19 +255,22 @@ export function CarrierMarkers({ groups, selectedKey = null, onSelect }: Carrier
     return result;
   }, [placed]);
 
-  // Маршрут: сплошная линия от системы, из которой носитель пришёл. Тот же
-  // цвет, что у значка, но тусклее пунктира: это уже свершившийся прыжок.
+  // Маршрут: сплошные линии выполненных прыжков из истории носителя. Тот же
+  // цвет, что у значка, но тусклее пунктира — это уже свершившийся прыжок.
+  // Свежий отрезок ярче: по яркости видно, какой прыжок последний.
   const routes = useMemo<RouteLine[]>(() => {
     const result: RouteLine[] = [];
-    for (const { group, position } of placed) {
+    if (!showHistory) return result;
+    for (const { group } of placed) {
       for (const route of group.routes) {
         const from = eliteToThreeCentered(route.position);
-        if (position.distanceTo(from) < 0.01) continue;
-        const geometry = new THREE.BufferGeometry().setFromPoints([from, position]);
+        const to = eliteToThreeCentered(route.targetPosition);
+        if (from.distanceTo(to) < 0.01) continue;
+        const geometry = new THREE.BufferGeometry().setFromPoints([from, to]);
         const material = new THREE.LineBasicMaterial({
           color: CARRIER_TONE_COLOR[carrierTone(route.carrier)],
           transparent: true,
-          opacity: 0.32,
+          opacity: historyOpacity(route.age),
           depthTest: false,
           depthWrite: false,
           toneMapped: false,
@@ -258,7 +282,7 @@ export function CarrierMarkers({ groups, selectedKey = null, onSelect }: Carrier
       }
     }
     return result;
-  }, [placed]);
+  }, [placed, showHistory]);
 
   useEffect(() => () => {
     for (const trail of trails) {
