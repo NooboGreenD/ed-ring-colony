@@ -11,7 +11,8 @@ import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
 import { NEBULA_KIND_KEYS } from '@/lib/i18n/nebulaLabels';
 import { gameLabel, POWER_STATE_KEYS } from '@/lib/i18n/gameLabels';
-import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
+import { systemNameKey } from '@/lib/systemProgress';
+import { lastBuildTarget, mapLayerDefaults, mapSystemStatus, type MapStatus } from '@/lib/mapLayerDefaults';
 import type { MarketResult } from './MarketResultMarkers';
 import { useAtlasSearchProgress, useAtlasSearchResult } from '@/hooks/useAtlasSearchProgress';
 import { clearAtlasSearchResult } from '@/lib/atlasSearchProgress';
@@ -21,18 +22,9 @@ import { NEBULA_KIND_ORDER, NEBULA_SHORT_KEYS, NEBULA_KIND_UI_COLOR } from './Ne
 import { GALAXY_NEBULAE, NEBULA_KIND_LABELS, type GalaxyNebula, type NebulaKind } from '@/lib/galaxyNebulae';
 import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
 import { useSystemAutocomplete, type SystemSuggestion } from '@/hooks/useSystemAutocomplete';
-import {
-  DEFAULT_CARRIER_FILTER,
-  countMapCarriers,
-  filterMapCarriers,
-  groupCarriersBySystem,
-  type CarrierLayerFilter,
-  type CarrierSystemGroup,
-  type MapCarrier,
-  type MapCarriersResponse,
-  type MapDirectoryInfo,
-} from '@/lib/carrierMap';
-import { CarrierLayerControls, type CarrierLayerStatus } from './CarrierLayerControls';
+import { type CarrierSystemGroup, type MapPoint } from '@/lib/carrierMap';
+import { useCarrierLayer, type CarrierLayer } from '@/hooks/useCarrierLayer';
+import { CarrierLayerControls } from './CarrierLayerControls';
 import { GalaxyScene } from './GalaxyScene';
 import type { FocusTarget } from './GalaxyScene';
 import { CarrierSystemCard } from './CarrierSystemCard';
@@ -67,7 +59,6 @@ function formatMegabytes(bytes: number, t: TFn): string {
   return t('gmap.megabytes', { value: (bytes / (1024 * 1024)).toFixed(1) });
 }
 
-type MapStatus = 'planned' | 'building' | 'done';
 type StatusFilters = Record<MapStatus, boolean>;
 
 type CoordinateSystem = {
@@ -81,14 +72,8 @@ function hasCoordinates(item: CoordinateSystem): item is CoordinateSystem & { x:
   return Number.isFinite(item.x) && Number.isFinite(item.y) && Number.isFinite(item.z);
 }
 
-function mapStatus(item: { status?: unknown; progress?: unknown }): MapStatus {
-  // A non-null percentage is the source of truth everywhere Raven data is
-  // available. This protects marker color/filtering from legacy rows whose
-  // stored status was not updated alongside their progress value.
-  if (readableProgress(item.progress) != null) return statusFromProgress(item.progress);
-  if (item.status === 'done' || item.status === 'building' || item.status === 'planned') return item.status;
-  return 'planned';
-}
+/** Правило статуса живёт в `mapLayerDefaults.ts` — там же, где выбор кнопки. */
+const mapStatus = mapSystemStatus;
 
 /** Render a physical system only once even if a legacy route contains duplicates. */
 function uniqueBySystemName<T extends CoordinateSystem>(items: T[]): T[] {
@@ -238,6 +223,12 @@ export interface GalaxyMapProps {
   marketResults?: MarketResult[];
   powerplay?: GalaxyMapPowerplay | null;
   factions?: GalaxyMapFactions | null;
+  /**
+   * Слой «Авианосцы» снаружи (Atlas: фильтр живёт во вкладке «Авианосцы»).
+   * Не передан — карта ведёт слой сама и показывает панель в своих слоях
+   * (`/map`).
+   */
+  carriers?: CarrierLayer | null;
 }
 
 export default function GalaxyMap({
@@ -249,6 +240,7 @@ export default function GalaxyMap({
   focusSystem = null,
   powerplay = null,
   factions = null,
+  carriers: carrierLayerProp = null,
 }: GalaxyMapProps) {
   const { t, locale } = useI18n();
   // Прогресс любого поисковика Atlas (миры, маршрут, кольцо, рынок) приходит из
@@ -261,11 +253,6 @@ export default function GalaxyMap({
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
   const [pilots, setPilots] = useState<any[]>([]);
-  const [carriers, setCarriers] = useState<MapCarrier[]>([]);
-  const [carriersStatus, setCarriersStatus] = useState<CarrierLayerStatus>('loading');
-  const [carriersSignedIn, setCarriersSignedIn] = useState(false);
-  const [carrierDirectory, setCarrierDirectory] = useState<MapDirectoryInfo | null>(null);
-  const [selectedCarrierKey, setSelectedCarrierKey] = useState<string | null>(null);
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
   const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
   const [systemSearch, setSystemSearch] = useState('');
@@ -310,22 +297,24 @@ export default function GalaxyMap({
   // but not the orange line, while it also unexpectedly hid Atlas/pilots.
   const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
   const controlsId = useId();
-  const [showKnownSystems, setShowKnownSystems] = useState(true);
-  const [showProjectRoute, setShowProjectRoute] = useState(true);
-  const [showAtlasCandidates, setShowAtlasCandidates] = useState(true);
-  const [showPilots, setShowPilots] = useState(true);
-  const [showMarketResults, setShowMarketResults] = useState(true);
-  const [showNoMarketSystems, setShowNoMarketSystems] = useState(true);
-  // Авианосцы — слой и на /map (компактный режим), и в Atlas.
-  const [showCarriers, setShowCarriers] = useState(true);
-  const [carrierFilter, setCarrierFilter] = useState<CarrierLayerFilter>(DEFAULT_CARRIER_FILTER);
-  const [showRegionLabels, setShowRegionLabels] = useState(true);
-  const [showRegionBoundaries, setShowRegionBoundaries] = useState(true);
-  const [showNebulae, setShowNebulae] = useState(true);
+  // Atlas открывается почти пустым (10.11.2026): по умолчанию видны только
+  // имена и границы секторов, оранжевый пояс и туманности — остальные слои
+  // включаются в панели. Компактная «Карта кольца» (`/map`) показывает
+  // маршрут сразу: это её единственный смысл.
+  const layerDefaults = useMemo(() => mapLayerDefaults(showOnlyMainRoute), [showOnlyMainRoute]);
+  const [showKnownSystems, setShowKnownSystems] = useState(layerDefaults.knownSystems);
+  const [showProjectRoute, setShowProjectRoute] = useState(layerDefaults.projectRoute);
+  const [showAtlasCandidates, setShowAtlasCandidates] = useState(layerDefaults.atlasCandidates);
+  const [showPilots, setShowPilots] = useState(layerDefaults.pilots);
+  const [showMarketResults, setShowMarketResults] = useState(layerDefaults.marketResults);
+  const [showNoMarketSystems, setShowNoMarketSystems] = useState(layerDefaults.noMarketSystems);
+  const [showRegionLabels, setShowRegionLabels] = useState(layerDefaults.regionLabels);
+  const [showRegionBoundaries, setShowRegionBoundaries] = useState(layerDefaults.regionBoundaries);
+  const [showNebulae, setShowNebulae] = useState(layerDefaults.nebulae);
   const [showNebulaLabels, setShowNebulaLabels] = useState(true);
   const [nebulaKinds, setNebulaKinds] = useState<NebulaKind[]>(NEBULA_KIND_ORDER);
   const [selectedNebula, setSelectedNebula] = useState<GalaxyNebula | null>(null);
-  const [showRingZone, setShowRingZone] = useState(true);
+  const [showRingZone, setShowRingZone] = useState(layerDefaults.ringZone);
   // Экспериментальный слой «все системы» (данные: Spansh-дамп в БД).
   const [showAllSystems, setShowAllSystems] = useState(false);
   const [allSystemsData, setAllSystemsData] = useState<AllSystemsData | null>(null);
@@ -450,44 +439,29 @@ export default function GalaxyMap({
     return () => window.clearInterval(interval);
   }, []);
 
-  // Носители прыгают не чаще раза в 15–20 минут, а прыжок виден заранее —
-  // опроса раз в минуту достаточно. Выключенный слой сеть не тратит.
-  useEffect(() => {
-    if (!showCarriers) return;
-    let cancelled = false;
-    const loadCarriers = async () => {
-      try {
-        const response = await fetch(`/api/map/carriers?t=${Date.now()}`, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = (await response.json()) as MapCarriersResponse;
-        if (cancelled) return;
-        setCarriers(Array.isArray(data.carriers) ? data.carriers : []);
-        setCarriersSignedIn(Boolean(data.viewer?.signedIn));
-        setCarrierDirectory(data.directory ?? null);
-        setCarriersStatus('ready');
-      } catch {
-        // Необязательный слой: последний удачный ответ остаётся на карте.
-        if (!cancelled) setCarriersStatus('error');
-      }
-    };
-
-    void loadCarriers();
-    const interval = window.setInterval(loadCarriers, 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [showCarriers]);
-
-  const carrierCounts = useMemo(() => countMapCarriers(carriers), [carriers]);
-  const visibleCarriers = useMemo(() => filterMapCarriers(carriers, carrierFilter), [carriers, carrierFilter]);
-  const carrierGroups = useMemo(() => groupCarriersBySystem(visibleCarriers), [visibleCarriers]);
-  const selectedCarrierGroup = useMemo(
-    () => (showCarriers && selectedCarrierKey
-      ? carrierGroups.find((group) => group.key === selectedCarrierKey) ?? null
-      : null),
-    [carrierGroups, selectedCarrierKey, showCarriers],
-  );
+  // Слой «Авианосцы»: в Atlas его фильтр живёт во вкладке, поэтому состояние
+  // приходит сверху; в компактной карте карта ведёт слой сама.
+  const ownCarrierLayer = useCarrierLayer({ enabled: !carrierLayerProp });
+  const carrierLayer = carrierLayerProp ?? ownCarrierLayer;
+  const {
+    show: showCarriers,
+    setShow: setShowCarriers,
+    filter: carrierFilter,
+    setFilter: setCarrierFilter,
+    counts: carrierCounts,
+    visibleCarriers,
+    groups: carrierGroups,
+    status: carriersStatus,
+    signedIn: carriersSignedIn,
+    directory: carrierDirectory,
+    selectedGroup: selectedCarrierGroup,
+    selectedKey: selectedCarrierKey,
+    selectGroup: selectCarrierGroup,
+  } = carrierLayer;
+  const setSelectedCarrierKey = useCallback((key: string | null) => {
+    // Сброс выбора (клик по пустому месту, другая карточка) — без камеры.
+    if (key == null) selectCarrierGroup(null);
+  }, [selectCarrierGroup]);
 
   const uniqueRouteSystems = useMemo(
     () => uniqueBySystemName(allRouteSystems).filter(hasCoordinates) as RouteSystem[],
@@ -720,7 +694,8 @@ export default function GalaxyMap({
   }, [clearLayerSelections]);
 
   // Система с авианосцами — такой же объект карты: камера летит к ней, внизу
-  // слева карточка со списком носителей.
+  // слева карточка со списком носителей. Сам выбор (и запрос камеры) живёт в
+  // слое, поэтому строка списка во вкладке Atlas ведёт камеру тем же путём.
   const handleSelectCarrierGroup = useCallback((group: CarrierSystemGroup | null) => {
     clearLayerSelections();
     setSelectedNebula(null);
@@ -729,9 +704,23 @@ export default function GalaxyMap({
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
     setGalaxyPick(null);
-    setSelectedCarrierKey(group?.key ?? null);
-    if (group?.position) setFocusTarget(eliteToThreeCentered(group.position));
-  }, [clearLayerSelections]);
+    selectCarrierGroup(group);
+  }, [clearLayerSelections, selectCarrierGroup]);
+
+  useEffect(() => {
+    if (!carrierLayer.focusRequest) return;
+    setFocusTarget(eliteToThreeCentered(carrierLayer.focusRequest.position));
+  }, [carrierLayer.focusRequest]);
+
+  // Список систем слоя живёт во вкладке «Авианосцы»: строка списка ведёт камеру
+  // тем же путём, что и значок на карте (сброс чужих карточек + выбор системы).
+  useEffect(() => {
+    const onSelectGroup = (event: Event) => {
+      handleSelectCarrierGroup((event as CustomEvent<CarrierSystemGroup | null>).detail ?? null);
+    };
+    window.addEventListener('atlas-select-carrier-group', onSelectGroup);
+    return () => window.removeEventListener('atlas-select-carrier-group', onSelectGroup);
+  }, [handleSelectCarrierGroup]);
 
   // Остальные карточки закрываются, выбор PowerPlay (если он есть) остаётся.
   const clearNonPowerplaySelection = useCallback(() => {
@@ -822,13 +811,23 @@ export default function GalaxyMap({
     handleClearSelection();
   }, [handleClearSelection]);
 
+  /**
+   * «Последняя стройка» — последняя **завершённая** система маршрута, а не
+   * последняя в списке (10.11.2026). Порядок завершения в данных кольца — это
+   * порядок маршрута (`sort_order`): системы строят последовательно, поэтому
+   * дальняя завершённая и есть последняя сданная. Если завершённых нет,
+   * ведём к последней строящейся, и лишь затем — к концу маршрута.
+   */
+  const lastCompletedBuild = useMemo(() => lastBuildTarget(uniqueRouteSystems), [uniqueRouteSystems]);
+
   const focusLastProgressPoint = useCallback(() => {
-    const progressed = uniqueRouteSystems
-      .filter((point) => mapStatus(point) !== 'planned' || readableProgress(point.progress) != null)
-      .sort((left, right) => Number((right as any).sort_order ?? 0) - Number((left as any).sort_order ?? 0));
-    const point = progressed[0] || uniqueRouteSystems[uniqueRouteSystems.length - 1];
-    if (point) handleSelectRouteSystem({ ...point, status: mapStatus(point) });
-  }, [handleSelectRouteSystem, uniqueRouteSystems]);
+    if (!lastCompletedBuild) return;
+    // В Atlas маршрут по умолчанию скрыт: иначе камера прилетала бы к системе,
+    // которой на карте не видно. Показываем слой и статус «готово».
+    setShowKnownSystems(true);
+    setStatusFilters((current) => (current.done ? current : { ...current, done: true }));
+    handleSelectRouteSystem({ ...lastCompletedBuild, status: mapStatus(lastCompletedBuild) });
+  }, [handleSelectRouteSystem, lastCompletedBuild]);
 
   useEffect(() => {
     const focusLast = () => focusLastProgressPoint();
@@ -1010,7 +1009,7 @@ export default function GalaxyMap({
           <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             <IconRefresh size={12} /> {t('gmap.resetView')}
           </button>
-          <button onClick={focusLastProgressPoint} style={{ marginTop: 6, background: 'rgba(230,126,34,0.14)', border: '1px solid rgba(230,126,34,0.45)', color: '#e67e22', padding: '5px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
+          <button onClick={focusLastProgressPoint} title={t('gmap.lastBuildTitle')} style={{ marginTop: 6, background: 'rgba(230,126,34,0.14)', border: '1px solid rgba(230,126,34,0.45)', color: '#e67e22', padding: '5px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             <IconMapPin size={12} /> {t('gmap.lastBuild')}
           </button>
           <div style={{ display: 'flex', gap: 4, marginTop: 6, position: 'relative' }}>
@@ -1116,20 +1115,24 @@ export default function GalaxyMap({
                   : t('gmap.allSystemsLoading')}
             </div>
           )}
-          <CarrierLayerControls
-            show={showCarriers}
-            onShowChange={setShowCarriers}
-            filter={carrierFilter}
-            onFilterChange={setCarrierFilter}
-            counts={carrierCounts}
-            visibleCount={visibleCarriers.length}
-            groups={carrierGroups}
-            selectedKey={selectedCarrierGroup?.key ?? null}
-            onSelectGroup={handleSelectCarrierGroup}
-            status={carriersStatus}
-            signedIn={carriersSignedIn}
-            directory={carrierDirectory}
-          />
+          {/* В Atlas фильтр слоя живёт во вкладке «Авианосцы», поэтому панель
+              слоёв показывает его только там, где карта ведёт слой сама. */}
+          {!carrierLayerProp && (
+            <CarrierLayerControls
+              show={showCarriers}
+              onShowChange={setShowCarriers}
+              filter={carrierFilter}
+              onFilterChange={setCarrierFilter}
+              counts={carrierCounts}
+              visibleCount={visibleCarriers.length}
+              groups={carrierGroups}
+              selectedKey={selectedCarrierGroup?.key ?? null}
+              onSelectGroup={handleSelectCarrierGroup}
+              status={carriersStatus}
+              signedIn={carriersSignedIn}
+              directory={carrierDirectory}
+            />
+          )}
           {powerplay && (
             <div className="powerplay-layer-controls" style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
               <label style={{ fontSize: 11, color: '#f0af28', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}

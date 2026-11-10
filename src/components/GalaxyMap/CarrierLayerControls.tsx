@@ -30,13 +30,15 @@ import {
   toggleCarrierType,
   type CarrierCounts,
   type CarrierLayerFilter,
+  type CarrierLayerStatus,
   type CarrierSystemGroup,
   type MapDirectoryInfo,
 } from '@/lib/carrierMap';
 import { CarrierGlyph } from './CarrierGlyph';
 import { useI18n } from '@/lib/i18n/I18nContext';
 
-export type CarrierLayerStatus = 'loading' | 'ready' | 'error';
+/** Состояние загрузки слоя живёт рядом с типами слоя (`carrierMap.ts`). */
+export type { CarrierLayerStatus } from '@/lib/carrierMap';
 
 export interface CarrierLayerControlsProps {
   show: boolean;

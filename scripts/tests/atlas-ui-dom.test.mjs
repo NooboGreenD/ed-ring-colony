@@ -1010,6 +1010,10 @@ test('вкладка «Авианосцы»: реестр, избранное г
       if (target.includes('/api/atlas/carriers?')) {
         return { body: { carriers, total: carriers.length, truncated: false, viewer: { signedIn: false } } };
       }
+      // Слой карты живёт во вкладке: без ответа он просто пуст.
+      if (target.includes('/api/map/carriers')) {
+        return { body: { carriers: [], viewer: { signedIn: false }, generatedAt: new Date().toISOString() } };
+      }
       if (target.includes('/api/projects')) return { body: { projects: [] } };
       if (target.includes('/api/atlas/favorites') || target.includes('/api/atlas/sessions')) {
         return { status: 401, body: { error: 'Unauthorized' } };
@@ -1027,6 +1031,17 @@ test('вкладка «Авианосцы»: реестр, избранное г
     const panel = ui.document.querySelector('[data-carrier-watch-panel]');
     assert.ok(panel, 'панель «Трафик авианосцев» отрисована');
     assert.match(ui.text(), /Трафик авианосцев/, 'заголовок панели');
+
+    // Управление слоем карты переехало сюда из панели слоёв (10.11.2026).
+    const layer = panel.querySelector('[data-carrier-layer-controls]');
+    assert.ok(layer, 'во вкладке есть блок слоя карты');
+    assert.match(layer.textContent, /Слой карты/);
+    assert.match(layer.textContent, /Авианосцы/);
+    const layerToggle = layer.querySelector('input[type="checkbox"]');
+    assert.equal(layerToggle.checked, false, 'в Atlas слой авианосцев по умолчанию выключен');
+    await ui.click(layerToggle);
+    await ui.flush(5);
+    assert.ok(ui.calls.some((call) => call.includes('/api/map/carriers?t=')), 'включённый слой спрашивает маршрут');
     assert.match(ui.text(), /K7Q-BQL · Hippione/, 'подпись носителя — позывной и имя');
     assert.match(ui.text(), /Steel Barge/);
     assert.match(ui.text(), /Войдите, чтобы избранное и заметки/, 'гостю сказано, что записи личные');

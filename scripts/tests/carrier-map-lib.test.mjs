@@ -458,15 +458,27 @@ test('слой подключён к карте: и в компактной /map
   const map = read('src/components/GalaxyMap/GalaxyMap.tsx');
   const scene = read('src/components/GalaxyMap/GalaxyScene.tsx');
   const markers = read('src/components/GalaxyMap/CarrierMarkers.tsx');
+  const layer = read('src/hooks/useCarrierLayer.ts');
 
-  assert.ok(map.includes('/api/map/carriers'), 'карта не опрашивает слой авианосцев');
+  assert.ok(layer.includes('/api/map/carriers'), 'слой авианосцев не опрашивает маршрут');
+  assert.ok(map.includes('useCarrierLayer('), 'карта не поднимает слой авианосцев');
   assert.ok(map.includes('<CarrierLayerControls'), 'в панели слоёв нет фильтра авианосцев');
   assert.ok(map.includes('<CarrierSystemCard'), 'нет карточки системы с носителями');
   assert.ok(map.includes('showCarriers={showCarriers}'), 'слой не передаётся в сцену');
   assert.ok(!/showCarriers=\{!compactMap/.test(map), 'слой авианосцев не должен прятаться в компактной карте /map');
-  const controls = map.indexOf('<CarrierLayerControls');
-  const compactBlock = map.indexOf('{!compactMap && (', map.indexOf('Все системы'));
-  assert.ok(controls > 0 && controls < compactBlock, 'фильтр авианосцев должен стоять вне блока, скрытого на /map');
+  // С 10.11.2026 фильтр слоя переехал во вкладку «Авианосцы»: карта показывает
+  // его только когда слой ведёт сама (компактная «Карта кольца»).
+  const controlsBlock = map.indexOf('{!carrierLayerProp && (');
+  assert.ok(controlsBlock > 0 && controlsBlock < map.indexOf('<CarrierLayerControls'),
+    'панель слоёв карты не должна дублировать фильтр в Atlas');
+  const atlas = read('src/app/atlas/page.tsx');
+  const panel = read('src/components/Atlas/AtlasCarriersPanel.tsx');
+  assert.ok(atlas.includes('useCarrierLayer('), 'Atlas не поднимает состояние слоя авианосцев');
+  assert.ok(atlas.includes('carriers={carrierLayer}'), 'слой не доходит до 3D-карты');
+  assert.ok(atlas.includes('<AtlasCarriersPanel carrierLayer={carrierLayer}'), 'вкладка не получает слой');
+  assert.ok(panel.includes('<CarrierLayerControls'), 'во вкладке «Авианосцы» нет фильтра слоя');
+  assert.ok(panel.includes('atlas-select-carrier-group'), 'строка списка не ведёт камеру карты');
+  assert.ok(map.includes("'atlas-select-carrier-group'"), 'карта не слушает выбор системы из вкладки');
 
   assert.ok(scene.includes('<CarrierMarkers'), 'сцена не рисует авианосцы');
   assert.ok(markers.includes('sizeAttenuation: false'), 'значок должен держать экранный размер');

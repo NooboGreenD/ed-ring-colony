@@ -1744,6 +1744,33 @@ Full description: **FLEET-CARRIERS.md** → «Все носители на ка�
 - Card: an EDDN marker shows an `EDDN` chip, «Пришёл из …» and, instead of
   «владелец не привязан», «Владелец неизвестен: запись из реестра EDDN».
 
+### 8.27 Atlas tooling: carrier filter in its own tab, quiet defaults, «last build» — 10.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Панель слоя — во вкладке «Авианосцы»».
+
+- **Carrier filter moved into the «Авианосцы» tab.** The layer state (data,
+  filter, visibility, selected system) moved to `useCarrierLayer`
+  (`src/hooks/useCarrierLayer.ts`). `/map` keeps it inside `GalaxyMap`; the
+  Atlas page owns it and passes `carriers={carrierLayer}` to `GalaxyMapClient`
+  and `carrierLayer` to `AtlasCarriersPanel`, which renders
+  `CarrierLayerControls` (source chips, «чьи», class, system list). The map's
+  own layer panel no longer duplicates it (`{!carrierLayerProp && …}`).
+  A row of that list dispatches `atlas-select-carrier-group`; `GalaxyMap`
+  listens, closes other cards, selects the system and flies the camera
+  (`focusRequest` with a growing `id`).
+- **Quiet defaults.** `src/lib/mapLayerDefaults.ts → mapLayerDefaults(compact)`:
+  the Atlas opens with only «Имена секторов», «Границы секторов»,
+  «Оранжевый пояс» and «Туманности» on — every other layer is off, including
+  carriers (`useCarrierLayer({ defaultVisible: false })`). The compact
+  «Карта кольца» (`/map`) keeps the route layers on, otherwise it would open
+  empty. Route statuses stay on as a sub-filter of the route layer.
+- **«Последняя стройка»** now opens the last **completed** system
+  (`lastBuildTarget`): the furthest `done` system along the route
+  (`sort_order`, then `id`) — the ring is built in order, and no completion
+  timestamp exists in the map data (`system_progress.updated_at` is a sync
+  time). Fallback: last `building`, then the end of the route. The button has
+  a tooltip (`gmap.lastBuildTitle`).
+
 ## 9. Background jobs (`jobs`)
 
 Schedule: `scripts/job-schedule.mjs` (shared with the monitor agent), runner:
