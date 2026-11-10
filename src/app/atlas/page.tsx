@@ -19,6 +19,7 @@ import AtlasRingRouteFinder from '@/components/Atlas/AtlasRingRouteFinder';
 import { AtlasPowerplayPanel } from '@/components/Atlas/AtlasPowerplayPanel';
 import { useAtlasPowerplay } from '@/hooks/usePowerplayLayer';
 import { AtlasFactionsPanel } from '@/components/Atlas/AtlasFactionsPanel';
+import { AtlasCarriersPanel } from '@/components/Atlas/AtlasCarriersPanel';
 import { useAtlasFactions } from '@/hooks/useFactionsLayer';
 import type { GalaxyMapFactions, GalaxyMapPowerplay } from '@/components/GalaxyMap/GalaxyMap';
 import { toast } from '@/components/ui/Toaster';
@@ -27,6 +28,7 @@ import {
   IconDownload,
   IconGlobe,
   IconMap,
+  IconPlane,
   IconPower,
   IconRoute,
   IconSearch,
@@ -58,7 +60,7 @@ type ProjectItem = {
   squadron_name?: string;
 };
 
-type AtlasTab = 'search' | 'route' | 'route-finder' | 'ship-route' | 'ring-route' | 'market' | 'nearby' | 'powerplay' | 'factions';
+type AtlasTab = 'search' | 'route' | 'route-finder' | 'ship-route' | 'ring-route' | 'market' | 'nearby' | 'powerplay' | 'factions' | 'carriers';
 
 const TABS: { id: AtlasTab; labelKey: string; icon: React.ReactNode; hintKey: string }[] = [
   { id: 'search', labelKey: 'atlas.tabSearch', icon: <IconSearch size={14} />, hintKey: 'atlas.hintSearch' },
@@ -70,6 +72,8 @@ const TABS: { id: AtlasTab; labelKey: string; icon: React.ReactNode; hintKey: st
   { id: 'nearby', labelKey: 'atlas.tabNearby', icon: <IconGlobe size={14} />, hintKey: 'atlas.hintNearby' },
   { id: 'powerplay', labelKey: 'atlas.tabPowerplay', icon: <IconPower size={14} />, hintKey: 'atlas.hintPowerplay' },
   { id: 'factions', labelKey: 'atlas.tabFactions', icon: <IconShieldHalf size={14} />, hintKey: 'atlas.hintFactions' },
+  // Десятая вкладка: цифр всего девять, поэтому хоткей — Alt+0.
+  { id: 'carriers', labelKey: 'atlas.tabCarriers', icon: <IconPlane size={14} />, hintKey: 'atlas.hintCarriers' },
 ];
 
 const CANDIDATE_PAGE_SIZE = 200;
@@ -278,11 +282,12 @@ function AtlasPageInner() {
     return () => window.removeEventListener('atlas-route-target-selected', chooseRouteTarget);
   }, [router, searchParams]);
 
-  /* ── Alt+1..7 — быстрое переключение вкладок ── */
+  /* ── Alt+1..9 и Alt+0 — быстрое переключение вкладок ── */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.altKey || event.ctrlKey || event.metaKey) return;
-      const index = Number(event.key);
+      // Десятая вкладка — по Alt+0: цифр всего девять, а мышь для этого не нужна.
+      const index = event.key === '0' ? 10 : Number(event.key);
       if (!Number.isInteger(index) || index < 1 || index > TABS.length) return;
       const target = event.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
@@ -976,6 +981,8 @@ function AtlasPageInner() {
           {activeTab === 'powerplay' && <AtlasPowerplayPanel powerplay={powerplay} />}
 
           {activeTab === 'factions' && <AtlasFactionsPanel factions={factions} />}
+
+          {activeTab === 'carriers' && <AtlasCarriersPanel />}
 
           {activeTab === 'market' && (
             <AtlasMarketSearch

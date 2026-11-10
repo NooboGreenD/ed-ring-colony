@@ -59,9 +59,13 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   список «в каких системах», карточка системы и пунктир запланированного прыжка —
   [FLEET-CARRIERS.md](FLEET-CARRIERS.md#карта-галактики-и-atlas-web-2160). Устройство слоёв —
   [src/components/GalaxyMap/INTEGRATION.md](src/components/GalaxyMap/INTEGRATION.md)
-- **Atlas** (`/atlas`) — восемь вкладок рядом с той же 3D-картой (Alt+1…Alt+8):
+- **Atlas** (`/atlas`) — десять вкладок рядом с той же 3D-картой (Alt+1…Alt+9, десятая — Alt+0):
   «Поиск» миров по типам, «Маршрут» проекта, «Маршрут A→B», «Кольцо», «Рынок», «Поблизости»,
-  «PowerPlay», «Фракции»; плюс «Галактические секторы» (`/atlas/sector`). Найденное сохраняется в базе
+  «PowerPlay», «Фракции», «Авианосцы» — «Трафик авианосцев»: поиск любого известного сайту носителя
+  по позывному (тегу), имени, системе или MarketID, личное избранное и комментарии (у гостя — в
+  браузере, у пилота с сессией — в профиле, чужим не видны) —
+  [FLEET-CARRIERS.md](FLEET-CARRIERS.md#трафик-авианосцев-в-atlas-10112026). Плюс «Галактические
+  секторы» (`/atlas/sector`) и «Карта кольца» (`/map`) — оба пункта в подменю «Атласа». Найденное сохраняется в базе
   проекта (`atlas_system_cache`, `atlas_body_cache`), поэтому повторный поиск в том же районе не ходит в
   EDSM/Spansh, а прогресс любого поиска виден на карте —
   [ATLAS-SEARCH-REWORK.md](ATLAS-SEARCH-REWORK.md).
@@ -347,11 +351,11 @@ ed-ring-colony/
       layout.tsx            # topbar (статус System Online/Update) + sidebar + footer
       atlas/ map/ system/ systems/ architect/ outfitting/ engineers/ station-search/ ...
       admin/ m-admin/       # админка и мобильная админка (PWA)
-      api/                  # 230 маршрутов API (полный список — CONTEXT.md §5)
+      api/                  # 255 маршрутов API (полный список — CONTEXT.md §5)
     components/
       GalaxyMap/            # 3D-карта галактики и её слои (INTEGRATION.md)
       SystemMap/            # карта системы: SystemOrrery3D + список тел
-      Atlas/                # вкладки Atlas: поиск, маршруты, кольцо, рынок, поблизости, PowerPlay, фракции
+      Atlas/                # вкладки Atlas: поиск, маршруты, кольцо, рынок, поблизости, PowerPlay, фракции, авианосцы
       Architect/            # планировщик застройки и «Проекты систем»
       Carriers/             # карточки и панель авианосцев
       Outfitting/ Engineers/ Forum/ Wiki/ Projects/ Comments/ Cosmetics/ Galnet/ Support/

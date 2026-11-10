@@ -17,7 +17,18 @@
 
 import { readAllRows } from './readAllRows.ts';
 import { viewerContext } from './fleetCarrierStore';
-import { carrierSystemKey, isMapPoint, type MapCarriersResponse, type MapPoint } from './carrierMap.ts';
+import { carrierSystemKey, isMapPoint, type MapCarrier, type MapCarriersResponse, type MapPoint } from './carrierMap.ts';
+import {
+  CARRIER_QUERY_MIN,
+  CARRIER_SEARCH_LIMIT,
+  CARRIER_SEARCH_MAX,
+  carrierMatchesQuery,
+  carrierQueryTokens,
+  normalizeCarrierQuery,
+  orderCarrierDirectory,
+  type CarrierWatch,
+  type CarrierWatchScope,
+} from './carrierDirectory.ts';
 import {
   MAP_CARRIER_COLUMNS,
   coordinateNamesNeeded,
@@ -218,19 +229,19 @@ export interface LoadMapCarriersOptions extends ResolveOptions {
   now?: Date;
 }
 
-export async function loadMapCarriers(svc: Svc, viewerId: string | null, options: LoadMapCarriersOptions = {}): Promise<MapCarriersResponse> {
-  const now = options.now ?? new Date();
-  const read = await readAllRows<Row>((from, to) => svc
-    .from('fleet_carriers')
-    .select(MAP_CARRIER_COLUMNS)
-    .order('carrier_id', { ascending: true })
-    .range(from, to));
-  if (read.error) throw new Error(read.error.message);
-
-  const rows = read.data.filter((row) => isMapCarrierRow(row, now));
-  const response: MapCarriersResponse = { carriers: [], viewer: { signedIn: Boolean(viewerId) }, generatedAt: now.toISOString() };
-  if (!rows.length) return response;
-
+/**
+ * Строки реестра → отметки `MapCarrier` с теми же правилами приватности.
+ * Общая часть слоя карты и поиска «Трафик авианосцев»: имена владельцев,
+ * эскадрильи и координаты систем считаются один раз и одинаково.
+ */
+async function shapeCarrierRows(
+  svc: Svc,
+  rows: Row[],
+  viewerId: string | null,
+  now: Date,
+  options: ResolveOptions = {},
+) {
+  if (!rows.length) return [];
   const ownerIds = Array.from(new Set(rows.map((row) => row.owner_id).filter(Boolean).map(String)));
   const squadronIds = Array.from(new Set(rows
     .map((row) => (row.squadron_id == null ? NaN : Number(row.squadron_id)))
@@ -244,11 +255,14 @@ export async function loadMapCarriers(svc: Svc, viewerId: string | null, options
   const squadronMateIds = await loadSquadronMates(svc, viewer.squadronIds, viewerId);
 
   const known = rowCoordinates(rows, now);
-  const resolved = await resolveMapCoordinates(svc, coordinateNamesNeeded(rows, now, known), { fetchImpl: options.fetchImpl, nowMs: now.getTime() });
+  const resolved = await resolveMapCoordinates(svc, coordinateNamesNeeded(rows, now, known), {
+    fetchImpl: options.fetchImpl,
+    nowMs: now.getTime(),
+  });
   // Координаты из журнала точнее каталогов — они перекрывают найденное.
   const coordinates = new Map<string, MapPoint>([...resolved, ...known]);
 
-  response.carriers = shapeMapCarriers(rows, {
+  return shapeMapCarriers(rows, {
     viewerId,
     viewerSquadronIds: viewer.squadronIds,
     squadronMateIds,
@@ -257,7 +271,146 @@ export async function loadMapCarriers(svc: Svc, viewerId: string | null, options
     coordinates,
     now,
   });
+}
+
+export async function loadMapCarriers(svc: Svc, viewerId: string | null, options: LoadMapCarriersOptions = {}): Promise<MapCarriersResponse> {
+  const now = options.now ?? new Date();
+  const read = await readAllRows<Row>((from, to) => svc
+    .from('fleet_carriers')
+    .select(MAP_CARRIER_COLUMNS)
+    .order('carrier_id', { ascending: true })
+    .range(from, to));
+  if (read.error) throw new Error(read.error.message);
+
+  const rows = read.data.filter((row) => isMapCarrierRow(row, now));
+  const response: MapCarriersResponse = { carriers: [], viewer: { signedIn: Boolean(viewerId) }, generatedAt: now.toISOString() };
+  if (!rows.length) return response;
+  response.carriers = await shapeCarrierRows(svc, rows, viewerId, now, options);
   return response;
+}
+
+/* ── «Трафик авианосцев»: поиск по реестру ────────────────────────────────── */
+
+export interface CarrierSearchRequest {
+  /** Строка поиска: позывной (тег), имя, система или MarketID. */
+  query?: string;
+  scope?: CarrierWatchScope;
+  /** Сколько отдать. */
+  limit?: number;
+  /**
+   * Избранное зрителя. Нужно не для поиска, а для порядка: избранные и записи
+   * с комментарием идут первыми (см. `orderCarrierDirectory`).
+   */
+  watches?: readonly CarrierWatch[];
+}
+
+export interface CarrierSearchResult {
+  carriers: MapCarrier[];
+  /** Сколько совпало до обрезки по `limit`. */
+  total: number;
+  truncated: boolean;
+}
+
+/** Защита от PostgREST-шаблонов: `%` и `_` в запросе — литералы, не wildcard. */
+function likePattern(value: string): string {
+  return `%${escapeLike(value)}%`;
+}
+
+/**
+ * «Рыхлый» шаблон для позывного: `%k%7%q%b%q%l%`.
+ *
+ * Позывные в игре пишут с дефисом («K7Q-BQL»), а пилот набирает слитно —
+ * «k7qbql». `ilike '%k7qbql%'` такую строку не найдёт, а схема «эти символы
+ * идут по порядку» находит и её, и «K7-QBQL». Окончательный отбор всё равно
+ * делает `carrierMatchesQuery` в памяти, поэтому лишние строки не страшны.
+ */
+function looseCallsignPattern(value: string): string {
+  return `%${value.split('').map(escapeLike).join('%')}%`;
+}
+
+/**
+ * Поиск носителей по реестру сайта (`fleet_carriers`).
+ *
+ * Почему не один запрос с `or`: PostgREST ломается на запятых и скобках внутри
+ * `or=`, а в позывных и именах они встречаются. Делаем отдельные `ilike` по
+ * самым важным колонкам и сводим строки по `carrier_id`.
+ *
+ * Ищем по самому длинному слову запроса: короткое слово («1») вернуло бы
+ * половину реестра. Остальные слова проверяет `carrierMatchesQuery` уже в
+ * памяти — так «K7Q steel» не выдаёт все носители со словом «steel».
+ *
+ * `scope = 'favorites'` без `carrierIds` — пустой результат: список избранного
+ * знает маршрут, он и передаёт идентификаторы.
+ */
+export async function searchMapCarriers(
+  svc: Svc,
+  viewerId: string | null,
+  request: CarrierSearchRequest = {},
+  options: ResolveOptions = {},
+): Promise<CarrierSearchResult> {
+  const now = options.nowMs ? new Date(options.nowMs) : new Date();
+  const limit = Math.max(1, Math.min(CARRIER_SEARCH_MAX, Number(request.limit) || CARRIER_SEARCH_LIMIT));
+  const query = normalizeCarrierQuery(request.query ?? '');
+  const tokens = carrierQueryTokens(query);
+  const primary = [...tokens].sort((left, right) => right.length - left.length)[0] ?? '';
+  if (primary && primary.length < CARRIER_QUERY_MIN) return { carriers: [], total: 0, truncated: false };
+
+  const scanned = new Map<string, Row>();
+  const absorb = (rows: Row[] | null | undefined) => {
+    for (const row of rows ?? []) {
+      if (row?.carrier_id == null) continue;
+      scanned.set(String(row.carrier_id), row);
+    }
+  };
+
+  if (request.scope === 'favorites' && !tokens.length) {
+    const ids = Array.from(new Set((request.watches ?? []).filter((watch) => watch.favorite).map((watch) => watch.carrierId)));
+    if (!ids.length) return { carriers: [], total: 0, truncated: false };
+    for (const chunk of chunks(ids, IN_CHUNK)) {
+      absorb(await safeRows(svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS).in('carrier_id', chunk).limit(limit * 3)));
+    }
+  } else if (!tokens.length) {
+    // Пустой запрос: показываем реестр, а не пустоту — пилоту нужно с чего-то начать.
+    absorb(await safeRows(svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS)
+      .order('updated_at', { ascending: false }).limit(limit * 3)));
+  } else {
+    const pattern = likePattern(primary);
+    const perQuery = limit * 3;
+    const lookups = [
+      svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS).ilike('callsign', pattern).limit(perQuery),
+      svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS).ilike('name', pattern).limit(perQuery),
+      svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS).ilike('system_name', pattern).limit(perQuery),
+    ];
+    // MarketID ищут числом: позывной из цифр не бывает, а `ilike` по BIGINT
+    // Postgre не примет.
+    if (/^\d+$/.test(primary)) {
+      lookups.push(svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS).eq('carrier_id', primary).limit(1));
+    }
+    for (const rows of await Promise.all(lookups.map((lookup) => safeRows(lookup)))) absorb(rows);
+
+    // Слитный позывной: буквы идут по порядку, дефисы в базе не мешают.
+    const compact = primary.replace(/[^a-z0-9]/g, '');
+    if (scanned.size === 0 && tokens.length === 1 && compact.length >= 3) {
+      absorb(await safeRows(svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS)
+        .ilike('callsign', looseCallsignPattern(compact)).limit(perQuery)));
+    }
+  }
+
+  const rows = Array.from(scanned.values()).filter((row) => isMapCarrierRow(row, now));
+  const carriers = await shapeCarrierRows(svc, rows, viewerId, now, options);
+  const matched = carriers.filter((carrier) => carrierMatchesQuery({
+    id: carrier.id,
+    callsign: carrier.callsign,
+    name: carrier.name,
+    owner: carrier.owner,
+    system: carrier.system,
+  }, query));
+  const ordered = orderCarrierDirectory(matched, request.watches ?? []);
+  return {
+    carriers: ordered.slice(0, limit),
+    total: ordered.length,
+    truncated: ordered.length > limit,
+  };
 }
 
 function escapeLike(value: string): string {

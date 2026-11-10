@@ -146,6 +146,7 @@ test('в интерфейсе PowerPlay нет русских строк в ко
   const files = [
     'src/hooks/usePowerplayLayer.ts',
     'src/components/Atlas/AtlasPowerplayPanel.tsx',
+    'src/components/Atlas/AtlasCarriersPanel.tsx',
     'src/components/GalaxyMap/PowerplayGlyph.tsx',
     'src/components/GalaxyMap/PowerplaySystemCard.tsx',
   ];

@@ -449,13 +449,14 @@ test('страница Atlas: вкладки, панель поиска и пе�
     await ui.render(ui.React.createElement(ui.mod.AtlasPage));
 
     const tabs = Array.from(ui.document.querySelectorAll('[role="tab"]'));
-    assert.equal(tabs.length, 9, 'в панели девять разделов');
+    assert.equal(tabs.length, 10, 'в панели десять разделов');
     assert.deepEqual(
       tabs.map((tab) => (tab.textContent || '').trim()),
-      ['Поиск', 'Маршрут', 'Колонизация A→B', 'Маршрут корабля', 'Кольцо', 'Рынок', 'Поблизости', 'PowerPlay', 'Фракции'],
+      ['Поиск', 'Маршрут', 'Колонизация A→B', 'Маршрут корабля', 'Кольцо', 'Рынок', 'Поблизости', 'PowerPlay', 'Фракции', 'Авианосцы'],
       'подписи и порядок вкладок',
     );
     assert.match(tabs[7].getAttribute('title'), /Alt\+8/);
+    assert.match(tabs[9].getAttribute('title'), /Alt\+0/, 'десятая вкладка переключается Alt+0');
     assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
     assert.match(ui.text(), /Поиск миров/, 'по умолчанию открыт поиск миров');
     assert.match(ui.text(), /История поисков/);
@@ -985,6 +986,86 @@ test('кольцо: результат виден в панели, сохран�
   } finally {
     // Оверлей результата живёт 30 секунд: убираем таймер, чтобы файл не ждал его.
     ui.mod.resetAtlasSearchProgress();
+    await ui.cleanup();
+  }
+});
+
+/* ── вкладка «Авианосцы»: поиск, избранное, заметка, камера карты ─────────── */
+
+test('вкладка «Авианосцы»: реестр, избранное гостя в браузере и фокус камеры', async () => {
+  const carriers = [
+    {
+      id: '3800000201', type: 'FleetCarrier', callsign: 'K7Q-BQL', name: 'Hippione',
+      relation: 'own', system: 'Sol', position: { x: 0, y: 0, z: 0 }, decommission: false,
+    },
+    {
+      id: '3800000202', type: 'SquadronCarrier', callsign: 'STE-777', name: 'Steel Barge',
+      relation: 'other', system: 'Lave', position: { x: 75.75, y: 48.75, z: -12.5 }, decommission: false,
+    },
+  ];
+  const ui = await renderAtlas(null, {
+    url: 'http://localhost/atlas?tab=carriers',
+    api: (target) => {
+      if (target.includes('/api/atlas/carriers/watch')) return { status: 401, body: { error: 'Unauthorized' } };
+      if (target.includes('/api/atlas/carriers?')) {
+        return { body: { carriers, total: carriers.length, truncated: false, viewer: { signedIn: false } } };
+      }
+      if (target.includes('/api/projects')) return { body: { projects: [] } };
+      if (target.includes('/api/atlas/favorites') || target.includes('/api/atlas/sessions')) {
+        return { status: 401, body: { error: 'Unauthorized' } };
+      }
+      return null;
+    },
+  });
+  const focusEvents = [];
+  try {
+    await ui.act(async () => {
+      ui.dom.window.addEventListener('atlas-focus-system', (event) => focusEvents.push(event.detail));
+    });
+    await ui.render(ui.React.createElement(ui.mod.AtlasPage));
+
+    const panel = ui.document.querySelector('[data-carrier-watch-panel]');
+    assert.ok(panel, 'панель «Трафик авианосцев» отрисована');
+    assert.match(ui.text(), /Трафик авианосцев/, 'заголовок панели');
+    assert.match(ui.text(), /K7Q-BQL · Hippione/, 'подпись носителя — позывной и имя');
+    assert.match(ui.text(), /Steel Barge/);
+    assert.match(ui.text(), /Войдите, чтобы избранное и заметки/, 'гостю сказано, что записи личные');
+
+    // Клик по системе ведёт камеру карты тем же событием, что и остальные панели.
+    const resultButtons = Array.from(panel.querySelectorAll('.acw-row-main'));
+    assert.equal(resultButtons.length, 2);
+    await ui.click(resultButtons[1]);
+    assert.deepEqual(focusEvents.at(-1), { name: 'Lave', x: 75.75, y: 48.75, z: -12.5 });
+
+    // Избранное гостя: запись остаётся в браузере, серверу не пишем.
+    const star = resultButtons[0].closest('li').querySelector('.acw-star');
+    assert.ok(star, 'кнопка «в избранное» есть');
+    await ui.click(star);
+    const stored = JSON.parse(ui.dom.window.localStorage.getItem('atlas:carrier-watch-local') || '[]');
+    assert.deepEqual(stored.map((row) => row.carrierId), ['3800000201']);
+    assert.ok(!ui.calls.some((call) => call.startsWith('PUT ')), `гостю нечего отправлять на сервер: ${ui.calls.join(', ')}`);
+
+    // Комментарий: редактор открывается, ввод сохраняется в ту же запись.
+    const row = resultButtons[0].closest('li');
+    const noteButton = Array.from(row.querySelectorAll('.atlas-icon-btn'))
+      .find((button) => button.getAttribute('title') === 'Комментарий');
+    assert.ok(noteButton, 'кнопка комментария есть');
+    await ui.click(noteButton);
+    const textarea = row.querySelector('.acw-editor textarea');
+    assert.ok(textarea, 'редактор комментария открыт');
+    await ui.act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(ui.dom.window.HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(textarea, 'наш склад у станции');
+      textarea.dispatchEvent(new ui.dom.window.Event('input', { bubbles: true }));
+    });
+    await ui.flush(10);
+    const saveButton = Array.from(row.querySelectorAll('button')).find((button) => (button.textContent || '').trim() === 'Сохранить');
+    assert.ok(saveButton, 'кнопка сохранения есть');
+    await ui.click(saveButton);
+    const afterNote = JSON.parse(ui.dom.window.localStorage.getItem('atlas:carrier-watch-local') || '[]');
+    assert.equal(afterNote[0].note, 'наш склад у станции');
+    assert.match(ui.text(), /заметка/, 'у строки появился признак заметки');
+  } finally {
     await ui.cleanup();
   }
 });

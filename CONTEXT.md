@@ -3,7 +3,7 @@
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-11-09** (checked against the code).
 > Web release: **2.27.9** · Colonial Helper: **2.28.2** (`PARSER_VERSION = 6`, launcher 1.5.0).
-> 106 SQL migrations · 251 API routes · 60 pages · 185 site test files · Helper tests: 2077.
+> 107 SQL migrations · 255 API routes · 60 pages · 186 site test files · Helper tests: 2077.
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -399,6 +399,8 @@ checks itself:
 | Маршрут | Методы · доступ | Назначение |
 |---|---|---|
 | `/api/atlas/candidates` | GET · — | Кандидаты поиска миров по `search_id` |
+| `/api/atlas/carriers` | GET · — | «Трафик авианосцев»: поиск по реестру `fleet_carriers` по позывному (тегу), имени, системе и MarketID; `scope=favorites` — только своё, требует сессии |
+| `/api/atlas/carriers/watch` | GET/PUT/DELETE · сессия | Личное избранное и комментарии к авианосцам (`atlas_carrier_watch`, RLS по `auth.uid()`) |
 | `/api/atlas/favorites` | GET/POST/DELETE · сессия | Избранные системы Atlas |
 | `/api/atlas/nearby` | POST · — | Все системы в сфере/кубе 1–50 св. лет вокруг опорной |
 | `/api/atlas/ring-route` | GET · —<br>POST · — (с сессией — больше) | Галактическое кольцо: шаговая сессия (POST — шаг/продолжение по `session_id`, GET — состояние) |
@@ -802,6 +804,7 @@ React и без строк интерфейса, повторяющие моде
 | AtlasNearbySearch | `components/Atlas/AtlasNearbySearch.tsx` | Client | Atlas «Поблизости»: sphere/cube 1–50 ly |
 | AtlasPowerplayPanel | `components/Atlas/AtlasPowerplayPanel.tsx` | Client | Atlas «PowerPlay»: status card, power/state filters, list, CSV, «Чья зона?» (`usePowerplayLayer`) |
 | AtlasFactionsPanel | `components/Atlas/AtlasFactionsPanel.tsx` | Client | Atlas «Фракции»: allegiance filter, faction search, up to 12 selected factions (`useFactionsLayer`) |
+| AtlasCarriersPanel | `components/Atlas/AtlasCarriersPanel.tsx` | Client | Atlas «Трафик авианосцев»: поиск по позывному/имени/системе, личное избранное и комментарии (`/api/atlas/carriers*`), фокус камеры через `atlas-focus-system` |
 | PowerplayPoints / FactionPoints | `components/GalaxyMap/PowerplayPoints.tsx`, `FactionPoints.tsx` | Client | Shader point clouds of the two layers; picking through `MapClickLayer` |
 | PowerplaySystemCard / FactionSystemCard | `components/GalaxyMap/PowerplaySystemCard.tsx`, `FactionSystemCard.tsx` | Client | System cards of the layers (influence zones / all factions with influence) |
 | CarrierPanel / CarrierCard | `components/Carriers/` | Client | Carrier tab of the profile and the squadron page: services, location, cargo (owner/officers), manual binding |
@@ -1647,6 +1650,28 @@ Analysis of all sections, the gaps found (G1–G17) and the plan live in
   systems (`systemOverview.loadSystemsProgress`); `GET /api/projects/[id]/progress`
   serves it per system of a squadron project, and `/projects/[id]` shows the
   percentage next to each system.
+
+### 8.24 Atlas «Трафик авианосцев» — 10.11.2026
+Full description: **FLEET-CARRIERS.md** → «Трафик авианосцев».
+- Tenth Atlas tab `?tab=carriers` (`Alt+0`; hints of the other tabs keep their
+  `Alt+1…9`). Search runs over the site registry `fleet_carriers`, so it is
+  not limited to what the map has already placed: callsign (tag), name, system
+  and MarketID. Separators do not matter — `k7qbql` finds `K7Q-BQL` (a literal
+  `ilike` first, then a `%k%7%q%b%q%l%` fallback, and the final pick is
+  `carrierMatchesQuery` in memory). Rows keep the map's privacy rules and
+  never carry cargo or finance.
+- Personal data lives in `atlas_carrier_watch` (migration
+  `20261107090000_atlas_carrier_watch.sql`): one row per pilot and carrier,
+  `favorite` flag and a note up to 500 characters, RLS by `auth.uid()`. The
+  route `/api/atlas/carriers/watch` mirrors that check; guests keep the same
+  list in `localStorage` (`atlas:carrier-watch-local`) and it is merged into
+  the server list on sign-in (`mergeCarrierWatches`, server wins).
+- Rules shared by the panel and the route: `src/lib/carrierDirectory.ts`
+  (query tokens, normalisation, ordering, merge).
+- Menu: «Карта кольца» (`/map`) moved into the Atlas submenu, next to
+  «Сектора»; it is the same Atlas map opened in single-route mode.
+- Atlas tab strip is responsive: three columns on desktop, one scrollable row
+  at ≤768 px (ten tabs of ~100 px used to ellipsise «Колонизация A→B»).
 
 ## 9. Background jobs (`jobs`)
 
