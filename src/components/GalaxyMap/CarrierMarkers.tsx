@@ -8,7 +8,12 @@
  * двух и более носителях в системе — бейдж со счётчиком. Значок всегда поверх
  * туманностей и секторов (как метки на карте галактики в игре).
  *
- * Запланированный прыжок — пунктир к системе назначения и бледный значок там.
+ * Прыжки видны двумя линиями одной палитры, как у остальных слоёв карты:
+ *   * пунктир в цвет носителя — заказанный прыжок (куда он уйдёт) и бледный
+ *     значок в системе назначения;
+ *   * сплошная бледная линия — выполненный прыжок, который привёл носитель
+ *     сюда («откуда → здесь»). Так маршрут читается и у носителей сайта, и у
+ *     реестра EDDN, где заказанного прыжка не бывает вовсе.
  * Наведение показывает подпись, клик выбирает систему (карточка — в GalaxyMap).
  */
 
@@ -30,6 +35,7 @@ import {
   type CarrierSystemGroup,
   type CarrierTone,
 } from '@/lib/carrierMap';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { drawCarrierGlyph, type CarrierGlyphKind } from './CarrierGlyph';
 
 const TEXTURE = 128;
@@ -42,7 +48,7 @@ const GHOST_SCALE = 0.72;
 const RING_SCALE = 1.4;
 const HOVER_SCALE = 1.18;
 const SELECTED_SCALE = 1.12;
-const RENDER_ORDER = { line: 26, ghost: 27, ring: 28, icon: 30 } as const;
+const RENDER_ORDER = { route: 25, line: 26, ghost: 27, ring: 28, icon: 30 } as const;
 /**
  * На масштабе галактики значки соседних систем ложатся друг на друга: сверху
  * должен оказаться свой носитель, затем эскадрильи, затем остальные;
@@ -160,6 +166,12 @@ interface JumpTrail {
   ghost: THREE.SpriteMaterial | null;
 }
 
+/** Выполненный прыжок: сплошная бледная линия «откуда пришёл → здесь». */
+interface RouteLine {
+  key: string;
+  line: THREE.Line;
+}
+
 export interface CarrierMarkersProps {
   groups: CarrierSystemGroup[];
   selectedKey?: string | null;
@@ -222,16 +234,46 @@ export function CarrierMarkers({ groups, selectedKey = null, onSelect }: Carrier
     return result;
   }, [placed]);
 
+  // Маршрут: сплошная линия от системы, из которой носитель пришёл. Тот же
+  // цвет, что у значка, но тусклее пунктира: это уже свершившийся прыжок.
+  const routes = useMemo<RouteLine[]>(() => {
+    const result: RouteLine[] = [];
+    for (const { group, position } of placed) {
+      for (const route of group.routes) {
+        const from = eliteToThreeCentered(route.position);
+        if (position.distanceTo(from) < 0.01) continue;
+        const geometry = new THREE.BufferGeometry().setFromPoints([from, position]);
+        const material = new THREE.LineBasicMaterial({
+          color: CARRIER_TONE_COLOR[carrierTone(route.carrier)],
+          transparent: true,
+          opacity: 0.32,
+          depthTest: false,
+          depthWrite: false,
+          toneMapped: false,
+        });
+        const line = new THREE.Line(geometry, material);
+        line.renderOrder = RENDER_ORDER.route;
+        line.raycast = () => undefined;
+        result.push({ key: `${group.key}<${route.key}`, line });
+      }
+    }
+    return result;
+  }, [placed]);
+
   useEffect(() => () => {
     for (const trail of trails) {
       trail.line.geometry.dispose();
       (trail.line.material as THREE.Material).dispose();
     }
-  }, [trails]);
+    for (const route of routes) {
+      route.line.geometry.dispose();
+      (route.line.material as THREE.Material).dispose();
+    }
+  }, [trails, routes]);
 
   useEffect(() => {
     invalidate();
-  }, [placed, trails, selectedKey, hoveredKey, pixel, invalidate]);
+  }, [placed, trails, routes, selectedKey, hoveredKey, pixel, invalidate]);
 
   useEffect(() => () => setCursor('auto'), []);
 
@@ -247,6 +289,8 @@ export function CarrierMarkers({ groups, selectedKey = null, onSelect }: Carrier
 
   return (
     <group name="carrier-markers">
+      {routes.map((route) => <primitive key={route.key} object={route.line} />)}
+
       {trails.map((trail) => (
         <group key={trail.key}>
           <primitive object={trail.line} />
@@ -311,8 +355,11 @@ export function CarrierMarkers({ groups, selectedKey = null, onSelect }: Carrier
 }
 
 function CarrierHoverLabel({ group, color }: { group: CarrierSystemGroup; color: string }) {
+  const { t } = useI18n();
   const count = group.carriers.length;
   const jump = group.carriers.map((carrier) => carrierJumpText(carrier)).find(Boolean);
+  // У реестра EDDN заказанного прыжка не бывает — зато есть след: откуда пришёл.
+  const route = jump ? null : group.routes[0] ?? null;
   return (
     <div style={{
       transform: 'translate(-50%, calc(-100% - 26px))',
@@ -332,6 +379,7 @@ function CarrierHoverLabel({ group, color }: { group: CarrierSystemGroup; color:
       </div>
       <div style={{ color: '#d1d5db', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{carrierListLabel(group, 3)}</div>
       {jump && <div style={{ color: '#ffd166' }}>{jump}</div>}
+      {route && <div style={{ color: '#9ca3af' }}>{t('clc.routeFrom', { system: route.system })}</div>}
     </div>
   );
 }

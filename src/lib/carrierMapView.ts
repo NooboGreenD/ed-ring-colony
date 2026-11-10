@@ -21,12 +21,34 @@
 
 import { buildCarrierView, serviceLabel } from './fleetCarriers.ts';
 import { privacyForViewer } from './privacy.ts';
-import { carrierSystemKey, isMapPoint, type MapCarrier, type MapCarrierRelation, type MapPoint } from './carrierMap.ts';
+import {
+  carrierSystemKey,
+  isMapPoint,
+  type MapCarrier,
+  type MapCarrierRelation,
+  type MapPoint,
+} from './carrierMap.ts';
 
 /** Через сколько после флага списания носитель считается разобранным. */
 export const SCRAP_AFTER_MS = 8 * 24 * 60 * 60 * 1000;
 /** Сколько держать на карте носитель без владельца и эскадрильи на сайте. */
 export const UNBOUND_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Колонки реестра EDDN для слоя карты. `previous_*` появились вместе с
+ * миграцией `20261110090000_carrier_directory_route.sql`; на установке без неё
+ * запрос падает целиком, поэтому есть базовый набор и запасной путь
+ * (`carrierMapStore.loadDirectoryRows`).
+ */
+export const DIRECTORY_COLUMNS = [
+  'carrier_id', 'callsign', 'name', 'carrier_type', 'system_name', 'system_address', 'body_name',
+  'x', 'y', 'z', 'services', 'updated_at', 'last_seen_at',
+  'previous_system_name', 'previous_x', 'previous_y', 'previous_z',
+].join(', ');
+export const DIRECTORY_COLUMNS_BASE = [
+  'carrier_id', 'callsign', 'name', 'carrier_type', 'system_name', 'system_address', 'body_name',
+  'x', 'y', 'z', 'services', 'updated_at', 'last_seen_at',
+].join(', ');
 
 /** Колонки, которые нужны карте (без груза, финансов и ордеров). */
 export const MAP_CARRIER_COLUMNS = [
@@ -106,6 +128,8 @@ export function coordinateNamesNeeded(rows: readonly Row[], now: Date, known: Re
     const view = viewOf(row, now);
     if (!view.location.coords) need(view.location.system);
     if (view.jump) need(view.jump.system);
+    // Откуда носитель пришёл — тоже нужно: по этой точке рисуется линия.
+    if (view.location.previousSystem) need(view.location.previousSystem);
   }
   return Array.from(names.values());
 }
@@ -163,6 +187,7 @@ export function shapeMapCarrier(row: Row, context: MapCarrierContext): MapCarrie
     locationAt: view.location.at,
     estimated: view.location.estimated,
     previousSystem: view.location.previousSystem,
+    previousPosition: view.location.previousSystem ? coordinates(view.location.previousSystem) : null,
     jump: view.jump ? {
       system: view.jump.system,
       departureAt: view.jump.departureAt,
@@ -185,4 +210,117 @@ export function shapeMapCarriers(rows: readonly Row[], context: MapCarrierContex
     if (carrier) carriers.push(carrier);
   }
   return carriers;
+}
+
+/* ── Реестр EDDN (`carrier_directory`) ─────────────────────────────────────── */
+
+/** Службы реестра — те же подписи, что у носителей сайта. */
+function directoryServices(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const roles = Array.from(new Set(value
+    .map((entry) => (typeof entry === 'string' ? entry.trim().toLowerCase() : ''))
+    .filter((entry) => entry && MAP_SERVICE_SET.has(entry)))) as string[];
+  // Службы экипажа из Carrier Management приходят как `Commodities` — сравнение регистронезависимое.
+  roles.sort((left, right) => MAP_SERVICE_ROLES.indexOf(left) - MAP_SERVICE_ROLES.indexOf(right));
+  return roles.map(serviceLabel);
+}
+
+/** Время строки — ISO; PostgREST отдаёт строку, драйвер теста может отдать `Date`. */
+function directoryTime(value: unknown): string | null {
+  if (value == null || value === '') return null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function directoryPoint(row: Row, prefix = ''): MapPoint | null {
+  const point = { x: Number(row[`${prefix}x`]), y: Number(row[`${prefix}y`]), z: Number(row[`${prefix}z`]) };
+  const has = [row[`${prefix}x`], row[`${prefix}y`], row[`${prefix}z`]]
+    .every((value) => value != null && Number.isFinite(Number(value)));
+  return has && isMapPoint(point) ? point : null;
+}
+
+/**
+ * Строка реестра EDDN → отметка карты.
+ *
+ * Отметка честно беднее, чем у носителей сайта: владельца, эскадрильи,
+ * стыковки и заказанного прыжка в EDDN нет (`CarrierJump` — это уже
+ * случившийся прыжок). Зато есть след: откуда носитель пришёл, — и по нему
+ * карта рисует маршрут.
+ */
+export function shapeDirectoryCarrier(row: Row, coordinates: ReadonlyMap<string, MapPoint>): MapCarrier | null {
+  const system = typeof row.system_name === 'string' ? row.system_name.trim() : '';
+  if (!system) return null;
+  const key = carrierSystemKey(system);
+  if (!key) return null;
+  const position = directoryPoint(row) ?? coordinates.get(key) ?? null;
+  const previousSystem = typeof row.previous_system_name === 'string' && row.previous_system_name.trim()
+    ? row.previous_system_name.trim()
+    : null;
+  const previousPosition = previousSystem
+    ? directoryPoint(row, 'previous_') ?? coordinates.get(carrierSystemKey(previousSystem)) ?? null
+    : null;
+  const at = directoryTime(row.last_seen_at) ?? directoryTime(row.updated_at);
+
+  return {
+    id: String(row.carrier_id),
+    type: row.carrier_type === 'SquadronCarrier' ? 'SquadronCarrier' : 'FleetCarrier',
+    callsign: typeof row.callsign === 'string' && row.callsign.trim() ? row.callsign.trim() : null,
+    name: typeof row.name === 'string' && row.name.trim() ? row.name.trim() : null,
+    relation: 'other',
+    owner: null,
+    ownerHidden: false,
+    squadron: null,
+    system,
+    body: typeof row.body_name === 'string' && row.body_name.trim() ? row.body_name.trim() : null,
+    position,
+    locationAt: at,
+    estimated: false,
+    previousSystem,
+    previousPosition,
+    jump: null,
+    docking: null,
+    notorious: null,
+    services: directoryServices(row.services),
+    decommission: false,
+    origin: 'eddn',
+  };
+}
+
+/**
+ * Отметки реестра для слоя карты. Записи учёта сайта главнее: носитель,
+ * который уже есть на карте, второй раз не появляется.
+ */
+export function shapeDirectoryCarriers(
+  rows: readonly Row[],
+  context: { coordinates: ReadonlyMap<string, MapPoint>; knownIds?: ReadonlySet<string>; seenAfter?: number },
+): MapCarrier[] {
+  const carriers: MapCarrier[] = [];
+  const taken = new Set(context.knownIds ?? []);
+  for (const row of rows) {
+    if (row?.carrier_id == null) continue;
+    const id = String(row.carrier_id);
+    if (taken.has(id)) continue;
+    const at = Date.parse(String(row.updated_at ?? ''));
+    if (context.seenAfter != null && (!Number.isFinite(at) || at < context.seenAfter)) continue;
+    const carrier = shapeDirectoryCarrier(row, context.coordinates);
+    if (!carrier) continue;
+    taken.add(id);
+    carriers.push(carrier);
+  }
+  return carriers;
+}
+
+/** Системы реестра без координат — их стоит поискать в каталогах. */
+export function directoryCoordinateNames(rows: readonly Row[], known: ReadonlyMap<string, MapPoint>): string[] {
+  const names = new Map<string, string>();
+  const need = (value: unknown) => {
+    const name = typeof value === 'string' ? value.trim() : '';
+    const key = carrierSystemKey(name);
+    if (key && !known.has(key) && !names.has(key)) names.set(key, name);
+  };
+  for (const row of rows) {
+    if (!directoryPoint(row)) need(row.system_name);
+    if (row.previous_system_name && !directoryPoint(row, 'previous_')) need(row.previous_system_name);
+  }
+  return Array.from(names.values());
 }

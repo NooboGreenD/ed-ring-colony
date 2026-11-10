@@ -30,6 +30,7 @@ import {
   type CarrierSystemGroup,
   type MapCarrier,
   type MapCarriersResponse,
+  type MapDirectoryInfo,
 } from '@/lib/carrierMap';
 import { CarrierLayerControls, type CarrierLayerStatus } from './CarrierLayerControls';
 import { GalaxyScene } from './GalaxyScene';
@@ -263,6 +264,7 @@ export default function GalaxyMap({
   const [carriers, setCarriers] = useState<MapCarrier[]>([]);
   const [carriersStatus, setCarriersStatus] = useState<CarrierLayerStatus>('loading');
   const [carriersSignedIn, setCarriersSignedIn] = useState(false);
+  const [carrierDirectory, setCarrierDirectory] = useState<MapDirectoryInfo | null>(null);
   const [selectedCarrierKey, setSelectedCarrierKey] = useState<string | null>(null);
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
   const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
@@ -461,6 +463,7 @@ export default function GalaxyMap({
         if (cancelled) return;
         setCarriers(Array.isArray(data.carriers) ? data.carriers : []);
         setCarriersSignedIn(Boolean(data.viewer?.signedIn));
+        setCarrierDirectory(data.directory ?? null);
         setCarriersStatus('ready');
       } catch {
         // Необязательный слой: последний удачный ответ остаётся на карте.
@@ -1125,6 +1128,7 @@ export default function GalaxyMap({
             onSelectGroup={handleSelectCarrierGroup}
             status={carriersStatus}
             signedIn={carriersSignedIn}
+            directory={carrierDirectory}
           />
           {powerplay && (
             <div className="powerplay-layer-controls" style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>

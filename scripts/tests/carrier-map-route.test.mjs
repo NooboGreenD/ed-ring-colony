@@ -6,8 +6,8 @@
  * `@/lib/supabaseServer`; service-role клиент — `helpers/pgliteSupabase.mjs`.
  * EDSM — подставной `fetch`. Проверяется, что видит гость и пилот с
  * эскадрильей, приватность владельцев, отсев списанных и забытых носителей,
- * все источники координат (журнал, каталоги, маршрут, хабы, EDSM) и кэш
- * промахов EDSM.
+ * все источники координат (журнал, каталоги, маршрут, хабы, EDSM), кэш
+ * промахов EDSM и подмешивание реестра EDDN — с его следом последнего прыжка.
  */
 
 import test from 'node:test';
@@ -100,7 +100,13 @@ CREATE TABLE public.route_systems(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY
 CREATE TABLE public.hubs(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, system_name text, x float8, y float8, z float8);
 CREATE TABLE public.galaxy_systems(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text, name_lc text UNIQUE, x float8 NOT NULL, y float8 NOT NULL, z float8 NOT NULL);
 `);
-for (const file of ['20261014000000_station_commerce.sql', '20261017000000_fleet_carriers.sql', '20261018000000_fleet_carrier_squadron_claims.sql']) {
+for (const file of [
+  '20261014000000_station_commerce.sql',
+  '20261017000000_fleet_carriers.sql',
+  '20261018000000_fleet_carrier_squadron_claims.sql',
+  '20261108120000_carrier_directory.sql',
+  '20261110090000_carrier_directory_route.sql',
+]) {
   await db.exec(readFileSync(join(TEST_ROOT, 'supabase', 'migrations', file), 'utf8'));
 }
 
@@ -169,9 +175,9 @@ test.after(async () => {
   await db.close();
 });
 
-async function get(userId) {
+async function get(userId, query = '') {
   mod.state.userId = userId;
-  const response = await mod.carriers.GET(new Request('http://localhost/api/map/carriers'));
+  const response = await mod.carriers.GET(new Request(`http://localhost/api/map/carriers${query}`));
   const text = await response.text();
   return { status: response.status, headers: response.headers, text, body: JSON.parse(text) };
 }
@@ -237,6 +243,58 @@ test('прыжки: заказанный — с координатами цел�
   assert.deepEqual(arrived.position, { x: 67.5, y: -119.47, z: 24.84 }, 'хабы; x/y/z строки — от старой системы');
   assert.equal(arrived.decommission, true, 'списывается, но флаг свежий — носитель ещё на карте');
   assert.equal(arrived.docking, 'никто');
+});
+
+test('реестр EDDN подмешивается: чужие носители, след прыжка и переключатель ?directory=0', async () => {
+  // Носитель, которого сайт не учитывает: его прыжок видел кто-то в EDDN.
+  await db.exec(`
+    INSERT INTO public.carrier_directory(carrier_id, callsign, name, carrier_type, system_name, system_address,
+        body_name, x, y, z, services, updated_at, last_seen_at,
+        previous_system_name, previous_x, previous_y, previous_z)
+    VALUES
+      (3700000501, 'EDD-501', NULL, 'FleetCarrier', 'HIP 100', 10477373803, 'HIP 100 4', 10, 1, -20,
+        '["commodities","refuel","dock"]', ${at(-15)}, ${at(-15)}, 'Lave', 75.75, 48.75, -12.5),
+      -- Дубль носителя сайта: учёт сайта главнее, вторая отметка не появляется.
+      (${FC.mate}, 'MAT-102', NULL, 'FleetCarrier', 'Sol', NULL, NULL, 0, 0, 0,
+        '[]', ${at(-5)}, ${at(-5)}, NULL, NULL, NULL, NULL),
+      -- Слишком старое наблюдение: на карту не берём.
+      (3700000502, 'EDD-502', NULL, 'FleetCarrier', 'Sol', NULL, NULL, 0, 0, 0,
+        '[]', ${at(-200 * 24 * 60)}, ${at(-200 * 24 * 60)}, NULL, NULL, NULL, NULL);
+  `);
+  mod.resetCarrierMapCache();
+
+  try {
+    const response = await get(null);
+    assert.equal(response.status, 200, response.text);
+    const carriers = byId(response.body);
+    const guest = await get(null, '?directory=0');
+
+    assert.equal(carriers.size, 9, 'восемь носителей сайта плюс один из реестра');
+    assert.equal(guest.body.carriers.length, 8, '?directory=0 — только подтверждённые стоянки сайта');
+
+    const eddn = carriers.get('3700000501');
+    assert.equal(eddn.origin, 'eddn');
+    assert.equal(eddn.relation, 'other');
+    assert.equal(eddn.owner, null);
+    assert.equal(eddn.squadron, null);
+    assert.equal(eddn.jump, null, 'EDDN не приносит заказанный прыжок');
+    assert.equal(eddn.callsign, 'EDD-501');
+    assert.deepEqual(eddn.services, ['Рынок товаров', 'Заправка']);
+    assert.deepEqual(eddn.position, { x: 10, y: 1, z: -20 });
+    assert.match(eddn.locationAt, /^\d{4}-\d{2}-\d{2}T/, 'время наблюдения — ISO, а не Date из драйвера');
+    assert.equal(eddn.previousSystem, 'Lave', 'след последнего прыжка');
+    assert.deepEqual(eddn.previousPosition, { x: 75.75, y: 48.75, z: -12.5 });
+    assert.ok(!carriers.has('3700000502'), 'наблюдение старше срока давности не показывается');
+    assert.equal(carriers.get(FC.mate).origin, 'site', 'учёт сайта главнее реестра');
+
+    assert.deepEqual(response.body.directory, {
+      shown: 1, truncated: false, since: response.body.directory.since,
+    });
+    assert.equal(guest.body.directory, undefined, 'без реестра и счётчиков реестра нет');
+  } finally {
+    await db.exec('DELETE FROM public.carrier_directory');
+    mod.resetCarrierMapCache();
+  }
 });
 
 test('пилот с эскадрильей: свой носитель, носители эскадрильи и участников; скрытый участник — чужой', async () => {
