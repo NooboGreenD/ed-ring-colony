@@ -7305,7 +7305,8 @@ html[data-hud-effect="glow"]::before {
 
 /* ── Atlas: вкладка «PowerPlay» (системы под контролем держав) ── */
 @layer components {
-  /* Седьмая вкладка одна в своём ряду — на всю ширину, а не обрубком слева. */
+  /* Последняя вкладка, оставшаяся в ряду одна, — на всю ширину, а не обрубком слева.
+     Правило считает от трёх колонок, поэтому работает при любом их количестве. */
   .atlas-tabs > .atlas-tab:last-child:nth-child(3n + 1) { grid-column: 1 / -1; }
   .atlas-tabs > .atlas-tab:last-child:nth-child(3n + 2) { grid-column: span 2; }
 
@@ -7511,4 +7512,89 @@ html[data-hud-effect="glow"]::before {
   }
   .bgs-card-btn:disabled { opacity: .4; cursor: not-allowed; }
   .bgs-hover-tip > span { display: block; }
+}
+
+/* ── Atlas: вкладка «Трафик авианосцев» (поиск, избранное, заметки) ──
+   Плашка состояния, полосы и поиск — классы вкладок PowerPlay и «Фракции»;
+   здесь только строки реестра, переключатель «все / избранное» и редактор
+   заметки. Всё это живёт в узкой боковой панели, поэтому размеры шрифтов
+   те же, что у остальных панелей Atlas. */
+@layer components {
+  .acw-panel { gap: 6px; }
+  .acw-scope { display: flex; flex-wrap: wrap; gap: 4px; }
+  .acw-scope-btn {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; min-height: 0;
+    background: transparent; border: 1px solid var(--line); border-radius: 3px;
+    color: var(--muted); font-family: inherit; font-size: 10px; text-transform: none;
+    letter-spacing: normal; cursor: pointer; line-height: 1.3;
+  }
+  .acw-scope-btn:hover { color: var(--text); border-color: rgba(196,181,253,.4); }
+  .acw-scope-btn.active { color: var(--text); border-color: rgba(196,181,253,.45); background: rgba(196,181,253,.08); }
+  .acw-hint { margin: 0; font-size: 10px; line-height: 1.4; color: var(--muted); }
+  .acw-hint.dim, .acw-system.dim { color: #6b7280; }
+  .acw-results { max-height: 340px; }
+  .acw-results > li { border-bottom: 1px solid #24272a; }
+  .acw-results > li:last-child { border-bottom: none; }
+  .acw-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px; }
+  .acw-row-main {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-width: 0;
+    padding: 4px 6px; background: transparent; border: none; border-radius: 3px; color: var(--text);
+    font: inherit; font-size: 12px; text-align: left; text-transform: none; letter-spacing: normal; cursor: pointer;
+  }
+  .acw-row-main:hover:not(:disabled) { background: rgba(196,181,253,.08); }
+  .acw-row-main:disabled { cursor: default; }
+  .acw-row-label { max-width: 100%; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acw-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
+  .acw-chip {
+    border: 1px solid #3a3d40; border-radius: 2px; padding: 0 4px; font-size: 9px;
+    text-transform: uppercase; letter-spacing: .5px; white-space: nowrap;
+  }
+  .acw-system, .acw-note-badge { display: inline-flex; align-items: center; gap: 3px; }
+  .acw-note-badge { color: #c4b5fd; }
+  .acw-row-actions { display: inline-flex; align-items: center; gap: 1px; padding-right: 2px; }
+  .acw-row-actions .atlas-icon-btn { min-height: 0; }
+  .acw-star.active { color: #ffd166; border-color: rgba(255,209,102,.45); }
+  .acw-editor { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 6px; }
+  .acw-editor textarea {
+    width: 100%; min-height: 54px; padding: 4px 6px; resize: vertical; font-family: inherit; font-size: 12px;
+    line-height: 1.4; color: var(--text); background: #141618; border: 1px solid #2d2f33; border-radius: 3px;
+  }
+  .acw-editor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .acw-counter { margin-right: auto; font-size: 10px; color: var(--muted); }
+  .acw-save {
+    padding: 3px 8px; font-family: inherit; font-size: 10px; letter-spacing: normal; text-transform: none;
+    color: #17191b; background: var(--orange); border: 1px solid var(--orange); border-radius: 3px; cursor: pointer;
+  }
+  .acw-save:disabled { opacity: .5; cursor: not-allowed; }
+  .acw-footnote { margin: 0; font-size: 9px; line-height: 1.4; color: #6b7280; }
+}
+
+/* Узкий экран: список не прокручивается отдельной областью — страница и так
+   прокручивается целиком, а двойная прокрутка на телефоне только мешает. */
+@media (max-width: 768px) {
+  .acw-results { max-height: none; }
+}
+
+/* ── Адаптивность вкладок Atlas ──
+   На узком экране боковая панель занимает всю ширину, а вкладок десять:
+   три колонки оставляли по ~100 px на подпись, и «Колонизация A→B» резалась
+   многоточием в каждой второй строке. Вместо этого — одна прокручиваемая
+   строка: подписи целиком, высота панели не растёт, а до нужной вкладки
+   доводит горизонтальный свайп. */
+@media (max-width: 768px) {
+  .atlas-tabs {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Правило «последняя вкладка на всю ширину» здесь не нужно: ряд один. */
+  .atlas-tabs > .atlas-tab:last-child:nth-child(3n + 1),
+  .atlas-tabs > .atlas-tab:last-child:nth-child(3n + 2) { grid-column: auto; }
+  .atlas-tab { white-space: nowrap; padding: 8px 10px; }
+  .atlas-tab span { overflow: visible; text-overflow: clip; white-space: nowrap; }
 }

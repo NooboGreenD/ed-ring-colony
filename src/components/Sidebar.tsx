@@ -15,7 +15,6 @@ import {
   IconGlobe,
   IconHomeSystem,
   IconLeaderboard,
-  IconMap,
   IconMessage,
   IconNote,
   IconPlane,
@@ -68,9 +67,14 @@ const NAV_GROUPS: NavGroup[] = [
         href: '/atlas',
         translation: 'nav.atlas',
         icon: <IconAtlas size={iconSize} className="sidebar-icon" />,
-        children: [{ href: '/atlas/sector', labelKey: 'nav.sectors' }],
+        // «Карта кольца» живёт внутри Atlas: это тот же раздел, только открытый
+        // в режиме единственного маршрута. В самом низу меню ей места нет —
+        // пилот искал карту рядом с Атласом, а не через одну строку.
+        children: [
+          { href: '/map', labelKey: 'nav.map' },
+          { href: '/atlas/sector', labelKey: 'nav.sectors' },
+        ],
       },
-      { href: '/map', translation: 'nav.map', icon: <IconMap size={iconSize} className="sidebar-icon" /> },
       { href: '/systems', translation: 'nav.systems', icon: <IconGlobe size={iconSize} className="sidebar-icon" /> },
       { href: '/cmdrs', translation: 'nav.cmdrs', icon: <IconUsers size={iconSize} className="sidebar-icon" /> },
       { href: '/leaderboard', translation: 'nav.leaderboard', icon: <IconLeaderboard size={iconSize} className="sidebar-icon" /> },
