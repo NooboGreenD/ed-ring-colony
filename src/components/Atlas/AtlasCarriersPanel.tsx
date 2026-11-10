@@ -17,8 +17,13 @@
  *    `atlas_carrier_watch` (RLS по `auth.uid()`), у гостя — в localStorage
  *    браузера; чужие записи не видны никому;
  *  * комментарий к носителю — до 500 символов, только для себя;
+ *  * управление слоем карты — здесь же (10.11.2026): переключатель слоя,
+ *    фильтр источника (сайт / EDDN), «чьи», класс и список систем со
+ *    счётчиками. Раньше это жило в панели слоёв карты, отдельно от раздела,
+ *    которому принадлежит;
  *  * клик по системе ведёт камеру карты: `atlas-focus-system` уже слушает
- *    `GalaxyMap`, отдельного канала не нужно.
+ *    `GalaxyMap`, отдельного канала не нужно; строка списка слоя шлёт
+ *    `atlas-select-carrier-group` — тем же путём карта открывает карточку.
  *
  * Груза и финансов здесь нет: их не отдаёт `/api/map/carriers` и не хранит
  * реестр — это правило слоя карты, и оно сохранено.
@@ -39,6 +44,9 @@ import {
   IconX,
 } from '@/components/Icons';
 import { downloadCsv } from '@/lib/atlas';
+import { CarrierLayerControls } from '@/components/GalaxyMap/CarrierLayerControls';
+import type { CarrierLayer } from '@/hooks/useCarrierLayer';
+import type { CarrierSystemGroup } from '@/lib/carrierMap';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { toast } from '@/components/ui/Toaster';
 import {
@@ -129,7 +137,21 @@ function watchToCarrierRow(watch: CarrierWatch): CarrierRow {
   };
 }
 
-export function AtlasCarriersPanel() {
+/**
+ * Строка списка слоя — событие карты: `GalaxyMap` сбрасывает чужие карточки,
+ * выбирает систему и подводит камеру (тот же путь, что клик по значку).
+ */
+function selectCarrierGroupOnMap(group: CarrierSystemGroup | null): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('atlas-select-carrier-group', { detail: group }));
+}
+
+export interface AtlasCarriersPanelProps {
+  /** Слой карты: состояние живёт на странице Atlas, фильтр — в этой вкладке. */
+  carrierLayer?: CarrierLayer | null;
+}
+
+export function AtlasCarriersPanel({ carrierLayer = null }: AtlasCarriersPanelProps = {}) {
   const { t, locale } = useI18n();
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -450,6 +472,27 @@ export function AtlasCarriersPanel() {
           </button>
         </div>
       </div>
+
+      {carrierLayer && (
+        <div className="acw-layer" data-carrier-layer-controls="">
+          <div className="acw-layer-title">{t('acw.layerTitle')}</div>
+          <p className="acw-hint dim">{t('acw.layerHint')}</p>
+          <CarrierLayerControls
+            show={carrierLayer.show}
+            onShowChange={carrierLayer.setShow}
+            filter={carrierLayer.filter}
+            onFilterChange={carrierLayer.setFilter}
+            counts={carrierLayer.counts}
+            visibleCount={carrierLayer.visibleCount}
+            groups={carrierLayer.groups}
+            selectedKey={carrierLayer.selectedKey}
+            onSelectGroup={selectCarrierGroupOnMap}
+            status={carrierLayer.status}
+            signedIn={carrierLayer.signedIn}
+            directory={carrierLayer.directory}
+          />
+        </div>
+      )}
 
       <div className={`powerplay-state-card ${statusKind}`} data-carrier-watch-status={statusKind} role="status" aria-live="polite">
         {statusBlock}

@@ -21,6 +21,7 @@ import { useAtlasPowerplay } from '@/hooks/usePowerplayLayer';
 import { AtlasFactionsPanel } from '@/components/Atlas/AtlasFactionsPanel';
 import { AtlasCarriersPanel } from '@/components/Atlas/AtlasCarriersPanel';
 import { useAtlasFactions } from '@/hooks/useFactionsLayer';
+import { useCarrierLayer } from '@/hooks/useCarrierLayer';
 import type { GalaxyMapFactions, GalaxyMapPowerplay } from '@/components/GalaxyMap/GalaxyMap';
 import { toast } from '@/components/ui/Toaster';
 import {
@@ -153,6 +154,11 @@ function AtlasPageInner() {
     focusPowerplayOverview();
   }, [activeTab, focusPowerplayOverview, powerplay.status, powerplay.visible, powerplay.visibleSystems.length]);
 
+  // Слой «Авианосцы»: фильтр переехал во вкладку (10.11.2026), поэтому его
+  // состояние живёт на странице, а карта получает готовый объект слоя.
+  // Грузится он только когда включён — по умолчанию слой выключен, как и
+  // остальные слои, кроме имён и границ секторов, оранжевого пояса и туманностей.
+  const carrierLayer = useCarrierLayer({ defaultVisible: false });
   // Слой «Фракции»: населённые системы и выбранные минорные фракции — общие для вкладки и карты.
   const factions = useAtlasFactions({ tabActive: activeTab === 'factions' });
   const factionsSelectedColors = useMemo(
@@ -982,7 +988,7 @@ function AtlasPageInner() {
 
           {activeTab === 'factions' && <AtlasFactionsPanel factions={factions} />}
 
-          {activeTab === 'carriers' && <AtlasCarriersPanel />}
+          {activeTab === 'carriers' && <AtlasCarriersPanel carrierLayer={carrierLayer} />}
 
           {activeTab === 'market' && (
             <AtlasMarketSearch
@@ -1032,6 +1038,7 @@ function AtlasPageInner() {
           marketResults={stationFocus ? [...marketResults, { system_name: stationFocus.name, x: stationFocus.x, y: stationFocus.y, z: stationFocus.z, distance: 0 }] : marketResults}
           powerplay={powerplayLayer}
           factions={factionsLayer}
+          carriers={carrierLayer}
         />
       </div>
     </div>

@@ -7531,6 +7531,15 @@ html[data-hud-effect="glow"]::before {
   .acw-scope-btn:hover { color: var(--text); border-color: rgba(196,181,253,.4); }
   .acw-scope-btn.active { color: var(--text); border-color: rgba(196,181,253,.45); background: rgba(196,181,253,.08); }
   .acw-hint { margin: 0; font-size: 10px; line-height: 1.4; color: var(--muted); }
+  /* Слой карты: фильтр переехал во вкладку, поэтому блок отделён от поиска. */
+  .acw-layer {
+    display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 7px;
+    border: 1px solid #2d2f33; border-radius: 4px; background: rgba(13,15,17,.35);
+  }
+  .acw-layer-title {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
+  }
+  .acw-layer .carrier-layer-controls { border-top: none; margin-top: 0; padding-top: 0; }
   .acw-hint.dim, .acw-system.dim { color: #6b7280; }
   .acw-results { max-height: 340px; }
   .acw-results > li { border-bottom: 1px solid #24272a; }

@@ -87,6 +87,9 @@ export interface MapDirectoryInfo {
   since: string;
 }
 
+/** Состояние загрузки слоя: у карты и у панели вкладки оно одно. */
+export type CarrierLayerStatus = 'loading' | 'ready' | 'error';
+
 export interface MapCarriersResponse {
   carriers: MapCarrier[];
   viewer: { signedIn: boolean };
