@@ -41,12 +41,27 @@ if (usesSameOriginSupabaseGateway(process.env.NEXT_PUBLIC_SUPABASE_URL) && !supa
   );
 }
 
+// Персистентный кэш сборки Turbopack (Next 16.3+, `.next/cache`) ускоряет
+// тёплые пересборки, но переживает смену версии Next и на сервере умеет
+// «отравиться»: `TurbopackInternalError: read_task_output: task … no longer
+// exists (it was garbage collected)` — сборка падает ещё до разбора кода, и
+// повтор с тем же кэшем падает так же. Обычно его лечит страж
+// `deploy/docker-next-cache-guard.sh` (он чистит кэш при смене версии Next) и
+// холодный повтор в `edrc_build_with_retry`. NEXT_BUILD_CACHE=off — крайняя
+// мера: кэш не пишется вовсе, каждая сборка холодная.
+const buildCacheDisabled = /^(off|0|false|no)$/i.test(String(process.env.NEXT_BUILD_CACHE ?? '').trim());
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   // Bound build workers on a small self-hosted server. `proxyTimeout` covers
   // slow Storage uploads; WebSocket upgrades themselves have no timeout.
-  experimental: { cpus: 2, proxyClientMaxBodySize: '50mb', proxyTimeout: 3_600_000 },
+  experimental: {
+    cpus: 2,
+    proxyClientMaxBodySize: '50mb',
+    proxyTimeout: 3_600_000,
+    ...(buildCacheDisabled ? { turbopackFileSystemCacheForBuild: false } : {}),
+  },
   allowedDevOrigins: ['*.e2b.app', 'localhost', '127.0.0.1'],
   // Автономная сборка для деплоя на VPS/Docker без Vercel:
   // `next build` кладёт в .next/standalone минимальный сервер со всеми

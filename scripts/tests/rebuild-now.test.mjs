@@ -252,4 +252,16 @@ test('Docker builder inherits installed dependencies without a node_modules copy
   // Инкрементальный кэш Next.js монтируется на время сборки (в образ не попадает).
   assert.match(dockerfile, /^RUN --mount=type=cache,target=\/app\/\.next\/cache npm run build$/m, 'Next.js still runs its TypeScript build gate');
   assert.match(dockerfile, /^FROM node:22-alpine AS runner$/m, 'runtime remains a separate minimal stage');
+  // Кэш Turbopack привязан к версии Next: перед сборкой его сверяет страж
+  // (иначе чужие записи роняют сборку на read_task_output … garbage collected).
+  const guardAt = dockerfile.indexOf('sh ./deploy/docker-next-cache-guard.sh');
+  const buildAt = dockerfile.indexOf('npm run build', guardAt >= 0 ? guardAt : 0);
+  assert.ok(guardAt > 0, 'страж кэша Turbopack вызывается из Dockerfile');
+  assert.ok(buildAt > guardAt, 'страж стоит ДО npm run build');
+  assert.match(dockerfile, /^ARG NEXT_BUILD_CACHE=on$/m);
+  assert.match(dockerfile, /^ENV NEXT_BUILD_CACHE=\$NEXT_BUILD_CACHE$/m, 'next build видит тот же режим кэша');
+  // Тот же аргумент передаётся из compose: NEXT_BUILD_CACHE=off в .env.production
+  // выключает персистентный кэш сборки без правки Dockerfile.
+  const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
+  assert.match(compose, /NEXT_BUILD_CACHE: \$\{NEXT_BUILD_CACHE:-on\}/);
 });

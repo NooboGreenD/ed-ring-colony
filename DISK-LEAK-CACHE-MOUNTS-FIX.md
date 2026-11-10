@@ -120,3 +120,31 @@ experimental: { turbopackFileSystemCacheForBuild: false },
 
 — тогда `.next/cache` при сборках не пишется вовсе (за счёт скорости тёплых
 переборок). По умолчанию оставлено как у Next 16.3 (включено) + бюджет.
+
+## Дополнение 10.11.2026: кэш привязан к версии Next
+
+У кэш-маунта есть обратная сторона: `.next/cache` переживает **смену версии**
+Next, а записи Turbopack привязаны к его версии. После обновления `next`
+сборка стала падать за три секунды, ещё до разбора кода:
+
+```
+Creating an optimized production build ...
+Error [TurbopackInternalError]: read_task_output: task TaskId 7 no longer
+exists (it was garbage collected). The reading task holds a stale reference
+to it and is expected to be dropped by its parent.
+```
+
+Три автоповтора дали ровно тот же текст: они попадали в тот же кэш. Лечение
+(подробности — `DEPLOY.md` → «Кэш Turbopack привязан к версии Next»):
+
+- `deploy/docker-next-cache-guard.sh` — шаг перед `npm run build`: маркер
+  `.edrc-next-version` рядом с кэшем, при несовпадении версии каталог
+  вычищается до сборки (тёплая сборка той же версии не страдает);
+- `edrc_build_with_retry` перед автоповтором вызывает
+  `edrc_trim_cache_mounts next` — чистится только кэш Next, npm-кэш остаётся;
+- разово — `sudo bash deploy/docker-disk-report.sh --wipe-next`;
+- крайняя мера — `NEXT_BUILD_CACHE=off` (кэш не читается и не пишется).
+
+Бюджеты и режим `auto` при этом не менялись: кэш по-прежнему нужен, просто он
+больше не наследуется молча от другой версии компилятора.
+

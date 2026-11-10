@@ -274,6 +274,41 @@ sudo USE_CACHE=1 bash deploy/rebuild-now.sh
 Если вдруг понадобится старый бандлер — верните `--webpack` в `package.json`
 (`dev`/`build`), Dockerfile менять не нужно.
 
+#### Кэш Turbopack привязан к версии Next
+
+Персистентный кэш сборки Turbopack (`.next/cache`, кэш-маунт BuildKit)
+переживает всё, включая `--no-cache` и смену версии Next. Записи чужой версии
+Turbopack читает как свои и падает ещё до разбора кода — сборка умирает за
+три секунды, а автоповторы попадают в тот же отравленный кэш:
+
+```
+Creating an optimized production build ...
+FATAL: An unexpected Turbopack error occurred.
+Error [TurbopackInternalError]: read_task_output: task TaskId 7 no longer exists
+(it was garbage collected). The reading task holds a stale reference to it …
+ОШИБКА: сборка не удалась после 3 попыток (последний код 1)
+```
+
+Что теперь делает проект:
+
+- `deploy/docker-next-cache-guard.sh` (шаг перед `npm run build`) хранит рядом
+  с кэшем маркер версии Next: версия сменилась — каталог вычищается **до**
+  сборки, тёплая сборка той же версии остаётся тёплой;
+- перед автоповтором `edrc_build_with_retry` вычищает только кэш Next
+  (`edrc_trim_cache_mounts next`), npm-кэш сохраняется: повтор больше не
+  упирается в тот же отравленный кэш;
+- аварийный выключатель — `NEXT_BUILD_CACHE=off` в `.env.production` (или
+  `docker compose build --build-arg NEXT_BUILD_CACHE=off web`): кэш не
+  читается и не пишется, каждая сборка холодная.
+
+Если ошибка повторилась на уже обновлённом клоне, кэш сборки чистится одной
+командой (только `.next/cache`, npm-кэш остаётся; следующая сборка начнётся
+холодной):
+
+```bash
+sudo bash deploy/docker-disk-report.sh --wipe-next
+```
+
 ## 4. Вариант Б — без Docker (systemd + Node)
 
 ```bash

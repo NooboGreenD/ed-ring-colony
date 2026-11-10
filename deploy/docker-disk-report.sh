@@ -30,6 +30,10 @@
 #     которых нет ни в одной папке»);
 #   • сколько занимают резервные копии БД (перед обновлениями и ручные).
 #
+# --wipe-next вычищает ТОЛЬКО кэш сборки Next (.next/cache; npm-кэш остаётся) —
+# это лечение «отравленного» кэша Turbopack: сборка падает с
+# TurbopackInternalError ещё до разбора кода, а повторы попадают в тот же кэш.
+#
 # --wipe вычищает кэш-маунты целиком (edrc_trim_cache_mounts wipe), снимает
 # ОСТАНОВЛЕННЫЕ остатки переключений, забирает освободившиеся висячие образы
 # и анонимные тома-сироты. Именованные тома (galaxy-dump, uploader-store) и
@@ -40,7 +44,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WIPE=0
-[ "${1:-}" = "--wipe" ] && WIPE=1
+WIPE_NEXT=0
+case "${1:-}" in
+  --wipe) WIPE=1 ;;
+  --wipe-next) WIPE_NEXT=1 ;;
+esac
 
 say()  { printf '%s\n' "$*"; }
 # ВАЖНО: функция называется section, а не head — одноимённая функция
@@ -255,7 +263,10 @@ if [ -f "$SCRIPT_DIR/compose-lib.sh" ]; then
   section "кэш-маунты BuildKit (не видны в docker system df / builder prune)"
   if declare -F edrc_trim_cache_mounts >/dev/null 2>&1; then
     if edrc_compose_uses_buildkit; then
-      if [ "$WIPE" = "1" ]; then
+      if [ "$WIPE_NEXT" = "1" ]; then
+        say "вычищаю кэш сборки Next (/app/.next/cache); npm-кэш не трогаю…"
+        edrc_trim_cache_mounts next || true
+      elif [ "$WIPE" = "1" ]; then
         say "вычищаю оба кэш-маунта (/app/.next/cache и /root/.npm)…"
         edrc_trim_cache_mounts wipe || true
         # Остатки сорвавшихся переключений держат старые образы — снимаем
@@ -291,12 +302,17 @@ for d in "$REPO_ROOT/../backups/uploader-releases" "/opt/ed-ring-colony/backups/
 done
 
 say ""
-if [ "$WIPE" = "1" ]; then
+if [ "$WIPE_NEXT" = "1" ]; then
+  say "ГОТОВО: вычищен только кэш сборки Next. Следующая сборка начнётся холодной"
+  say "(дольше), npm-кэш на месте."
+elif [ "$WIPE" = "1" ]; then
   say "ГОТОВО: вычищены кэш-маунты, остатки переключений, висячие образы и"
   say "анонимные тома. Сверьте df выше с состоянием ДО запуска."
 else
   say "Это только замер. Вернуть место (кэш-маунты + остатки контейнеров + образы):"
   say "  sudo bash deploy/docker-disk-report.sh --wipe"
+  say "Лечение «отравленного» кэша Turbopack (сборка падает на read_task_output) —"
+  say "  sudo bash deploy/docker-disk-report.sh --wipe-next"
   say "Бюджеты на будущее (в .env.production):"
   say "  UPDATE_NEXT_CACHE_KEEP=2g · UPDATE_NPM_CACHE_KEEP=2g · UPDATE_DOCKER_CACHE_KEEP=8g"
   say "Переключение контейнеров: UPDATE_STOP_TIMEOUT=120 (сек на корректную остановку)."
