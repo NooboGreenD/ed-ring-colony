@@ -173,6 +173,7 @@ export function shapeMapCarrier(row: Row, context: MapCarrierContext): MapCarrie
     notorious: view.status.allowNotorious,
     services: services(view),
     decommission: view.status.pendingDecommission,
+    origin: 'site',
   };
 }
 

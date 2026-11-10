@@ -178,8 +178,10 @@ test('в ответе карты нет груза, финансов и орде
   }
   assert.deepEqual(Object.keys(carrier).sort(), [
     'body', 'callsign', 'decommission', 'docking', 'estimated', 'id', 'jump', 'locationAt', 'name', 'notorious',
-    'owner', 'ownerHidden', 'position', 'previousSystem', 'relation', 'services', 'squadron', 'system', 'type',
+    'origin', 'owner', 'ownerHidden', 'position', 'previousSystem', 'relation', 'services', 'squadron', 'system', 'type',
   ]);
+  // Откуда запись: отметка из учёта сайта, а не из реестра EDDN.
+  assert.equal(carrier.origin, 'site');
 });
 
 test('прыжок: заказан, в пути, после пяти минут — оценка в системе назначения', () => {

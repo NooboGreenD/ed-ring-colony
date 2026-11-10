@@ -17,6 +17,7 @@
 
 import { readAllRows } from './readAllRows.ts';
 import { viewerContext } from './fleetCarrierStore';
+import { searchCarrierRegistry } from './carrierRegistryStore';
 import { carrierSystemKey, isMapPoint, type MapCarrier, type MapCarriersResponse, type MapPoint } from './carrierMap.ts';
 import {
   CARRIER_QUERY_MIN,
@@ -398,7 +399,64 @@ export async function searchMapCarriers(
 
   const rows = Array.from(scanned.values()).filter((row) => isMapCarrierRow(row, now));
   const carriers = await shapeCarrierRows(svc, rows, viewerId, now, options);
-  const matched = carriers.filter((carrier) => carrierMatchesQuery({
+
+  // Реестр EDDN (`carrier_directory`) — вторая половина поиска: там носители,
+  // которых сайт сам не учитывал (чужой прыжок видел пилот в живом потоке).
+  // Слияние по MarketID: запись сайта главнее, реестр лишь дополняет.
+  const registryIds = request.scope === 'favorites' && !tokens.length
+    ? Array.from(new Set((request.watches ?? []).filter((watch) => watch.favorite).map((watch) => watch.carrierId)))
+    : undefined;
+  let directory: Map<string, Awaited<ReturnType<typeof searchCarrierRegistry>>['rows'][number]> = new Map();
+  try {
+    const found = await searchCarrierRegistry(svc, tokens, limit * 3, {
+      ...(registryIds ? { ids: registryIds } : {}),
+      nowMs: now.getTime(),
+    });
+    directory = new Map(found.rows.map((entry) => [entry.id, entry]));
+  } catch {
+    // Реестр вторичен: если таблицы ещё нет или она недоступна, поиск по
+    // учёту сайта продолжает работать.
+    directory = new Map();
+  }
+
+  const enriched = carriers.map((carrier) => {
+    const entry = directory.get(carrier.id);
+    if (!entry) return carrier;
+    directory.delete(carrier.id);
+    const next = { ...carrier };
+    if (!next.callsign && entry.callsign) next.callsign = entry.callsign;
+    if (!next.name && entry.name) next.name = entry.name;
+    if (!next.system && entry.system) next.system = entry.system;
+    if (!next.position && entry.position) next.position = entry.position;
+    return next;
+  });
+
+  // Носители, известные только реестру: владельца и эскадрильи у них нет —
+  // врать «свой» или подставлять чужой ник мы не будем.
+  const onlyRegistry: MapCarrier[] = Array.from(directory.values()).map((entry) => ({
+    id: entry.id,
+    type: 'FleetCarrier',
+    callsign: entry.callsign,
+    name: entry.name,
+    relation: 'other',
+    owner: null,
+    ownerHidden: false,
+    squadron: null,
+    system: entry.system,
+    body: null,
+    position: entry.position,
+    locationAt: entry.updatedAt || null,
+    estimated: false,
+    previousSystem: null,
+    jump: null,
+    docking: null,
+    notorious: null,
+    services: entry.services,
+    decommission: false,
+    origin: 'eddn',
+  }));
+
+  const matched = [...enriched, ...onlyRegistry].filter((carrier) => carrierMatchesQuery({
     id: carrier.id,
     callsign: carrier.callsign,
     name: carrier.name,

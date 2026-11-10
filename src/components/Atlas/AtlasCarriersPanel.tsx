@@ -29,6 +29,7 @@ import {
   IconAlert,
   IconCheckCircle,
   IconDownload,
+  IconEdit,
   IconMapPin,
   IconNote,
   IconRefresh,
@@ -75,6 +76,10 @@ interface CarrierRow {
   position?: { x: number; y: number; z: number } | null;
   /** У гостя носитель известен только по снимку из localStorage. */
   watch?: CarrierWatch | null;
+  /** Запись есть только в реестре EDDN: владельца и эскадрильи у неё нет. */
+  origin?: 'site' | 'eddn';
+  /** Пилот был на носителе (или владеет им) — может уточнить имя. */
+  canName?: boolean;
 }
 
 interface SearchResponse {
@@ -87,6 +92,8 @@ interface SearchResponse {
     system: string;
     position: { x: number; y: number; z: number } | null;
     decommission: boolean;
+    origin?: 'site' | 'eddn';
+    canName?: boolean;
   }>;
   total: number;
   truncated: boolean;
@@ -137,6 +144,9 @@ export function AtlasCarriersPanel() {
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  // Уточнение имени: отдельное состояние, чтобы не путать с комментарием.
+  const [naming, setNaming] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
   const alive = useRef(true);
 
@@ -205,6 +215,8 @@ export function AtlasCarriersPanel() {
         relation: carrier.relation,
         decommission: carrier.decommission,
         position: carrier.position,
+        origin: carrier.origin,
+        canName: carrier.canName,
         watch: watchFor(watches, carrier.id),
       }));
       setRows(list);
@@ -318,6 +330,38 @@ export function AtlasCarriersPanel() {
       toast(t('acw.commentSaved'), 'success');
     }
   }, [draft, persist, t, watches]);
+
+  /**
+   * Уточнить имя носителя. Имя приходит только от людей: EDDN передаёт
+   * позывной, а настоящее имя видно лишь владельцу и тем, кто был на борту.
+   * Право проверяет сервер (`/api/atlas/carriers/name`), здесь — только ввод.
+   */
+  const saveName = useCallback(async (carrier: CarrierRow) => {
+    const name = nameDraft.replace(/\s+/g, ' ').trim();
+    if (!name) return;
+    setSaving(carrier.id);
+    try {
+      const response = await fetch('/api/atlas/carriers/name', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ carrierId: carrier.id, name }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string; name?: string };
+      if (!response.ok) {
+        toast(payload.error || t('acw.nameFailed'), 'error');
+        return;
+      }
+      const saved = payload.name ?? name;
+      setRows((list) => list.map((row) => (row.id === carrier.id ? { ...row, name: saved } : row)));
+      setNaming(null);
+      setNameDraft('');
+      toast(t('acw.nameSaved'), 'success');
+    } catch {
+      toast(t('acw.nameFailed'), 'error');
+    } finally {
+      if (alive.current) setSaving(null);
+    }
+  }, [alive, nameDraft, t]);
 
   const removeWatch = useCallback(async (carrier: CarrierRow) => {
     const ok = await persist(carrier, { favorite: false, note: null });
@@ -479,6 +523,7 @@ export function AtlasCarriersPanel() {
                   <span className="acw-row-label">{label}</span>
                   <span className="acw-row-meta">
                     <span className="acw-chip">{relationLabel(row, t)}</span>
+                    {row.origin === 'eddn' && <span className="acw-chip dim" title={t('acw.nameHint')}>{t('acw.originEddn')}</span>}
                     {row.system ? <span className="acw-system"><IconMapPin size={10} /> {row.system}</span> : <span className="acw-system dim">{t('acw.noSystem')}</span>}
                     {watch?.note && <span className="acw-note-badge" title={watch.note}><IconNote size={10} /> {t('acw.hasNote')}</span>}
                   </span>
@@ -495,6 +540,20 @@ export function AtlasCarriersPanel() {
                   >
                     <IconStar size={12} />
                   </button>
+                  {row.canName && (
+                    <button
+                      type="button"
+                      className={`atlas-icon-btn${naming === row.id ? ' active' : ''}`}
+                      title={t('acw.nameEdit')}
+                      aria-label={t('acw.nameEdit')}
+                      onClick={() => {
+                        setNaming(naming === row.id ? null : row.id);
+                        setNameDraft(row.name ?? '');
+                      }}
+                    >
+                      <IconEdit size={12} />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={`atlas-icon-btn${isEditing ? ' active' : ''}`}
@@ -521,6 +580,31 @@ export function AtlasCarriersPanel() {
                   )}
                 </span>
               </div>
+              {naming === row.id && (
+                <div className="acw-editor acw-name-editor">
+                  <input
+                    type="text"
+                    value={nameDraft}
+                    maxLength={80}
+                    placeholder={t('acw.namePlaceholder')}
+                    aria-label={t('acw.namePlaceholder')}
+                    onChange={(event) => setNameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void saveName(row);
+                      if (event.key === 'Escape') { setNaming(null); setNameDraft(''); }
+                    }}
+                  />
+                  <div className="acw-editor-foot">
+                    <span className="acw-counter">{t('acw.nameHint')}</span>
+                    <button type="button" className="atlas-link-btn" onClick={() => { setNaming(null); setNameDraft(''); }}>
+                      {t('acw.commentCancel')}
+                    </button>
+                    <button type="button" className="acw-save" onClick={() => void saveName(row)} disabled={saving === row.id || !nameDraft.trim()}>
+                      {t('acw.nameSave')}
+                    </button>
+                  </div>
+                </div>
+              )}
               {isEditing && (
                 <div className="acw-editor">
                   <textarea
