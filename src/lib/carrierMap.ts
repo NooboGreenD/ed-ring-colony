@@ -38,6 +38,35 @@ export interface MapCarrierJump {
   position: MapPoint | null;
 }
 
+/**
+ * Один известный прыжок носителя: «откуда → куда», когда и откуда узнали.
+ *
+ * История копится в `carrier_jump_history` (учёт сайта и EDDN). Карта берёт
+ * прыжки за `CARRIER_HISTORY_WINDOW_MS` (неделя) и рисует по ним след, а
+ * карточка системы показывает их списком. Координаты приходят с сервера:
+ * браузер их не ищет, а система без координат просто не попадает на линию.
+ */
+export interface CarrierJumpHistoryEntry {
+  from: string;
+  to: string;
+  jumpedAt: string;
+  source: MapCarrierSource;
+  fromPosition: MapPoint | null;
+  toPosition: MapPoint | null;
+}
+
+/**
+ * Окно истории на карте и в карточке: неделя.
+ *
+ * Раньше думали про «последние пять прыжков», но пять прыжков — это разный
+ * срок для разных носителей: у одного неделя, у другого месяц. Период честнее:
+ * на карте видно, что случилось за последние семь дней, и у всех носителей
+ * одинаково. Полная история (час/день/месяц/год) — во вкладке «История».
+ */
+export const CARRIER_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** Страховка от мусора в данных: столько строк на носителя карта не покажет. */
+export const CARRIER_HISTORY_MAX_PER_CARRIER = 50;
+
 /** Один носитель в ответе карты. Груза и финансов здесь нет никогда. */
 export interface MapCarrier {
   /** Carrier ID (MarketID) — в игре его видит любой пилот, состыковавшийся с носителем. */
@@ -76,6 +105,11 @@ export interface MapCarrier {
    * У записи из EDDN нет владельца, эскадрильи и груза — и это честно видно.
    */
   origin?: MapCarrierSource;
+  /**
+   * Прыжки за последнюю неделю, свежие сверху (см. `CARRIER_HISTORY_WINDOW_MS`).
+   * Пустой массив — истории нет: носитель новый или учёт ещё не видел прыжка.
+   */
+  history?: readonly CarrierJumpHistoryEntry[];
 }
 
 export interface MapDirectoryInfo {
@@ -159,6 +193,11 @@ export interface CarrierLayerFilter {
   types: Record<MapCarrierType, boolean>;
   /** Источник записи: учёт сайта или реестр EDDN. */
   sources: Record<MapCarrierSource, boolean>;
+  /**
+   * Рисовать ли линии выполненных прыжков за неделю. На число носителей не
+   * влияет — это только следы на карте; в карточке системы история остаётся.
+   */
+  history: boolean;
 }
 
 export const DEFAULT_CARRIER_FILTER: CarrierLayerFilter = {
@@ -167,6 +206,8 @@ export const DEFAULT_CARRIER_FILTER: CarrierLayerFilter = {
   // «Все носители» — по умолчанию: карта показывает и подтверждённые стоянки,
   // и реестр EDDN, а переключатель позволяет оставить только свои.
   sources: { site: true, eddn: true },
+  // История за неделю — включена: без неё слой выглядит как точки без маршрута.
+  history: true,
 };
 
 /** Ключ сравнения систем: регистр и лишние пробелы не важны. */
@@ -185,11 +226,25 @@ export function filterMapCarriers(carriers: readonly MapCarrier[], filter: Carri
     && filter.sources?.[carrierSourceOf(carrier)] !== false);
 }
 
-/** Фильтр ничего не отсекает. */
+/**
+ * Фильтр не отсекает ни одного носителя.
+ *
+ * Выключенные линии истории сюда не входят: они не меняют число носителей, а
+ * счётчик в панели показывает именно его — иначе «5/5» пугало бы зря.
+ */
 export function isDefaultCarrierFilter(filter: CarrierLayerFilter): boolean {
   return MAP_CARRIER_RELATIONS.every((relation) => filter.relations[relation] !== false)
     && MAP_CARRIER_TYPES.every((type) => filter.types[type] !== false)
     && MAP_CARRIER_SOURCES.every((source) => filter.sources?.[source] !== false);
+}
+
+/** Линии истории включены (старый объект фильтра без поля — включены). */
+export function carrierHistoryShown(filter: Pick<CarrierLayerFilter, 'history'> | null | undefined): boolean {
+  return filter?.history !== false;
+}
+
+export function toggleCarrierHistory(filter: CarrierLayerFilter): CarrierLayerFilter {
+  return { ...filter, history: !carrierHistoryShown(filter) };
 }
 
 export function toggleCarrierRelation(filter: CarrierLayerFilter, relation: MapCarrierRelation): CarrierLayerFilter {
@@ -255,6 +310,24 @@ export function compareMapCarriers(left: MapCarrier, right: MapCarrier): number 
     || left.id.localeCompare(right.id);
 }
 
+/** Отрезок выполненного прыжка — линия на карте и строка в карточке. */
+export interface CarrierRouteLeg {
+  /** `lave>hip 100` — уникален внутри группы. */
+  key: string;
+  /** Откуда прыгнули. */
+  system: string;
+  position: MapPoint;
+  /** Куда пришли. */
+  target: string;
+  targetPosition: MapPoint;
+  /** Время прыжка; `null` — известен только факт (след реестра без даты). */
+  jumpedAt: string | null;
+  source: MapCarrierSource;
+  /** 0 — самый свежий прыжок носителя: линия ярче, у старых прозрачнее. */
+  age: number;
+  carrier: MapCarrier;
+}
+
 export interface CarrierSystemGroup {
   key: string;
   system: string;
@@ -266,11 +339,82 @@ export interface CarrierSystemGroup {
   /** Прыжки из этой системы (по одной цели на систему назначения). */
   jumps: Array<{ key: string; system: string; position: MapPoint | null; state: 'scheduled' | 'jumping'; departureAt: string | null; carrier: MapCarrier }>;
   /**
-   * Выполненные прыжки, которые привели носителей сюда: отрезок «откуда →
-   * сюда». Рисуется сплошной бледной линией — в отличие от пунктира
-   * запланированного прыжка. По одной линии на систему-источник.
+   * Выполненные прыжки носителей группы: отрезки «откуда → куда». Рисуются
+   * сплошными бледными линиями — в отличие от пунктира запланированного
+   * прыжка. Свежий прыжок ярче, старые бледнее: по линии видно направление
+   * времени. Одна линия на пару систем, без повторов и петель.
    */
-  routes: Array<{ key: string; system: string; position: MapPoint; carrier: MapCarrier }>;
+  routes: CarrierRouteLeg[];
+}
+
+/**
+ * Линии выполненных прыжков группы: по одной на пару «откуда → куда».
+ *
+ * Источник — `carrier.history`: прыжки за последнюю неделю, свежие сверху.
+ * Если истории нет (старая запись, носитель без прыжков в учёте), остаётся
+ * прежний след `previousSystem` — одна линия «откуда пришёл → здесь».
+ *
+ * Петли (`from === to`), отрезки без координат и повторы отбрасываются:
+ * несколько носителей, прыгавших одним маршрутом, дают одну линию, а не пять
+ * поверх друг друга. `age` — номер нарисованного отрезка у носителя (свежий —
+ * 0): по нему карта гасит старые линии.
+ */
+function carrierRouteLegs(carriers: readonly MapCarrier[], groupKey: string): CarrierRouteLeg[] {
+  const legs: CarrierRouteLeg[] = [];
+  const seen = new Set<string>();
+  const push = (leg: CarrierRouteLeg): boolean => {
+    const from = carrierSystemKey(leg.system);
+    const to = carrierSystemKey(leg.target);
+    if (!from || !to || from === to) return false;
+    if (from === groupKey && to === groupKey) return false;
+    const key = `${from}>${to}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    legs.push({ ...leg, key });
+    return true;
+  };
+
+  for (const carrier of carriers) {
+    const history = (carrier.history ?? []).slice(0, CARRIER_HISTORY_MAX_PER_CARRIER);
+    if (history.length) {
+      // `age` — номер уже нарисованного отрезка, а не индекс строки: дубли и
+      // петли выпадают, и без этого между свежими линиями были бы дыры в
+      // прозрачности.
+      let age = 0;
+      for (const entry of history) {
+        if (!entry.fromPosition || !entry.toPosition) continue;
+        const drawn = push({
+          key: '',
+          system: entry.from,
+          position: entry.fromPosition,
+          target: entry.to,
+          targetPosition: entry.toPosition,
+          jumpedAt: entry.jumpedAt || null,
+          source: entry.source,
+          age,
+          carrier,
+        });
+        if (drawn) age += 1;
+      }
+      continue;
+    }
+    // След реестра: точку назначения знаем только по самой отметке.
+    const target = carrier.position;
+    if (!carrier.previousSystem || !carrier.previousPosition || !target) continue;
+    push({
+      key: '',
+      system: String(carrier.previousSystem).trim(),
+      position: carrier.previousPosition,
+      target: carrier.system,
+      targetPosition: target,
+      jumpedAt: null,
+      source: carrierSourceOf(carrier),
+      age: 0,
+      carrier,
+    });
+  }
+
+  return legs.sort((left, right) => left.age - right.age || left.system.localeCompare(right.system, 'ru'));
 }
 
 /** Одна отметка на систему: значок ведущего носителя и счётчик остальных. */
@@ -307,14 +451,7 @@ export function groupCarriersBySystem(carriers: readonly MapCarrier[]): CarrierS
         carrier,
       });
     }
-    const routes: CarrierSystemGroup['routes'] = [];
-    const seenSources = new Set<string>();
-    for (const carrier of sorted) {
-      const from = carrier.previousSystem ? carrierSystemKey(carrier.previousSystem) : '';
-      if (!from || from === key || seenSources.has(from) || !carrier.previousPosition) continue;
-      seenSources.add(from);
-      routes.push({ key: from, system: String(carrier.previousSystem).trim(), position: carrier.previousPosition, carrier });
-    }
+    const routes = carrierRouteLegs(sorted, key);
     groups.push({ key, system: lead.system, position, carriers: sorted, lead, relations, jumps, routes });
   }
 

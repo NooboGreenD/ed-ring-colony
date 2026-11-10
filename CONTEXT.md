@@ -1734,11 +1734,10 @@ Full description: **FLEET-CARRIERS.md** → «Все носители на ка�
   chips next to «чьи» and «класс», and marks a registry-only system with
   `EDDN`. The system list is capped at 200 rows.
 - Jump routes are drawn in one style for both sources: dashed in the carrier
-  tone — the scheduled jump (as before); solid and dim — the performed jump
-  «from → here» (`CarrierSystemGroup.routes`, one line per source system).
-  A site carrier gets `previousPosition` from `buildCarrierView`'s
-  `previousSystem`; a registry carrier from the new
-  `previous_system_name`/`previous_x/y/z` columns.
+  tone — the scheduled jump (as before); solid and dim — performed jumps
+  (`CarrierSystemGroup.routes`). Since 12.11.2026 that is the carrier's history
+  — up to five legs, newest first (see 8.31) — with the old single
+  `previousSystem`/`previous_*` trail as a fallback when no history exists.
 - Migration `20261110090000_carrier_directory_route.sql` adds those columns and
   redefines `carrier_directory_apply`: a fresher observation with a real system
   change moves the old parking spot into `previous_*`. Re-sent or older
@@ -1885,6 +1884,48 @@ Full description: **FLEET-CARRIERS.md** → «История прыжков: в�
   triggers, dedupe, RPCs and route on PGlite) and
   `carrier-jump-history-ui.test.mjs` (tabs, address, lazy load, chart, periods,
   search, empty and error states in jsdom).
+
+### 8.31 Carrier jump history on the Atlas map — 12.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «История прыжков на карте».
+
+- `GET /api/map/carriers` now carries `history` on every marker: **every jump
+  of the last week** (`CARRIER_HISTORY_WINDOW_MS`), newest first, as
+  `{ from, to, jumpedAt, source, fromPosition, toPosition }` entries read from
+  `carrier_jump_history`. A week beats «last five jumps»: five jumps mean a
+  day for an active carrier and a month for a rare one, so the period is the
+  same for everyone. Rows inside the week are not trimmed
+  (`CARRIER_HISTORY_MAX_PER_CARRIER` = 50 is only a guard). An empty array
+  means no history; it is not an error.
+- The history is fetched in **one** time-ordered pass over the
+  `jumped_at DESC` index with a `jumped_at >= now - 7 days` filter
+  (`MAP_HISTORY_SCAN` = 8000 rows for the whole registry) instead of a query
+  per carrier — there are up to 1500 markers and the map polls every minute.
+  The trade-off is honest: under a very large stream the oldest jumps may fall
+  outside the scan, while the «История» tab still shows the full period.
+- History coordinates are resolved from **local catalogues only**
+  (`fetchImpl: null`): historical systems number in the thousands, so EDSM is
+  never called per map refresh. A system without coordinates still appears in
+  the card as text; its line is just not drawn. A missing migration
+  (`20261113120000_carrier_jump_history.sql`) yields an empty list, so the map
+  keeps working.
+- Legs are built by the pure `carrierRouteLegs` in `carrierMap.ts`: one line
+  per «from → to» pair (loops, duplicates and legs without coordinates are
+  dropped), ordered by `age` (0 = the newest drawn leg). Older legs are drawn
+  dimmer (`0.34 → 0.1`), so the direction of time is visible.
+- **The lines can be switched off.** The carrier filter gained
+  `history: boolean` with the «История недели» chip (`toggleCarrierHistory`,
+  `carrierHistoryShown`, on by default) in the layer panel on `/map` and in the
+  Atlas «Авианосцы» tab. It only hides performed-jump lines: markers and
+  scheduled jumps stay, and the «visible/total» counter does not change — it
+  is a map decoration, not a carrier filter. The card still lists the week's
+  jumps.
+- `CarrierSystemCard` lists the same jumps as «Последние прыжки»: up to five
+  rows «relative time · from → to» with system links, an `EDDN` chip for
+  registry-sourced rows and the full timestamp in the tooltip.
+- Tests: `carrier-map-lib.test.mjs` (leg rules, shaping from the map context),
+  `carrier-map-route.test.mjs` (history in the response, coordinates, the
+  five-entry cap) and `carrier-map-ui.test.mjs` (the card block).
 
 ## 9. Background jobs (`jobs`)
 

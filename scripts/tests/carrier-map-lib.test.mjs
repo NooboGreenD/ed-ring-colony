@@ -18,6 +18,7 @@ import {
   DEFAULT_CARRIER_FILTER,
   carrierBadgeText,
   carrierCountLabel,
+  carrierHistoryShown,
   carrierIconVariant,
   carrierJumpText,
   carrierListLabel,
@@ -29,6 +30,7 @@ import {
   groupCarriersBySystem,
   carrierSourceOf,
   isDefaultCarrierFilter,
+  toggleCarrierHistory,
   toggleCarrierRelation,
   toggleCarrierSource,
   toggleCarrierType,
@@ -181,7 +183,7 @@ test('в ответе карты нет груза, финансов и орде
     assert.ok(!json.includes(secret), `в отметке карты есть «${secret}»`);
   }
   assert.deepEqual(Object.keys(carrier).sort(), [
-    'body', 'callsign', 'decommission', 'docking', 'estimated', 'id', 'jump', 'locationAt', 'name', 'notorious',
+    'body', 'callsign', 'decommission', 'docking', 'estimated', 'history', 'id', 'jump', 'locationAt', 'name', 'notorious',
     'origin', 'owner', 'ownerHidden', 'position', 'previousPosition', 'previousSystem', 'relation', 'services',
     'squadron', 'system', 'type',
   ]);
@@ -342,6 +344,26 @@ test('источник отметки: сайт или реестр EDDN — о�
   assert.equal(isDefaultCarrierFilter(toggleCarrierSource(onlyRegistry, 'site')), true, 'оба источника снова включены');
 });
 
+test('линии истории: переключатель фильтра не трогает носителей', () => {
+  assert.equal(DEFAULT_CARRIER_FILTER.history, true, 'история включена по умолчанию');
+  assert.equal(carrierHistoryShown(DEFAULT_CARRIER_FILTER), true);
+  assert.equal(carrierHistoryShown({}), true, 'старый фильтр без поля — история включена');
+  assert.equal(carrierHistoryShown(null), true);
+
+  const off = toggleCarrierHistory(DEFAULT_CARRIER_FILTER);
+  assert.equal(off.history, false);
+  assert.equal(carrierHistoryShown(off), false);
+  assert.equal(DEFAULT_CARRIER_FILTER.history, true, 'исходный фильтр не меняется');
+  assert.equal(toggleCarrierHistory(off).history, true, 'переключатель возвращает обратно');
+
+  const list = [carrier({ id: '1' }), carrier({ id: '2', origin: 'eddn' })];
+  assert.deepEqual(filterMapCarriers(list, off).map((item) => item.id), ['1', '2'],
+    'выключенная история не прячет ни одного носителя');
+  assert.equal(countMapCarriers(list).total, 2);
+  assert.equal(isDefaultCarrierFilter(off), true,
+    'счётчик «видно/всего» меняется только от отбора носителей, а не от линий');
+});
+
 test('реестр EDDN: отметка без владельца и прыжка, но со следом последнего прыжка', () => {
   const coordinates = new Map([
     ['lave', { x: 75, y: 48, z: -12 }],
@@ -391,15 +413,19 @@ test('реестр EDDN: отметка без владельца и прыжк�
   const [group] = groupCarriersBySystem(carriers);
   assert.equal(group.routes.length, 1);
   assert.equal(group.routes[0].system, 'Lave');
-  assert.equal(group.routes[0].key, 'lave');
+  assert.equal(group.routes[0].key, 'lave>hip 100');
   assert.deepEqual(group.routes[0].position, { x: 75, y: 48, z: -12 });
+  assert.equal(group.routes[0].target, 'HIP 100', 'куда пришёл — система самой отметки');
+  assert.deepEqual(group.routes[0].targetPosition, { x: 10, y: 1, z: -20 });
+  assert.equal(group.routes[0].jumpedAt, null, 'даты у следа реестра нет');
+  assert.equal(group.routes[0].source, 'eddn');
   assert.equal(group.jumps.length, 0, 'запланированных прыжков у реестра нет');
 
   assert.deepEqual(directoryCoordinateNames(rows, new Map([['lave', { x: 75, y: 48, z: -12 }]])), ['Achenar', 'Sol'],
     'искать надо и систему стоянки, и систему, откуда носитель пришёл');
 });
 
-test('маршрут в группе: по одной линии на систему-источник, без петли в саму себя', () => {
+test('маршрут в группе: по одной линии на пару систем, без петли и повторов', () => {
   const list = [
     carrier({ id: '1', system: 'HIP 100', position: { x: 10, y: 1, z: -20 }, previousSystem: 'Lave', previousPosition: { x: 75, y: 48, z: -12 } }),
     carrier({ id: '2', system: 'hip 100', position: { x: 10, y: 1, z: -20 }, previousSystem: 'lave', previousPosition: { x: 75, y: 48, z: -12 } }),
@@ -407,7 +433,102 @@ test('маршрут в группе: по одной линии на систе
     carrier({ id: '4', system: 'HIP 100', position: { x: 10, y: 1, z: -20 }, previousSystem: 'HIP 100', previousPosition: { x: 10, y: 1, z: -20 } }),
   ];
   const [group] = groupCarriersBySystem(list);
-  assert.deepEqual(group.routes.map((route) => route.key), ['lave'], 'без координат и без повторов, петля не рисуется');
+  assert.deepEqual(group.routes.map((route) => route.key), ['lave>hip 100'],
+    'без координат, без повторов и без петли в саму себя');
+});
+
+/** Прыжок для истории: позиции есть только там, где карта знает координаты. */
+function jump(from, to, minutesAgo, overrides = {}) {
+  return {
+    from,
+    to,
+    jumpedAt: ago(minutesAgo * MIN),
+    source: 'site',
+    fromPosition: { x: 1, y: 2, z: 3 },
+    toPosition: { x: 4, y: 5, z: 6 },
+    ...overrides,
+  };
+}
+
+test('история прыжков в группе: все прыжки недели, свежие первыми', () => {
+  const history = [
+    jump('Sol', 'Lave', 10),
+    jump('Lave', 'HIP 100', 30),
+    jump('HIP 100', 'Achenar', 90),
+    jump('Achenar', 'Sol', 300),
+    jump('Sol', 'Lave', 900), // повтор первой пары — вторая линия не нужна
+    jump('Lave', 'Achenar', 24 * 60), // сутки назад — ещё в неделе
+  ];
+  const [group] = groupCarriersBySystem([
+    carrier({ id: '1', system: 'Sol', position: { x: 0, y: 0, z: 0 }, history }),
+  ]);
+
+  assert.deepEqual(group.routes.map((route) => route.key), [
+    'sol>lave', 'lave>hip 100', 'hip 100>achenar', 'achenar>sol', 'lave>achenar',
+  ], 'все прыжки недели по порядку, без повтора «Sol → Lave»');
+  assert.deepEqual(group.routes.map((route) => route.age), [0, 1, 2, 3, 4],
+    'age — порядковый номер прыжка: по нему гаснут старые линии');
+  assert.equal(group.routes[0].jumpedAt, ago(10 * MIN));
+  assert.deepEqual(group.routes[0].targetPosition, { x: 4, y: 5, z: 6 });
+  assert.equal(group.routes[0].source, 'site');
+
+  // Неделя не режет по количеству: десять разных прыжков — десять линий.
+  const week = [
+    jump('Sol', 'Lave', 30), jump('Lave', 'HIP 100', 60), jump('HIP 100', 'Achenar', 90),
+    jump('Achenar', 'Sol', 120), jump('Sol', 'HIP 100', 150), jump('HIP 100', 'Sol', 180),
+    jump('Lave', 'Achenar', 210), jump('Achenar', 'HIP 100', 240), jump('HIP 100', 'Lave', 270),
+    jump('Sol', 'Achenar', 300),
+  ];
+  const [full] = groupCarriersBySystem([carrier({ id: '1', system: 'Sol', history: week })]);
+  assert.equal(full.routes.length, 10, 'за неделю показываем все отрезки, без обрезки по числу');
+  assert.deepEqual(full.routes.map((route) => route.age), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+  // История важнее старого следа реестра: одна и та же линия не рисуется дважды.
+  const [withBoth] = groupCarriersBySystem([
+    carrier({ id: '1', system: 'Sol', position: { x: 0, y: 0, z: 0 }, previousSystem: 'Lave',
+      previousPosition: { x: 1, y: 1, z: 1 }, history: [jump('Lave', 'Sol', 20)] }),
+  ]);
+  assert.deepEqual(withBoth.routes.map((route) => route.key), ['lave>sol']);
+  assert.equal(withBoth.routes[0].age, 0, 'строка из истории, а не след реестра');
+
+  // Без координат линии нет; петля не рисуется.
+  const [partial] = groupCarriersBySystem([
+    carrier({ id: '1', system: 'Sol', position: { x: 0, y: 0, z: 0 }, history: [
+      jump('Nowhere', 'Sol', 5, { fromPosition: null }),
+      jump('Sol', 'Sol', 9),
+      jump('Lave', 'Sol', 12),
+    ] }),
+  ]);
+  assert.deepEqual(partial.routes.map((route) => route.key), ['lave>sol']);
+
+  // Одинаковые листья разных носителей дают одну линию.
+  const [shared] = groupCarriersBySystem([
+    carrier({ id: '1', system: 'Sol', history: [jump('Lave', 'Sol', 5)] }),
+    carrier({ id: '2', system: 'Sol', history: [jump('lave', 'sol', 7)] }),
+  ]);
+  assert.deepEqual(shared.routes.map((route) => route.key), ['lave>sol']);
+});
+
+test('история приходит в отметку из контекста карты и не течёт в чужие носители', () => {
+  const history = new Map([
+    ['3700000000', [
+      { from: 'Lave', to: 'Sol', jumpedAt: ago(20 * MIN), source: 'eddn', fromPosition: { x: 75, y: 48, z: -12 }, toPosition: null },
+    ]],
+  ]);
+  const [known, other] = shapeMapCarriers([
+    row({ carrier_id: 3700000000, owner_id: STRANGER }),
+    row({ carrier_id: 3700000001, owner_id: STRANGER }),
+  ], context({ history }));
+
+  assert.equal(known.history.length, 1);
+  assert.equal(known.history[0].from, 'Lave');
+  assert.equal(known.history[0].source, 'eddn');
+  assert.deepEqual(known.history[0].fromPosition, { x: 75, y: 48, z: -12 });
+  assert.deepEqual(other.history, [], 'у носителя без записи — пустая история, а не чужая');
+
+  // Контекст без истории (старые вызовы) не ломает отметку.
+  const [plain] = shapeMapCarriers([row({ carrier_id: 3700000000, owner_id: STRANGER })], context());
+  assert.deepEqual(plain.history, []);
 });
 
 test('значок группы: класс ведущего носителя, тон, бледность и счётчик', () => {
@@ -481,6 +602,14 @@ test('слой подключён к карте: и в компактной /map
   assert.ok(map.includes("'atlas-select-carrier-group'"), 'карта не слушает выбор системы из вкладки');
 
   assert.ok(scene.includes('<CarrierMarkers'), 'сцена не рисует авианосцы');
+  // История недели: фильтр гасит линии, но не носителей; выключатель доходит
+  // от панели слоя через карту и сцену до самого слоя линий.
+  assert.ok(map.includes('carrierHistoryShown(carrierFilter)'), 'карта не читает переключатель истории из фильтра');
+  assert.ok(map.includes('showCarrierHistory={carrierHistory}'), 'карта не передаёт переключатель истории в сцену');
+  assert.ok(scene.includes('showCarrierHistory'), 'сцена не принимает переключатель истории');
+  assert.ok(scene.includes('showHistory={showCarrierHistory}'), 'сцена не передаёт историю в слой авианосцев');
+  assert.ok(markers.includes('if (!showHistory) return result'), 'слой линий не умеет выключаться');
+
   assert.ok(markers.includes('sizeAttenuation: false'), 'значок должен держать экранный размер');
   assert.ok(markers.includes('depthTest: false'), 'значок должен быть поверх туманностей');
 

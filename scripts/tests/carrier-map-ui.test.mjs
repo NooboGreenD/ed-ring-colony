@@ -381,3 +381,96 @@ test('значок: Drake — кольцо, Javelin — заполненный �
     await ui.cleanup();
   }
 });
+
+test('карточка системы: история прыжков за неделю, свежие сверху, с ссылками', async () => {
+  const ui = await setup();
+  try {
+    const { React, mod } = ui;
+    const jump = (from, to, minutesAgo, source = 'site') => ({
+      from, to, jumpedAt: ago(minutesAgo * MIN), source,
+      fromPosition: { x: 1, y: 2, z: 3 }, toPosition: { x: 4, y: 5, z: 6 },
+    });
+    const history = [
+      jump('Lave', 'HIP 100', 12, 'eddn'),
+      jump('HIP 100', 'Achenar', 90),
+      jump('Achenar', 'Sol', 24 * 60),
+      jump('Sol', 'Lave', 2 * 24 * 60),
+      jump('Lave', 'Sol', 3 * 24 * 60),
+      jump('Sol', 'Achenar', 4 * 24 * 60), // за неделю — значит в карточке
+    ];
+    const [group] = groupCarriersBySystem([
+      carrier({ id: '3700000001', name: 'My Hauler', callsign: 'MYC-001', system: 'HIP 100',
+        position: { x: 10, y: 1, z: -20 }, history }),
+      carrier({ id: '3700000002', name: 'Quiet', callsign: 'QUI-002', system: 'HIP 100', position: { x: 10, y: 1, z: -20 } }),
+    ]);
+    await ui.render(React.createElement(mod.CarrierSystemCard, {
+      group, now: NOW, onClose: () => {}, onFocus: () => {},
+    }));
+
+    const item = ui.document.querySelector('li[data-carrier-id="3700000001"]');
+    const block = item.querySelector('[data-carrier-history]');
+    assert.ok(block, 'блок истории есть');
+    assert.equal(block.getAttribute('data-carrier-history'), '6', 'все прыжки недели, без обрезки по числу');
+    assert.match(block.textContent, /Последние прыжки/);
+    const rows = Array.from(block.querySelectorAll('li'));
+    assert.equal(rows.length, 6);
+    assert.match(rows[0].textContent, /Lave.*HIP 100/s, 'маршрут «откуда → куда»');
+    assert.match(rows[0].textContent, /12 мин назад/, 'относительное время прыжка');
+    assert.match(rows[0].textContent, /EDDN/, 'источник строки помечен');
+    assert.doesNotMatch(rows[1].textContent, /EDDN/, 'прыжок учёта сайта без пометки');
+    assert.match(rows[4].textContent, /Lave.*Sol/s);
+    const links = Array.from(block.querySelectorAll('a')).map((link) => link.getAttribute('href'));
+    assert.ok(links.includes('/system/Lave'), 'система отправления — ссылка');
+    assert.ok(links.includes('/system/HIP%20100'), 'система прибытия — ссылка');
+    assert.equal(block.querySelectorAll('a').length, 12, 'по две ссылки на строку');
+
+    const quiet = ui.document.querySelector('li[data-carrier-id="3700000002"]');
+    assert.equal(quiet.querySelector('[data-carrier-history]'), null, 'без истории блока нет');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('панель слоя: «История недели» выключает только линии, носители остаются', async () => {
+  const ui = await setup();
+  try {
+    const { React, mod } = ui;
+    const calls = [];
+
+    function Harness() {
+      const [filter, setFilter] = React.useState(DEFAULT_CARRIER_FILTER);
+      const visible = filterMapCarriers(CARRIERS, filter);
+      return React.createElement(mod.CarrierLayerControls, {
+        show: true,
+        onShowChange: () => {},
+        filter,
+        onFilterChange: (next) => { calls.push(next.history); setFilter(next); },
+        counts: countMapCarriers(CARRIERS),
+        visibleCount: visible.length,
+        groups: groupCarriersBySystem(visible),
+        selectedKey: null,
+        onSelectGroup: () => {},
+        status: 'ready',
+        signedIn: true,
+      });
+    }
+
+    await ui.render(React.createElement(Harness));
+    const chip = ui.button(/^История недели$/);
+    assert.ok(chip, 'переключатель истории есть в фильтре авианосцев');
+    assert.equal(chip.getAttribute('aria-pressed'), 'true', 'история включена по умолчанию');
+    assert.match(chip.getAttribute('title'), /7 дней/, 'подсказка объясняет окно');
+    assert.match(ui.text(), /Авианосцы \(5\)/, 'счётчик носителей до переключения');
+
+    await ui.click(chip);
+    assert.deepEqual(calls, [false], 'фильтр получает history: false');
+    assert.equal(ui.button(/^История недели$/).getAttribute('aria-pressed'), 'false');
+    assert.match(ui.text(), /Авианосцы \(5\)/, 'линии истории не меняют число носителей');
+    assert.equal(ui.document.querySelectorAll('[data-carrier-system]').length, 3, 'системы остались на месте');
+
+    await ui.click(ui.button(/^История недели$/));
+    assert.deepEqual(calls, [false, true], 'переключатель возвращает историю обратно');
+  } finally {
+    await ui.cleanup();
+  }
+});

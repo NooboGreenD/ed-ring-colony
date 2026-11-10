@@ -3,9 +3,9 @@
 /**
  * Панель слоя «Авианосцы» в управлении картой (и на `/map`, и в Atlas):
  * переключатель слоя, фильтр источника (учёт сайта / реестр EDDN), «чьи»
- * (мой / эскадрилья / другие) и «класс» (Drake / Javelin) со счётчиками и
- * список систем, где стоят носители, — клик по строке ведёт камеру к системе
- * и открывает карточку.
+ * (мой / эскадрилья / другие), «класс» (Drake / Javelin) и линии истории
+ * прыжков за неделю, счётчики и список систем, где стоят носители, — клик по
+ * строке ведёт камеру к системе и открывает карточку.
  */
 
 import { useState, type ReactNode } from 'react';
@@ -20,11 +20,13 @@ import {
   MAP_CARRIER_RELATIONS,
   MAP_CARRIER_SOURCES,
   MAP_CARRIER_TYPES,
+  carrierHistoryShown,
   carrierIconVariant,
   carrierJumpText,
   carrierListLabel,
   carrierSourceOf,
   isDefaultCarrierFilter,
+  toggleCarrierHistory,
   toggleCarrierRelation,
   toggleCarrierSource,
   toggleCarrierType,
@@ -172,6 +174,20 @@ export function CarrierLayerControls({
                 {CARRIER_TYPE_LABEL[type]} {counts.types[type]}
               </FilterChip>
             ))}
+          </div>
+
+          {/* История — не отбор носителей, а следы на карте: выключить линии
+              можно, не теряя ни одной отметки. В карточке системы список
+              прыжков при этом остаётся — он про носитель, а не про карту. */}
+          <div role="group" aria-label={t('clc.historyAria')} style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+            <FilterChip
+              on={carrierHistoryShown(filter)}
+              color="#c4b5fd"
+              title={t('clc.historyHint')}
+              onClick={() => onFilterChange(toggleCarrierHistory(filter))}
+            >
+              {t('clc.history')}
+            </FilterChip>
           </div>
 
           <button

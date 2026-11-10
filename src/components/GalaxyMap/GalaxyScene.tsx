@@ -89,6 +89,8 @@ interface GalaxySceneProps {
   /** Авианосцы по системам (уже после фильтра слоя). */
   carrierGroups?: CarrierSystemGroup[];
   showCarriers?: boolean;
+  /** Линии выполненных прыжков за неделю (фильтр слоя «История недели»). */
+  showCarrierHistory?: boolean;
   selectedCarrierKey?: string | null;
   onSelectCarrierGroup?: (group: CarrierSystemGroup | null) => void;
   /** Слой PowerPlay (Atlas): системы держав после фильтра вкладки. */
@@ -155,6 +157,7 @@ export function GalaxyScene({
   showMarketResults = true,
   showNoMarketSystems = true,
   carrierGroups = [],
+  showCarrierHistory = true,
   showCarriers = true,
   selectedCarrierKey = null,
   onSelectCarrierGroup,
@@ -390,7 +393,12 @@ export function GalaxyScene({
       {showMarketResults && <MarketResultMarkers systems={marketResults} />}
       {showNoMarketSystems && <NoMarketMarkers systems={noMarketSystems} />}
       {showCarriers && carrierGroups.length > 0 && (
-        <CarrierMarkers groups={carrierGroups} selectedKey={selectedCarrierKey} onSelect={onSelectCarrierGroup} />
+        <CarrierMarkers
+          groups={carrierGroups}
+          selectedKey={selectedCarrierKey}
+          onSelect={onSelectCarrierGroup}
+          showHistory={showCarrierHistory}
+        />
       )}
       {searchProgress && <SearchProgressLayer progress={searchProgress} result={searchResult} />}
     </>

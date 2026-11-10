@@ -19,8 +19,11 @@ import { readAllRows } from './readAllRows.ts';
 import { viewerContext } from './fleetCarrierStore';
 import { REGISTRY_STALE_MS, searchCarrierRegistry } from './carrierRegistryStore';
 import {
+  CARRIER_HISTORY_MAX_PER_CARRIER,
+  CARRIER_HISTORY_WINDOW_MS,
   carrierSystemKey,
   isMapPoint,
+  type CarrierJumpHistoryEntry,
   type MapCarrier,
   type MapCarriersResponse,
   type MapDirectoryInfo,
@@ -68,6 +71,19 @@ const CACHE_LIMIT = 5000;
 export const MAP_DIRECTORY_LIMIT = 1500;
 /** Сколько систем реестра за один раз искать в каталогах (EDSM и так не больше 50). */
 const DIRECTORY_COORD_NAMES = 200;
+/**
+ * Сколько строк истории прыжков читать на один запрос карты.
+ *
+ * Окно — неделя (`CARRIER_HISTORY_WINDOW_MS`), и читается оно одним проходом по
+ * индексу `jumped_at DESC`, а не запросом на каждого носителя: их до полутора
+ * тысяч, и столько запросов раз в минуту дороже одного прохода. Лимит — только
+ * страховка от лавины: если за неделю в реестре больше строк, чем здесь, у
+ * самых старых прыжков линии не будет. Полная история — во вкладке «История».
+ */
+export const MAP_HISTORY_SCAN = 8000;
+/** Сколько систем из истории за один раз искать в каталогах. */
+const HISTORY_COORD_NAMES = 600;
+const HISTORY_COLUMNS = 'carrier_id, from_system, to_system, jumped_at, source';
 
 const coordinateCache = new Map<string, { point: MapPoint | null; at: number }>();
 
@@ -262,6 +278,108 @@ export interface LoadMapCarriersOptions extends ResolveOptions {
   directoryLimit?: number;
 }
 
+/* ── История прыжков носителей (след на карте и список в карточке) ───────── */
+
+/**
+ * Строки истории прыжков одним проходом по времени.
+ *
+ * Таблицы может не быть — миграция `20261113120000` не применена; тогда след
+ * просто не рисуется, а карта работает как раньше. Ошибку не глотаем молча:
+ * слой карты не должен падать из-за необязательного украшения.
+ */
+export async function loadJumpHistoryRows(
+  svc: Svc,
+  options: { since?: string; limit?: number } = {},
+): Promise<Row[]> {
+  try {
+    let query = svc.from('carrier_jump_history').select(HISTORY_COLUMNS);
+    if (options.since) query = query.gte('jumped_at', options.since);
+    const { data, error } = await query
+      .order('jumped_at', { ascending: false })
+      .limit(Math.max(1, Math.floor(options.limit ?? MAP_HISTORY_SCAN)));
+    return !error && Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * История по носителям карты: прыжки за неделю, свежие сверху, с координатами.
+ *
+ * Окно — `CARRIER_HISTORY_WINDOW_MS`, одинаковое для всех носителей: «пять
+ * прыжков» означало бы у активного носителя день, у редкого — месяц. Внутри
+ * окна строки не обрезаются (страховка — `CARRIER_HISTORY_MAX_PER_CARRIER`).
+ *
+ * Читаем окно одним проходом по индексу времени, а не запросом на каждого
+ * носителя: на карте их до полутора тысяч, и столько запросов раз в минуту
+ * дороже одного прохода. Координаты ищем только в локальных каталогах
+ * (`fetchImpl: null`): исторических систем тысячи, EDSM на каждый опрос карты
+ * звать нельзя. Систему без координат карточка всё равно покажет текстом —
+ * линия просто не нарисуется.
+ */
+export async function loadCarrierHistory(
+  svc: Svc,
+  ids: ReadonlySet<string>,
+  options: { nowMs?: number; known?: ReadonlyMap<string, MapPoint>; limit?: number } = {},
+): Promise<Map<string, CarrierJumpHistoryEntry[]>> {
+  const result = new Map<string, CarrierJumpHistoryEntry[]>();
+  if (!ids.size) return result;
+
+  const since = new Date((options.nowMs ?? Date.now()) - CARRIER_HISTORY_WINDOW_MS).toISOString();
+  const rows = await loadJumpHistoryRows(svc, { since, limit: options.limit ?? MAP_HISTORY_SCAN });
+  const byCarrier = new Map<string, Row[]>();
+  for (const row of rows) {
+    const id = row?.carrier_id == null ? '' : String(row.carrier_id);
+    if (!id || !ids.has(id)) continue;
+    const from = typeof row.from_system === 'string' ? row.from_system.trim() : '';
+    const to = typeof row.to_system === 'string' ? row.to_system.trim() : '';
+    if (!from || !to || carrierSystemKey(from) === carrierSystemKey(to)) continue;
+    const list = byCarrier.get(id);
+    if (!list) byCarrier.set(id, [row]);
+    else if (list.length < CARRIER_HISTORY_MAX_PER_CARRIER) list.push(row);
+  }
+  if (!byCarrier.size) return result;
+
+  const known = options.known ?? new Map<string, MapPoint>();
+  const names = new Map<string, string>();
+  for (const list of byCarrier.values()) {
+    for (const row of list) {
+      for (const value of [row.from_system, row.to_system]) {
+        const key = carrierSystemKey(value);
+        if (key && !known.has(key) && !names.has(key)) names.set(key, String(value).trim());
+      }
+    }
+  }
+  const resolved = names.size
+    ? await resolveMapCoordinates(svc, Array.from(names.values()).slice(0, HISTORY_COORD_NAMES), {
+      fetchImpl: null,
+      nowMs: options.nowMs,
+      rememberMisses: false,
+    })
+    : new Map<string, MapPoint>();
+  const pointOfName = (name: string): MapPoint | null => {
+    const key = carrierSystemKey(name);
+    return (key && (known.get(key) ?? resolved.get(key))) || null;
+  };
+
+  for (const [id, list] of byCarrier) {
+    result.set(id, list.map((row) => {
+      const from = String(row.from_system).trim();
+      const to = String(row.to_system).trim();
+      const at = row.jumped_at == null ? NaN : Date.parse(String(row.jumped_at));
+      return {
+        from,
+        to,
+        jumpedAt: Number.isFinite(at) ? new Date(at).toISOString() : '',
+        source: row.source === 'eddn' ? 'eddn' as const : 'site' as const,
+        fromPosition: pointOfName(from),
+        toPosition: pointOfName(to),
+      };
+    }));
+  }
+  return result;
+}
+
 /**
  * Строки реестра → отметки `MapCarrier` с теми же правилами приватности.
  * Общая часть слоя карты и поиска «Трафик авианосцев»: имена владельцев,
@@ -273,6 +391,7 @@ async function shapeCarrierRows(
   viewerId: string | null,
   now: Date,
   options: ResolveOptions = {},
+  history: ReadonlyMap<string, readonly CarrierJumpHistoryEntry[]> = new Map(),
 ) {
   if (!rows.length) return [];
   const ownerIds = Array.from(new Set(rows.map((row) => row.owner_id).filter(Boolean).map(String)));
@@ -302,6 +421,7 @@ async function shapeCarrierRows(
     owners,
     squadrons,
     coordinates,
+    history,
     now,
   });
 }
@@ -357,7 +477,17 @@ export async function loadMapCarriers(svc: Svc, viewerId: string | null, options
 
   if (!rows.length && !directory.length) return finish([], 0);
 
-  const carriers = rows.length ? await shapeCarrierRows(svc, rows, viewerId, now, options) : [];
+  // История прыжков одна на весь ответ: до пяти строк на носителя, с координатами.
+  const ids = new Set<string>([
+    ...rows.map((row) => String(row.carrier_id)),
+    ...directory.map((row) => String(row.carrier_id)),
+  ]);
+  const history = await loadCarrierHistory(svc, ids, {
+    nowMs: now.getTime(),
+    known: rowCoordinates(rows, now),
+  });
+
+  const carriers = rows.length ? await shapeCarrierRows(svc, rows, viewerId, now, options, history) : [];
   let shown = 0;
   if (directory.length) {
     const known = new Set(carriers.map((carrier) => carrier.id));
@@ -379,6 +509,7 @@ export async function loadMapCarriers(svc: Svc, viewerId: string | null, options
       coordinates,
       knownIds: known,
       seenAfter: now.getTime() - REGISTRY_STALE_MS,
+      history,
     });
     shown = fromRegistry.length;
     carriers.push(...fromRegistry);
