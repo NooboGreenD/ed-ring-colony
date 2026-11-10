@@ -7724,6 +7724,218 @@ html[data-hud-effect="glow"]::before {
   .cj-watch-side { width: 100%; justify-content: space-between; }
 }
 
+/* ── «Авианосцы перед прыжком»: вкладки и календарь расписаний ──
+   Вкладка «Прыжки» — таблица живых заказов, «Расписание» — календарь планов.
+   Слева список расписаний, справа месяц и прыжки выбранного дня. На узком
+   экране колонки складываются в одну: список сверху, календарь под ним. */
+@layer components {
+  .cj-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+  .cj-tab {
+    display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; min-height: 0;
+    border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--muted);
+    font-family: inherit; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; cursor: pointer;
+  }
+  .cj-tab:hover { color: var(--text); border-color: rgba(196,181,253,.4); }
+  .cj-tab.active { color: var(--orange); border-color: var(--orange); background: rgba(230,126,34,.08); }
+  .cj-col-schedule { width: 1%; text-align: center; }
+
+  .cjc-layout { display: grid; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 14px; align-items: start; }
+  .cjc-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .cjc-side-head h2 { margin: 0 0 4px; font-size: 14px; }
+  .cjc-new {
+    display: flex; flex-direction: column; gap: 6px; padding: 10px;
+    border: 1px solid var(--line); border-radius: 4px; background: #1e2022;
+  }
+  .cjc-new b { color: var(--text); font-size: 12px; font-weight: 600; }
+  .cjc-new input, .cjc-new textarea, .cjc-new select,
+  .cjc-form input, .cjc-form select {
+    width: 100%; padding: 7px 8px; background: #16181a; border: 1px solid var(--line); border-radius: 3px;
+    color: var(--text); font-family: inherit; font-size: 12px; letter-spacing: normal; text-transform: none;
+  }
+  .cjc-new input:focus, .cjc-new textarea:focus, .cjc-new select:focus,
+  .cjc-form input:focus { outline: none; border-color: var(--orange); }
+  .cjc-new textarea { resize: vertical; min-height: 38px; }
+  .cjc-new-row { display: flex; gap: 6px; align-items: center; }
+  .cjc-new-row select { flex: 1 1 auto; min-width: 0; }
+  .cjc-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .cjc-item {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--text);
+    font-family: inherit; letter-spacing: normal; text-transform: none; text-align: left; cursor: pointer;
+  }
+  .cjc-item:hover { border-color: rgba(196,181,253,.4); }
+  .cjc-item.active { border-color: var(--orange); background: rgba(230,126,34,.07); }
+  .cjc-item-title { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; }
+  .cjc-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
+  .cjc-badge {
+    padding: 0 5px; border: 1px solid; border-radius: 3px; font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+  }
+  .cjc-badge.mine { color: #ffd166; border-color: rgba(255,209,102,.45); }
+  .cjc-badge.public { color: #60a5fa; border-color: rgba(96,165,250,.45); }
+  .cjc-badge.private { color: #9ca3af; border-color: rgba(156,163,175,.35); }
+
+  .cjc-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .cjc-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .cjc-head h2 { margin: 0 0 4px; font-size: 16px; }
+  .cjc-head p { margin: 0; }
+  .cjc-head-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .cjc-danger:hover { color: #f87171; border-color: rgba(248,113,113,.45); }
+  .cjc-next {
+    display: inline-flex; align-items: center; gap: 6px; margin: 0;
+    color: #c4b5fd; font-size: 11px;
+  }
+
+  .cjc-month { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 4px; background: #1e2022; }
+  .cjc-month-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .cjc-month-head b { flex: 1 1 auto; color: var(--text); font-size: 13px; text-transform: capitalize; }
+  .cjc-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .cjc-day {
+    position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+    min-height: 44px; padding: 4px 2px; border: 1px solid #2a2d30; border-radius: 3px; background: #16181a;
+    color: var(--text); font-family: inherit; font-size: 12px; letter-spacing: normal; cursor: pointer;
+  }
+  .cjc-day:hover { border-color: rgba(196,181,253,.4); }
+  .cjc-day.out { opacity: .4; }
+  .cjc-day.today { border-color: rgba(230,126,34,.6); }
+  .cjc-day.selected { border-color: var(--orange); background: rgba(230,126,34,.12); }
+  .cjc-day.has-entries .cjc-day-num { color: var(--text); font-weight: 700; }
+  .cjc-day-num { line-height: 1; }
+  .cjc-day-count {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px;
+    border-radius: 7px; background: rgba(230,126,34,.22); color: #ffd166; font-size: 9px; line-height: 1;
+  }
+
+  .cjc-entries { display: flex; flex-direction: column; gap: 8px; }
+  .cjc-entries-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .cjc-entries-head b { flex: 1 1 auto; color: var(--text); font-size: 12px; }
+  .cjc-form {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px;
+    border: 1px solid var(--line); border-radius: 4px; background: #1e2022;
+  }
+  .cjc-form p { margin: 0; }
+  .cjc-form label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 10px; letter-spacing: normal; }
+  .cjc-form label > span { text-transform: uppercase; letter-spacing: 1px; }
+  .cjc-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .cjc-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+  .cjc-live { border: 1px dashed var(--line); border-radius: 4px; padding: 8px 10px; }
+  .cjc-live summary { color: var(--muted); font-size: 11px; cursor: pointer; }
+  .cjc-live ul { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
+  .cjc-live li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11px; }
+  .cjc-live-label { color: var(--text); font-weight: 600; }
+
+  .cjc-entry-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .cjc-entry {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: #1e2022;
+  }
+  .cjc-entry-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+  .cjc-entry-time { color: #c4b5fd; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cjc-entry-route { display: inline-flex; align-items: center; gap: 5px; color: var(--text); font-size: 12px; }
+  .cjc-entry-route a { color: #c4b5fd; text-decoration: none; border-bottom: 1px dashed rgba(196,181,253,.35); }
+  .cjc-entry-carrier { color: var(--orange); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .cjc-entry-side { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+}
+
+@media (max-width: 900px) {
+  .cjc-layout { grid-template-columns: minmax(0, 1fr); }
+  .cjc-day { min-height: 38px; font-size: 11px; }
+}
+@media (max-width: 480px) {
+  .cjc-grid { gap: 2px; }
+  .cjc-day { min-height: 34px; }
+  .cjc-form-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Вкладка «История» прыжков авианосцев (/carriers/jumps?tab=history) ──
+   Вверху — график интенсивности, ниже сводка, топ и таблица прыжков.
+   Столбцы рисуются в координатах viewBox (0…100), поэтому график тянется по
+   ширине карточки без пересчёта пикселей; ось — обычная CSS-сетка. */
+.cjh { display: flex; flex-direction: column; gap: 12px; }
+.cjh-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.cjh-head h2 { margin: 0 0 4px; font-size: 16px; }
+.cjh-head p { margin: 0; max-width: 68ch; }
+.cjh-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cjh-periods { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.cjh-period {
+  appearance: none; border: none; background: transparent; color: var(--muted);
+  padding: 5px 10px; font-size: 11px; cursor: pointer; white-space: nowrap;
+  border-right: 1px solid var(--line);
+}
+.cjh-period:last-child { border-right: none; }
+.cjh-period:hover { color: var(--text); background: rgba(255,255,255,.04); }
+.cjh-period.active { color: #1b1c1e; background: var(--orange); font-weight: 600; }
+
+.cjh-chart-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px 8px; border: 1px solid var(--line); border-radius: 4px; background: #1e2022;
+}
+.cjh-chart-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; }
+.cjh-chart-head b { color: var(--text); font-size: 13px; }
+.cjh-chart-meta { color: var(--muted); font-size: 10px; letter-spacing: .4px; }
+.cjh-chart { display: block; width: 100%; height: 150px; overflow: visible; }
+.cjh-grid-line { stroke: rgba(255,255,255,.07); stroke-width: .4; }
+.cjh-bar { fill: rgba(230,126,34,.82); transition: fill .12s ease; }
+.cjh-bar:hover { fill: #f39c12; }
+.cjh-bar.empty { fill: rgba(255,255,255,.06); }
+.cjh-bar.empty:hover { fill: rgba(255,255,255,.12); }
+.cjh-axis {
+  display: grid; gap: 0; margin-top: 2px;
+  color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums;
+}
+.cjh-axis span { text-align: center; overflow: hidden; white-space: nowrap; text-overflow: clip; }
+.cjh-axis span.quiet { visibility: hidden; }
+.cjh-chart-empty { padding: 26px 8px; color: var(--muted); font-size: 12px; text-align: center; }
+
+.cjh-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.cjh-stat {
+  display: flex; flex-direction: column; gap: 2px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 4px; background: #1e2022;
+}
+.cjh-stat b { color: var(--text); font-size: 16px; font-variant-numeric: tabular-nums; }
+.cjh-stat span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+
+.cjh-top { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 4px; }
+.cjh-top b { color: var(--text); font-size: 12px; }
+.cjh-top ul { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; list-style: none; }
+.cjh-top li { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 5px; font-size: 11px; }
+.cjh-top-count { color: var(--orange); font-variant-numeric: tabular-nums; }
+
+.cjh-list { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cjh-list-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.cjh-list-head b { color: var(--text); font-size: 12px; }
+.cjh-search { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: #26282c; color: var(--muted); }
+.cjh-search input {
+  appearance: none; border: none; background: transparent; color: var(--text);
+  font-size: 11px; min-width: 0; width: 150px; padding: 2px 0;
+}
+.cjh-search input:focus { outline: none; }
+.cjh-search button { appearance: none; border: none; background: transparent; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; }
+.cjh-search button:hover { color: var(--text); }
+.cjh-search:focus-within { border-color: var(--orange); }
+.cjh-table .cjh-source {
+  display: inline-block; padding: 0 5px; border: 1px solid var(--line); border-radius: 3px;
+  font-size: 10px; letter-spacing: .4px; color: var(--muted); white-space: nowrap;
+}
+.cjh-table .cjh-source.eddn { color: #60a5fa; border-color: rgba(96,165,250,.4); }
+.cjh-table .cjh-source.site { color: #ffd166; border-color: rgba(255,209,102,.4); }
+.cjh-foot { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0; font-size: 10px; }
+
+@media (max-width: 768px) {
+  .cjh-chart { height: 120px; }
+  .cjh-axis span { font-size: 9px; }
+  .cjh-actions { width: 100%; justify-content: space-between; }
+}
+@media (max-width: 480px) {
+  .cjh-periods { width: 100%; }
+  .cjh-period { flex: 1 1 0; text-align: center; padding: 6px 4px; }
+  .cjh-chart { height: 96px; }
+  .cjh-axis span { font-size: 8px; }
+  .cjh-search input { width: 100%; }
+  .cjh-search { flex: 1 1 auto; }
+  .cjh-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* ── Адаптивность вкладок Atlas ──
    На узком экране боковая панель занимает всю ширину, а вкладок десять:
    три колонки оставляли по ~100 px на подпись, и «Колонизация A→B» резалась

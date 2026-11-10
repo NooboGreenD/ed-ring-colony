@@ -402,6 +402,9 @@ checks itself:
 | `/api/atlas/carriers` | GET · — | «Трафик авианосцев»: поиск по `fleet_carriers` ∪ `carrier_directory` (позывной, имя, система, MarketID); `origin: 'eddn'` у носителей, известных только реестру; `canName` — право уточнить имя; `scope=favorites` — только своё, требует сессии |
 | `/api/atlas/carriers/watch` | GET/PUT/DELETE · сессия | Личное избранное, комментарии и подписка на прыжок (`atlas_carrier_watch`, RLS по `auth.uid()`); `jump_*` — снимок плана, пишется только если передан |
 | `/api/carriers/jumps` | GET · — | «Авианосцы перед прыжком» (`/carriers/jumps`): заказы из `fleet_carriers.jump_*`, вылет в будущем или ≤30 мин назад, сортировка по времени, `total`/`truncated` |
+| `/api/carriers/jumps/schedules` | GET · —<br>POST · сессия | Расписания прыжков: список «свои + публичные» (гостю — только публичные), создание с `visibility` (`private` по умолчанию) |
+| `/api/carriers/jumps/schedules/[id]` | GET/POST · —<br>PATCH/DELETE · сессия | Расписание с прыжками (публичное читается без входа, приватное чужое — 403); добавление прыжка (повтор — 409), правка шапки и удаление — только владелец |
+| `/api/carriers/jumps/history` | GET · — | История прыжков всех носителей (`carrier_jump_history`): корзины графика (`5min`/`hour`/`day`/`month`), сводка и последние строки за период `1h`/`1d`/`1m`/`1y`; поиск по окну, `limit` ≤ 500, `no-store` |
 | `/api/atlas/carriers/name` | PUT · сессия | Уточнить имя носителя; право (владелец или визит) проверяет `carrier_directory_set_name`, иначе 403 |
 | `/api/atlas/favorites` | GET/POST/DELETE · сессия | Избранные системы Atlas |
 | `/api/atlas/nearby` | POST · — | Все системы в сфере/кубе 1–50 св. лет вокруг опорной |
@@ -1806,6 +1809,82 @@ Full description: **FLEET-CARRIERS.md** → «Страница «Авианос�
   key) and the record is merged into the server list on sign-in.
 - Before the migration is applied the page still works: the route repeats the
   watch query without `jump_*` and subscriptions are stored without a snapshot.
+
+### 8.29 Jump schedules: «Расписание» tab on `/carriers/jumps` — 10.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Расписание прыжков: вкладка «Расписание»».
+
+- **Tabs on the page.** «Прыжки» — the live orders table (as before),
+  «Расписание» — a month calendar of hand-kept plans (the third tab, «История»,
+  is described in 8.30). The tab and the open
+  schedule go into the address (`?tab=calendar&schedule=<id>`), so a public
+  schedule is shared by link and survives a reload. Still not in the menu.
+- Tables (migration `20261112120000_carrier_jump_schedule.sql`):
+  `carrier_jump_schedules` (`owner_id`, `title`, `note`, `visibility`,
+  timestamps) and `carrier_jump_schedule_entries` (`carrier_id` nullable,
+  `callsign`, `name`, `from_system`, `to_system`, `departure_at`, `note`, cascade
+  on delete). A unique index prevents the same carrier at the same time twice;
+  plans without a carrier are exempt.
+- **Private vs public.** `private` (default) is owner-only and a foreign request
+  gets **403**, not 404. `public` is readable by anyone **without signing in**;
+  only the owner can edit — sharing is reading, not co-editing. The list shows
+  public schedules to everyone and private ones only to their owner.
+- `carrier_jump_schedule_stats(UUID[])` returns the entry count and the next
+  departure per schedule, so the list does not pull every entry for two numbers.
+- Routes: `GET/POST /api/carriers/jumps/schedules`,
+  `GET/POST/PATCH/DELETE /api/carriers/jumps/schedules/[id]`
+  (`?entry=<id>` removes one jump). `POST` on an entry rejects duplicates with
+  409. RLS in the migration mirrors the same rules; the routes check them too.
+- Rules live in `src/lib/carrierJumpSchedule.ts` (normalisation, month grid
+  starting on Monday with UTC days, day grouping, next departure, duplicates,
+  ordering, `scheduleHref`); SQL is in `carrierJumpScheduleStore.ts`.
+- UI: `CarrierJumpCalendar` — schedules list with «Моё» / «Публичное» badges
+  and jump counts, month grid with per-day counters, day click filters the list,
+  manual add form, «Из текущих прыжков» block, and a calendar button in the
+  board row that carries the live order over to the schedule form.
+- Tests: `scripts/tests/carrier-jump-schedule.test.mjs` (rules + routes on
+  PGlite) and `carrier-jump-calendar-ui.test.mjs` (tabs, calendar, owner and
+  guest flows in jsdom).
+
+### 8.30 Jump history: «История» tab on `/carriers/jumps` — 12.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «История прыжков: вкладка «История»».
+
+- The live table only shows orders and the schedule tab only shows plans, so
+  the past was lost. `carrier_jump_history` (migration
+  `20261113120000_carrier_jump_history.sql`) now keeps one row per completed
+  jump: `carrier_id` (MarketID, not a foreign key — history outlives the
+  carrier), `callsign`/`name` snapshot, `from_system`, `to_system`, `jumped_at`,
+  `source` (`site` | `eddn`), `recorded_at`.
+- **Triggers write the rows, routes never do.** A change of
+  `fleet_carriers.system_name` (journal/Helper, time from `location_at`) and of
+  `carrier_directory.system_name` (EDDN, time from `updated_at`) both call
+  `carrier_jump_history_record()`. The same carrier and target within **±2 hours**
+  counts as one jump, so a journal report and its EDDN echo are not counted
+  twice. The migration also backfills the last known jump from
+  `carrier_directory.previous_system_name` / `previous_at`.
+- Read access is public (RLS `SELECT` for `anon`/`authenticated`); writes only
+  through `SECURITY DEFINER` triggers, RPCs granted to `service_role`.
+- `carrier_jump_history_buckets(p_since, granularity)` returns counters per
+  `5min`/`hour`/`day`/`month` bucket in UTC;
+  `carrier_jump_history_summary(p_since, p_top)` returns `jsonb`
+  `{total, carriers, routes, source_site, source_eddn, top[]}`. Aggregation
+  happens in Postgres: a year is thousands of rows.
+- Route: `GET /api/carriers/jumps/history?period=1h|1d|1m|1y&q=…&limit=…`
+  (`no-store`; unknown periods fall back to `1d`; `limit` ≤ 500). Rules live in
+  `src/lib/carrierJumpHistory.ts` (period → granularity and bucket count, UTC
+  bucket grid, zero-safe bar geometry, labels, search, row/summary parsing), SQL
+  in `carrierJumpHistoryStore.ts`.
+- UI: `CarrierJumpHistory` — period switcher in the address
+  (`?tab=history&period=1m`), intensity chart at the top of the tab (SVG in
+  relative units, tooltip per bucket, thinned axis labels), then counters
+  (total, carriers, routes, site/EDDN), «чаще всех прыгали» and the jump table
+  with a search over the loaded window. The tab loads only when opened and
+  refreshes every two minutes.
+- Tests: `scripts/tests/carrier-jump-history.test.mjs` (rules, migration,
+  triggers, dedupe, RPCs and route on PGlite) and
+  `carrier-jump-history-ui.test.mjs` (tabs, address, lazy load, chart, periods,
+  search, empty and error states in jsdom).
 
 ## 9. Background jobs (`jobs`)
 
