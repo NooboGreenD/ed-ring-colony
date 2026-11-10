@@ -7559,6 +7559,13 @@ html[data-hud-effect="glow"]::before {
     width: 100%; min-height: 54px; padding: 4px 6px; resize: vertical; font-family: inherit; font-size: 12px;
     line-height: 1.4; color: var(--text); background: #141618; border: 1px solid #2d2f33; border-radius: 3px;
   }
+  /* Уточнение имени: одна строка, в отличие от заметки. */
+  .acw-name-editor input {
+    width: 100%; padding: 4px 6px; font-family: inherit; font-size: 12px; line-height: 1.4;
+    color: var(--text); background: #141618; border: 1px solid #2d2f33; border-radius: 3px;
+  }
+  .acw-name-editor input:focus { outline: none; border-color: var(--orange); }
+  .acw-name-editor .acw-counter { flex: 1 1 auto; }
   .acw-editor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
   .acw-counter { margin-right: auto; font-size: 10px; color: var(--muted); }
   .acw-save {

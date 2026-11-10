@@ -7,6 +7,21 @@ import { inflateSync } from 'node:zlib';
 
 const EDDN_RELAY = 'tcp://eddn.edcd.io:9500';
 
+/**
+ * Что воркер вообще отправляет на `/api/eddn/ingest`.
+ *
+ * Рынок, снаряжение и корабли — как раньше. Из `journal/1` — только прыжки
+ * авианосцев: остальной журнал идёт на сайте своим слушателем
+ * (`src/lib/eddn/listener.ts`), а воркеру он не нужен и только тратил бы
+ * трафик. Тестовые схемы не отправляются никогда.
+ */
+export function wantsEddnPayload(data: any): boolean {
+  const schema = String(data?.$schemaRef ?? '');
+  if (!schema || schema.includes('/test')) return false;
+  if (/\/(commodity|outfitting|shipyard)\//.test(schema)) return true;
+  return schema.includes('/journal/') && data?.message?.event === 'CarrierJump';
+}
+
 export async function startEddnListener(
   ingestUrl: string,
   secret: string
@@ -28,7 +43,7 @@ export async function startEddnListener(
   for await (const [msg] of sock) {
     try {
       const data = JSON.parse(inflateSync(msg).toString('utf-8'));
-      if (!/\/(commodity|outfitting|shipyard)\//.test(data.$schemaRef || '') || data.$schemaRef.includes('/test')) continue;
+      if (!wantsEddnPayload(data)) continue;
 
       const res = await fetch(ingestUrl, {
         method: 'POST',

@@ -61,6 +61,12 @@ export interface MapCarrier {
   services: string[];
   /** Носитель списывается (в игре — серая строка навигационной панели). */
   decommission: boolean;
+  /**
+   * Откуда запись: `site` — учёт сайта (`fleet_carriers`: владелец, эскадрилья),
+   * `eddn` — только реестр из живого потока EDDN (`carrier_directory`).
+   * У записи из EDDN нет владельца, эскадрильи и груза — и это честно видно.
+   */
+  origin?: 'site' | 'eddn';
 }
 
 export interface MapCarriersResponse {

@@ -3,7 +3,7 @@
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-11-09** (checked against the code).
 > Web release: **2.27.9** · Colonial Helper: **2.28.2** (`PARSER_VERSION = 6`, launcher 1.5.0).
-> 107 SQL migrations · 255 API routes · 60 pages · 186 site test files · Helper tests: 2077.
+> 108 SQL migrations · 256 API routes · 60 pages · 187 site test files · Helper tests: 2077.
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -399,8 +399,9 @@ checks itself:
 | Маршрут | Методы · доступ | Назначение |
 |---|---|---|
 | `/api/atlas/candidates` | GET · — | Кандидаты поиска миров по `search_id` |
-| `/api/atlas/carriers` | GET · — | «Трафик авианосцев»: поиск по реестру `fleet_carriers` по позывному (тегу), имени, системе и MarketID; `scope=favorites` — только своё, требует сессии |
+| `/api/atlas/carriers` | GET · — | «Трафик авианосцев»: поиск по `fleet_carriers` ∪ `carrier_directory` (позывной, имя, система, MarketID); `origin: 'eddn'` у носителей, известных только реестру; `canName` — право уточнить имя; `scope=favorites` — только своё, требует сессии |
 | `/api/atlas/carriers/watch` | GET/PUT/DELETE · сессия | Личное избранное и комментарии к авианосцам (`atlas_carrier_watch`, RLS по `auth.uid()`) |
+| `/api/atlas/carriers/name` | PUT · сессия | Уточнить имя носителя; право (владелец или визит) проверяет `carrier_directory_set_name`, иначе 403 |
 | `/api/atlas/favorites` | GET/POST/DELETE · сессия | Избранные системы Atlas |
 | `/api/atlas/nearby` | POST · — | Все системы в сфере/кубе 1–50 св. лет вокруг опорной |
 | `/api/atlas/ring-route` | GET · —<br>POST · — (с сессией — больше) | Галактическое кольцо: шаговая сессия (POST — шаг/продолжение по `session_id`, GET — состояние) |
@@ -419,7 +420,7 @@ checks itself:
 | `/api/atlas/system-bodies` | GET · —<br>POST · токен | Тела системы из трёх источников со сверкой (`?compare=1`); POST — сканы тел от Helper |
 | `/api/cg` | GET · — | Community Goals (`community_goals`) |
 | `/api/eddn` | GET · —<br>POST · секрет EDDN | Последние сообщения EDDN (`eddn_messages`, `?system=&event=`); POST — приём сообщения |
-| `/api/eddn/ingest` | POST · секрет EDDN | Приём сообщений от EDDN-воркера (`scripts/eddn-worker.ts`) |
+| `/api/eddn/ingest` | POST · секрет EDDN | Приём сообщений от EDDN-воркера (`scripts/eddn-worker.ts`): рынок, снаряжение, корабли и `journal/1` → `CarrierJump` в `carrier_directory` |
 | `/api/edsm/batch` | POST · — | Прокси EDSM: несколько систем |
 | `/api/edsm/search` | GET · — | Прокси EDSM: поиск систем |
 | `/api/edsm/system` | GET · — | Прокси EDSM: система |
@@ -1672,6 +1673,46 @@ Full description: **FLEET-CARRIERS.md** → «Трафик авианосцев�
   «Сектора»; it is the same Atlas map opened in single-route mode.
 - Atlas tab strip is responsive: three columns on desktop, one scrollable row
   at ≤768 px (ten tabs of ~100 px used to ellipsise «Колонизация A→B»).
+
+### 8.25 Carrier directory from the live EDDN stream — 10.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Реестр из EDDN: перепись и имена».
+
+- **Census** comes from the live stream. `CarrierJump` arrives on `journal/1`
+  and is the only carrier event EDDN relays at all (`CarrierLocation`,
+  `CarrierStats`, `CarrierJumpRequest` are not retransmitted). It carries
+  MarketID, callsign (`StationName`), system + `StarPos`, `SystemAddress`,
+  `StationServices` and `timestamp` — no vanity name.
+- Path: `src/lib/eddn/listener.ts` (the in-process listener the admin turns on)
+  keeps a second queue keyed by MarketID (systems are keyed by system and would
+  lose carriers in the same system) and writes it via
+  `applyCarrierRegistryRows` in the same flush. `scripts/eddn-worker.ts` —
+  the optional standalone ZeroMQ worker — now forwards `journal/1` only for
+  `CarrierJump` (`wantsEddnPayload`), and `POST /api/eddn/ingest` handles that
+  message before the station-report checks (`{ kind: 'carrier', stored }`).
+- Table `carrier_directory` (migration `20261108120000_carrier_directory.sql`),
+  primary key `carrier_id` = MarketID, same key as `fleet_carriers`: callsign,
+  system/address/body, x/y/z, services, `first_seen_at`, `last_seen_at`,
+  `sightings`, and `name` + `name_source` (`owner` | `visit`) + `name_by`.
+  `carrier_directory_apply` (EDDN) updates location and services by newest
+  observation and **never touches `name`** — neither writes nor clears it.
+- **Names only from people** (the 10.11.2026 decision): `Docked`, `Location`
+  (`Docked: true`) and `CarrierJump` give a visit (`carrier_visits`) and the
+  name the game showed (`source = 'visit'`, if `StationName` is not a callsign);
+  `CarrierStats` / `CarrierNameChanged` of the owner give the real name
+  (`source = 'owner'`, wins over a visitor's guess). Third-party catalogues are
+  not a name source.
+- Rights are checked in SQL (`carrier_directory_set_name`): owner
+  (`fleet_carriers.owner_id`) or a pilot with a visit row. `PUT
+  /api/atlas/carriers/name` only relays the pilot; 403 for everyone else.
+  Helper and the site journal loader already send carrier events to
+  `POST /api/carriers/sync`, which now feeds both `fleet_carriers` and the
+  registry — no new client path was added.
+- Atlas search is a union: `fleet_carriers` ∪ `carrier_directory`, merged by
+  MarketID. Site records win; a registry-only carrier shows `origin: 'eddn'`
+  and has no owner, squadron, cargo or finance. The threshold for stale
+  registry rows is 90 days. `canName` in the response is a hint for the UI —
+  the SQL function decides.
 
 ## 9. Background jobs (`jobs`)
 

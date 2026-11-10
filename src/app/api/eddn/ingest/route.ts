@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { findSystemByName } from '@/lib/galaxySystemsDb';
 import { saveStationReport, validTime } from '@/lib/stationCommerce';
+import { applyEddnCarrierMessage } from '@/lib/carrierRegistryStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +15,14 @@ export async function POST(req: Request) {
     const msg = data?.message;
     const schema = String(data?.$schemaRef || '');
     if (schema.includes('/test')) return NextResponse.json({ ignored: true });
+    // Прыжок авианосца приходит в `journal/1` и не похож на станционный
+    // отчёт: ни товаров, ни модулей. Отдаём его реестру отдельно, до общей
+    // проверки полей — иначе сообщение отверглось бы как неполное.
+    if (schema.includes('/journal/') && msg?.event === 'CarrierJump') {
+      const svc = createServiceClient();
+      const stored = await applyEddnCarrierMessage(svc, msg);
+      return NextResponse.json({ kind: 'carrier', stored });
+    }
     const kind = Array.isArray(msg?.commodities) ? 'market'
       : Array.isArray(msg?.modules) ? 'outfitting' : Array.isArray(msg?.ships) ? 'shipyard' : null;
     const observed_at = validTime(msg?.timestamp);

@@ -4,6 +4,7 @@ import { apiTranslate } from '@/lib/i18n/apiT';
 import { searchMapCarriers } from '@/lib/carrierMapStore';
 import { CARRIER_SEARCH_MAX, type CarrierWatch, type CarrierWatchScope } from '@/lib/carrierDirectory';
 import { watchFromRow } from '@/lib/carrierWatch';
+import { carriersViewerCanName } from '@/lib/carrierRegistryStore';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,8 +62,14 @@ export async function GET(request: Request) {
   try {
     const svc = createServiceClient();
     const result = await searchMapCarriers(svc, viewerId, { query, scope, limit, watches });
+    // `canName` — право уточнить имя: владелец носителя или пилот, стоявший на
+    // нём. Интерфейс не показывает поле всем подряд, но решает всё равно
+    // SQL-функция при записи — здесь лишь подсказка.
+    const canName = await carriersViewerCanName(svc, viewerId, result.carriers.map((carrier) => carrier.id))
+      .catch(() => new Set<string>());
     return NextResponse.json({
       ...result,
+      carriers: result.carriers.map((carrier) => ({ ...carrier, canName: canName.has(carrier.id) })),
       viewer: { signedIn: Boolean(viewerId) },
       generatedAt: new Date().toISOString(),
     }, { headers: { 'Cache-Control': 'no-store' } });

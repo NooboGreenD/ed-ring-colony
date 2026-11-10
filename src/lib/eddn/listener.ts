@@ -36,6 +36,8 @@
 
 import { inflateSync } from 'node:zlib';
 import { applySystemObservations, type SystemObservationsResult } from '../systemObservations.ts';
+import { eddnCarrierRow, rememberCarrierJump, type CarrierRegistryRow } from '../carrierRegistry.ts';
+import { applyCarrierRegistryRows } from '../carrierRegistryStore.ts';
 import { pushPowerplayLog, sanitizePowerplayLog, type PowerplayLogLevel, type PowerplayLogLine } from '../powerplayProgress.ts';
 import { zmtpSubscribe, type ZmtpCloseInfo, type ZmtpSession, type ZmtpSubscribeOptions } from './zmtp.ts';
 
@@ -48,6 +50,10 @@ const OBSERVATION_EVENTS = new Set(['FSDJump', 'Location', 'CarrierJump']);
 const DEFAULT_STALL_MS = 30_000;
 const DEFAULT_FLUSH_MS = 60_000;
 const FLUSH_MAX_SYSTEMS = 1500;
+/** Прыжки авианосцев пишутся реже систем, но пачку держим такой же по объёму. */
+const FLUSH_MAX_CARRIERS = 1000;
+/** Предел очереди носителей, если запись в базу висит; старые вытесняются. */
+const CARRIER_QUEUE_LIMIT = 10_000;
 /** Запись зависла (база не отвечает) — дальше этого очередь не растёт, лишнее отбрасывается. */
 const PENDING_HARD_LIMIT = FLUSH_MAX_SYSTEMS * 5;
 const PERSIST_EVERY_MS = 30_000;
@@ -85,6 +91,8 @@ export interface EddnListenerStats {
   factions: { applied: number; created: number; stale: number };
   flushes: number;
   flushErrors: number;
+  /** Прыжки авианосцев, записанные в реестр `carrier_directory`. */
+  carriers: { applied: number; errors: number };
 }
 
 export interface EddnListenerSnapshot {
@@ -97,6 +105,8 @@ export interface EddnListenerSnapshot {
   nextAttemptAt: string | null;
   /** Систем в очереди на запись. */
   pending: number;
+  /** Прыжков авианосцев в очереди на запись. */
+  pendingCarriers: number;
 }
 
 export interface EddnListenerOptions {
@@ -108,6 +118,8 @@ export interface EddnListenerOptions {
   /** Для тестов: соединение вместо `net.connect` и запись наблюдений. */
   connect?: ZmtpSubscribeOptions['connect'];
   apply?: (svc: Svc, events: Record<string, unknown>[]) => Promise<SystemObservationsResult>;
+  /** Для тестов: запись прыжков авианосцев в реестр. */
+  applyCarriers?: (svc: Svc, rows: CarrierRegistryRow[]) => Promise<number>;
   /** Для тестов: не писать состояние в базу. */
   persist?: boolean;
 }
@@ -131,6 +143,7 @@ function emptyStats(): EddnListenerStats {
     factions: { applied: 0, created: 0, stale: 0 },
     flushes: 0,
     flushErrors: 0,
+    carriers: { applied: 0, errors: 0 },
   };
 }
 
@@ -213,6 +226,8 @@ interface ListenerRuntime {
   flushTimer: ReturnType<typeof setInterval> | null;
   flushing: Promise<void> | null;
   pending: Map<string, Record<string, unknown>>;
+  /** Прыжки авианосцев: последний на MarketID (носителя, а не систему). */
+  carriers: Map<string, { event: Record<string, unknown>; at: number }>;
   stats: EddnListenerStats;
   log: PowerplayLogLine[];
   error: string | null;
@@ -240,7 +255,7 @@ function log(run: ListenerRuntime, level: PowerplayLogLevel, text: string): void
 
 function snapshotOf(run: ListenerRuntime | null | undefined): EddnListenerSnapshot {
   if (!run) {
-    return { running: false, status: 'off', relay: eddnRelay(), stats: emptyStats(), log: [], error: null, nextAttemptAt: null, pending: 0 };
+    return { running: false, status: 'off', relay: eddnRelay(), stats: emptyStats(), log: [], error: null, nextAttemptAt: null, pending: 0, pendingCarriers: 0 };
   }
   return {
     running: !run.stopped,
@@ -251,6 +266,7 @@ function snapshotOf(run: ListenerRuntime | null | undefined): EddnListenerSnapsh
     error: run.error,
     nextAttemptAt: run.nextAttemptAt ? new Date(run.nextAttemptAt).toISOString() : null,
     pending: run.pending.size,
+    pendingCarriers: run.carriers.size,
   };
 }
 
@@ -290,42 +306,82 @@ async function persist(run: ListenerRuntime, force = false): Promise<void> {
   }
 }
 
+/**
+ * Прыжки авианосцев → `carrier_directory`.
+ *
+ * В EDDN их сравнительно немного (носитель прыгает раз в 15 минут и не каждый
+ * пилот их вообще транслирует), поэтому пишем только прыжки: они дают
+ * позывной, систему с координатами и службы. Имя носителя EDDN не присылает
+ * никогда — его уточняют люди (см. `carrierRegistry.ts`).
+ */
+async function flushCarriers(run: ListenerRuntime, events: Record<string, unknown>[]): Promise<void> {
+  const rows = events.map((event) => eddnCarrierRow(event)).filter((row): row is CarrierRegistryRow => row != null);
+  if (!rows.length) return;
+  try {
+    const applyCarriers = run.options.applyCarriers ?? applyCarrierRegistryRows;
+    const applied = await applyCarriers(run.svc, rows);
+    run.stats.carriers.applied += applied;
+    if (run.stats.carriers.applied <= applied || run.stats.carriers.applied % 500 < applied) {
+      log(run, 'info', `Реестр авианосцев: записано ${run.stats.carriers.applied} носителей из EDDN: ${rows.length} в этой пачке`);
+    }
+  } catch (error) {
+    run.stats.carriers.errors += 1;
+    const message = error instanceof Error ? error.message : String(error);
+    log(run, 'warn', `Реестр авианосцев не обновлён: ${message.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Наблюдения систем → PowerPlay и фракции. Ошибка записи не должна ронять
+ * слушатель и не должна мешать записи реестра авианосцев.
+ */
+async function flushSystems(run: ListenerRuntime, events: Record<string, unknown>[]): Promise<void> {
+  try {
+    const apply = run.options.apply ?? ((svc: Svc, list: Record<string, unknown>[]) => applySystemObservations(svc, list, { source: 'eddn', userId: null }));
+    const result = await apply(run.svc, events);
+    run.stats.flushes += 1;
+    run.stats.lastFlushAt = new Date().toISOString();
+    run.stats.observations += events.length;
+    const pp = result.powerplay;
+    run.stats.powerplay.applied += pp.applied;
+    run.stats.powerplay.created += pp.created;
+    run.stats.powerplay.resolved += pp.resolved ?? 0;
+    run.stats.powerplay.vacated += pp.vacated;
+    run.stats.powerplay.stale += pp.stale;
+    run.stats.factions.applied += result.factions.applied;
+    run.stats.factions.created += result.factions.created;
+    run.stats.factions.stale += result.factions.stale;
+    if (pp.error) log(run, 'warn', `PowerPlay не обновлён: ${pp.error}`);
+    // Первая пачка и дальше раз в ~10 минут — чтобы журнал не тонул в рутине.
+    if (run.stats.flushes === 1 || run.stats.flushes % 10 === 0) {
+      log(run, 'info', `Записано систем: ${events.length} · PowerPlay: применено ${pp.applied}, владельцев названо ${pp.resolved ?? 0}, новых ${pp.created}`
+        + ` · фракции: применено ${result.factions.applied}`);
+    }
+  } catch (error) {
+    run.stats.flushErrors += 1;
+    const message = error instanceof Error ? error.message : String(error);
+    run.error = `Запись наблюдений: ${message.slice(0, 200)}`;
+    log(run, 'error', run.error);
+  }
+}
+
 async function flush(run: ListenerRuntime): Promise<void> {
   if (run.flushing) return run.flushing;
-  if (run.pending.size === 0) return;
+  if (run.pending.size === 0 && run.carriers.size === 0) return;
   const events = Array.from(run.pending.values());
   run.pending.clear();
+  const carrierEvents = Array.from(run.carriers.values()).map((entry) => entry.event);
+  run.carriers.clear();
   run.flushing = (async () => {
     try {
-      const apply = run.options.apply ?? ((svc: Svc, list: Record<string, unknown>[]) => applySystemObservations(svc, list, { source: 'eddn', userId: null }));
-      const result = await apply(run.svc, events);
-      run.stats.flushes += 1;
-      run.stats.lastFlushAt = new Date().toISOString();
-      run.stats.observations += events.length;
-      const pp = result.powerplay;
-      run.stats.powerplay.applied += pp.applied;
-      run.stats.powerplay.created += pp.created;
-      run.stats.powerplay.resolved += pp.resolved ?? 0;
-      run.stats.powerplay.vacated += pp.vacated;
-      run.stats.powerplay.stale += pp.stale;
-      run.stats.factions.applied += result.factions.applied;
-      run.stats.factions.created += result.factions.created;
-      run.stats.factions.stale += result.factions.stale;
-      if (pp.error) log(run, 'warn', `PowerPlay не обновлён: ${pp.error}`);
-      // Первая пачка и дальше раз в ~10 минут — чтобы журнал не тонул в рутине.
-      if (run.stats.flushes === 1 || run.stats.flushes % 10 === 0) {
-        log(run, 'info', `Записано систем: ${events.length} · PowerPlay: применено ${pp.applied}, владельцев названо ${pp.resolved ?? 0}, новых ${pp.created}`
-          + ` · фракции: применено ${result.factions.applied}`);
-      }
-    } catch (error) {
-      run.stats.flushErrors += 1;
-      const message = error instanceof Error ? error.message : String(error);
-      run.error = `Запись наблюдений: ${message.slice(0, 200)}`;
-      log(run, 'error', run.error);
+      // Пачка может состоять из одних прыжков авианосцев — тогда системных
+      // наблюдений нет и трогать слои PowerPlay/фракций не нужно.
+      if (events.length) await flushSystems(run, events);
     } finally {
       run.flushing = null;
       void persist(run);
     }
+    if (carrierEvents.length) await flushCarriers(run, carrierEvents);
   })();
   return run.flushing;
 }
@@ -406,6 +462,11 @@ function connect(run: ListenerRuntime): void {
         return;
       }
       run.stats.journal += 1;
+      // Прыжок авианосца — не только наблюдение системы: из него пополняется
+      // реестр носителей. В очередь систем он идёт как прежде (PowerPlay и
+      // фракции системы тоже меняются), а здесь копится отдельно по MarketID:
+      // иначе последний прыжок в системе вытеснит предыдущие.
+      rememberCarrierJump(run.carriers, result.event, { limit: CARRIER_QUEUE_LIMIT });
       const key = systemKey(result.event);
       const current = run.pending.get(key);
       if (!current && run.pending.size >= PENDING_HARD_LIMIT) {
@@ -416,7 +477,7 @@ function connect(run: ListenerRuntime): void {
         return;
       }
       if (!current || String(result.event.timestamp ?? '') >= String(current.timestamp ?? '')) run.pending.set(key, result.event);
-      if (run.pending.size >= FLUSH_MAX_SYSTEMS) void flush(run);
+      if (run.pending.size >= FLUSH_MAX_SYSTEMS || run.carriers.size >= FLUSH_MAX_CARRIERS) void flush(run);
     },
     onClose: (info) => onClose(run, info),
   });
@@ -443,6 +504,7 @@ export function startEddnListener(svc: Svc, options: EddnListenerOptions = {}): 
     flushTimer: null,
     flushing: null,
     pending: new Map(),
+    carriers: new Map(),
     stats: emptyStats(),
     log: existing ? [...existing.log] : [],
     error: null,

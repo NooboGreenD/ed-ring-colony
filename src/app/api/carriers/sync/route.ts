@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { resolveRequestUser } from '@/lib/helperAuth';
 import { normalizeCarrierEvents } from '@/lib/fleetCarriers';
 import { applyCarrierOps } from '@/lib/fleetCarrierStore';
+import { applyCarrierSightings } from '@/lib/carrierRegistryStore';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -48,8 +49,19 @@ export async function POST(request: Request) {
 
     const { ops, skipped } = normalizeCarrierEvents(body.events, { userId: user.userId });
     const source = user.via === 'api_token' ? 'helper' : 'web';
-    const totals = await applyCarrierOps(createServiceClient(), user.userId, source, ops);
+    const svc = createServiceClient();
+    const totals = await applyCarrierOps(svc, user.userId, source, ops);
+    // Тот же поток питает реестр Атласа: визит даёт пилоту право уточнить имя
+    // носителя, `CarrierStats`/`CarrierNameChanged` владельца — достоверное имя.
+    // Реестр вторичен: его сбой не должен отменять уже записанный учёт.
+    let registry = { visits: 0, names: 0 };
+    try {
+      registry = await applyCarrierSightings(svc, user.userId, body.events);
+    } catch (registryError) {
+      console.warn('[carriers/sync] carrier registry:', (registryError as Error).message);
+    }
     return NextResponse.json({
+      registry,
       ok: true,
       received: body.events.length,
       skipped,

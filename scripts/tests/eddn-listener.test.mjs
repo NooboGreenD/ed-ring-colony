@@ -301,6 +301,52 @@ test('подписка ZMTP: рукопожатие, отбор, пачка по
   }
 });
 
+test('прыжки авианосцев из потока уходят в реестр отдельной очередью по MarketID', async () => {
+  const relay = await fakeRelay();
+  const captured = [];
+  try {
+    mod.eddn.startEddnListener(svc, {
+      relay: relay.relay,
+      flushMs: 60_000,
+      stallMs: 10_000,
+      persist: false,
+      // Системные слои в этом тесте не нужны — проверяем только реестр.
+      apply: async () => ({ received: 0, factions: { received: 0, applied: 0, stale: 0, created: 0, systems: [], accepted: 0, invalid: 0, rejected: {} }, powerplay: { received: 0, applied: 0, stale: 0, created: 0, vacated: 0, resolved: 0, systems: [], accepted: 0, rejected: {}, error: null } }),
+      applyCarriers: async (_svc, rows) => { captured.push(...rows); return rows.length; },
+    });
+    await relay.subscribed(0);
+    const carrierJump = (marketId, callsign, system) => ({
+      timestamp: iso(-30_000),
+      event: 'CarrierJump',
+      MarketID: marketId,
+      StationName: callsign,
+      StarSystem: system,
+      SystemAddress: 10477373803,
+      StarPos: [0, 0, 0],
+      StationServices: ['dock', 'commodities'],
+    });
+    // Два носителя в одной системе: ключ очереди — MarketID, а не система.
+    relay.send(0, pack(envelope(carrierJump(3700000101, 'K7Q-BQL', 'Sol'))));
+    relay.send(0, pack(envelope(carrierJump(3700000102, 'ABC-123', 'Sol'))));
+    await until(() => mod.eddn.getEddnListener().stats.messages === 2, 'прыжки не дошли');
+    assert.equal(mod.eddn.getEddnListener().pendingCarriers, 2, 'оба носителя ждут записи');
+    assert.equal(mod.eddn.getEddnListener().stats.journal, 2, 'прыжок — ещё и наблюдение системы');
+
+    const stopped = await mod.eddn.stopEddnListener('остановлен тестом');
+    assert.equal(stopped.pendingCarriers, 0);
+    assert.deepEqual(captured.map((row) => row.carrier_id).sort(), ['3700000101', '3700000102']);
+    const byId = Object.fromEntries(captured.map((row) => [row.carrier_id, row]));
+    assert.equal(byId['3700000101'].callsign, 'K7Q-BQL');
+    assert.equal(byId['3700000101'].system_name, 'Sol');
+    // Имени в строке нет: EDDN его не приносит.
+    assert.equal('name' in byId['3700000101'], false);
+  } finally {
+    await mod.eddn.stopEddnListener();
+    mod.eddn.resetEddnListenerRuntime();
+    await relay.close();
+  }
+});
+
 test('сторож тишины: замолчавшее реле — новая сессия; в журнале — сколько пришло до «заморозки»', async () => {
   const relay = await fakeRelay();
   try {
