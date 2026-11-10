@@ -7,7 +7,7 @@
  *
  * Поддерживается то подмножество построителя запросов PostgREST, которым
  * пользуются маршруты: select/insert/update/upsert/delete, фильтры eq, neq,
- * in, is, ilike, gt/gte/lt/lte, order, limit, range, single/maybeSingle и
+ * in, is, not, ilike, gt/gte/lt/lte, order, limit, range, single/maybeSingle и
  * rpc (в том числе с order/range для функций, возвращающих набор строк).
  * Встраивание связанных таблиц (`profiles(name)`) и `or()` не поддерживаются.
  */
@@ -83,6 +83,7 @@ class Builder {
   lte(column, value) { this.filters.push(['<=', column, value]); return this; }
   in(column, values) { this.filters.push(['in', column, values]); return this; }
   is(column, value) { this.filters.push(['is', column, value]); return this; }
+  not(column, operator, value) { this.filters.push(['not', column, operator, value]); return this; }
   ilike(column, value) { this.filters.push(['ilike', column, value]); return this; }
   order(column, options = {}) { this.orders.push([column, options.ascending !== false, options.nullsFirst]); return this; }
   limit(value) { this.limitValue = value; return this; }
@@ -93,7 +94,7 @@ class Builder {
 
   where(params) {
     const parts = [];
-    for (const [op, column, value] of this.filters) {
+    for (const [op, column, value, extra] of this.filters) {
       const col = ident(column);
       if (op === 'eq') {
         if (value === null) parts.push(`${col} IS NULL`);
@@ -106,6 +107,21 @@ class Builder {
         else { params.push(list); parts.push(`${col} = ANY($${params.length})`); }
       } else if (op === 'is') {
         parts.push(value === null ? `${col} IS NULL` : value === true ? `${col} IS TRUE` : `${col} IS FALSE`);
+      } else if (op === 'not') {
+        // PostgREST `.not(column, operator, value)`: `is null` — самое частое.
+        if (value === 'is') {
+          if (extra === null) parts.push(`${col} IS NOT NULL`);
+          else parts.push(`${col} IS NOT ${extra === true ? 'TRUE' : extra === false ? 'FALSE' : 'NULL'}`);
+        } else if (value === 'eq' && extra === null) {
+          parts.push(`${col} IS NOT NULL`);
+        } else if (value === 'in') {
+          const list = Array.isArray(extra) ? extra : [];
+          if (!list.length) parts.push('true');
+          else { params.push(list); parts.push(`${col} <> ALL($${params.length})`); }
+        } else {
+          params.push(extra);
+          parts.push(`NOT (${col} ${value === 'neq' ? '<>' : value} $${params.length})`);
+        }
       } else if (op === 'ilike') {
         params.push(value); parts.push(`${col}::text ILIKE $${params.length}`);
       } else {

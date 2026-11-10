@@ -27,7 +27,10 @@ export const CARRIER_WATCH_LIMIT = 200;
 
 export type CarrierWatchScope = 'all' | 'favorites';
 
-/** Личная запись об авианосце: избранное и/или комментарий. */
+/**
+ * Личная запись об авианосце: избранное, комментарий и — если пилот подписался
+ * на прыжок — снимок плана на момент подписки (страница `/carriers/jumps`).
+ */
 export interface CarrierWatch {
   id: string;
   /** MarketID носителя строкой — так он приходит со всех сторон. */
@@ -39,6 +42,12 @@ export interface CarrierWatch {
   favorite: boolean;
   note: string | null;
   updatedAt: string | null;
+  /** Куда носитель собирался прыгнуть, когда пилот подписался на прыжок. */
+  jumpSystem?: string | null;
+  /** Когда был заказан тот прыжок. */
+  jumpDepartureAt?: string | null;
+  /** Когда снимок сделан (последняя подписка/обновление). */
+  jumpSeenAt?: string | null;
 }
 
 /** Минимум, который нужен от авианосца, чтобы показать его в списке. */
