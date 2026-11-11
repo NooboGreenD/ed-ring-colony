@@ -18,14 +18,25 @@ import type { MapCarrier } from '@/lib/carrierMap';
 import {
   buildJumpBoard,
   buildJumpWatchRows,
+  collectJumpAlerts,
   matchesJumpQuery,
+  parseJumpAlertMemory,
+  JUMP_ALERT_STORAGE_KEY,
+  type JumpAlertMemory,
   type JumpBoardRow,
   type JumpPlanState,
 } from '@/lib/carrierJumps';
-import { systemPageHref } from '@/lib/systemIdentity';
+import { carrierAtlasHref, systemPageHref } from '@/lib/systemIdentity';
 
 /** Как часто страница сама обновляет заказы: прыжок живёт минутами, не часами. */
 const REFRESH_MS = 60_000;
+/** Текст уведомления по виду события: перенос, прибытие, снятый заказ. */
+const ALERT_KEY: Record<'changed' | 'arrived' | 'gone', string> = {
+  changed: 'cj.alertChanged',
+  arrived: 'cj.alertArrived',
+  gone: 'cj.alertGone',
+};
+
 /** Подпись плана для «Мои подписки». */
 const PLAN_KEY: Record<JumpPlanState, string> = {
   none: 'cj.planNone',
@@ -117,6 +128,9 @@ export function CarrierJumpBoard({ onScheduleJump = null }: CarrierJumpBoardProp
   const [carriers, setCarriers] = useState<MapCarrier[]>([]);
   const [watches, setWatches] = useState<CarrierWatch[]>([]);
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
+  // Личный список прочитан (сервер или браузер): до этого пустой `watches`
+  // значит «ещё не загрузили», а не «подписок нет».
+  const [watchesReady, setWatchesReady] = useState(false);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
   const [error, setError] = useState('');
   const [total, setTotal] = useState(0);
@@ -137,6 +151,7 @@ export function CarrierJumpBoard({ onScheduleJump = null }: CarrierJumpBoardProp
       if (response.status === 401) {
         setSignedIn(false);
         setWatches(readLocalCarrierWatches());
+        setWatchesReady(true);
         return;
       }
       if (!response.ok) throw new Error(String(response.status));
@@ -145,11 +160,13 @@ export function CarrierJumpBoard({ onScheduleJump = null }: CarrierJumpBoardProp
       // Локальные записи не теряем: они могли появиться до входа.
       setSignedIn(true);
       setWatches(mergeCarrierWatches(payload.watches ?? [], readLocalCarrierWatches()));
+      setWatchesReady(true);
     } catch {
       // Сеть недоступна — работаем как гость, без ошибки на весь раздел.
       if (!alive.current) return;
       setSignedIn(false);
       setWatches(readLocalCarrierWatches());
+      setWatchesReady(true);
     }
   }, []);
 
@@ -320,6 +337,47 @@ export function CarrierJumpBoard({ onScheduleJump = null }: CarrierJumpBoardProp
   const myWatches = useMemo(() => buildJumpWatchRows(watches, board), [board, watches]);
   const updated = generatedAt ? departureLabel(generatedAt, locale) : '';
 
+  /**
+   * Уведомления о подписках, которые видно прямо на странице.
+   *
+   * Вошедшему пилоту прыжок приходит в колокольчик (`user_notifications`,
+   * тип `carrier_jump`, пишет триггер истории прыжков). Здесь — второй канал:
+   * пока страница открыта, замечаем смену плана у подписанного носителя и
+   * показываем toast. Гостю это единственный доступный канал, поэтому память
+   * «что уже видел» лежит в localStorage; запись личная, как и подписки.
+   */
+  const alertsSeeded = useRef(false);
+  const alertMemory = useRef<JumpAlertMemory>({});
+  const alertsWritten = useRef('');
+  useEffect(() => {
+    if (status !== 'ready' || !watchesReady) return;
+    if (!alertsSeeded.current) {
+      alertsSeeded.current = true;
+      try {
+        alertMemory.current = parseJumpAlertMemory(window.localStorage.getItem(JUMP_ALERT_STORAGE_KEY));
+      } catch {
+        alertMemory.current = {};
+      }
+    }
+    const { alerts, next } = collectJumpAlerts(myWatches, alertMemory.current);
+    alertMemory.current = next;
+    const serialized = JSON.stringify(next);
+    if (serialized !== alertsWritten.current) {
+      alertsWritten.current = serialized;
+      try {
+        window.localStorage.setItem(JUMP_ALERT_STORAGE_KEY, serialized);
+      } catch {
+        // Приватный режим браузера: уведомления просто не переживут перезагрузку.
+      }
+    }
+    for (const alert of alerts) {
+      toast(t(ALERT_KEY[alert.kind], {
+        carrier: alert.label,
+        system: alert.system || t('cj.departureUnknown'),
+      }), 'info');
+    }
+  }, [myWatches, status, t, watchesReady]);
+
   return (
     <div className="cj-board">
       <div className="cj-toolbar">
@@ -419,8 +477,14 @@ export function CarrierJumpBoard({ onScheduleJump = null }: CarrierJumpBoardProp
                   return (
                     <tr key={row.id}>
                       <td data-label={t('cj.colCarrier')}>
-                        <span className="cj-callsign">{row.callsign || t('cj.noCallsign')}</span>
-                        {row.carrier.name ? <span className="cj-name">{row.carrier.name}</span> : null}
+                        <Link
+                          className="cj-carrier-link"
+                          href={carrierAtlasHref(row.id, { system: row.from, point: row.carrier.position })}
+                          title={t('cj.openCarrier')}
+                        >
+                          <span className="cj-callsign">{row.callsign || t('cj.noCallsign')}</span>
+                          {row.carrier.name ? <span className="cj-name">{row.carrier.name}</span> : null}
+                        </Link>
                         {row.tone === 'decommission' ? <span className="cj-chip">{t('acw.decommission')}</span> : null}
                       </td>
                       <td data-label={t('cj.colRoute')}>
@@ -512,7 +576,13 @@ export function CarrierJumpBoard({ onScheduleJump = null }: CarrierJumpBoardProp
               return (
                 <li key={watch.carrierId} className="cj-watch-item">
                   <div className="cj-watch-main">
-                    <span className="cj-watch-name">{label}</span>
+                    <Link
+                      className="cj-watch-name cj-carrier-link"
+                      href={carrierAtlasHref(watch.carrierId, { system: watch.system })}
+                      title={t('cj.openCarrier')}
+                    >
+                      {label}
+                    </Link>
                     {target ? (
                       <span className="cj-watch-route">
                         {t('cj.planNow', {

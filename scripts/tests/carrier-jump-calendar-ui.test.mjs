@@ -359,3 +359,35 @@ test('гость не создаёт расписание, но читает п�
     await ui.cleanup();
   }
 });
+
+test('расписание: прыжок с носителем ведёт в Атлас, ручной план — нет', async () => {
+  const ui = await render('CarrierJumpCalendar', {
+    api: ownerApi,
+    url: 'http://localhost/carriers/jumps?tab=calendar',
+  });
+  try {
+    const own = [...ui.document.querySelectorAll('.cjc-item')]
+      .find((element) => (element.textContent || '').includes('Среда, снабжение Lave'));
+    await ui.click(own);
+
+    const entries = [...ui.document.querySelectorAll('.cjc-entry')];
+    const linked = entries.find((row) => row.querySelector('.cjc-entry-carrier .cj-carrier-link'));
+    assert.ok(linked, 'у прыжка с MarketID позывной — ссылка');
+    const query = new URLSearchParams(
+      (linked.querySelector('.cjc-entry-carrier .cj-carrier-link').getAttribute('href') || '').split('?')[1],
+    );
+    assert.equal(query.get('tab'), 'carriers');
+    assert.equal(query.get('carrier'), '3800000501');
+    assert.equal(query.get('carrier_system'), 'Sol', 'фокус — на системе, откуда прыгает');
+
+    // Ручной план без привязки к реестру остаётся текстом: фокусировать нечего.
+    const links = entries.filter((row) => row.querySelector('.cjc-entry-carrier .cj-carrier-link'));
+    assert.equal(links.length, 2, 'две записи с MarketID, ручной план — без ссылки');
+    assert.ok(
+      entries.some((row) => !row.querySelector('.cjc-entry-carrier .cj-carrier-link')),
+      'запись без носителя не притворяется ссылкой',
+    );
+  } finally {
+    await ui.cleanup();
+  }
+});

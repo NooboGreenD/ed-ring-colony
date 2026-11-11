@@ -116,6 +116,85 @@ export function atlasSystemHref(
   return query ? `/atlas?${query}` : '/atlas';
 }
 
+/**
+ * Параметры адреса Атласа для фокуса на носителе.
+ *
+ * `carrier` — MarketID носителя: вкладка «Авианосцы» включает слой и выбирает
+ * систему, в которой носитель стоит сейчас (камера летит туда же, куда при
+ * клике по значку на карте). `carrier_system` — запасной ориентир, если
+ * носителя в ответе слоя уже нет: по нему ищется система. Координаты
+ * (`focus_system`, `x/y/z`) добавляются, когда они известны на странице-
+ * источнике (`/carriers/jumps`), — тогда камера прилетает сразу, не дожидаясь
+ * загрузки слоя.
+ */
+export const ATLAS_CARRIER_PARAM = 'carrier';
+export const ATLAS_CARRIER_SYSTEM_PARAM = 'carrier_system';
+
+/** MarketID носителя: только цифры, иначе параметр считается мусором. */
+export function carrierMarketId(value: unknown): string | null {
+  const clean = String(value ?? '').trim();
+  return /^\d{1,20}$/.test(clean) ? clean : null;
+}
+
+export interface AtlasCarrierTarget {
+  /** MarketID носителя; `null` — в адресе была только система. */
+  carrierId: string | null;
+  system: string | null;
+  /** Координаты системы, если страница-источник их передала. */
+  point: SystemPoint | null;
+}
+
+/**
+ * Адрес Атласа с фокусом на носителе: `/atlas?tab=carriers&carrier=<MarketID>`.
+ *
+ * Так строка `/carriers/jumps` (таблица, история, расписание) ведёт туда же,
+ * куда ведёт строка вкладки «Авианосцы»: вкладка открывается, слой включён,
+ * камера на системе носителя. Адрес без MarketID (старый план расписания без
+ * привязки к реестру) остаётся просто ссылкой на вкладку.
+ */
+export function carrierAtlasHref(
+  carrierId: unknown,
+  options: { system?: unknown; point?: Partial<SystemPoint> | null } = {},
+): string {
+  const params = new URLSearchParams();
+  params.set('tab', 'carriers');
+  const id = carrierMarketId(carrierId);
+  if (id) params.set(ATLAS_CARRIER_PARAM, id);
+  const system = cleanSystemName(options.system);
+  if (system) {
+    params.set(ATLAS_CARRIER_SYSTEM_PARAM, system);
+    const point = finitePoint(options.point);
+    if (point) {
+      params.set('focus_system', system);
+      params.set('x', String(point.x));
+      params.set('y', String(point.y));
+      params.set('z', String(point.z));
+      params.set('from', 'system');
+    }
+  }
+  return `/atlas?${params.toString()}`;
+}
+
+/** Координаты из адреса: те же границы, что у `atlasSystemHref`. */
+function pointFromParams(params: Pick<URLSearchParams, 'get'>): SystemPoint | null {
+  const values = ['x', 'y', 'z'].map((key) => params.get(key));
+  if (values.some((value) => value == null || value.trim() === '')) return null;
+  const [x, y, z] = values.map(Number) as [number, number, number];
+  if (![x, y, z].every((n) => Number.isFinite(n) && Math.abs(n) <= 100_000)) return null;
+  return { x, y, z };
+}
+
+/**
+ * Что фокусировать по адресу Атласа. `null` — адрес не про носителя, и
+ * страница ведёт себя как раньше (вкладка, поиск, слой фракций).
+ */
+export function carrierAtlasTargetFromParams(params: Pick<URLSearchParams, 'get'>): AtlasCarrierTarget | null {
+  const carrierId = carrierMarketId(params.get(ATLAS_CARRIER_PARAM));
+  const system = cleanSystemName(params.get(ATLAS_CARRIER_SYSTEM_PARAM)).slice(0, 200) || null;
+  if (!carrierId && !system) return null;
+  return { carrierId, system, point: pointFromParams(params) };
+}
+
 /** Поиск станций с опорной системой (и, если нужно, вкладкой и запросом). */
 export function stationSearchHref(
   reference: unknown,

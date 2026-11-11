@@ -50,7 +50,8 @@ import {
 import { countByWorldType, downloadCsv, favoriteKey, filterCandidates, formatCoordinates, worldTypeLabel } from '@/lib/atlas';
 
 import { atlasFocusFromParams } from '@/lib/stationSearch';
-import { systemId64, systemPageHref } from '@/lib/systemIdentity';
+import { carrierAtlasTargetFromParams, systemId64, systemPageHref } from '@/lib/systemIdentity';
+import { carrierGroupForTarget } from '@/lib/carrierMap';
 
 type ProjectItem = {
   id: number;
@@ -207,6 +208,29 @@ function AtlasPageInner() {
       showFactionSystem({ id64: focusId64, name, x: stationFocus?.x, y: stationFocus?.y, z: stationFocus?.z });
     }
   }, [activeTab, factions.status, focusId64, layerFocusRequested, powerplay.status, showFactionSystem, showPowerplaySystem, stationFocus]);
+
+  // Носитель из ссылки (`/atlas?tab=carriers&carrier=<MarketID>`): так строка
+  // `/carriers/jumps` и уведомление о прыжке открывают Атлас на носителе.
+  // Слой по умолчанию выключен, поэтому сначала включаем его, а когда данные
+  // пришли — выбираем систему носителя. Дальше всё как при клике по значку:
+  // камера летит к системе, внизу карточка со списком носителей.
+  const carrierTarget = useMemo(() => carrierAtlasTargetFromParams(searchParams), [searchParams]);
+  const carrierFocusDone = useRef<string | null>(null);
+  const setCarrierLayerShown = carrierLayer.setShow;
+  const selectCarrierGroup = carrierLayer.selectGroup;
+  useEffect(() => {
+    if (!carrierTarget) return;
+    setCarrierLayerShown(true);
+  }, [carrierTarget, setCarrierLayerShown]);
+  useEffect(() => {
+    if (!carrierTarget) return;
+    const key = `${carrierTarget.carrierId ?? ''}|${carrierTarget.system ?? ''}`;
+    if (carrierFocusDone.current === key) return;
+    if (carrierLayer.status !== 'ready') return;
+    const group = carrierGroupForTarget(carrierLayer.groups, carrierTarget);
+    carrierFocusDone.current = key;
+    if (group) selectCarrierGroup(group);
+  }, [carrierTarget, carrierLayer.groups, carrierLayer.status, selectCarrierGroup]);
 
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IconCalendar, IconHistory, IconPlus, IconTrash, IconX } from '@/components/Icons';
 import { toast } from '@/components/ui/Toaster';
 import { useI18n } from '@/lib/i18n/I18nContext';
-import { systemPageHref } from '@/lib/systemIdentity';
+import { carrierAtlasHref, systemPageHref } from '@/lib/systemIdentity';
 import {
   buildMonthGrid,
   compareSchedules,
@@ -665,7 +665,13 @@ export function CarrierJumpCalendar({
                     <ul>
                       {liveRows.map((row) => (
                         <li key={row.id}>
-                          <span className="cjc-live-label">{row.label}</span>
+                          <Link
+                            className="cjc-live-label cj-carrier-link"
+                            href={carrierAtlasHref(row.id, { system: row.from })}
+                            title={t('cj.openCarrier')}
+                          >
+                            {row.label}
+                          </Link>
                           <span className="cj-dim">{row.from} → {row.to}</span>
                           <button
                             type="button"
@@ -721,8 +727,21 @@ export function CarrierJumpCalendar({
                             <Link className="cj-target" href={systemPageHref(entry.to)}>{entry.to}</Link>
                           </span>
                           <span className="cjc-entry-carrier">
-                            {entry.callsign || entry.name || t('cj.noCallsign')}
-                            {entry.callsign && entry.name ? <span className="cj-dim"> · {entry.name}</span> : null}
+                            {entry.carrierId ? (
+                              <Link
+                                className="cj-carrier-link"
+                                href={carrierAtlasHref(entry.carrierId, { system: entry.from })}
+                                title={t('cj.openCarrier')}
+                              >
+                                {entry.callsign || entry.name || t('cj.noCallsign')}
+                                {entry.callsign && entry.name ? <span className="cj-dim"> · {entry.name}</span> : null}
+                              </Link>
+                            ) : (
+                              <>
+                                {entry.callsign || entry.name || t('cj.noCallsign')}
+                                {entry.callsign && entry.name ? <span className="cj-dim"> · {entry.name}</span> : null}
+                              </>
+                            )}
                           </span>
                           {entry.note ? <span className="cj-dim">{entry.note}</span> : null}
                         </div>

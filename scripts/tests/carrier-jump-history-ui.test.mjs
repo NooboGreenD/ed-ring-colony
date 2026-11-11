@@ -337,3 +337,25 @@ test('ошибка загрузки: сообщение и повторный з
     await ui.cleanup();
   }
 });
+
+test('прыжок в истории ведёт в Атлас на носителе', async () => {
+  const ui = await render({ url: 'http://localhost/carriers/jumps?tab=history' });
+  try {
+    const row = [...ui.document.querySelectorAll('.cjh-table tbody tr')]
+      .find((item) => (item.textContent || '').includes('K7Q-BQL'));
+    assert.ok(row, 'строка истории на месте');
+    const link = row.querySelector('.cj-carrier-link');
+    assert.ok(link, 'позывной — ссылка');
+    const query = new URLSearchParams((link.getAttribute('href') || '').split('?')[1]);
+    assert.equal(query.get('tab'), 'carriers');
+    assert.equal(query.get('carrier'), '3800000501');
+    assert.equal(query.get('carrier_system'), 'Lave', 'носитель теперь в целевой системе');
+
+    // Топ прыжков тоже кликабельный: там известен только MarketID.
+    const top = ui.document.querySelector('.cjh-top .cj-carrier-link');
+    assert.ok(top, 'топ истории — ссылки');
+    assert.match(top.getAttribute('href') || '', /tab=carriers&carrier=3800000501/);
+  } finally {
+    await ui.cleanup();
+  }
+});
