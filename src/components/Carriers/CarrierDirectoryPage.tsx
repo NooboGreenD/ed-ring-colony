@@ -44,6 +44,7 @@ import {
   writeLocalCarrierWatches,
   type CarrierWatch,
 } from '@/lib/carrierDirectory';
+import { CarrierGlyph } from '@/components/GalaxyMap/CarrierGlyph';
 import { carrierCardHref } from '@/lib/carrierCard';
 import { systemPageHref } from '@/lib/systemIdentity';
 
@@ -555,10 +556,20 @@ export function CarrierDirectoryPage() {
                 return (
                   <tr key={row.id} className={row.decommission ? 'cl-off' : undefined}>
                     <td data-label={t('cl.colCarrier')}>
-                      <Link className="cj-carrier-link" href={href} title={t('cl.openCard')}>
-                        <span className="cj-callsign">{row.callsign || t('cl.noCallsign')}</span>
-                        <span className="cj-name">{row.name || t('cl.noName')}</span>
-                      </Link>
+                      {/* Значок — тот же, что на карте: свой жёлтый, эскадрильи
+                          зелёный, списываемый серый и перечёркнут, остальные
+                          оранжевые. По нему видно отношение, не читая меток. */}
+                      <span className="cl-carrier-cell">
+                        <CarrierGlyph
+                          size={16}
+                          glyph={row.type === 'SquadronCarrier' ? 'javelin' : 'drake'}
+                          tone={row.decommission ? 'decommission' : row.relation}
+                        />
+                        <Link className="cj-carrier-link" href={href} title={t('cl.openCard')}>
+                          <span className="cj-callsign">{row.callsign || t('cl.noCallsign')}</span>
+                          <span className="cj-name">{row.name || t('cl.noName')}</span>
+                        </Link>
+                      </span>
                       <span className="cl-tags">
                         {row.relation === 'own' ? <span className="cl-tag own">{t('cl.relationOwn')}</span> : null}
                         {row.relation === 'squadron' ? <span className="cl-tag squadron">{t('cl.relationSquadron')}</span> : null}

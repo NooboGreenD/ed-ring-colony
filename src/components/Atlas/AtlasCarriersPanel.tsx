@@ -47,6 +47,7 @@ import { downloadCsv } from '@/lib/atlas';
 import { CarrierLayerControls } from '@/components/GalaxyMap/CarrierLayerControls';
 import type { CarrierLayer } from '@/hooks/useCarrierLayer';
 import type { CarrierSystemGroup } from '@/lib/carrierMap';
+import { CarrierGlyph } from '@/components/GalaxyMap/CarrierGlyph';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { toast } from '@/components/ui/Toaster';
 import {
@@ -462,7 +463,7 @@ export function AtlasCarriersPanel({ carrierLayer = null }: AtlasCarriersPanelPr
   return (
     <div className="atlas-section powerplay-panel acw-panel" data-carrier-watch-panel="">
       <div className="atlas-section-head">
-        <h4><IconStar size={13} /> {t('acw.title')}</h4>
+        <h4><CarrierGlyph size={14} color="currentColor" /> {t('acw.title')}</h4>
         <div className="atlas-section-actions">
           <button type="button" className="atlas-icon-btn" title={t('acw.exportTitle')} onClick={exportList} disabled={rows.length === 0}>
             <IconDownload size={12} />

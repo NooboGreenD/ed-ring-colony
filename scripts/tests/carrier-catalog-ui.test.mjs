@@ -221,6 +221,12 @@ test('таблица: позывной и имя ведут в карточку,
   assert.match(text, /2 из 3/, 'работающие службы из общего числа');
   assert.match(text, /EDDN/, 'источник подписан');
 
+  // Значок носителя в строке — тот же, что на карте: класс и отношение видны
+  // по силуэту и тону, а не только по меткам.
+  const glyphs = [...ui.document.querySelectorAll('.cl-carrier-cell [data-carrier-glyph]')];
+  assert.deepEqual(glyphs.map((svg) => svg.getAttribute('data-carrier-glyph')), ['drake', 'drake']);
+  assert.deepEqual(glyphs.map((svg) => svg.getAttribute('data-carrier-tone')), ['other', 'other']);
+
   const links = [...ui.document.querySelectorAll('.cj-carrier-link')];
   assert.deepEqual(links.map((link) => link.getAttribute('href')), ['/carriers/3800001001', '/carriers/3800001002']);
 
