@@ -26,6 +26,7 @@ import {
 } from '@/components/Icons';
 import { allegianceLabel, economyLabel, governmentLabel, securityLabel, stateLabel, BGS_SOURCE_LABEL, type BgsSource } from '@/lib/bgs';
 import { CARRIER_RELATION_LABEL } from '@/lib/carrierMap';
+import { carrierCardHref, carrierCardTitle } from '@/lib/carrierCard';
 import { POWERPLAY_STATE_LABEL, POWERPLAY_STATE_ZONE, powerColor, powerLabel, type PowerplayState } from '@/lib/powerplay';
 import { STAGE_LABELS, STATUS_LABELS, type ProjectStatus, type SystemStage } from '@/lib/architect/projects';
 import type { TFn } from '@/lib/i18n/gameLabels';
@@ -411,28 +412,83 @@ function PowerplaySection({ overview }: { overview: SystemOverview }) {
   );
 }
 
+/**
+ * Авианосцы системы: кто стоит, у какого тела и что о нём известно.
+ *
+ * Носители сгруппированы по телу — в игре их находят по телу, а не по
+ * алфавиту: «у A 2b» читается сразу, а список из двадцати позывных подряд —
+ * нет. Тело знает и учёт сайта (`fleet_carriers.body_name`), и реестр EDDN
+ * (`carrier_directory.body_name`); если его не передавали, носитель попадает
+ * в группу «тело не указано», а не теряется.
+ *
+ * Каждая строка ведёт в карточку носителя (`/carriers/<MarketID>`): там его
+ * статистика прыжков, службы и всё остальное, что знает сайт. Ссылка на
+ * страницу системы тут была бы бесполезна — читатель уже на ней.
+ */
 function CarriersSection({ overview }: { overview: SystemOverview }) {
   const { t } = useI18n();
   const { carriers } = overview;
   if (!carriers.length) return null;
+  // Группы по телу: тело — заголовок, внутри носители по алфавиту.
+  const groups = new Map<string, typeof carriers>();
+  for (const carrier of carriers) {
+    const body = carrier.body?.trim() || '';
+    const key = body.toLowerCase();
+    const list = groups.get(key);
+    if (list) list.push(carrier);
+    else groups.set(key, [carrier]);
+  }
+  const ordered = Array.from(groups.entries()).sort((left, right) => {
+    // Носители у известного тела идут первыми, «тело не указано» — в конце.
+    if (!left[0] !== !right[0]) return left[0] ? -1 : 1;
+    return left[1][0].body!.localeCompare(right[1][0].body!, 'ru');
+  });
+  const withBody = carriers.filter((carrier) => Boolean(carrier.body?.trim())).length;
   return (
     <Section icon={<IconAnchor size={18} />} title={t('sysOv.carriersSection', { count: carriers.length })}>
-      {carriers.map((carrier) => (
-        <div key={carrier.id} style={row}>
-          <span>
-            <span style={{ fontFamily: mono }}>{carrier.callsign ?? carrier.id}</span>
-            {carrier.name ? ` «${carrier.name}»` : ''}
-            <span style={muted}>
-              {' · '}{CARRIER_RELATION_LABEL[carrier.relation]}
-              {carrier.owner ? ` · ${carrier.owner}` : ''}
-              {carrier.squadron?.tag ? ` · [${carrier.squadron.tag}]` : ''}
-              {carrier.body ? ` · ${carrier.body}` : ''}
-            </span>
-          </span>
-          <span style={{ ...muted, fontFamily: mono, textAlign: 'right' }}>
-            {carrier.jump ? t('sysOv.carrierJump', { system: carrier.jump.system }) : carrier.docking ?? ''}
-            {carrier.estimated ? t('sysOv.carrierScheduled') : ''}
-          </span>
+      <p style={{ ...muted, marginTop: 0 }}>
+        {t('sysOv.carriersBodies', { withBody, total: carriers.length })}
+      </p>
+      {ordered.map(([key, list]) => (
+        <div key={key || 'unknown'} style={{ marginBottom: 10 }}>
+          <div style={{ ...label, marginBottom: 4 }}>
+            {key
+              ? t('sysOv.carriersAtBody', { body: list[0].body!.trim() })
+              : t('sysOv.carriersNoBody')}
+          </div>
+          {list.map((carrier) => {
+            const href = carrierCardHref(carrier.id);
+            const label = carrierCardTitle(carrier);
+            const facts = [
+              carrier.relation === 'own' ? t('sysOv.carrierOwn')
+                : carrier.relation === 'squadron' ? t('sysOv.carrierSquadron')
+                  : CARRIER_RELATION_LABEL[carrier.relation],
+              carrier.owner ? carrier.owner : (carrier.ownerHidden ? t('sysOv.carrierOwnerHidden') : ''),
+              carrier.squadron?.tag ? `[${carrier.squadron.tag}]` : '',
+              carrier.origin === 'eddn' ? t('sysOv.carrierEddn') : '',
+              carrier.services.length ? t('sysOv.carrierServices', { count: carrier.services.length }) : '',
+            ].filter(Boolean);
+            return (
+              <div key={carrier.id} style={row}>
+                <span style={{ minWidth: 0 }}>
+                  {href ? (
+                    <Link href={href} style={{ color: 'var(--text)', textDecoration: 'none', borderBottom: '1px dashed var(--line)' }}>
+                      {label}
+                    </Link>
+                  ) : <span style={{ color: 'var(--text)' }}>{label}</span>}
+                  {carrier.name && carrier.callsign ? (
+                    <span style={{ ...muted, fontFamily: mono }}>{` · ${carrier.callsign}`}</span>
+                  ) : null}
+                  <span style={muted}>{facts.length ? ` · ${facts.join(' · ')}` : ''}</span>
+                </span>
+                <span style={{ ...muted, fontFamily: mono, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {carrier.decommission ? t('sysOv.carrierDecommission') : null}
+                  {carrier.jump ? t('sysOv.carrierJump', { system: carrier.jump.system }) : carrier.docking ?? ''}
+                  {carrier.estimated ? t('sysOv.carrierScheduled') : ''}
+                </span>
+              </div>
+            );
+          })}
         </div>
       ))}
     </Section>

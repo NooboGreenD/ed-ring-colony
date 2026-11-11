@@ -40,6 +40,7 @@ const DICTIONARIES = [
   'exchangeText.ts',
   'planMessages.ts',
   'carrierJumps.ts',
+  'carrierCard.ts',
 ];
 
 const LOCALES = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];

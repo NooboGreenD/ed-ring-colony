@@ -41,6 +41,7 @@ const DICTIONARIES = [
   'architectLabels.ts',
   'commodities.ts',
   'carrierJumps.ts',
+  'carrierCard.ts',
 ];
 
 const PLACEHOLDER = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;

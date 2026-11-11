@@ -590,40 +590,9 @@ export function carrierOpsFromStationReport(report: {
 
 export type CarrierRelation = 'own' | 'squadron' | 'public';
 
-const SERVICE_LABELS: Record<string, string> = {
-  captain: 'Капитан',
-  refuel: 'Заправка',
-  repair: 'Ремонт',
-  rearm: 'Перевооружение',
-  commodities: 'Рынок товаров',
-  blackmarket: 'Чёрный рынок',
-  voucherredemption: 'Обмен ваучеров',
-  exploration: 'Universal Cartographics',
-  shipyard: 'Верфь',
-  outfitting: 'Снаряжение',
-  carrierfuel: 'Склад тритиума',
-  vistagenomics: 'Vista Genomics',
-  pioneersupplies: 'Pioneer Supplies',
-  bartender: 'Бар',
-  squadronbank: 'Банк эскадрильи',
-};
-
-export function serviceLabel(role: string): string {
-  return SERVICE_LABELS[role.toLowerCase()] ?? role;
-}
-
-const DOCKING_LABELS: Record<string, string> = {
-  all: 'все пилоты',
-  none: 'никто',
-  friends: 'только друзья',
-  squadron: 'только эскадрилья',
-  squadronfriends: 'эскадрилья и друзья',
-};
-
-export function dockingLabel(access: string | null | undefined): string | null {
-  if (!access) return null;
-  return DOCKING_LABELS[access.toLowerCase()] ?? access;
-}
+/* Подписи служб и стыковки — в `carrierServices.ts`: их берёт и браузер. */
+import { dockingLabel, serviceLabel } from './carrierServices.ts';
+export { dockingLabel, serviceLabel };
 
 export interface CarrierCargoView {
   commodity: string;

@@ -48,6 +48,7 @@ import {
   directoryCoordinateNames,
   isMapCarrierRow,
   rowCoordinates,
+  shapeDirectoryCarrier,
   shapeDirectoryCarriers,
   shapeMapCarriers,
 } from './carrierMapView.ts';
@@ -803,7 +804,7 @@ export async function loadSystemCarriers(
   svc: Svc,
   viewerId: string | null,
   systemName: string,
-  options: { point?: MapPoint | null; now?: Date } = {},
+  options: { point?: MapPoint | null; now?: Date; includeDirectory?: boolean; directoryLimit?: number } = {},
 ): Promise<MapCarriersResponse['carriers']> {
   const now = options.now ?? new Date();
   const key = carrierSystemKey(systemName);
@@ -822,7 +823,25 @@ export async function loadSystemCarriers(
     if (row?.carrier_id != null) byId.set(String(row.carrier_id), row);
   }
   const rows = Array.from(byId.values()).filter((row) => isMapCarrierRow(row, now));
-  if (!rows.length) return [];
+  // Реестр EDDN: носители, которые сайт не ведёт (нет владельца на сайте), но
+  // которые точно стоят в этой системе. Без них карточка системы показывала бы
+  // только «своих» и молчала бы о чужих — а в игре видно всех.
+  const includeDirectory = options.includeDirectory !== false;
+  const directoryRows = includeDirectory
+    ? await safeRows(svc.from('carrier_directory')
+      .select(DIRECTORY_COLUMNS)
+      .ilike('system_name', pattern)
+      .gte('updated_at', new Date(now.getTime() - REGISTRY_STALE_MS).toISOString())
+      .limit(Math.max(1, Math.floor(options.directoryLimit ?? 200))))
+    : [];
+  const directoryFallback = includeDirectory && directoryRows.length === 0
+    ? await safeRows(svc.from('carrier_directory')
+      .select(DIRECTORY_COLUMNS_BASE)
+      .ilike('system_name', pattern)
+      .gte('updated_at', new Date(now.getTime() - REGISTRY_STALE_MS).toISOString())
+      .limit(Math.max(1, Math.floor(options.directoryLimit ?? 200))))
+    : [];
+  if (!rows.length && !directoryRows.length && !directoryFallback.length) return [];
 
   const ownerIds = Array.from(new Set(rows.map((row: Row) => row.owner_id).filter(Boolean).map(String))) as string[];
   const squadronIds = Array.from(new Set(rows
@@ -836,7 +855,7 @@ export async function loadSystemCarriers(
   const squadronMateIds = await loadSquadronMates(svc, viewer.squadronIds, viewerId);
   const coordinates = new Map<string, MapPoint>(rowCoordinates(rows, now));
   if (options.point && isMapPoint(options.point) && !coordinates.has(key)) coordinates.set(key, options.point);
-  return shapeMapCarriers(rows, {
+  const shaped = shapeMapCarriers(rows, {
     viewerId,
     viewerSquadronIds: viewer.squadronIds,
     squadronMateIds,
@@ -844,5 +863,13 @@ export async function loadSystemCarriers(
     squadrons,
     coordinates,
     now,
-  }).filter((carrier) => carrierSystemKey(carrier.system) === key);
+  });
+  // Учёт сайта главнее реестра: у него есть владелец, службы и заказ прыжка.
+  const known = new Set(shaped.map((carrier) => carrier.id));
+  for (const row of [...directoryRows, ...directoryFallback]) {
+    if (row?.carrier_id == null || known.has(String(row.carrier_id))) continue;
+    const carrier = shapeDirectoryCarrier(row, coordinates);
+    if (carrier) shaped.push(carrier);
+  }
+  return shaped.filter((carrier) => carrierSystemKey(carrier.system) === key);
 }
