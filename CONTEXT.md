@@ -2232,3 +2232,47 @@ Full description: **FLEET-CARRIERS.md** → «Карточка авианосц�
   real carrier migrations (location and body, jump order, services, hidden
   owner, squadron membership, one year of history, 404/400, absence of cargo
   and finance, registry-only carrier, registry merge without duplicates).
+
+### 8.34 Carrier catalogue `/carriers` — 16.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Каталог авианосцев».
+
+- `/carriers` is a table of every carrier the site knows, and every callsign or
+  name links to `/carriers/<MarketID>`. The header carries a CTA to
+  `/carriers/jumps`, and the carrier card links back with «Все авианосцы». The
+  page is not in the site menu — same as `/carriers/jumps`, it is opened by a
+  direct link and from its neighbours.
+- The two sources are merged **in the database**: migration
+  `20261116090000_carrier_catalog.sql` adds the `carrier_catalog` view (site
+  rows win on MarketID, the EDDN registry only fills empty fields, registry-only
+  rows are marked `origin = 'eddn'`) and `carrier_catalog_page()`, which returns
+  one page — search, filters, ordering, paging and the total count — in a single
+  answer. Two independent queries would break paging across the union (a row can
+  be lost or counted twice), and the concatenated `search_text` (printed and
+  compact forms) removes the need for PostgREST `.or()`, which breaks on commas
+  and parentheses typed by a pilot.
+- `GET /api/carriers/directory` → `{ ok, carriers, total, page, pageSize, pages,
+  viewer, generatedAt }`, `no-store`, 503 when the database or migration is
+  missing. A page past the end is not an error: the server answers the last
+  existing page and reports which one it is.
+- Table state lives in the address (`?q=&origin=&scope=&jump=&sort=&page=`), so
+  a link reproduces the list. Search is written after a 250 ms pause, filters and
+  ordering immediately. Search matches callsign, name, system, body and MarketID;
+  a compact `k7qbql` finds `K7Q-BQL`; words are ANDed. `/` focuses the field.
+- Rows contain no owner, no owner name, no cargo and no finance — only the
+  viewer relation (`own`/`squadron`/`other`, computed server-side via
+  `viewerContext`) and the decommission mark. Favourites stay personal
+  (`atlas_carrier_watch` or `localStorage` for guests); the «mine» filter only
+  exists for a signed-in pilot, and a guest link with `scope=mine` does not
+  narrow anything.
+- Rules live in `src/lib/carrierCatalog.ts` (search cleaning, address parsing,
+  links, page window, row shaping, reuse of `carrierCardServices` for the
+  service counter), the query in `src/lib/carrierCatalogStore.ts`, styles in the
+  appended `.cl-*` block of `globals.css`.
+- Tests: `carrier-catalog.test.mjs` (rules plus the route on PGlite with the real
+  migrations: merge without duplicates, site precedence, every search form,
+  filters, three orderings, paging and clamping, «mine», absence of secrets,
+  migration idempotency, 503 without the function) and
+  `carrier-catalog-ui.test.mjs` (rows and links, the jumps CTA, debounced
+  search, filters and ordering in the request and the address, pager, guest
+  favourite, empty state with reset, Carrier ID copy).

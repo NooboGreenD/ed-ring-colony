@@ -579,6 +579,9 @@ export function CarrierCardPage({ carrierId }: CarrierCardPageProps) {
               <Link className="cj-btn" href="/carriers/jumps">
                 <IconClock size={13} /> {t('ccd.jumpsLink')}
               </Link>
+              <Link className="cj-btn" href="/carriers">
+                <IconAnchor size={13} /> {t('cl.toCatalog')}
+              </Link>
               <Link className="cj-btn" href={`/atlas?tab=carriers&carrier_system=${encodeURIComponent(card.location.system ?? '')}`}>
                 <IconExternalLink size={13} /> {t('ccd.atlasSystemCarriers')}
               </Link>

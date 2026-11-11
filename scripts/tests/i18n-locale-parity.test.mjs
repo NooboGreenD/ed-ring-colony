@@ -41,6 +41,7 @@ const DICTIONARIES = [
   'planMessages.ts',
   'carrierJumps.ts',
   'carrierCard.ts',
+  'carrierCatalog.ts',
 ];
 
 const LOCALES = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];

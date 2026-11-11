@@ -8044,3 +8044,99 @@ html[data-hud-effect="glow"]::before {
   .ccd-top li { grid-template-columns: 1fr auto; }
   .ccd-top-bar { grid-column: 1 / -1; }
 }
+
+/* ── Каталог авианосцев `/carriers` ────────────────────────────────────────
+   Таблица и инструменты переиспользуют `.cj-*` страницы прыжков: раздел
+   читается как один экран. Здесь только то, чего у прыжков нет — переход в
+   «Прыжки», сегментированные фильтры, пейджер и скелет загрузки. */
+
+@layer components {
+  .cl-page { display: flex; flex-direction: column; gap: 12px; }
+  .cl-head { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+  .cl-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  .cl-cta {
+    display: inline-flex; align-items: center; gap: 10px; padding: 8px 14px;
+    border: 1px solid rgba(230,126,34,.45); border-radius: 4px; background: rgba(230,126,34,.06);
+    color: var(--orange); text-decoration: none; font-family: ui-monospace; letter-spacing: 1px;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .cl-cta:hover { background: rgba(230,126,34,.14); border-color: var(--orange); color: var(--orange-hover); }
+  .cl-cta:focus-visible { outline: 1px solid var(--orange); outline-offset: 2px; }
+  .cl-cta-text { display: flex; flex-direction: column; gap: 2px; }
+  .cl-cta-text b { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 2px; }
+  .cl-cta-text span { color: var(--muted); font-size: 10px; letter-spacing: 0; text-transform: none; }
+
+  .cl-search { flex: 1 1 260px; }
+  .cl-sort { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-family: ui-monospace; letter-spacing: 1px; text-transform: uppercase; }
+  .cl-sort select { margin: 0; padding: 5px 8px; font-size: 11px; font-family: ui-monospace; letter-spacing: 1px; text-transform: uppercase; }
+
+  .cl-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cl-seg { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 4px; background: #232629; }
+  .cl-seg-label { padding: 0 6px; color: var(--muted); font-size: 10px; font-family: ui-monospace; letter-spacing: 1px; text-transform: uppercase; }
+  .cl-seg-btn {
+    padding: 3px 9px; border: 1px solid transparent; border-radius: 2px; background: transparent;
+    color: var(--muted); font-family: ui-monospace; font-size: 11px; letter-spacing: 1px; cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .cl-seg-btn:hover { color: var(--text); border-color: var(--line); }
+  .cl-seg-btn.active { color: var(--orange); border-color: rgba(230,126,34,.55); background: rgba(230,126,34,.1); }
+  .cl-seg-btn:focus-visible { outline: 1px solid var(--orange); outline-offset: 1px; }
+
+  .cl-table .cl-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; }
+  .cl-tag {
+    padding: 0 6px; border-radius: 10px; border: 1px solid; font-size: 10px; letter-spacing: 1px;
+    font-family: ui-monospace; text-transform: uppercase;
+  }
+  .cl-tag.own { color: #4ade80; border-color: rgba(74,222,128,.4); background: rgba(74,222,128,.08); }
+  .cl-tag.squadron { color: #c4b5fd; border-color: rgba(196,181,253,.4); background: rgba(196,181,253,.08); }
+  .cl-copy {
+    display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border: 1px solid var(--line);
+    border-radius: 2px; background: transparent; color: #6b7280; font-family: ui-monospace;
+    font-size: 10px; letter-spacing: 1px; cursor: pointer;
+  }
+  .cl-copy:hover { color: var(--cyan); border-color: rgba(52,152,219,.5); }
+  .cl-copy:focus-visible { outline: 1px solid var(--cyan); outline-offset: 1px; }
+
+  .cl-source { padding: 1px 6px; border-radius: 2px; border: 1px solid var(--line); color: var(--muted); font-size: 10px; font-family: ui-monospace; letter-spacing: 1px; text-transform: uppercase; }
+  .cl-source.eddn { color: #c4b5fd; border-color: rgba(196,181,253,.4); }
+  .cl-source.site { color: var(--cyan); border-color: rgba(52,152,219,.45); }
+
+  .cl-table tr.cl-off td { opacity: .65; }
+  .cj-scroll { transition: opacity .15s; }
+  .cl-refreshing { opacity: .6; }
+
+  .cl-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .cl-page-btn {
+    min-width: 30px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 2px;
+    background: transparent; color: var(--muted); font-family: ui-monospace; font-size: 11px;
+    letter-spacing: 1px; cursor: pointer; text-align: center;
+  }
+  .cl-page-btn.wide { display: inline-flex; align-items: center; gap: 4px; text-transform: uppercase; }
+  .cl-page-btn:hover:not(:disabled) { color: var(--orange); border-color: rgba(230,126,34,.5); }
+  .cl-page-btn.active { color: var(--orange); border-color: var(--orange); background: rgba(230,126,34,.08); }
+  .cl-page-btn:disabled { opacity: .4; cursor: default; }
+  .cl-page-btn:focus-visible { outline: 1px solid var(--orange); outline-offset: 1px; }
+  .cl-gap { padding: 0 4px; color: #4b5563; font-family: ui-monospace; font-size: 11px; }
+
+  .cl-skeleton { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .cl-skel { display: block; height: 12px; border-radius: 2px; background: #2f3337; animation: cl-pulse 1.4s ease-in-out infinite; }
+  .cl-skel:nth-child(2) { width: 88%; }
+  .cl-skel:nth-child(3) { width: 94%; }
+  .cl-skel:nth-child(4) { width: 76%; }
+  .cl-skel:nth-child(5) { width: 90%; }
+  @keyframes cl-pulse { 0%, 100% { opacity: .45; } 50% { opacity: .9; } }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-skel { animation: none; }
+}
+
+@media (max-width: 768px) {
+  .cl-search { flex: 1 1 100%; }
+  .cl-seg { width: 100%; }
+  .cl-seg-btn { flex: 1 1 auto; text-align: center; }
+  .cl-table .cl-tags { margin-top: 6px; }
+  .cl-pager { justify-content: space-between; }
+  .cl-page-btn.wide { flex: 1 1 40%; justify-content: center; }
+}
