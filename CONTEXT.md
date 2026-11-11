@@ -2240,8 +2240,16 @@ Full description: **FLEET-CARRIERS.md** → «Каталог авианосце�
 - `/carriers` is a table of every carrier the site knows, and every callsign or
   name links to `/carriers/<MarketID>`. The header carries a CTA to
   `/carriers/jumps`, and the carrier card links back with «Все авианосцы». The
-  page is not in the site menu — same as `/carriers/jumps`, it is opened by a
-  direct link and from its neighbours.
+  page sits in the **left menu under «Community»** (`nav.carriers`, seven
+  locales) and is also reachable from its neighbours (the `/carriers/jumps`
+  header and the carrier card's «Все авианосцы» button); `/carriers/jumps`
+  itself stays a direct-link working screen.
+- One carrier silhouette everywhere: `CarrierGlyph` (`components/GalaxyMap/
+  CarrierGlyph.tsx`), the same drawing the map uses — menu item, Atlas tab
+  (replacing the plane), the system card's carrier section and the carrier
+  card's «Where» panel (replacing the anchor), and each catalogue row with the
+  Drake/Javelin glyph and the relation tone (own yellow, squadron green,
+  decommission grey and slashed, others orange).
 - The two sources are merged **in the database**: migration
   `20261116090000_carrier_catalog.sql` adds the `carrier_catalog` view (site
   rows win on MarketID, the EDDN registry only fills empty fields, registry-only

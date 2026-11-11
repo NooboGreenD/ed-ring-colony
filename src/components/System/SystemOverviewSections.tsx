@@ -22,11 +22,11 @@ import {
   IconShieldHalf,
   IconStore,
   IconUsers,
-  IconAnchor,
 } from '@/components/Icons';
 import { allegianceLabel, economyLabel, governmentLabel, securityLabel, stateLabel, BGS_SOURCE_LABEL, type BgsSource } from '@/lib/bgs';
 import { CARRIER_RELATION_LABEL } from '@/lib/carrierMap';
 import { carrierCardHref, carrierCardTitle } from '@/lib/carrierCard';
+import { CarrierGlyph } from '@/components/GalaxyMap/CarrierGlyph';
 import { POWERPLAY_STATE_LABEL, POWERPLAY_STATE_ZONE, powerColor, powerLabel, type PowerplayState } from '@/lib/powerplay';
 import { STAGE_LABELS, STATUS_LABELS, type ProjectStatus, type SystemStage } from '@/lib/architect/projects';
 import type { TFn } from '@/lib/i18n/gameLabels';
@@ -445,7 +445,7 @@ function CarriersSection({ overview }: { overview: SystemOverview }) {
   });
   const withBody = carriers.filter((carrier) => Boolean(carrier.body?.trim())).length;
   return (
-    <Section icon={<IconAnchor size={18} />} title={t('sysOv.carriersSection', { count: carriers.length })}>
+    <Section icon={<CarrierGlyph size={18} color="currentColor" />} title={t('sysOv.carriersSection', { count: carriers.length })}>
       <p style={{ ...muted, marginTop: 0 }}>
         {t('sysOv.carriersBodies', { withBody, total: carriers.length })}
       </p>

@@ -7,6 +7,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAtlasData } from '@/hooks/useAtlasData';
 import { AtlasProvider, useAtlas } from '@/components/Atlas/AtlasContext';
+import { CarrierGlyph } from '@/components/GalaxyMap/CarrierGlyph';
 import AtlasNearbySearch from '@/components/Atlas/AtlasNearbySearch';
 import { AtlasSearchPanel } from '@/components/Atlas/AtlasSearchPanel';
 import { AtlasCandidateList } from '@/components/Atlas/AtlasCandidateList';
@@ -29,7 +30,6 @@ import {
   IconDownload,
   IconGlobe,
   IconMap,
-  IconPlane,
   IconPower,
   IconRoute,
   IconSearch,
@@ -75,7 +75,7 @@ const TABS: { id: AtlasTab; labelKey: string; icon: React.ReactNode; hintKey: st
   { id: 'powerplay', labelKey: 'atlas.tabPowerplay', icon: <IconPower size={14} />, hintKey: 'atlas.hintPowerplay' },
   { id: 'factions', labelKey: 'atlas.tabFactions', icon: <IconShieldHalf size={14} />, hintKey: 'atlas.hintFactions' },
   // Десятая вкладка: цифр всего девять, поэтому хоткей — Alt+0.
-  { id: 'carriers', labelKey: 'atlas.tabCarriers', icon: <IconPlane size={14} />, hintKey: 'atlas.hintCarriers' },
+  { id: 'carriers', labelKey: 'atlas.tabCarriers', icon: <CarrierGlyph size={14} color="currentColor" />, hintKey: 'atlas.hintCarriers' },
 ];
 
 const CANDIDATE_PAGE_SIZE = 200;

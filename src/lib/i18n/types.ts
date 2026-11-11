@@ -21,6 +21,7 @@ export type TranslationKey =
   | 'nav.squadrons'
   | 'nav.projects'
   | 'nav.communityGoals'
+  | 'nav.carriers'
   | 'nav.collapseSidebar'
   | 'nav.expandSidebar'
   | 'nav.architect'

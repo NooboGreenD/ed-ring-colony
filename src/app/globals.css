@@ -8051,6 +8051,9 @@ html[data-hud-effect="glow"]::before {
    «Прыжки», сегментированные фильтры, пейджер и скелет загрузки. */
 
 @layer components {
+  .cl-title { display: flex; align-items: center; gap: 10px; }
+  .cl-title svg { color: var(--orange); }
+
   .cl-page { display: flex; flex-direction: column; gap: 12px; }
   .cl-head { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
   .cl-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -8083,6 +8086,9 @@ html[data-hud-effect="glow"]::before {
   .cl-seg-btn.active { color: var(--orange); border-color: rgba(230,126,34,.55); background: rgba(230,126,34,.1); }
   .cl-seg-btn:focus-visible { outline: 1px solid var(--orange); outline-offset: 1px; }
 
+  .cl-carrier-cell { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+  .cl-carrier-cell .cj-carrier-link { min-width: 0; }
+  .cl-carrier-cell > svg { margin-top: 2px; }
   .cl-table .cl-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; }
   .cl-tag {
     padding: 0 6px; border-radius: 10px; border: 1px solid; font-size: 10px; letter-spacing: 1px;

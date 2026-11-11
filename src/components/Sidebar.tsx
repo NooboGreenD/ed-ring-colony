@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import { CarrierGlyph } from '@/components/GalaxyMap/CarrierGlyph';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   IconAtlas,
@@ -87,6 +88,13 @@ const NAV_GROUPS: NavGroup[] = [
       { href: '/squadrons', translation: 'nav.squadrons', icon: <IconPlane size={iconSize} className="sidebar-icon" /> },
       { href: '/projects', translation: 'nav.projects', icon: <IconProjects size={iconSize} className="sidebar-icon" /> },
       { href: '/cg', translation: 'nav.communityGoals', icon: <IconStar size={iconSize} className="sidebar-icon" /> },
+      // Каталог носителей — тем же значком, что и слой «Авианосцы» на карте:
+      // пилот узнаёт раздел по силуэту, а не по подписи.
+      {
+        href: '/carriers',
+        translation: 'nav.carriers',
+        icon: <CarrierGlyph size={iconSize} className="sidebar-icon" color="currentColor" />,
+      },
       { href: '/wiki', translation: 'nav.wiki', icon: <IconWiki size={iconSize} className="sidebar-icon" /> },
       { href: '/forum', translation: 'nav.forum', icon: <IconMessage size={iconSize} className="sidebar-icon" /> },
       { href: '/news', translation: 'nav.news', icon: <IconNote size={iconSize} className="sidebar-icon" /> },

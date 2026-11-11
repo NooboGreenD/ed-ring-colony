@@ -19,6 +19,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { TEST_ROOT, bundleFile } from './helpers/bundle.mjs';
 import {
@@ -166,6 +167,34 @@ test('строка таблицы: службы двух форматов, за�
   assert.equal(catalogJumpState(null), null);
   assert.equal(catalogJumpState('не дата'), null);
   assert.equal(catalogJumpState('2026-11-16T13:00:00.000Z', now), 'scheduled');
+});
+
+test('значок авианосцев один: тот же силуэт в меню и на всех экранах носителей', () => {
+  const root = fileURLToPath(new URL('../..', import.meta.url));
+  const read = (path) => readFileSync(join(root, path), 'utf8');
+
+  // Меню: пункт в разделе сообщества, подпись из словаря, значок — с карты.
+  const sidebar = read('src/components/Sidebar.tsx');
+  assert.match(sidebar, /href: '\/carriers'/);
+  assert.match(sidebar, /translation: 'nav\.carriers'/);
+  assert.match(sidebar, /<CarrierGlyph[^>]*className="sidebar-icon"/, 'пункт меню без значка авианосца');
+
+  // Экраны носителей: значок `CarrierGlyph`, а не «якорь» и не самолёт.
+  const screens = [
+    'src/components/System/SystemOverviewSections.tsx',
+    'src/components/Carriers/CarrierCardPage.tsx',
+    'src/components/Carriers/CarrierDirectoryPage.tsx',
+    'src/components/Atlas/AtlasCarriersPanel.tsx',
+    'src/app/atlas/page.tsx',
+    'src/app/carriers/page.tsx',
+    'src/app/carriers/jumps/page.tsx',
+  ];
+  for (const file of screens) {
+    const source = read(file);
+    assert.match(source, /import \{ CarrierGlyph \} from '@\/components\/GalaxyMap\/CarrierGlyph'/, `${file}: нет импорта значка`);
+    assert.match(source, /<CarrierGlyph/, `${file}: значок не используется`);
+    assert.doesNotMatch(source, /IconAnchor/, `${file}: остался «якорь» вместо силуэта носителя`);
+  }
 });
 
 /* ── маршрут на PostgreSQL ──────────────────────────────────────────────── */

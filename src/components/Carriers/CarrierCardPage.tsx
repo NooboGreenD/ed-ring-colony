@@ -22,7 +22,6 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import {
-  IconAnchor,
   IconChart,
   IconClock,
   IconExternalLink,
@@ -34,6 +33,7 @@ import {
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { historyBarHeights, historyBarWidth } from '@/lib/carrierJumpHistory';
 import { carrierAtlasHref, systemPageHref } from '@/lib/systemIdentity';
+import { CarrierGlyph } from '@/components/GalaxyMap/CarrierGlyph';
 import type { CarrierCardBucket, CarrierCardJump, CarrierCardService } from '@/lib/carrierCard';
 
 /** Как часто карточка обновляется сама: носитель прыгает раз в 15–20 минут. */
@@ -298,7 +298,7 @@ export function CarrierCardPage({ carrierId }: CarrierCardPageProps) {
         <>
           {/* Где носитель: система и тело — то, что ищут в игре. */}
           <section className="ccd-panel" aria-label={t('ccd.whereTitle')}>
-            <h2 className="ccd-panel-title"><IconAnchor size={16} /> {t('ccd.whereTitle')}</h2>
+            <h2 className="ccd-panel-title"><CarrierGlyph size={16} color="currentColor" /> {t('ccd.whereTitle')}</h2>
             <div className="ccd-facts">
               <div className="ccd-fact">
                 <span className="ccd-fact-name">{t('ccd.factSystem')}</span>
@@ -580,7 +580,7 @@ export function CarrierCardPage({ carrierId }: CarrierCardPageProps) {
                 <IconClock size={13} /> {t('ccd.jumpsLink')}
               </Link>
               <Link className="cj-btn" href="/carriers">
-                <IconAnchor size={13} /> {t('cl.toCatalog')}
+                <CarrierGlyph size={13} color="currentColor" /> {t('cl.toCatalog')}
               </Link>
               <Link className="cj-btn" href={`/atlas?tab=carriers&carrier_system=${encodeURIComponent(card.location.system ?? '')}`}>
                 <IconExternalLink size={13} /> {t('ccd.atlasSystemCarriers')}

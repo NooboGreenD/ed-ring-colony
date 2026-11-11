@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { CarrierDirectoryPage } from '@/components/Carriers/CarrierDirectoryPage';
+import { CarrierGlyph } from '@/components/GalaxyMap/CarrierGlyph';
 import { getServerI18n } from '@/lib/i18n/server';
 
 /**
@@ -31,7 +32,10 @@ export default async function CarrierDirectoryRoute() {
   return (
     <main style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 16px 48px' }}>
       <div className="card" style={{ width: '100%' }}>
-        <h1>{t('cl.title')}</h1>
+        <h1 className="cl-title">
+          <CarrierGlyph size={26} color="currentColor" />
+          {t('cl.title')}
+        </h1>
         <p className="cj-intro">{t('cl.intro')}</p>
         <p className="cj-source">{t('cl.sourceNote')}</p>
         <CarrierDirectoryPage />
