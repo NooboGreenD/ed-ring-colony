@@ -9,6 +9,7 @@ import { orreryTipTranslations } from "./orreryTips.ts";
 import { planMessageTranslations } from "./planMessages.ts";
 import { carrierJumpTranslations } from "./carrierJumps.ts";
 import { carrierCardTranslations } from "./carrierCard.ts";
+import { carrierCatalogTranslations } from "./carrierCatalog.ts";
 
 /** Базовый словарь сайта; большие разделы подмешиваются ниже отдельными файлами. */
 const baseTranslations: Record<string, Record<string, string>> = {
@@ -54498,6 +54499,7 @@ const sectionTranslations = [
   planMessageTranslations,
   carrierJumpTranslations,
   carrierCardTranslations,
+  carrierCatalogTranslations,
 ];
 
 export const translations: Record<string, Record<string, string>> = Object.fromEntries(

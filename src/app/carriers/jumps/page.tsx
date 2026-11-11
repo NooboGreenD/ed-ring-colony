@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { CarrierJumpsPage } from '@/components/Carriers/CarrierJumpsPage';
 import { getServerI18n } from '@/lib/i18n/server';
 
@@ -31,6 +32,9 @@ export default async function CarrierJumpsRoute() {
         <h1>{t('cj.title')}</h1>
         <p className="cj-intro">{t('cj.intro')}</p>
         <p className="cj-source">{t('cj.sourceNote')}</p>
+        <p className="cj-actions">
+          <Link className="cj-btn" href="/carriers">{t('cl.toCatalog')}</Link>
+        </p>
         <CarrierJumpsPage />
       </div>
     </main>
