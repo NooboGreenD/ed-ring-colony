@@ -28,6 +28,8 @@ export default function Link(props: any) {
 const ENTRY = `
 export { CarrierJumpBoard } from '@/components/Carriers/CarrierJumpBoard';
 export { CARRIER_WATCH_LOCAL_KEY } from '@/lib/carrierDirectory';
+export { Toaster } from '@/components/ui/Toaster';
+export { JUMP_ALERT_STORAGE_KEY } from '@/lib/carrierJumps';
 `;
 
 const GENERATED_AT = '2026-11-10T12:00:00.000Z';
@@ -122,7 +124,14 @@ async function renderBoard(options = {}) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
   };
   await act(async () => {
-    root.render(React.createElement(mod.CarrierJumpBoard));
+    // Toaster рядом с таблицей: уведомления о подписках проверяются по тексту,
+    // который пилот действительно видит, а не по вызову toast().
+    root.render(React.createElement(
+      React.Fragment,
+      null,
+      React.createElement(mod.Toaster),
+      React.createElement(mod.CarrierJumpBoard),
+    ));
   });
   await flush(60);
 
@@ -314,6 +323,68 @@ test('подписка вошедшего пилота отправляет жи
     assert.equal(put.body.jumpSystem, 'Lave');
     assert.equal(put.body.jumpDepartureAt, new Date(NOW + 20 * MIN).toISOString());
     assert.equal(put.body.favorite, false, 'подписка не добавляет носитель в избранное Атласа');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('позывной в таблице ведёт в Атлас и фокусирует носитель', async () => {
+  const ui = await renderBoard({ api: feedApi });
+  try {
+    const link = rowFor(ui, 'K7Q-BQL').querySelector('.cj-carrier-link');
+    assert.ok(link, 'позывной — ссылка');
+    assert.ok((link.getAttribute('href') || '').startsWith('/atlas?'), 'ведёт в Атлас');
+    const query = new URLSearchParams((link.getAttribute('href') || '').split('?')[1]);
+    assert.equal(query.get('tab'), 'carriers', 'открывается вкладка «Авианосцы»');
+    assert.equal(query.get('carrier'), '3800000401', 'фокус — на этом носителе');
+    assert.equal(query.get('carrier_system'), 'Sol');
+    // Координаты стоянки передаются сразу: камера летит, не дожидаясь слоя.
+    assert.equal(query.get('focus_system'), 'Sol');
+    assert.deepEqual([query.get('x'), query.get('y'), query.get('z')], ['0', '0', '0']);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('смена плана подписки: уведомление один раз, повторное обновление молчит', async () => {
+  const watch = {
+    id: 'w-1',
+    carrierId: '3800000401',
+    callsign: 'K7Q-BQL',
+    name: 'Hippione',
+    system: 'Sol',
+    favorite: false,
+    note: null,
+    updatedAt: GENERATED_AT,
+    jumpSystem: 'Lave',
+    jumpDepartureAt: new Date(NOW + 20 * MIN).toISOString(),
+    jumpSeenAt: GENERATED_AT,
+  };
+  const feed = structuredClone(FEED);
+  feed.viewer = { signedIn: true };
+  const ui = await renderBoard({
+    api: (target, method) => {
+      if (target.includes('/api/carriers/jumps')) return { body: feed };
+      if (target.includes('/api/atlas/carriers/watch') && method === 'GET') return { body: { watches: [watch] } };
+      return null;
+    },
+  });
+  try {
+    const alerts = () => (ui.text().match(/план прыжка изменился/g) ?? []).length;
+    assert.equal(alerts(), 0, 'первый показ страницы ничего не рассылает');
+
+    // Командир перенёс прыжок: живая цель больше не совпадает со снимком.
+    feed.carriers[0].jump.system = 'Alioth';
+    await ui.click(ui.document.querySelector('.cj-toolbar .cj-btn'));
+    assert.equal(alerts(), 1, 'перенос плана — одно уведомление');
+    assert.match(ui.text(), /Hippione: план прыжка изменился — Alioth/);
+
+    const stored = JSON.parse(ui.dom.window.localStorage.getItem(ui.mod.JUMP_ALERT_STORAGE_KEY) || '{}');
+    assert.ok(stored['3800000401'], 'что видел пилот — запомнено');
+
+    // Обновление без изменений не повторяет уведомление.
+    await ui.click(ui.document.querySelector('.cj-toolbar .cj-btn'));
+    assert.equal(alerts(), 1, 'то же состояние второй раз не уведомляет');
   } finally {
     await ui.cleanup();
   }

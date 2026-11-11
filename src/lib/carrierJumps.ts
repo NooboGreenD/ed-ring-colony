@@ -292,3 +292,101 @@ export function buildJumpWatchRows(
       return label(left.watch).localeCompare(label(right.watch), 'ru');
     });
 }
+
+/* ── Уведомления о прыжке подписанного носителя ──────────────────────────── */
+
+/**
+ * Ключ браузера: состояние подписок, которое пилот уже видел.
+ *
+ * Это запасной канал для гостя и для пилота, у которого страница открыта:
+ * вошедшему уведомление приходит в колокольчик (`user_notifications`, тип
+ * `carrier_jump`, пишет триггер истории прыжков), а здесь мы замечаем смену
+ * плана между обновлениями таблицы. Запись личная и лежит у гостя в
+ * localStorage — сервер о ней не знает и знать не должен.
+ */
+export const JUMP_ALERT_STORAGE_KEY = 'carrierJumpAlerts:v1';
+/** Сколько носителей помним: подписок на прыжок десятки, а не тысячи. */
+export const JUMP_ALERT_MEMORY_LIMIT = 200;
+
+/** Что показываем пилоту: план перенесли, носитель прыгнул или заказ снят. */
+export type JumpAlertKind = 'changed' | 'arrived' | 'gone';
+
+/** MarketID → отпечаток состояния, который пилот уже видел. */
+export type JumpAlertMemory = Record<string, string>;
+
+export interface JumpAlert {
+  carrierId: string;
+  /** Имя или позывной — как в «Моих подписках». */
+  label: string;
+  kind: JumpAlertKind;
+  /** Куда носитель собирается (changed) или уже прыгнул (arrived). */
+  system: string | null;
+}
+
+/** Отпечаток состояния подписки: состояние, цель и время вылета. */
+export function jumpAlertPrint(row: JumpWatchRow): string {
+  const target = row.live?.to ?? row.plan.to ?? row.plan.from ?? '';
+  const at = row.live?.departureAt ?? row.plan.toAt ?? row.plan.at ?? '';
+  return [row.plan.state, carrierSystemKey(target), at].join('|');
+}
+
+/**
+ * Сравнить «Мои подписки» с тем, что пилот видел в прошлый раз.
+ *
+ * Уведомляем только о том, что случилось **после** прошлого просмотра:
+ * состояние подписки изменилось и это перенос плана, прибытие или снятый
+ * заказ (`gone` — носителя в таблице заказов больше нет; прыгнул он или
+ * отменил заказ, страница по своим данным не различает, поэтому текст
+ * нейтральный). Точное «прыгнул» приходит подписчику в колокольчик из
+ * триггера истории прыжков. Первый показ (память пуста) ничего не рассылает —
+ * иначе открытие страницы превращалось бы в пачку уведомлений о старом.
+ */
+export function collectJumpAlerts(
+  rows: readonly JumpWatchRow[],
+  memory: JumpAlertMemory = {},
+): { alerts: JumpAlert[]; next: JumpAlertMemory } {
+  const alerts: JumpAlert[] = [];
+  const next: JumpAlertMemory = {};
+  let remembered = 0;
+  for (const row of rows) {
+    const id = String(row.watch.carrierId ?? '').trim();
+    if (!id) continue;
+    const print = jumpAlertPrint(row);
+    if (remembered < JUMP_ALERT_MEMORY_LIMIT) {
+      next[id] = print;
+      remembered += 1;
+    }
+    const seen = memory[id];
+    if (!seen || seen === print) continue;
+    if (row.plan.state !== 'changed' && row.plan.state !== 'arrived' && row.plan.state !== 'gone') continue;
+    const system = row.plan.state === 'changed'
+      ? (row.live?.to ?? row.plan.to ?? null)
+      : (row.plan.from ?? row.watch.jumpSystem ?? null);
+    alerts.push({
+      carrierId: id,
+      label: row.watch.name || row.watch.callsign || id,
+      kind: row.plan.state,
+      system: system ? text(system) : null,
+    });
+  }
+  return { alerts, next };
+}
+
+/** Память уведомлений из localStorage: мусор в значении не должен ломать страницу. */
+export function parseJumpAlertMemory(raw: unknown): JumpAlertMemory {
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: JumpAlertMemory = {};
+  for (const [id, print] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^\d{1,20}$/.test(id) || typeof print !== 'string') continue;
+    out[id] = print.slice(0, 200);
+    if (Object.keys(out).length >= JUMP_ALERT_MEMORY_LIMIT) break;
+  }
+  return out;
+}

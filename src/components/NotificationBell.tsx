@@ -21,6 +21,7 @@ interface Notification {
     | "project_system_status"
     | "route_status_change"
     | "route_progress"
+    | "carrier_jump"
     | "friend_request";
   title: string;
   subtitle?: string;
@@ -359,6 +360,8 @@ export default function NotificationBell() {
       case "project_system_status": return "#22c55e";
       case "route_status_change": return "#06b6d4";
       case "route_progress": return "#10b981";
+      // Прыжок носителя — тот же фиолетовый, что у линий истории на карте.
+      case "carrier_jump": return "#c4b5fd";
       case "friend_request": return "#e67e22";
       default: return "#9ca3af";
     }
@@ -372,6 +375,7 @@ export default function NotificationBell() {
       case "project_system_status": return <><IconGlobe size={14} /> {t('nbell.typeSystem')}</>;
       case "route_status_change": return <><IconGlobe size={14} /> {t('nbell.typeRoute')}</>;
       case "route_progress": return <><IconGlobe size={14} /> {t('nbell.typeProgress')}</>;
+      case "carrier_jump": return <><IconRocket size={14} /> {t('nbell.typeCarrierJump')}</>;
       case "message": return <><IconMessage size={14} /> {t('nbell.typeMessage')}</>;
       case "forum_reply": return <><IconMessage size={14} /> {t('nbell.typeForum')}</>;
       case "squadron_chat_mention": return <><IconMessage size={14} /> {t('nbell.typeSquadronChat')}</>;

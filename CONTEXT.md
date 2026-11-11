@@ -2144,3 +2144,91 @@ const { t, locale, setLocale } = useI18n();
 ---
 
 *End of Context Document. Design — DESIGN.md, setup — README.md, all documents — DOCS.md.*
+
+### 8.32 Carrier rows link into Atlas, jump notifications — 13.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Клик по носителю и уведомления о прыжке».
+
+- Every carrier in `/carriers/jumps` (board, history table and its «top
+  jumps», schedule entries and the «from board» list) is now a link. The link
+  is built by `carrierAtlasHref` in `src/lib/systemIdentity.ts`:
+  `/atlas?tab=carriers&carrier=<MarketID>&carrier_system=<system>`, plus
+  `focus_system`/`x`/`y`/`z`/`from=system` when the current-system coordinates
+  are known (board rows have them, history rows do not). A manual schedule
+  entry without a `carrierId` stays plain text.
+- Atlas parses that address with `carrierAtlasTargetFromParams`, turns the
+  carrier layer on (it is hidden by default) and, once
+  `/api/map/carriers` answers, picks the system with `carrierGroupForTarget`
+  (MarketID first, system name as a fallback) and calls
+  `carrierLayer.selectGroup`. From there the path is the same as clicking a
+  marker: camera flies to the system and the carrier card opens.
+- **Jump notifications** are written into `user_notifications` (the existing
+  bell channel — Realtime plus a 15 s poll; no web-push here, because the
+  event is born in the database) by the new migration
+  `20261114100000_carrier_jump_notify.sql`. The trigger sits on
+  `carrier_jump_history` inserts — a history row *is* a performed jump, so
+  cancelled orders and moved plans never notify. Only watchers with a jump
+  snapshot (`atlas_carrier_watch.jump_seen_at IS NOT NULL`) and an existing
+  profile are addressed; Atlas favourites without a snapshot stay silent.
+- The text stays language-neutral on purpose: `title` = callsign/name/`#id`,
+  `body` = `from → to`, `href` = `/atlas?tab=carriers&carrier=<id>`,
+  metadata carries the carrier and both systems. The bell labels the type in
+  the pilot's language (`nbell.typeCarrierJump` in all seven locales).
+- While the page is open, `collectJumpAlerts` compares per-subscription prints
+  (`state | target | departure`) with what the pilot already saw and toasts
+  `changed`/`arrived`/`gone` once each. The memory lives in
+  `localStorage` (`carrierJumpAlerts:v1`), so it is the only channel for a
+  guest and a supplement to the bell for a signed-in pilot. With no stored
+  memory (first visit in this browser) the page only records the current
+  state; with memory it reports a change that happened while the page was
+  closed exactly once.
+- Tests: `carrier-jump-notify.test.mjs` (links, address parsing, layer group
+  choice, alert rules, the migration on PGlite, idempotency), plus link/toast
+  cases in `carrier-jumps-ui`, `carrier-jump-history-ui` and
+  `carrier-jump-calendar-ui`.
+
+### 8.33 Carrier card page and carriers in the system card — 13.11.2026
+
+Full description: **FLEET-CARRIERS.md** → «Карточка авианосца и носители в
+карточке системы».
+
+- Every carrier now has its own page, `/carriers/<MarketID>` (server
+  `src/app/carriers/[id]/page.tsx` + client `CarrierCardPage`), and links from
+  `/system/<name>` go there instead of the Atlas. Meta is `noindex, follow`:
+  there are hundreds of thousands of cards, and the useful direction is from a
+  card to its system, not the other way round.
+- The page shows only what is public: name/callsign, type, system and body,
+  coordinates and when the position was confirmed, jump order, docking,
+  services, fuel and jump range, owner (subject to the same
+  `privacyForViewer(...).location` rule as the map), squadron, EDDN sightings,
+  the last-12-months jump history and the charts built from it. Cargo and
+  finance are absent from `CarrierCardView` by type — they cannot leak.
+- `GET /api/carriers/<MarketID>/card` → `{ ok: true, card }`, `no-store`;
+  400 for a non-numeric id, 404 when neither `fleet_carriers` nor
+  `carrier_directory` knows the carrier, 503 when the database is down. The
+  separate `/card` route exists because `GET /api/carriers/<id>` answers only
+  from `fleet_carriers` and would 404 for registry-only carriers.
+- `loadCarrierCard` (`src/lib/carrierCardStore.ts`) merges `fleet_carriers`,
+  `carrier_directory` and a year of `carrier_jump_history`, plus
+  `squadrons`/`squadron_members` and the owner profile. Missing tables are
+  tolerated (`safeRow`), so an old install still renders the card.
+- Pure rules live in `src/lib/carrierCard.ts`: one-year window, calendar UTC
+  buckets (30 days, 12 months), stats (`total`, `last7`, `last30`, `site`,
+  `eddn`, `uniqueDestinations`, `top` with shares, `perWeek`, boundaries),
+  service merging and the title. Service labels moved to
+  `src/lib/carrierServices.ts` so the client bundle does not pull
+  `node:crypto` from `fleetCarriers.ts`; a service counts as working only when
+  installed and enabled (`activated: false` — not installed, `enabled: false`
+  — paused), and an EDDN role string means «working».
+- `loadSystemCarriers` now merges `carrier_directory` by default (200 rows,
+  entries younger than 90 days); the site record wins on the same MarketID and
+  registry-only rows are marked `origin: 'eddn'`. `CarriersSection` groups them
+  by body (known bodies first, «body unknown» last) and links each carrier to
+  its card.
+- Infographics are CSS/SVG in the site style: `.ccd-*` blocks appended to
+  `globals.css`, reusing the `.cjh-chart`/`.cjh-stats` chart classes; no
+  external libraries or images.
+- Tests: `carrier-card.test.mjs` — rules, plus the route on PGlite with the
+  real carrier migrations (location and body, jump order, services, hidden
+  owner, squadron membership, one year of history, 404/400, absence of cargo
+  and finance, registry-only carrier, registry merge without duplicates).

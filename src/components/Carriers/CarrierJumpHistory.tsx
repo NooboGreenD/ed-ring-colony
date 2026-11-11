@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IconRefresh, IconSearch, IconX } from '@/components/Icons';
 import { useI18n } from '@/lib/i18n/I18nContext';
-import { systemPageHref } from '@/lib/systemIdentity';
+import { carrierAtlasHref, systemPageHref } from '@/lib/systemIdentity';
 import {
   HISTORY_PERIODS,
   historyBarWidth,
@@ -340,8 +340,14 @@ export function CarrierJumpHistory({ active = true, period: periodProp, onPeriod
               <ul>
                 {summary.top.map((item) => (
                   <li key={item.carrierId}>
-                    <span className="cj-callsign">{item.callsign || t('cj.noCallsign')}</span>
-                    {item.name ? <span className="cj-name">{item.name}</span> : null}
+                    <Link
+                      className="cj-carrier-link"
+                      href={carrierAtlasHref(item.carrierId)}
+                      title={t('cj.openCarrier')}
+                    >
+                      <span className="cj-callsign">{item.callsign || t('cj.noCallsign')}</span>
+                      {item.name ? <span className="cj-name">{item.name}</span> : null}
+                    </Link>
                     <span className="cjh-top-count">{t('cjh.topJumps', { count: item.jumps })}</span>
                   </li>
                 ))}
@@ -393,8 +399,14 @@ export function CarrierJumpHistory({ active = true, period: periodProp, onPeriod
                             <span className="cj-time">{jumpedLabel(row.jumpedAt, state?.period ?? period, locale)}</span>
                           </td>
                           <td data-label={t('cj.colCarrier')}>
-                            <span className="cj-callsign">{row.callsign || t('cj.noCallsign')}</span>
-                            {row.name ? <span className="cj-name">{row.name}</span> : null}
+                            <Link
+                              className="cj-carrier-link"
+                              href={carrierAtlasHref(row.carrierId, { system: row.to })}
+                              title={t('cj.openCarrier')}
+                            >
+                              <span className="cj-callsign">{row.callsign || t('cj.noCallsign')}</span>
+                              {row.name ? <span className="cj-name">{row.name}</span> : null}
+                            </Link>
                           </td>
                           <td data-label={t('cj.colRoute')}>
                             <span className="cj-route">

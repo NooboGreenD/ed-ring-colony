@@ -556,3 +556,26 @@ export function carrierListLabel(group: Pick<CarrierSystemGroup, 'carriers'>, li
   const rest = group.carriers.length - names.length;
   return rest > 0 ? `${names.join(', ')} и ещё ${rest}` : names.join(', ');
 }
+
+/**
+ * Система слоя, в которой стоит носитель из ссылки Атласа
+ * (`/atlas?tab=carriers&carrier=<MarketID>` или `carrier_system=<имя>`).
+ *
+ * Сначала ищем по MarketID — он точнее имени: позывной и систему носитель
+ * может сменить, MarketID остаётся. Если носителя в ответе слоя уже нет
+ * (списан, забыт, не попал в реестр), остаётся ориентир по системе. `null` —
+ * фокусировать нечего, страница открывает вкладку как обычно.
+ */
+export function carrierGroupForTarget(
+  groups: readonly CarrierSystemGroup[],
+  target: { carrierId?: string | null; system?: string | null },
+): CarrierSystemGroup | null {
+  const id = String(target.carrierId ?? '').trim();
+  if (id) {
+    const byId = groups.find((group) => group.carriers.some((carrier) => String(carrier.id) === id));
+    if (byId) return byId;
+  }
+  const key = carrierSystemKey(target.system ?? '');
+  if (!key) return null;
+  return groups.find((group) => carrierSystemKey(group.system) === key) ?? null;
+}
