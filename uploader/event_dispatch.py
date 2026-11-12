@@ -36,7 +36,10 @@
   файлов) по умолчанию **не** уходят во внешние сервисы: это живые трекеры,
   им нужны только текущие события. Включается флагом `backfill_enabled`;
 * дедупликация событий живёт здесь же, поэтому повторный проход по журналу
-  не создаёт повторных запросов.
+  не создаёт повторных запросов;
+* Inara получает события пакетами (до `InaraAPI.MAX_BATCH` в запросе) и не
+  чаще `InaraAPI.MIN_REQUEST_INTERVAL`: dev-guide прямо просит батчинг, а за
+  поток одиночных запросов отключает доступ.
 
 Модуль не зависит от Tkinter — его можно импортировать и тестировать
 отдельно от GUI.
@@ -363,14 +366,45 @@ class ThirdPartyDispatcher:
         # растут бесконечно (по множеству на каждый сервис).
         self.max_seen = 50000
 
+        # Батчинг Inara (dev-guide: слать события пакетами и не чаще двух
+        # запросов в минуту). Клиент Inara умеет `submit_batch`; если его нет
+        # (тестовые заглушки), события уходят по одному, как раньше.
+        self._inara_pending: list = []
+        self._inara_lock = threading.Lock()
+        self._inara_first_at = 0.0
+        self._inara_last_post = 0.0
+        self._inara_flusher = None
+        self._game_version = ""
+        self.inara_max_batch = max(1, int(getattr(self.inara_api, "MAX_BATCH", 25) or 25))
+        self.inara_min_interval = max(0.0, float(
+            getattr(self.inara_api, "MIN_REQUEST_INTERVAL", 30.0) or 0.0))
+        self.inara_linger = max(0.0, float(
+            getattr(self.inara_api, "BATCH_LINGER", 5.0) or 0.0))
+
     # -- контекст ----------------------------------------------------------
     def set_game_version(self, version: str = "", build: str = ""):
         """Версия и сборка игры — обязательные поля EDSM (msgnum 207/208)."""
+        if version:
+            self._game_version = str(version).strip()
         if self.edsm_api is not None and hasattr(self.edsm_api, "set_game_version"):
             try:
                 self.edsm_api.set_game_version(version, build)
             except Exception:
                 pass
+
+    def _inara_game_version_allowed(self) -> bool:
+        """Inara принимает только Live-игру (Odyssey/Horizons 4.0).
+
+        Legacy 3.8 и бета-сборки запрещены dev-guide'ом. Если версия ещё не
+        известна (журнал без `Fileheader`), не мешаем отправке: отсекаем только
+        явно неподходящие версии.
+        """
+        version = str(getattr(self, "_game_version", "") or "").strip().lower()
+        if not version:
+            return True
+        if "beta" in version or "alpha" in version:
+            return False
+        return not version.startswith("3.")
 
     def _is_seen(self, service: str, key) -> bool:
         """Уже отправляли? (без пометки — для сервисов с повтором при ошибке)."""
@@ -605,6 +639,8 @@ class ThirdPartyDispatcher:
         return self._enqueue("edsm", {"event": payload})
 
     def _submit_inara(self, event: dict, event_name: str) -> str:
+        if not self._inara_game_version_allowed():
+            return _SKIPPED
         key = (
             event.get("timestamp", ""),
             event_name,
@@ -888,20 +924,112 @@ class ThirdPartyDispatcher:
     def _do_inara(self, payload: dict):
         if not self._inara_enabled():
             return
+        if callable(getattr(self.inara_api, "submit_batch", None)):
+            self._inara_push(payload)
+            return
+        self._send_inara_now(payload)
+
+    def _send_inara_now(self, payload: dict):
+        """Отправить одно событие сразу (клиент без поддержки пакетов)."""
         result = self.inara_api.submit(
             payload["event_name"], payload["data"], payload["timestamp"]
         ) or {}
+        self._apply_inara_result(result, count=1)
+
+    def _apply_inara_result(self, result: dict, count: int = 1):
+        """Учесть результат запроса в статистике и логе."""
         if result.get("ok"):
-            self.stats["sent"] += 1
+            self.stats["sent"] += count
             self._notify_success("inara")
         elif result.get("error_kind") == "inara_not_whitelisted":
-            self.stats["failed"] += 1
+            self.stats["failed"] += count
             if not self._inara_access_notified:
                 self._inara_access_notified = True
                 self._notify("inara", False, str(result.get("error") or ""))
         else:
-            self.stats["failed"] += 1
+            self.stats["failed"] += count
             self._notify_failure("inara", str(result.get("error") or tr("Inara отклонила событие")))
+
+    # -- батчинг Inara ------------------------------------------------------
+    def _inara_push(self, payload: dict):
+        """Накопить событие для пакета. Отправка — по таймеру или по размеру."""
+        with self._inara_lock:
+            if not self._inara_pending:
+                self._inara_first_at = time.monotonic()
+            self._inara_pending.append(payload)
+            full = len(self._inara_pending) >= self.inara_max_batch
+            if full:
+                # Ограничение размера буфера: события Inara — это «последнее
+                # известное состояние», старые теряют смысл. Держим не больше
+                # двух пакетов, иначе при долгой недоступности сервиса буфер
+                # растёт бесконечно.
+                overflow = len(self._inara_pending) - 2 * self.inara_max_batch
+                if overflow > 0:
+                    del self._inara_pending[:overflow]
+        self._ensure_inara_flusher()
+        if full:
+            self._flush_inara()
+
+    def _ensure_inara_flusher(self):
+        """Один фоновый поток на весь диспетчер: отправляет пакет по таймеру."""
+        with self._lock:
+            if self._inara_flusher is not None:
+                return
+            thread = threading.Thread(
+                target=self._inara_flush_loop, name="third-party-inara-batch", daemon=True
+            )
+            thread.start()
+            self._inara_flusher = thread
+
+    def _inara_flush_loop(self):
+        while True:
+            try:
+                if self._stop_event.is_set():
+                    # На выходе не ждём окна частоты: иначе последние события
+                    # потеряются при закрытии Helper'а.
+                    self._flush_inara(force=True)
+                    return
+                pending = 0
+                with self._inara_lock:
+                    pending = len(self._inara_pending)
+                    waited = time.monotonic() - self._inara_first_at
+                if pending and waited >= self.inara_linger:
+                    self._flush_inara()
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    def _flush_inara(self, force: bool = False) -> bool:
+        """Отправить накопленный пакет одним запросом. True — если ушёл."""
+        if not self._inara_enabled():
+            with self._inara_lock:
+                self._inara_pending.clear()
+            return False
+        with self._inara_lock:
+            if not self._inara_pending:
+                return False
+            now = time.monotonic()
+            # Inara: не больше двух запросов в минуту на инструмент.
+            if not force and now - self._inara_last_post < self.inara_min_interval:
+                return False
+            batch = self._inara_pending[:self.inara_max_batch]
+            del self._inara_pending[:len(batch)]
+            self._inara_last_post = now
+            if self._inara_pending:
+                self._inara_first_at = now
+        try:
+            result = self.inara_api.submit_batch([
+                {"eventName": item["event_name"], "eventData": item["data"],
+                 "eventTimestamp": item["timestamp"]}
+                for item in batch
+            ]) or {}
+        except Exception as exc:
+            result = {"ok": False, "error": tr("Ошибка отправки в {service}: {error}",
+                                                service="Inara", error=exc)}
+        if result.get("skipped"):
+            return False
+        self._apply_inara_result(result, count=len(batch))
+        return bool(result.get("ok"))
 
     def _raven_fc_known(self, market_id) -> Optional[bool]:
         checker = getattr(self.raven_api, "fc_known", None)
@@ -1050,18 +1178,24 @@ class ThirdPartyDispatcher:
         return self._queue.qsize()
 
     def flush(self, timeout: float = None) -> bool:
-        """Дождаться опустошения очереди. Возвращает True, если успели."""
+        """Дождаться опустошения очереди и отправить накопленный пакет Inara.
+
+        Возвращает True, если всё успели.
+        """
         if not self._started:
             return True
         try:
             if timeout is None:
                 self._queue.join()
+                self._flush_inara(force=True)
                 return True
             deadline = time.monotonic() + timeout
             while self._queue.unfinished_tasks:
                 if time.monotonic() >= deadline:
                     return False
                 time.sleep(0.05)
+            # Явный flush (выход, «отправить остаток») не ждёт окна в 30 с.
+            self._flush_inara(force=True)
             return True
         except Exception:
             return False

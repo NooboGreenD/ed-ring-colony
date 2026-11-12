@@ -2284,3 +2284,39 @@ Full description: **FLEET-CARRIERS.md** → «Каталог авианосце�
   `carrier-catalog-ui.test.mjs` (rows and links, the jumps CTA, debounced
   search, filters and ordering in the request and the address, pager, guest
   favourite, empty state with reset, Carrier ID copy).
+
+### 8.35 Inara API: batching, rate limit and the whitelist request — 17.11.2026
+
+Full instructions and the ready-to-send request: **INARA-WHITELIST.md**.
+
+- Inara only answers applications on its whitelist; every other request gets
+  `header.eventStatus 400 "This application has no access allowed."` while the
+  personal key itself is valid. Two identifiers must be approved:
+  `ED Ring Colony Uploader` (desktop companion, `appVersion` = Helper `VERSION`,
+  `isBeingDeveloped: true`) and `ED Ring Colony` (website, `appVersion` now read
+  from `package.json`, `isBeingDeveloped: true`).
+- The desktop companion used to POST one event per journal event — selling a
+  full carrier hold meant dozens of consecutive requests, exactly the pattern
+  the dev-guide forbids ("do not spam events one by one"; more than two
+  requests per minute may invalidate the key). `InaraAPI.submit_batch` now sends
+  up to `MAX_BATCH = 25` events in one request, and the dispatcher keeps a
+  buffer (`_inara_pending`) that a dedicated thread flushes after
+  `BATCH_LINGER = 5` seconds or when full. Requests are at least
+  `MIN_REQUEST_INTERVAL = 30` seconds apart, so at most two per minute.
+- A batch counts as sent only when Inara accepted **every** event in it
+  (`event_statuses` in the answer); otherwise the dispatcher reports the failure
+  and keeps its failure streak, so a rejected event is not silently lost.
+- `flush()` and the shutdown path push the remaining buffer with
+  `force=True` (an explicit "send the rest" must not wait 30 seconds); the
+  regular timer respects the interval.
+- Only the Live game is forwarded: the version from `Fileheader`/`LoadGame` is
+  remembered and `3.*`, `alpha` and `beta` builds are skipped. An unknown
+  version (a journal without `Fileheader`) is not blocked — otherwise events
+  from a session started mid-file would never be sent.
+- While Inara has no whitelisted name, the companion writes one log line and
+  does not retry (`error_kind = inara_not_whitelisted`, `retryable = false`);
+  `cg-check` keeps the community-goal catalogue populated from the other
+  sources.
+- Tests: `uploader/tests/test_third_party_api.py` — batch payload in one
+  request, partial rejection, one request per interval, Legacy/beta filtering,
+  plus the existing mapping and whitelist tests.

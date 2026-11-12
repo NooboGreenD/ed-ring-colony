@@ -55,6 +55,7 @@
 | [uploader/CHANGES.md](uploader/CHANGES.md) | Подробный журнал по «раундам». **Первый раздел — заметки текущего релиза** (их берёт `build_bundle.py`) |
 | [UPLOADER-UPDATE-STRUCTURE.md](UPLOADER-UPDATE-STRUCTURE.md) | Канал обновлений: лаунчер + пакет кода, подпись Ed25519, публикация из админки |
 | [UPDATE-CHECK-HEADER-FIX.md](UPDATE-CHECK-HEADER-FIX.md) | Почему проверка обновлений на свежей установке сообщала «сервер недоступен»: заглушка версии `"—"` в `User-Agent` (latin-1) и как это закрыто |
+| [INARA-WHITELIST.md](INARA-WHITELIST.md) | Inara API: заявка на белый список (готовый текст письма CMDR Artie, порядок действий, проверка ответа), батчинг событий и лимит запросов в Helper |
 | [HELPER-LAUNCHER-LINK.md](HELPER-LAUNCHER-LINK.md) | Лаунчер: возврат после Helper, профиль пилота в правом верхнем углу, привязка учётной записи кодом, перенос раскладки оверлея, загрузка установщика Setup в админке |
 
 ## База данных
