@@ -746,6 +746,152 @@ class InaraEventMappingTests(unittest.TestCase):
             self.assertNotIn(event, INARA_EVENTS)
 
 
+class InaraBatchTests(unittest.TestCase):
+    """Dev-guide Inara: события шлются пакетами, не чаще двух запросов в минуту.
+
+    Раньше на каждое событие журнала уходил отдельный POST: продажа трюма на
+    авианосце давала десятки запросов подряд, что и есть «спам по одному
+    событию», за который Inara отключает доступ.
+    """
+
+    def _api(self):
+        from inara_api import InaraAPI
+
+        api = InaraAPI("key", "CMDR", app_version="2.28.2")
+        api._session = mock.MagicMock()
+        api.RETRY_DELAY = 0
+        self.requests = []
+
+        def record(url, json=None, timeout=None):
+            self.requests.append(json)
+            return _FakeResponse({
+                "header": {"eventStatus": 200},
+                "events": [{"eventStatus": 200} for _ in json["events"]],
+            })
+
+        api._session.post.side_effect = record
+        return api
+
+    def test_batch_puts_all_events_in_one_request(self):
+        api = self._api()
+        result = api.submit_batch([
+            {"eventName": "addCommanderTravelDock", "eventTimestamp": "2026-01-01T00:00:00Z",
+             "eventData": {"starsystemName": "Sol"}},
+            ("addCommanderInventoryCargoItem", {"itemName": "steel", "itemAmount": 10},
+             "2026-01-01T00:00:01Z"),
+        ])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(len(self.requests), 1, "два события — один запрос")
+        events = self.requests[0]["events"]
+        self.assertEqual([item["eventName"] for item in events],
+                         ["addCommanderTravelDock", "addCommanderInventoryCargoItem"])
+        self.assertEqual(self.requests[0]["header"]["appName"], "ED Ring Colony Uploader")
+
+    def test_batch_fails_if_any_event_rejected(self):
+        api = self._api()
+        api._session.post.side_effect = None
+        api._session.post.return_value = _FakeResponse({
+            "header": {"eventStatus": 200},
+            "events": [{"eventStatus": 200},
+                       {"eventStatus": 400, "eventStatusText": "Unknown item"}],
+        })
+        result = api.submit_batch([
+            {"eventName": "addCommanderTravelDock", "eventData": {"starsystemName": "Sol"}},
+            {"eventName": "addCommanderInventoryCargoItem", "eventData": {"itemName": "?"}},
+        ])
+        self.assertFalse(result["ok"])
+        self.assertIn("Unknown item", result["error"])
+        self.assertEqual(result["event_statuses"], [200, 400])
+
+    def test_dispatcher_batches_queued_events(self):
+        from event_dispatch import ThirdPartyDispatcher
+
+        sent = []
+
+        class FakeInara:
+            enabled = True
+            MAX_BATCH = 10
+            MIN_REQUEST_INTERVAL = 30.0
+            BATCH_LINGER = 5.0
+
+            def submit(self, event_name, event_data, timestamp=""):
+                sent.append([event_name])
+                return {"ok": True}
+
+            def submit_batch(self, events):
+                sent.append([item["eventName"] for item in events])
+                return {"ok": True, "count": len(events)}
+
+        dispatcher = ThirdPartyDispatcher(inara_api=FakeInara())
+        for name in ("Location", "FSDJump", "Docked"):
+            dispatcher.submit({"event": name, "timestamp": "2026-01-01T00:00:00Z",
+                               "StarSystem": "Sol", "StarPos": [0.0, 0.0, 0.0],
+                               "StationName": "Abraham Lincoln", "MarketID": 128666762},
+                              live=True)
+        dispatcher.flush(timeout=5)
+        self.assertEqual(len(sent), 1, f"ожидался один пакетный запрос, получено {sent}")
+        self.assertEqual(sorted(sent[0]),
+                         ["addCommanderTravelDock", "addCommanderTravelFSDJump",
+                          "setCommanderTravelLocation"])
+
+    def test_second_request_waits_for_the_interval(self):
+        from event_dispatch import ThirdPartyDispatcher
+
+        sent = []
+
+        class FakeInara:
+            enabled = True
+            MAX_BATCH = 10
+            MIN_REQUEST_INTERVAL = 30.0
+            BATCH_LINGER = 5.0
+
+            def submit_batch(self, events):
+                sent.append(len(events))
+                return {"ok": True, "count": len(events)}
+
+        dispatcher = ThirdPartyDispatcher(inara_api=FakeInara())
+        payload = {"event_name": "addCommanderTravelDock",
+                   "data": {"starsystemName": "Sol"}, "timestamp": "2026-01-01T00:00:00Z"}
+        dispatcher._inara_push(dict(payload))
+        self.assertTrue(dispatcher._flush_inara())
+        dispatcher._inara_push(dict(payload))
+        self.assertFalse(dispatcher._flush_inara(),
+                         "второй запрос в ту же минуту запрещён dev-guide Inara")
+        self.assertEqual(sent, [1])
+
+    def test_legacy_and_beta_versions_are_not_sent(self):
+        """Dev-guide Inara: только Live, без Legacy 3.8 и без бета-сборок."""
+        from event_dispatch import ThirdPartyDispatcher
+
+        sent = []
+
+        class FakeInara:
+            enabled = True
+
+            def submit(self, event_name, event_data, timestamp=""):
+                sent.append(event_name)
+                return {"ok": True}
+
+        dispatcher = ThirdPartyDispatcher(inara_api=FakeInara())
+        event = {"event": "FSDJump", "StarSystem": "Sol", "StarPos": [0.0, 0.0, 0.0]}
+
+        dispatcher.set_game_version("3.8.0.100", "r1/r0")
+        dispatcher.submit(dict(event, timestamp="2026-01-01T00:00:00Z"), live=True)
+        dispatcher.flush(timeout=2)
+        self.assertEqual(sent, [], "Legacy 3.8 не отправляется")
+
+        dispatcher.set_game_version("4.0.0.1900 (beta)", "r1/r0")
+        dispatcher.submit(dict(event, timestamp="2026-01-01T00:00:01Z"), live=True)
+        dispatcher.flush(timeout=2)
+        self.assertEqual(sent, [], "бета-сборка не отправляется")
+
+        dispatcher.set_game_version("4.0.0.1900", "r300000/r0")
+        dispatcher.submit(dict(event, timestamp="2026-01-01T00:00:02Z"), live=True)
+        dispatcher.flush(timeout=2)
+        self.assertEqual(sent, ["addCommanderTravelFSDJump"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

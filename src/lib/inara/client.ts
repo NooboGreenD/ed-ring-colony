@@ -8,8 +8,17 @@ import type {
   InaraCommanderProfile,
   InaraCommunityGoal,
 } from '@/types/inara';
+import packageJson from '../../../package.json';
 
 const INARA_API = 'https://inara.cz/inapi/v1/';
+
+/**
+ * Имя приложения в заголовке Inara API. Inara пускает только приложения из
+ * белого списка, и сверяет именно эту строку (см. `INARA-WHITELIST.md`),
+ * поэтому имя и версия не должны «плавать» между релизами.
+ */
+export const INARA_APP_NAME = 'ED Ring Colony';
+export const INARA_APP_VERSION = packageJson.version;
 
 export class InaraClient {
   constructor(private apiKey: string) {}
@@ -20,10 +29,10 @@ export class InaraClient {
   ): Promise<InaraApiResponse> {
     const req: InaraApiRequest = {
       header: {
-        appName: 'ED Ring Colony',
-        appVersion: '1.0',
+        appName: INARA_APP_NAME,
+        appVersion: INARA_APP_VERSION,
         APIkey: this.apiKey,
-        isBeingDeveloped: false,
+        isBeingDeveloped: true,
       },
       events: [
         {

@@ -34,6 +34,16 @@ class InaraAPI:
     MAX_ATTEMPTS = 3
     RETRY_DELAY = 1.5
 
+    #: Правила dev-guide Inara (https://inara.cz/elite/inara-api-devguide/):
+    #: события отправляются пакетами, а не по одному в отдельных запросах, и не
+    #: чаще двух запросов в минуту. Значения читает и диспетчер
+    #: (`event_dispatch.ThirdPartyDispatcher`), поэтому объявлены на классе.
+    MAX_BATCH = 25
+    MIN_REQUEST_INTERVAL = 30.0
+    BATCH_LINGER = 5.0
+    #: Диспетчер по этому признаку понимает, что клиент умеет пакеты.
+    supports_batching = True
+
     def __init__(self, api_key: str = "", commander_name: str = "",
                  app_name: str = "ED Ring Colony Uploader", app_version: str = "0.0.0"):
         self.api_key = api_key.strip()
@@ -63,12 +73,75 @@ class InaraAPI:
 
         Временные сбои (HTML-страница Cloudflare, 5xx, 429, обрыв соединения)
         повторяем `MAX_ATTEMPTS` раз — Inara за тем же Cloudflare, что и EDSM.
+
+        Одиночная отправка остаётся для ручных действий и тестов; обычный путь
+        Helper'а — `submit_batch`, потому что dev-guide просит батчинг.
         """
         if not self.enabled:
             return {"ok": False, "skipped": True}
+        payload = self._build_payload([(event_name, event_data, timestamp)])
+        return self._post_with_retries(payload)
+
+    def submit_batch(self, events) -> dict:
+        """Отправить несколько событий одним запросом.
+
+        `events` — список `{"eventName", "eventData", "eventTimestamp"}` (как их
+        собирает диспетчер) или кортежей `(event_name, event_data, timestamp)`.
+        Возвращает тот же результат, что `submit`, плюс `count` — сколько
+        событий ушло в запросе. Inara отвечает статусом на каждое событие:
+        пакет считается успешным, только если приняты все.
+        """
+        if not self.enabled:
+            return {"ok": False, "skipped": True}
+        prepared = []
+        for item in events or []:
+            if isinstance(item, dict):
+                name = item.get("eventName") or item.get("event_name") or ""
+                data = item.get("eventData")
+                if data is None:
+                    data = item.get("data")
+                timestamp = item.get("eventTimestamp") or item.get("timestamp") or ""
+            else:
+                parts = list(item)
+                name = parts[0] if len(parts) > 0 else ""
+                data = parts[1] if len(parts) > 1 else None
+                timestamp = parts[2] if len(parts) > 2 else ""
+            if not name:
+                continue
+            prepared.append((str(name), data if isinstance(data, dict) else {},
+                             str(timestamp or "")))
+        if not prepared:
+            return {"ok": False, "skipped": True}
+        payload = self._build_payload(prepared)
+        result = self._post_with_retries(payload)
+        result["count"] = len(prepared)
+        return result
+
+    def _build_payload(self, events) -> dict:
+        """Тело запроса: заголовок приложения и пакет событий."""
+        return {
+            "header": {
+                "appName": self.app_name,
+                "appVersion": self.app_version,
+                "isBeingDeveloped": True,
+                "APIkey": self.api_key,
+                "commanderName": self.commander_name,
+            },
+            "events": [
+                {
+                    "eventName": name,
+                    "eventTimestamp": timestamp,
+                    "eventData": data,
+                }
+                for name, data, timestamp in events
+            ],
+        }
+
+    def _post_with_retries(self, payload: dict) -> dict:
+        """Повторить запрос при «временных» ошибках (см. `MAX_ATTEMPTS`)."""
         result: dict = {"ok": False, "error": tr("Inara: не отправлено")}
         for attempt in range(1, max(1, self.MAX_ATTEMPTS) + 1):
-            result = self._submit_once(event_name, event_data, timestamp)
+            result = self._post(payload)
             if result.get("ok") or not result.get("retryable"):
                 return result
             if attempt < self.MAX_ATTEMPTS:
@@ -78,21 +151,13 @@ class InaraAPI:
 
     def _submit_once(self, event_name: str, event_data: dict,
                      timestamp: str = "") -> dict:
-        """Одна попытка отправки."""
-        payload = {
-            "header": {
-                "appName": self.app_name,
-                "appVersion": self.app_version,
-                "isBeingDeveloped": True,
-                "APIkey": self.api_key,
-                "commanderName": self.commander_name,
-            },
-            "events": [{
-                "eventName": event_name,
-                "eventTimestamp": timestamp,
-                "eventData": event_data,
-            }],
-        }
+        """Одна попытка отправки одного события (оставлено для совместимости)."""
+        return self._post(
+            self._build_payload([(event_name, event_data, timestamp)])
+        )
+
+    def _post(self, payload: dict) -> dict:
+        """Одна попытка отправки готового тела запроса."""
         try:
             response = self._session.post(self.URL, json=payload, timeout=15)
         except Exception as exc:
@@ -146,11 +211,7 @@ class InaraAPI:
             return result
 
         events = data.get("events") or []
-        first = events[0] if events else {}
-        event_status = first.get("eventStatus")
-        text = str(first.get("eventStatusText") or "")
-
-        if event_status is None:
+        if not isinstance(events, list) or not events:
             return {
                 "ok": False,
                 "status": response.status_code,
@@ -159,21 +220,43 @@ class InaraAPI:
                             detail=short_body(response)),
             }
 
-        event_status = int(event_status)
+        # Inara отвечает статусом на каждое событие пакета. Пакет успешен только
+        # если приняты все: иначе диспетчер посчитает отправленными и те
+        # события, которые сервис отклонил, и не повторит их.
+        statuses = []
+        failure = None
+        for item in events:
+            status = item.get("eventStatus") if isinstance(item, dict) else None
+            if status is None:
+                return {
+                    "ok": False,
+                    "status": response.status_code,
+                    "data": data,
+                    "error": tr("Inara: нет eventStatus в ответе ({detail})",
+                                detail=short_body(response)),
+                }
+            status = int(status)
+            statuses.append(status)
+            if status >= 400 and failure is None:
+                failure = (status, str(item.get("eventStatusText") or ""))
+
+        base = {
+            "status": response.status_code,
+            "event_statuses": statuses,
+            "count": len(statuses),
+            "data": data,
+        }
+        if len(statuses) == 1:
+            base["event_status"] = statuses[0]
+
         # 200 OK, 202 предупреждение, 204 «мягкая» ошибка (нет результата,
         # но формально всё верно). Всё, что 400 и выше — реальная ошибка.
-        if event_status >= 400:
-            return {
+        if failure is not None:
+            status, text = failure
+            base.update({
                 "ok": False,
-                "status": response.status_code,
-                "event_status": event_status,
-                "data": data,
-                "error": text or f"Inara: eventStatus {event_status}",
-            }
-        return {
-            "ok": True,
-            "status": response.status_code,
-            "event_status": event_status,
-            "data": data,
-            "error": text or None,
-        }
+                "error": text or f"Inara: eventStatus {status}",
+            })
+            return base
+        base.update({"ok": True, "error": None})
+        return base
