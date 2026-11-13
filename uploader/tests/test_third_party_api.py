@@ -892,6 +892,40 @@ class InaraBatchTests(unittest.TestCase):
         self.assertEqual(sent, ["addCommanderTravelFSDJump"])
 
 
+class InaraCommanderNameTests(unittest.TestCase):
+    """Имя командира для Inara: из журнала, а не «как ввёл пользователь».
+
+    Dev-guide: `commanderName` — «not set by user, get this from journals or
+    cAPI to ensure it is a correct in-game name». Ошибка в имени при верном
+    ключе выглядит как «Inara не работает», поэтому приоритет у журнала.
+    """
+
+    def test_journal_name_wins_over_typed(self):
+        from inara_api import resolve_commander_name
+
+        self.assertEqual(resolve_commander_name("CMDR Journal", "CMDR Typed", "CMDR Old"),
+                         "CMDR Journal")
+
+    def test_typed_name_is_used_before_the_first_journal(self):
+        from inara_api import resolve_commander_name
+
+        self.assertEqual(resolve_commander_name("", " CMDR Typed ", ""), "CMDR Typed")
+        self.assertEqual(resolve_commander_name("", "", " CMDR Saved "), "CMDR Saved")
+        self.assertEqual(resolve_commander_name("", "", ""), "")
+
+    def test_status_reflects_the_last_refusal(self):
+        from inara_api import connection_status
+
+        self.assertEqual(connection_status(False, False), "not_configured")
+        self.assertEqual(connection_status(True, False), "need_name")
+        self.assertEqual(connection_status(True, True), "enabled")
+        self.assertEqual(connection_status(True, True, "inara_not_whitelisted"),
+                         "not_whitelisted")
+        self.assertEqual(connection_status(True, True, "inara_invalid_key"), "invalid_key")
+        # Успешная отправка сбрасывает прошлый отказ.
+        self.assertEqual(connection_status(True, True, ""), "enabled")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -928,13 +962,33 @@ class InaraWhitelistTests(unittest.TestCase):
         self.assertIn("белом списке", result["error"])
 
     def test_other_auth_error_is_not_retried_either(self):
+        """Неверный ключ — это не «приложение не в белом списке»."""
         self._answer("Invalid API key")
         result = self.api.submit("addCommanderTravelDock",
                                  {"starsystemName": "Sol"}, "2025-01-01T00:00:00Z")
         self.assertFalse(result["ok"])
         self.assertFalse(result.get("retryable"))
-        self.assertNotIn("error_kind", result)
+        self.assertEqual(result.get("error_kind"), "inara_invalid_key")
         self.assertEqual(self.api._session.post.call_count, 1)
+
+    def test_dispatcher_forwards_error_kind(self):
+        """Helper показывает причину по виду ошибки, а не по тексту сообщения."""
+        from event_dispatch import ThirdPartyDispatcher
+
+        class Misconfigured:
+            enabled = True
+
+            def submit(self, event_name, data, timestamp=""):
+                return {"ok": False, "error_kind": "inara_invalid_key",
+                        "error": "Inara отклонила запрос: Invalid API key"}
+
+        seen = []
+        dispatcher = ThirdPartyDispatcher(inara_api=Misconfigured())
+        dispatcher.on_result = lambda service, ok, message, kind="": seen.append(
+            (service, ok, kind))
+        dispatcher._do_inara({"event_name": "addCommanderTravelDock", "data": {},
+                              "timestamp": "2025-01-01T00:00:00Z"})
+        self.assertEqual(seen, [("inara", False, "inara_invalid_key")])
 
     def test_dispatcher_notifies_once_per_session(self):
         from event_dispatch import ThirdPartyDispatcher

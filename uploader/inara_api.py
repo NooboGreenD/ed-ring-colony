@@ -26,6 +26,47 @@ from i18n import tr
 from http_errors import apply_client_headers, describe_bad_response, short_body
 
 
+#: Состояния подключения Inara для страницы «Подключение» Helper'а.
+INARA_STATUS_NOT_CONFIGURED = "not_configured"   # нет ключа
+INARA_STATUS_NEED_NAME = "need_name"             # ключ есть, имени командира нет
+INARA_STATUS_NOT_WHITELISTED = "not_whitelisted"  # «no access allowed»
+INARA_STATUS_INVALID_KEY = "invalid_key"         # «Invalid API key»
+INARA_STATUS_ENABLED = "enabled"
+
+
+def resolve_commander_name(known: str = "", typed: str = "", current: str = "") -> str:
+    """Имя командира для заголовка Inara.
+
+    Inara просит брать его из журналов, а не от пользователя: «get this from
+    journals or cAPI to ensure it is a correct in-game name». Поэтому имя,
+    известное игре, приоритетнее введённого руками; введённое — запасной
+    вариант, пока журнала не было (первый запуск до игры).
+    """
+    for value in (known, typed, current):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def connection_status(has_key: bool, has_name: bool, error_kind: str = "") -> str:
+    """Что показывать рядом с полями Inara.
+
+    `error_kind` — последний отказ сервиса (`inara_not_whitelisted`,
+    `inara_invalid_key`). Без него статус «включена» врал бы: ключ заполнен,
+    а Inara отвечает отказом.
+    """
+    if not has_key:
+        return INARA_STATUS_NOT_CONFIGURED
+    if not has_name:
+        return INARA_STATUS_NEED_NAME
+    if error_kind == "inara_not_whitelisted":
+        return INARA_STATUS_NOT_WHITELISTED
+    if error_kind == "inara_invalid_key":
+        return INARA_STATUS_INVALID_KEY
+    return INARA_STATUS_ENABLED
+
+
 class InaraAPI:
     URL = "https://inara.cz/inapi/v1/"
 
@@ -197,7 +238,11 @@ class InaraAPI:
                 "error": tr("Inara отклонила запрос: {reason}",
                             reason=text or tr("ошибка авторизации")),
             }
-            if "no access allowed" in text.lower():
+            if "invalid api key" in text.lower():
+                # Ключ отозван или перепутан: повторять бессмысленно, но и
+                # «приложение не в белом списке» здесь неверно — причина другая.
+                result["error_kind"] = "inara_invalid_key"
+            elif "no access allowed" in text.lower():
                 # Личный ключ Inara работает только в паре с приложением,
                 # внесённым в белый список администрацией: иначе любой запрос
                 # отклоняется с «This application has no access allowed.».

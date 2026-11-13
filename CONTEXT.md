@@ -2,7 +2,7 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: **2026-11-09** (checked against the code).
-> Web release: **2.27.9** · Colonial Helper: **2.28.2** (`PARSER_VERSION = 6`, launcher 1.5.0).
+> Web release: **2.27.9** · Colonial Helper: **2.28.3** (`PARSER_VERSION = 6`, launcher 1.5.0).
 > 108 SQL migrations · 256 API routes · 60 pages · 187 site test files · Helper tests: 2077.
 > Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
 > how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -2316,7 +2316,19 @@ Full instructions and the ready-to-send request: **INARA-WHITELIST.md**.
 - While Inara has no whitelisted name, the companion writes one log line and
   does not retry (`error_kind = inara_not_whitelisted`, `retryable = false`);
   `cg-check` keeps the community-goal catalogue populated from the other
-  sources.
+  sources. A rejected key is a different thing (`error_kind =
+  inara_invalid_key`) and is reported separately.
+- `commanderName` is taken from the game, not from the pilot's memory: the
+  dev-guide asks for it "from journals or cAPI" because a correct key with a
+  stale name either gets refused or lands in the wrong profile.
+  `inara_api.resolve_commander_name` gives the journal/token name priority over
+  the typed one; the field fills itself once the journal names the commander,
+  and a mismatch between the saved name and the journal is logged once instead
+  of failing silently.
+- The status line next to the Inara fields is no longer always «включена»:
+  `inara_api.connection_status` distinguishes "no key", "no commander name",
+  "application not allowed", "key not accepted" and "enabled", fed by the last
+  `error_kind` the dispatcher reported (success clears it).
 - Tests: `uploader/tests/test_third_party_api.py` — batch payload in one
   request, partial rejection, one request per interval, Legacy/beta filtering,
   plus the existing mapping and whitelist tests.

@@ -19,7 +19,7 @@ dev-guide: <https://inara.cz/elite/inara-api-devguide/>.
 
 | `appName` | Что это | `appVersion` | `isBeingDeveloped` | События |
 |---|---|---|---|---|
-| `ED Ring Colony Uploader` | Colonial Helper (десктоп) | реальная версия Helper (`VERSION` в `uploader/colonial_helper.py`, сейчас 2.28.2) | `true` | 7 событий «пилот/груз» (см. §2) |
+| `ED Ring Colony Uploader` | Colonial Helper (десктоп) | реальная версия Helper (`VERSION` в `uploader/colonial_helper.py`, сейчас 2.28.3) | `true` | 7 событий «пилот/груз» (см. §2) |
 | `ED Ring Colony` | Сайт проекта (серверные задачи) | версия сайта из `package.json` (сейчас 2.27.9) | `true` | `getCommunityGoalsRecent` (по расписанию), `getCommanderProfile` (только по инициативе пилота) |
 
 Имена и версии — константы: `uploader/inara_api.py`
@@ -52,7 +52,8 @@ dev-guide: <https://inara.cz/elite/inara-api-devguide/>.
 | Правило Inara | Как сделано |
 |---|---|
 | Батчинг: не слать события по одному | `InaraAPI.submit_batch` — до 25 событий в одном запросе; диспетчер копит их ~5 с и отправляет пакетом (`MAX_BATCH`, `BATCH_LINGER` в `uploader/inara_api.py`) |
-| Не больше двух запросов в минуту | `MIN_REQUEST_INTERVAL = 30.0`: между запросами к Inara не меньше 30 с (`_flush_inara` в `uploader/event_dispatch.py`) |
+| `commanderName` — из игры, не от пользователя | `resolve_commander_name`: имя из журнала/токена сайта приоритетнее введённого вручную; поле заполняется само, расхождение с журналом Helper предупреждает в логе |
+| Умеренный темп запросов (dev-guide: за поток частых запросов можно потерять доступ) | `MIN_REQUEST_INTERVAL = 30.0`: между запросами к Inara не меньше 30 с (`_flush_inara` в `uploader/event_dispatch.py`). Это наш запас, а не официальная цифра: конкретного лимита «N в минуту» dev-guide не называет |
 | Не повторять уже отправленное | Дедупликация по `(timestamp, event, SystemAddress, BodyID, MarketID)` в диспетчере |
 | Кэш на своей стороне для чтения | CG запрашиваются раз в шесть часов и лежат в базе (`community_goals`), профиль — только по запросу пилота, не в цикле |
 | Только Live-игра, без Legacy 3.8 и бет | `_inara_game_version_allowed()`: версия из `Fileheader`/`LoadGame`, `3.*`, `alpha`, `beta` не отправляются |
@@ -76,7 +77,7 @@ dev-guide: <https://inara.cz/elite/inara-api-devguide/>.
 > **1) Application names, exactly as sent in the request header**
 >
 > - `ED Ring Colony Uploader` — the desktop companion ("Colonial Helper"),
->   current version 2.28.2, `isBeingDeveloped: true`. It uses the commander's
+>   current version 2.28.3, `isBeingDeveloped: true`. It uses the commander's
 >   own Inara API key, which the pilot enters in the app and which is stored
 >   locally on that pilot's machine.
 > - `ED Ring Colony` — our website backend, current version 2.27.9,
@@ -127,8 +128,9 @@ dev-guide: <https://inara.cz/elite/inara-api-devguide/>.
 >
 > **Compliance with the API rules**
 >
-> - Events are batched: up to 25 events per request, and no more than one
->   request every 30 seconds per tool.
+> - Events are batched: up to 25 events per request, with at least 30 seconds
+>   between requests. We deliberately stay well below any rate that could
+>   hammer the server.
 > - Only real, new journal events are sent, de-duplicated locally; history is
 >   not re-uploaded by default.
 > - Only the Live game is supported: journals identified as Legacy 3.8, beta or
@@ -171,9 +173,12 @@ dev-guide: <https://inara.cz/elite/inara-api-devguide/>.
    строку в лог (без повторов — `error_kind = inara_not_whitelisted`,
    `retryable = false`), а задача `cg-check` продолжает наполнять каталог CG из
    других источников. Поле «Inara API key» можно оставить пустым.
-8. **После одобрения:** заполнить в Helper «Подключение → Inara API» ключ и имя
-   командира, нажать «Сохранить Inara настройки»; статус сменится на
-   «Inara: включена». Приложение должно появиться в списке
+8. **После одобрения:** заполнить в Helper «Подключение → Inara API» ключ,
+   нажать «Сохранить Inara настройки». Имя командира подставляется само из
+   журнала (2.28.3) — вручную его вводят, только пока игра ни разу не
+   запускалась. Статус меняется на «Inara: включена»; если осталось «укажите
+   имя командира», «приложению не разрешён доступ» или «ключ не принят», то
+   причина именно в этом, а не в связи. Приложение должно появиться в списке
    <https://inara.cz/elite/inara-api/> с описанием из §4.
 
 ## 6. Проверка, что доступ появился
@@ -188,7 +193,7 @@ $cmdr = "Ваш CMDR"
 $body = @{
   header = @{
     appName = "ED Ring Colony Uploader"
-    appVersion = "2.28.2"
+    appVersion = "2.28.3"
     isBeingDeveloped = $true
     APIkey = $key
     commanderName = $cmdr
@@ -243,8 +248,12 @@ Invoke-RestMethod -Uri "https://inara.cz/inapi/v1/" -Method Post `
 - `src/lib/inara/client.ts` — `appVersion` берётся из `package.json` (а не
   `"1.0"`), `isBeingDeveloped: true`; имя закреплено константой
   `INARA_APP_NAME`.
-- `uploader/tests/test_third_party_api.py` — тесты пакета, лимита частоты и
-  отсева Legacy/бета.
+- `uploader/i18n_catalogs.py` — четыре новые подписи статуса Inara во всех
+  шести языках («укажите имя командира», «приложению не разрешён доступ»,
+  «ключ не принят», «имя взято из журнала»); статус рядом с полями больше не
+  всегда «включена».
+- `uploader/tests/test_third_party_api.py` — тесты пакета, частичного отказа,
+  интервала, отсева Legacy/бета, приоритета имени командира и видов отказа.
 
 ## 9. Источники
 
