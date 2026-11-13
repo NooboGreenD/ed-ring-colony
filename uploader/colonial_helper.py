@@ -76,7 +76,15 @@ from colonisation import (
 from system_map import MapRavenCache, SystemMapBuilder
 from edsm_api import EDSMAPI
 from eddn_api import EddnClient
-from inara_api import InaraAPI
+from inara_api import (
+    INARA_STATUS_ENABLED,
+    INARA_STATUS_INVALID_KEY,
+    INARA_STATUS_NEED_NAME,
+    INARA_STATUS_NOT_WHITELISTED,
+    InaraAPI,
+    connection_status,
+    resolve_commander_name,
+)
 from ship_tracker import ShipTracker
 from foot_map import FootMap
 from pilot_equipment import PilotEquipment
@@ -139,7 +147,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.28.2"
+VERSION = "2.28.3"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -695,6 +703,7 @@ class ColonialHelperApp:
         self.inara_name_entry = self.auth_page.inara_name_entry
         self.inara_status_label = self.auth_page.inara_status_label
         self._capi_refresh_status()
+        self._refresh_inara_status()
 
     def _on_eddn_toggle(self, checked: bool):
         """Сохранить выбор «публиковать в EDDN» из нативного чекбокса."""
@@ -703,14 +712,117 @@ class ColonialHelperApp:
         self.save_config()
         self.log(f"EDDN: публикация {'включена' if checked else 'выключена'}", "info")
 
+    def _journal_cmdr_name(self) -> str:
+        """Имя командира так, как его знает игра (журнал или токен сайта)."""
+        return self._current_cmdr_name().strip()
+
+    def _inara_cmdr_name(self) -> str:
+        """Имя для `commanderName` в Inara (см. `inara_api.resolve_commander_name`)."""
+        typed = ""
+        if hasattr(self, "inara_name_entry"):
+            try:
+                typed = self.inara_name_entry.text().strip()
+            except Exception:
+                typed = ""
+        current = getattr(self.inara_api, "commander_name", "") or ""
+        name = resolve_commander_name(self._journal_cmdr_name(), typed, current)
+        if name and name != current:
+            self.inara_api.set_credentials(self.inara_api.api_key, name)
+            self.config["inara_commander_name"] = name
+        return name
+
     def _save_inara_settings(self):
-        self.inara_api.set_credentials(self.inara_key_entry.text(), self.inara_name_entry.text())
+        self.inara_api.set_credentials(self.inara_key_entry.text(), self._inara_cmdr_name())
         self.config["inara_api_key"] = self.inara_api.api_key
         self.config["inara_commander_name"] = self.inara_api.commander_name
+        # Поле показывает настоящее имя из журнала, если пользователь его не
+        # ввёл: иначе строка «Имя командира в Inara» оставалась пустой при
+        # рабочей настройке, и это выглядело как незаполненное поле.
+        if self.inara_api.commander_name and hasattr(self, "inara_name_entry"):
+            try:
+                if not self.inara_name_entry.text().strip():
+                    self.inara_name_entry.setText(self.inara_api.commander_name)
+            except Exception:
+                pass
         self.save_config()
-        self.inara_status_label.set_status(
-            tr("Inara: включена") if self.inara_api.enabled else tr("Inara: не настроена"),
-            COLOR_MUTED)
+        self._refresh_inara_status()
+
+    #: Последний отказ Inara (`inara_not_whitelisted` / `inara_invalid_key`),
+    #: чтобы статус не врал «включена», пока сервис не принимает события.
+    _inara_state: str = ""
+
+    def _refresh_inara_status(self):
+        """Статус Inara рядом с полями: нет ключа / нет имени / отказ / включена."""
+        label = getattr(self, "inara_status_label", None)
+        if label is None:
+            return
+        state = connection_status(
+            bool(self.inara_api.api_key), bool(self.inara_api.commander_name),
+            getattr(self, "_inara_state", "") or "")
+        if state == INARA_STATUS_NEED_NAME:
+            label.set_status(tr("Inara: укажите имя командира"), COLOR_ORANGE)
+        elif state == INARA_STATUS_NOT_WHITELISTED:
+            label.set_status(tr("Inara: приложению не разрешён доступ"), COLOR_ORANGE)
+        elif state == INARA_STATUS_INVALID_KEY:
+            label.set_status(tr("Inara: ключ не принят"), COLOR_ORANGE)
+        elif state == INARA_STATUS_ENABLED:
+            label.set_status(tr("Inara: включена"), COLOR_MUTED)
+        else:
+            label.set_status(tr("Inara: не настроена"), COLOR_MUTED)
+
+    def _sync_inara_commander(self):
+        """Подставить имя из журнала, как только оно стало известно.
+
+        Вызывается из потока watcher'а, поэтому всё, что трогает виджеты и
+        `save_config()` (он читает поля), уходит в поток окна через `after`.
+        Иначе Qt получил бы обращение к виджету из чужого потока.
+        """
+        if not getattr(self.inara_api, "api_key", ""):
+            return
+        known = self._journal_cmdr_name()
+        current = getattr(self.inara_api, "commander_name", "") or ""
+        if not known:
+            return
+        if current and known != current:
+            if getattr(self, "_inara_cmdr_mismatch_warned", False):
+                return
+            self._inara_cmdr_mismatch_warned = True
+            text = tr("Inara: в настройках имя «{current}», а журнал принадлежит "
+                      "«{known}» — события не уйдут, пока имя не совпадёт",
+                      current=current, known=known)
+            try:
+                self.root.after(0, lambda m=text: self.log(m, "warn"))
+            except Exception:
+                pass
+            return
+        if current:
+            return
+        try:
+            self.root.after(0, lambda name=known: self._apply_inara_commander(name))
+        except Exception:
+            pass
+
+    def _apply_inara_commander(self, name: str):
+        """Применить имя командира (поток окна: поля и конфиг)."""
+        if not name or not getattr(self.inara_api, "api_key", ""):
+            return
+        current = getattr(self.inara_api, "commander_name", "") or ""
+        if current == name:
+            self._refresh_inara_status()
+            return
+        if current:
+            # Имя уже задано (например, ввели вручную) — не перетираем молча.
+            return
+        self.inara_api.set_credentials(self.inara_api.api_key, name)
+        self.config["inara_commander_name"] = name
+        try:
+            if hasattr(self, "inara_name_entry") and not self.inara_name_entry.text().strip():
+                self.inara_name_entry.setText(name)
+        except Exception:
+            pass
+        self.save_config()
+        self._refresh_inara_status()
+        self.log(tr("Inara: имя командира взято из журнала — {name}", name=name), "info")
 
     def _save_eddn_setting(self):
         self._on_eddn_toggle(bool(self.eddn_enabled_var.isChecked()))
@@ -4921,7 +5033,7 @@ class ColonialHelperApp:
         self.config["edsm_commander_name"] = self.edsm_api.commander_name
         if hasattr(self, "inara_key_entry"):
             self.inara_api.set_credentials(self.inara_key_entry.text(),
-                                           self.inara_name_entry.text())
+                                           self._inara_cmdr_name())
         self.config["inara_api_key"] = self.inara_api.api_key
         self.config["inara_commander_name"] = self.inara_api.commander_name
         try:
@@ -6163,8 +6275,24 @@ class ColonialHelperApp:
         self._last_session_event = message
         self.overlay_manager.log_session_event(message)
 
-    def _on_third_party_result(self, service: str, ok: bool, message: str):
+    def _set_inara_state(self, state: str):
+        """Запомнить состояние Inara и обновить подпись на странице «Подключение»."""
+        current = getattr(self, "_inara_state", "") or ""
+        if current == state:
+            return
+        self._inara_state = state
+        try:
+            self.root.after(0, self._refresh_inara_status)
+        except Exception:
+            pass
+
+    def _on_third_party_result(self, service: str, ok: bool, message: str, kind: str = ""):
         """Результат отправки во внешний API (вызывается из потока диспетчера)."""
+        if service == "inara":
+            if ok:
+                self._set_inara_state("")
+            elif kind in ("inara_not_whitelisted", "inara_invalid_key"):
+                self._set_inara_state(kind)
         # В лог попадают только проблемы/особые случаи: успешных отправок на
         # истории могут быть тысячи, и засорять ими лог бессмысленно.
         if ok:
@@ -8743,6 +8871,7 @@ class ColonialHelperApp:
         # CMDR, установленный в начале watcher-сессии (или токеном), и валидируем,
         # что новый журнал не принадлежит другому командиру.
         if tick_cmdr_name:
+            self._sync_inara_commander()
             if self._watcher_cmdr_name and tick_cmdr_name != self._watcher_cmdr_name:
                 mismatch_msg = (
                     f"Обнаружен журнал другого CMDR '{tick_cmdr_name}' "

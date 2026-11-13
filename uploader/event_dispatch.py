@@ -530,11 +530,18 @@ class ThirdPartyDispatcher:
                    "событий не ушло)", service=service.upper(), count=streak),
             )
 
-    def _notify(self, service: str, ok: bool, message: str):
+    def _notify(self, service: str, ok: bool, message: str, kind: str = ""):
         if not self.on_result:
             return
         try:
-            self.on_result(service, ok, message)
+            if kind:
+                try:
+                    self.on_result(service, ok, message, kind)
+                except TypeError:
+                    # Колбэк старого вида (три аргумента) — не ломаем его.
+                    self.on_result(service, ok, message)
+            else:
+                self.on_result(service, ok, message)
         except Exception:
             pass
 
@@ -941,11 +948,12 @@ class ThirdPartyDispatcher:
         if result.get("ok"):
             self.stats["sent"] += count
             self._notify_success("inara")
-        elif result.get("error_kind") == "inara_not_whitelisted":
+        elif result.get("error_kind") in ("inara_not_whitelisted", "inara_invalid_key"):
             self.stats["failed"] += count
             if not self._inara_access_notified:
                 self._inara_access_notified = True
-                self._notify("inara", False, str(result.get("error") or ""))
+                self._notify("inara", False, str(result.get("error") or ""),
+                             kind=str(result.get("error_kind")))
         else:
             self.stats["failed"] += count
             self._notify_failure("inara", str(result.get("error") or tr("Inara отклонила событие")))
