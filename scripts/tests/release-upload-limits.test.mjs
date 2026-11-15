@@ -45,7 +45,9 @@ function siteServerBlocks(source) {
       const block = buffer.join('\n');
       buffer = null;
       // Только site-блоки: Supabase/Kong живёт по своим лимитам Storage.
-      if (/proxy_pass[^;]*:3000/.test(block)) blocks.push(block);
+      // Порт сайта на хосте настраивается (--web-port), поэтому в шаблоне
+      // установщика это `$WEB_PORT`, а в готовых конфигах — число.
+      if (/proxy_pass[^;]*:(3000|\$\{?WEB_PORT)/.test(block)) blocks.push(block);
     }
   }
   return blocks;
