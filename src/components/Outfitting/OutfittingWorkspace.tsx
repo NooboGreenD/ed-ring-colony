@@ -951,7 +951,7 @@ export default function OutfittingWorkspace() {
                         }}
                       >
                         {slot.class}
-                        {slot.special === 'Military' ? 'M' : ''}
+                        {slot.special === 'Military' ? 'M' : slot.special === 'Passenger' ? 'P' : ''}
                       </span>
 
                       {/* Центральная часть: клик открывает ModulePicker */}

@@ -37,6 +37,10 @@ test('Atlas ship route calculates from journal Loadout and exposes explicit Help
   assert.match(finder, /fromSlef/);
   assert.match(finder, /computeStats/);
   assert.match(finder, /profileAt/);
+  // Предупреждения разбора (косметика, редкий чертёж, незнакомый модуль) не
+  // повод отказываться от маршрута: они показываются строкой `rangeIssues`.
+  assert.doesNotMatch(finder, /shipUnknownLoadout/, 'маршрут нельзя блокировать из-за предупреждений');
+  assert.match(finder, /rangeIssues=\{planner\.issues\}/);
   assert.match(routeFinder, /atlas\.ui\.sendToHelper/);
   assert.match(helper, /_maybe_sync_ship_state/);
   const pages = read('uploader/helper_pages.py');

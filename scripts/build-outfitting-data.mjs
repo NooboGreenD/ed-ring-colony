@@ -26,14 +26,23 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'public', 'data', 'outfitting.json');
 const EFFECTS = join(ROOT, 'scripts', 'data', 'experimental-effects.json');
 const FACTORY = join(ROOT, 'scripts', 'data', 'factory-modules.json');
-const SHIP_UPDATE = join(ROOT, 'scripts', 'data', 'ship-update-20261020.json');
+/**
+ * Проверенные обновления справочника, по файлу на игровое обновление: корабли,
+ * модули, которых нет в наборе Coriolis, и точные внутренние имена Frontier.
+ * Порядок важен: более новый файл применяется последним.
+ */
+const SHIP_UPDATES = [
+  join(ROOT, 'scripts', 'data', 'ship-update-20261020.json'),
+  join(ROOT, 'scripts', 'data', 'ship-update-20260428-lynx.json'),
+];
+const EXTRA_BLUEPRINTS = join(ROOT, 'scripts', 'data', 'extra-blueprints.json');
 const REPO = 'https://github.com/EDCD/coriolis-data.git';
 
 /** Сопротивления Coriolis хранит в процентных пунктах, у нас везде доли. */
 const RESISTANCES = new Set(['kinres', 'thermres', 'explres', 'causres']);
 
 /** Поля, которые в наш справочник не попадают. */
-const DROP = new Set(['edID', 'eddbID', 'symbol', 'ukDiscript', 'ukName', 'eddbCategory', 'uuid']);
+const DROP = new Set(['edID', 'eddbID', 'ukDiscript', 'ukName', 'eddbCategory', 'uuid']);
 
 /** Русские названия групп модулей и их раздел на странице. */
 const GROUPS = {
@@ -152,6 +161,9 @@ function slim(record) {
     out[key] = value;
   }
   if (!out.name && record.ukName) out.name = record.ukName;
+  // Внутреннее имя Frontier нужно целиком: по нему узнаётся `Loadout` из
+  // журнала и собирается выгрузка в SLEF. Обёртку `$…_name;` снимаем.
+  if (out.symbol) out.symbol = String(out.symbol).replace(/^\$/, '').replace(/_name;?$/i, '');
   return out;
 }
 
@@ -330,9 +342,54 @@ function applyFactory(modules, blueprints, modifications) {
   return modules;
 }
 
-/** Наложить проверенное обновление кораблей из EDSY поверх набора Coriolis. */
+/**
+ * Чертежи, которых нет в наборе Coriolis (`scripts/data/extra-blueprints.json`).
+ *
+ * Сейчас это единственный чертёж — `FuelScoop_Efficiency` («Scoop rate
+ * enhanced»): в игре он есть и приходит в журнале ровно с этим именем, а в
+ * `modifications/blueprints.json` у топливозаборника лежит только «Shielded».
+ * Без записи в справочнике живой `Loadout` давал «чертёж не распознан», и
+ * дальность считалась без доработки.
+ *
+ * Данные источника главнее: если Coriolis однажды опишет тот же чертёж сам,
+ * наша запись просто не применяется.
+ */
+function applyExtraBlueprints(blueprints, moduleBlueprints) {
+  const file = readJson(EXTRA_BLUEPRINTS);
+  for (const [group, entries] of Object.entries(file.groups ?? {})) {
+    const target = moduleBlueprints[group] ?? (moduleBlueprints[group] = { blueprints: {} });
+    target.blueprints ??= {};
+    for (const [id, extra] of Object.entries(entries)) {
+      if (blueprints[id] && target.blueprints[id]) continue;
+      const trimmed = {};
+      const indexed = {};
+      for (const [grade, info] of Object.entries(extra.grades ?? {})) {
+        trimmed[grade] = { features: info.features ?? {}, components: info.components ?? {} };
+        indexed[grade] = {
+          engineers: extra.engineers?.[grade] ?? [],
+          features: info.features ?? {},
+          components: info.components ?? {},
+        };
+      }
+      if (!Object.keys(trimmed).length) throw new Error(`extra-blueprints: у ${id} нет уровней`);
+      blueprints[id] = { grades: trimmed };
+      target.blueprints[id] = { grades: indexed };
+    }
+  }
+}
+
+/**
+ * Наложить проверенные обновления кораблей и модулей из EDSY поверх набора
+ * Coriolis: по файлу на игровое обновление, от старого к новому.
+ */
 function applyShipUpdate(ships, modules) {
-  const patch = readJson(SHIP_UPDATE);
+  const applied = [];
+  for (const file of SHIP_UPDATES) applied.push(applyShipUpdateFile(ships, modules, file));
+  return applied;
+}
+
+function applyShipUpdateFile(ships, modules, file) {
+  const patch = readJson(file);
   for (const [id, entry] of Object.entries(patch.ships ?? {})) {
     const current = ships[id];
     if (current) {
@@ -373,7 +430,30 @@ function applyShipUpdate(ships, modules) {
     }
     list.sort((left, right) => (left.class - right.class) || String(left.rating).localeCompare(String(right.rating)));
   }
+  applySymbols(modules, patch.symbols ?? {});
   return patch;
+}
+
+/**
+ * Точное внутреннее имя Frontier для модуля (`группа:id` → `Int_…`/`Hpt_…`).
+ *
+ * Нужно там, где правило имени не работает или ошибается: Mk II модули,
+ * многофункциональные контроллеры дронов, награды за общественные цели.
+ * Без имени живой `Loadout` не узнаётся, а выгрузка в SLEF подставляет
+ * обычный модуль того же класса — то есть молча врёт.
+ */
+function applySymbols(modules, symbols) {
+  for (const [ref, symbol] of Object.entries(symbols)) {
+    const index = ref.indexOf(':');
+    const group = ref.slice(0, index);
+    const id = ref.slice(index + 1);
+    const module = (modules[group] ?? []).find((item) => item.id === id);
+    if (!module) throw new Error(`символы: нет модуля ${ref}`);
+    if (module.symbol && module.symbol !== symbol) {
+      throw new Error(`символы: у ${ref} уже есть другой символ (${module.symbol})`);
+    }
+    module.symbol = symbol;
+  }
 }
 
 function main() {
@@ -386,6 +466,10 @@ function main() {
     const specials = readJson(join(dir, 'modifications', 'specials.json'));
     const modifications = readJson(join(dir, 'modifications', 'modifications.json'));
     const modifierActions = readJson(join(dir, 'modifications', 'modifierActions.json'));
+
+    // Чертёж из игры, которого нет в наборе Coriolis, — до подсчёта инженеров,
+    // чтобы он попал и в их карту.
+    applyExtraBlueprints(blueprints, moduleBlueprints);
 
     // Инженеры в обратную сторону: кто какой чертёж и до какого уровня может.
     const engineers = {};
@@ -414,12 +498,12 @@ function main() {
     const trimmedSpecials = buildSpecials(specials, modifierActions);
     addMissingSpecialLists(moduleBlueprints, trimmedSpecials);
     applyFactory(modules, trimmedBlueprints, modifications);
-    const shipUpdate = applyShipUpdate(ships, modules);
+    const shipUpdates = applyShipUpdate(ships, modules);
 
     const payload = {
       version: 1,
       generatedAt: new Date().toISOString(),
-      source: `EDCD/coriolis-data + EDSY ${shipUpdate.source.gameUpdate}`,
+      source: `EDCD/coriolis-data + EDSY ${shipUpdates.map((patch) => patch.source?.gameUpdate).filter(Boolean).join(' + ')}`,
       groups: GROUPS,
       ships,
       modules,

@@ -2332,3 +2332,110 @@ Full instructions and the ready-to-send request: **INARA-WHITELIST.md**.
 - Tests: `uploader/tests/test_third_party_api.py` — batch payload in one
   request, partial rejection, one request per interval, Legacy/beta filtering,
   plus the existing mapping and whitelist tests.
+
+### 8.36 Atlas «Маршрут корабля»: живой Loadout больше не блокирует маршрут — 16.11.2026
+
+The ship tab used to answer «Не могу безопасно построить маршрут: часть
+Loadout не распознана» on perfectly flyable ships. The importer was not wrong
+about the modules — it was wrong about what to do with them.
+
+- `AtlasShipRouteFinder` turned **any** `warn` from `fromSlef` into a refusal:
+  one cosmetic string in `Loadout.Modules` was enough to lose the route. Now
+  warnings go into the existing `rangeIssues` line of `AtlasRouteFinder`
+  («дальность может быть оценочной»), and only `build === null` or a
+  non-positive jump range stops the planner. `atlas.ui.shipUnknownLoadout` is
+  gone from all seven locales.
+- Cosmetics (`PaintJob`, `Decal1/2`, string lights, bobbleheads, nameplates,
+  `ShipName`/`ShipIdent`) sit in the same `Modules` array and are now skipped
+  silently: they have no mass and no slot. They used to be reported as
+  «модуль не распознан» with the paint job name as the slot.
+- Generic blueprint ids are resolved to the family id of the module group:
+  the game sends `Misc_LightWeight`, while the catalogue calls the same effect
+  `LifeSupport_LightWeight`, `CollectionLimpet_LightWeight`,
+  `Sensor_LightWeight`, `Engine_Reinforced`, `FSD_Shielded` and so on. The rule
+  in `exchange.resolveBlueprint` is exact match first, then the **single**
+  blueprint of the group with the same name tail (`_LightWeight`,
+  `_Reinforced`, `_Shielded`, `_LongRange`, …). Ambiguity is never guessed: the
+  report keeps saying the blueprint was not recognised. This also covers the
+  EDSY habit of calling the wake scanner's `Scanner_LongRange`
+  `Sensor_LongRange`.
+- `FuelScoop_Efficiency` («Scoop rate enhanced», Inara blueprint 201) does not
+  exist in `EDCD/coriolis-data` at all, only «Shielded». It is now shipped from
+  `scripts/data/extra-blueprints.json` and merged by
+  `scripts/build-outfitting-data.mjs` before the engineer map is built, so the
+  catalogue, the blueprint picker and the engineer tree all know it: +10…50 %
+  to scoop `rate`, +3…15 % power, engineers Bill Turner/Lori Jameson/Marsha
+  Hicks. The catalogue-side data wins if Coriolis ever ships the same id.
+  `outfitting.mod.rate` was added to `outfittingSpecials.ts` for the label.
+- Note on fidelity: aliasing `Misc_Shielded` to `LifeSupport_Shielded` also
+  brings grade-5 power `1.12` instead of the generic `1.0`. The family value is
+  the right one for life support; the generic record in Coriolis is the
+  approximate one.
+- Tests: `outfitting-analysis.test.mjs` builds an Anaconda Loadout with a
+  generic lightweight life support, a `FuelScoop_Efficiency` scoop, a paint
+  job, a decal and an unknown utility, and checks the alias, the +50 %/+15 %
+  effect, the higher jump range, the absence of cosmetic complaints and the
+  remaining «модуль не распознан» warning;
+  `outfitting.test.mjs` checks the new catalogue entry;
+  `ship-route.test.mjs` keeps the planner from refusing routes on warnings.
+
+### 8.37 Frontier symbols in the catalogue, Lynx Highliner and the modules after «Operations» — 16.11.2026
+
+The ship-route panel was the symptom; the cause was that the catalogue did not
+know how the game names its modules. `public/data/outfitting.json` dropped the
+`symbol` field, so the importer guessed a module from class, rating and a
+hand-written name rule. That rule cannot cover Mk II modules, community-goal
+rewards, multi-limpet controllers or anything Frontier adds after a data update.
+
+- **Every module now carries `symbol`** (`Int_…` / `Hpt_…`), the same identifier
+  the game writes into `Loadout.Modules[].Item` and the one EDSY/Coriolis/Inara
+  understand. `scripts/build-outfitting-data.mjs` keeps the field from
+  coriolis-data (it used to be in `DROP`) and `applySymbols` fills the rest from
+  `scripts/data/ship-update-*.json`. Cost: ~40 KB of the 519 KB file (gzipped
+  almost nothing — the strings repeat).
+- `src/lib/outfitting/symbols.ts` builds the reverse index once per loaded
+  catalogue (`WeakMap`). `moduleBySymbol` is now the first thing `fromSlef` tries;
+  `guessModule` is the old heuristic and stays as a fallback. When one symbol
+  belongs to several records (FSD V1, MercGear share the base symbol) the plain
+  module wins, because the journal carries the engineering in `Engineering`.
+- `moduleSymbol` returns the stored symbol first, so **export to SLEF finally
+  writes the real module**. Previously a multi-limpet controller or an Imperial
+  Hammer was either skipped as «special in-game name» or silently exported as a
+  plain module of the same class.
+- **Missing ships fixed in `SHIP_FD_TO_CORIOLIS`**: a live `Loadout` of an
+  Anaconda Mk II (`AnacondaMkII`), Type 11 Prospector (`LakonMiner`) or Kestrel
+  (`SmallCombat01_NX`) used to fail with «корабль не найден». Added
+  `MediumTransport01 → lynx_highliner` too.
+- **New data file `scripts/data/ship-update-20260428-lynx.json`** (EDSY
+  `eddb.js`, commit `0f577f7`), applied after the 2026-10-20 update; the builder
+  now takes a list of update files:
+  - **Lynx Highliner** (Zorgon Peterson, medium passenger liner, 4.3.3.0):
+    hull 260 t, 5 hardpoints, 4 utility, three passenger-only internals
+    (6/6/5) and a new slot kind `Passenger` (`eligible: pce, pci`);
+  - **Mk II Economy / Business Class Passenger Cabins** (2D…6D, 3C…6C) — 1.5×
+    the capacity of the regular cabins (3/6/12/24/48 and 4/9/15/24 passengers),
+    restricted to the Lynx (`ships: ['lynx_highliner']`), so no other ship sees
+    them in the picker;
+  - **Large Planetary Vehicle Hangar** (2F/4F/6F, 1/2/4 bays) — distinct from
+    the already present Mk II Large PVH; both now carry their real symbols;
+  - `symbols` also fills `Mk II Cargo Rack 6D`, `Mk II Vessel Hangar 5D/6D/7D`
+    and `Mk II Large PVH 2F/4F/6F`, which the previous update added without one.
+- **`scripts/check-edsy-gaps.mjs`** compares the catalogue with EDSY's module and
+  ship tables and prints what is missing (exit code 1 when something is). It
+  skips `_Free`/hidden variants and the fixed cargo hatch. Right now: 0/0.
+- The `Passenger` slot shows a translated label in the module picker
+  (`outfitting.picker.passenger`, all seven locales) and a `P` badge in the
+  build list, like `M` for military slots.
+- Tests: catalogue totals (992 modules, 247 bulkheads), symbol uniqueness for
+  plain modules, Lynx slots/cabins/hangars, Mk II cabins only on the Lynx, a
+  full SLEF round trip of the stock Lynx without warnings, and `shipCoriolisId`
+  for the journal names above.
+- **MercGear entries** (`src/lib/outfitting/merccoin.ts`) were re-checked against the
+  catalogue: all 21 `ref`/`refs` resolve, and 16 of them point at records whose
+  symbol is shared with the base module (`pd:M1` and `pd:da`, `mr:MA` and
+  `mr:6B`). That is not a data error: Frontier ships MercGear under the same
+  internal name, so the journal cannot distinguish them either; the engineering
+  comes from the journal's own `Engineering` block.
+- `node scripts/run-tests.mjs`: 2065 of 2067, the two failures
+  (`carrier-jump-schedule`, `community-goal-admin-api`) reproduce on the base
+  commit and are unrelated to the catalogue.

@@ -68,9 +68,9 @@ beforeEach(() => {
 
 test('unmodified catalogue includes every source module, group and ship without mutating source', () => {
   const data = lib.mergeCatalog(base, initial());
-  assert.equal(Object.values(data.modules).flat().length, 980);
+  assert.equal(Object.values(data.modules).flat().length, 992);
   assert.equal(Object.keys(data.groups).length, 88);
-  assert.equal(Object.values(data.ships).flatMap((ship) => ship.bulkheads).length, 242);
+  assert.equal(Object.values(data.ships).flatMap((ship) => ship.bulkheads).length, 247);
   assert.equal(data.catalogRevision, 0);
   assert.equal(base.catalogRevision, undefined);
   assert.deepEqual(data.modules, base.modules);

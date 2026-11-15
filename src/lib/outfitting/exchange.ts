@@ -22,6 +22,7 @@
 import { STANDARD_GROUPS, buildSlots, findModule, moduleOf, moduleRef, modulesForSlot } from './calc';
 import { decodeBuild, defaultBuild, encodeBuild } from './build';
 import { bulkheadIndex, bulkheadSymbol, moduleSymbol, parseSymbol, shipCoriolisId, shipFdName } from './fdnames';
+import { moduleBySymbol } from './symbols';
 import { moduleGrade, moduleNameForSymbol } from './moduleGrades';
 import type { OutfittingData, OutfittingModule, ShipBuild } from './types';
 
@@ -190,6 +191,41 @@ function normalizedEngineeringName(value: unknown): string {
   return String(value ?? '').replace(/^\$/, '').replace(/_name;?$/i, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * Хвост идентификатора чертежа: `Misc_LightWeight` и
+ * `LifeSupport_LightWeight` — один и тот же эффект «LightWeight», просто у
+ * каждого семейства модулей Frontier называет его по-своему.
+ */
+function blueprintEffect(id: string): string {
+  const index = id.lastIndexOf('_');
+  return index >= 0 ? id.slice(index + 1) : id;
+}
+
+/**
+ * Идентификатор чертежа из журнала → идентификатор в нашем справочнике.
+ *
+ * В игре и EDSY живут два вида имён. Общий чертёж («Lightweight»,
+ * «Reinforced», «Shielded») приходит как `Misc_*` — журнал присылает его
+ * ровно так, а у `ls`/`cc`/`fx`/`hb`/`s`/`t`/`fsd` в справочнике то же
+ * самое называется по семейству (`LifeSupport_LightWeight` и т. п.).
+ * EDSY к тому же путает семейства сканеров (`Sensor_LongRange` на
+ * сканере следа называется `Scanner_LongRange`).
+ *
+ * Поэтому: сначала точное совпадение, затем — единственный чертёж группы с
+ * тем же эффектом. Если подходящих несколько или ни одного, чертёж не
+ * угадываем: пусть отчёт честно скажет, что он не распознан.
+ */
+function resolveBlueprint(data: OutfittingData, group: string, requested: string): string | null {
+  if (!data.blueprints[requested]) return null;
+  const available = data.moduleBlueprints[group]?.blueprints ?? {};
+  if (available[requested]) return requested;
+  const effect = blueprintEffect(requested);
+  const candidates = Object.keys(available).filter((id) => id !== requested
+    && blueprintEffect(id) === effect
+    && data.blueprints[id]);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 function journalModification(
   data: OutfittingData,
   module: OutfittingModule | null,
@@ -201,8 +237,9 @@ function journalModification(
   const quality = engineering && typeof engineering === 'object' ? Number(engineering.Quality) : NaN;
   const result: { blueprint?: string; grade?: number; quality?: number; special?: string } = {};
   if (typeof blueprintName === 'string' && blueprintName) {
-    if (data.blueprints[blueprintName] && (!module || data.moduleBlueprints[module.grp]?.blueprints?.[blueprintName])) {
-      result.blueprint = blueprintName;
+    const blueprint = module ? resolveBlueprint(data, module.grp, blueprintName) : (data.blueprints[blueprintName] ? blueprintName : null);
+    if (blueprint) {
+      result.blueprint = blueprint;
       result.grade = Number.isFinite(grade) ? Math.max(1, Math.min(5, Math.round(grade))) : 1;
       result.quality = Number.isFinite(quality) ? Math.max(0, Math.min(1, quality)) : 1;
     }
@@ -218,6 +255,13 @@ function journalModification(
   }
   return Object.keys(result).length ? result : null;
 }
+
+/**
+ * Строки журнала `Loadout`, которые не являются модулями: окраска, наклейки,
+ * гирлянды, болванчики, таблички с именем. Массы у них нет, на дальность они
+ * не влияют — в сборку не попадают и в отчёт об ошибках тоже.
+ */
+const COSMETIC_SLOT = /^(paintjob|decal\d*|stringlights|bobble|nameplate|vesselname|shipname|shipident)/i;
 
 /** Имя слота в журнале для нашего слота сборки. */
 function journalSlotName(section: string, index: number, size: number, counters: Record<string, number>): string {
@@ -279,6 +323,49 @@ export function toSlef(data: OutfittingData, build: ShipBuild, appVersion: strin
 
   issues.push({ level: 'warn', code: 'exchange.slefNoEngineering' });
   return { text: JSON.stringify(payload, null, 2), issues };
+}
+
+/**
+ * Подбор модуля по имени Frontier, когда точного совпадения в справочнике нет.
+ *
+ * Второй путь после `moduleBySymbol`: символ разбирается по правилам
+ * (`fdnames.parseSymbol`), класс и рейтинг уточняются по снимку FDevIDs, а из
+ * нескольких кандидатов выбирается тот, чьё имя совпало. `code` описывает
+ * причину отказа, чтобы отчёт не смешивал «неизвестный предмет» и
+ * «неоднозначный вариант».
+ */
+function guessModule(
+  data: OutfittingData,
+  item: string,
+  options: { strict?: boolean },
+): { module: OutfittingModule | null; code?: string } {
+  const parsedSpec = parseSymbol(item);
+  const catalogGrade = moduleGrade(item);
+  const spec = parsedSpec ? { ...parsedSpec, ...(catalogGrade ?? {}) } : null;
+  if (!spec) return { module: null, code: 'exchange.itemUnknown' };
+
+  const list = (data.modules[spec.group] ?? []).filter((candidate) => candidate.class === spec.class
+    && candidate.rating === spec.rating
+    && (!spec.mount || !candidate.mount || candidate.mount === spec.mount));
+  const label = moduleNameForSymbol(item);
+  const normalizedLabel = label ? normalizedEngineeringName(label) : '';
+  const named = normalizedLabel ? list.filter((candidate) => normalizedEngineeringName(candidate.name) === normalizedLabel) : [];
+  const symbol = normalizedEngineeringName(item);
+  const symbolMatched = list.filter((candidate) => normalizedEngineeringName(moduleSymbol(candidate)) === symbol);
+  const sameValue = (left: unknown, right: unknown) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  const equivalentForRange = list.length > 0 && list.every((candidate) =>
+    sameValue(candidate.mass, list[0].mass)
+    && sameValue(candidate.preEngineered, list[0].preEngineered)
+    && sameValue(candidate.jumpboost, list[0].jumpboost)
+    && (spec.group !== 'fsd' || ['optmass', 'fuelmul', 'fuelpower', 'maxfuel'].every((key) => sameValue(candidate[key], list[0][key]))));
+  const module = named.length === 1 ? named[0]
+    : symbolMatched.length === 1 ? symbolMatched[0]
+      : list.length === 1 ? list[0]
+        : options.strict && equivalentForRange ? list[0]
+          : options.strict ? null
+            : list.find((candidate) => !spec.mount || !candidate.mount || candidate.mount === spec.mount) ?? list[0] ?? null;
+  if (module) return { module };
+  return { module: null, code: list.length > 1 ? 'exchange.ambiguousModule' : 'exchange.moduleNotInCatalog' };
 }
 
 /** Разбор SLEF или сырого события `Loadout` из журнала. */
@@ -357,43 +444,22 @@ export function fromSlef(data: OutfittingData, parsed: unknown, options: { stric
       continue;
     }
     if (/cargohatch/i.test(slotName) || /planetaryapproachsuite/i.test(slotName)) continue;
+    // Косметика лежит в том же списке Modules: ни массы, ни слотов у неё нет.
+    if (COSMETIC_SLOT.test(slotName) || COSMETIC_SLOT.test(item)) continue;
 
-    const parsedSpec = parseSymbol(item);
-    const catalogGrade = moduleGrade(item);
-    const spec = parsedSpec ? { ...parsedSpec, ...(catalogGrade ?? {}) } : null;
-    if (!spec) {
-      issues.push({ level: 'warn', code: 'exchange.itemUnknown', params: { slot: slotName || item } });
-      continue;
-    }
-
-    const list = (data.modules[spec.group] ?? []).filter((module) => module.class === spec.class
-      && module.rating === spec.rating
-      && (!spec.mount || !module.mount || module.mount === spec.mount));
-    const label = moduleNameForSymbol(item);
-    const normalizedLabel = label ? normalizedEngineeringName(label) : '';
-    const named = normalizedLabel ? list.filter((candidate) => normalizedEngineeringName(candidate.name) === normalizedLabel) : [];
-    const symbol = normalizedEngineeringName(item);
-    const symbolMatched = list.filter((candidate) => normalizedEngineeringName(moduleSymbol(candidate)) === symbol);
-    const sameValue = (left: unknown, right: unknown) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
-    const equivalentForRange = list.length > 0 && list.every((candidate) =>
-      sameValue(candidate.mass, list[0].mass)
-      && sameValue(candidate.preEngineered, list[0].preEngineered)
-      && sameValue(candidate.jumpboost, list[0].jumpboost)
-      && (spec.group !== 'fsd' || ['optmass', 'fuelmul', 'fuelpower', 'maxfuel'].every((key) => sameValue(candidate[key], list[0][key]))));
-    const module = named.length === 1 ? named[0]
-      : symbolMatched.length === 1 ? symbolMatched[0]
-        : list.length === 1 ? list[0]
-          : options.strict && equivalentForRange ? list[0]
-            : options.strict ? null
-              : list.find((candidate) => !spec.mount || !candidate.mount || candidate.mount === spec.mount) ?? list[0] ?? null;
-    if (!module) {
+    // Имя Frontier из журнала — самый надёжный ключ: справочник хранит его у
+    // каждого модуля, так что Mk II, награды за общественные цели и новые
+    // предметы узнаются без догадок по классу и рейтингу.
+    const resolved: { module: OutfittingModule | null; code?: string } = moduleBySymbol(data, item) ?? guessModule(data, item, options);
+    if (!resolved.module) {
       issues.push({
         level: 'warn',
-        code: list.length > 1 ? 'exchange.ambiguousModule' : 'exchange.moduleNotInCatalog',
+        code: resolved.code ?? 'exchange.ambiguousModule',
         params: { slot: slotName || item },
       });
       continue;
     }
+    const module = resolved.module;
 
     const standardIndex = STANDARD_GROUPS.indexOf(module.grp as (typeof STANDARD_GROUPS)[number]);
     const isStandardSlot = /^(PowerPlant|MainEngines|FrameShiftDrive|LifeSupport|PowerDistributor|Radar|FuelTank)$/i.test(slotName);

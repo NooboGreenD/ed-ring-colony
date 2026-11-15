@@ -54,6 +54,7 @@ async function loadLib() {
       "export * from '@/lib/outfitting/analysis';",
       "export * from '@/lib/outfitting/exchange';",
       "export * from '@/lib/outfitting/fdnames';",
+      "export * from '@/lib/outfitting/symbols';",
       "export * from '@/lib/outfitting/merccoin';",
       "export * from '@/lib/outfitting/specs';",
       "export { issueText } from '@/lib/i18n/exchangeText';",
@@ -354,7 +355,8 @@ maybe('разбор вставленного текста узнаёт ссыл�
 // ── 6. Внутренние имена Frontier и SLEF ───────────────────────────────
 
 maybe('имена Frontier собираются и разбираются обратно', async () => {
-  const { moduleSymbol, parseSymbol, shipFdName, shipCoriolisId, bulkheadSymbol, bulkheadIndex } = await libPromise;
+  const lib = await libPromise;
+  const { moduleSymbol, parseSymbol, shipFdName, shipCoriolisId, bulkheadSymbol, bulkheadIndex } = lib;
 
   assert.equal(
     moduleSymbol({ grp: 'pp', class: 6, rating: 'A' }),
@@ -381,19 +383,86 @@ maybe('имена Frontier собираются и разбираются обр
   assert.equal(shipCoriolisId('anaconda'), 'anaconda');
   assert.equal(bulkheadIndex(bulkheadSymbol('python', 4)), 4);
 
-  // Круг «модуль → имя → модуль» для всех групп, которые умеет правило.
+  // Справочник хранит настоящие имена Frontier, поэтому круг проверяем по
+  // индексу: «имя → тот же модуль». Правило (`parseSymbol`) остаётся запасным
+  // путём для имён, которых в справочнике нет.
   let checked = 0;
   for (const [group, list] of Object.entries(data.modules)) {
     for (const module of list) {
-      const symbol = moduleSymbol(module);
-      if (!symbol) continue;
-      const parsed = parseSymbol(symbol);
-      assert.ok(parsed, `имя ${symbol} не разбирается обратно`);
-      assert.equal(parsed.group, group, `${symbol}: группа поехала`);
+      if (!module.symbol) continue;
+      if (module.rating === 'Z' || module.info) continue;
+      const match = lib.moduleBySymbol(data, module.symbol);
+      if (!match) {
+        // Один символ у нескольких записей (заводские варианты и MercGear) —
+        // это ожидаемо: разбор выбирает обычный модуль сам.
+        assert.ok(module.preEngineered || module.merc, `имя ${module.symbol} (${group}:${module.id}) не находится`);
+        continue;
+      }
+      assert.equal(match.group, group, `${module.symbol}: группа поехала`);
+      if (match.module.id !== module.id) {
+        // Общий символ у базового и заводского варианта: индекс обязан отдать
+        // обычный модуль, а не «предзаряженный» двойник.
+        assert.ok(module.preEngineered || module.merc, `${module.symbol}: вернулся другой модуль`);
+        assert.equal(match.module.preEngineered, undefined);
+      }
       checked += 1;
     }
   }
-  assert.ok(checked > 400, `правило должно покрывать сотни модулей, а покрыло ${checked}`);
+  assert.ok(checked > 400, `индекс должен покрывать сотни модулей, а покрыл ${checked}`);
+
+  // Журнальная обёртка и регистр не мешают опознанию.
+  assert.equal(lib.moduleBySymbol(data, '$int_powerplant_size6_class5_name;')?.module.rating, 'A');
+  assert.equal(lib.moduleBySymbol(data, '') ?? null, null);
+});
+
+maybe('Lynx Highliner: Mk II каюты и большой ангар SRV узнаются по имени Frontier', async () => {
+  const lib = await libPromise;
+  const ship = data.ships.lynx_highliner;
+  assert.ok(ship, 'Lynx Highliner должен быть в справочнике');
+  assert.equal(ship.properties.hullMass, 260);
+  // Три отсека зарезервированы под обычные каюты, остальные — под что угодно.
+  const passenger = ship.slots.internal.filter((slot) => typeof slot === 'object' && slot.name === 'Passenger');
+  assert.equal(passenger.length, 3, 'у Lynx три пассажирских отсека');
+  assert.deepEqual(Object.keys(passenger[0].eligible).sort(), ['pce', 'pci'], 'только эконом и бизнес');
+
+  const build = lib.defaultBuild(data, 'lynx_highliner');
+  assert.ok(build.standard.every(Boolean), 'все основные слоты заполнены заводскими модулями');
+  const slots = lib.buildSlots(data, build);
+  // Mk II каюты ставит только Lynx.
+  const lynxCabins = lib.modulesForSlot(data, data.ships.lynx_highliner, slots.find((slot) => slot.section === 'internal' && slot.class === 6))
+    .filter((module) => /Mk II/.test(module.name ?? '') && /Passenger/.test(module.name ?? ''));
+  assert.ok(lynxCabins.length >= 2, 'Lynx видит каюты Mk II');
+  const anacondaCabin = lib.modulesForSlot(data, data.ships.anaconda,
+    lib.buildSlots(data, lib.defaultBuild(data, 'anaconda')).find((slot) => slot.section === 'internal' && slot.class === 6))
+    .filter((module) => /Mk II/.test(module.name ?? '') && /Passenger/.test(module.name ?? ''));
+  assert.deepEqual(anacondaCabin, [], 'другим кораблям каюты Mk II недоступны');
+
+  // Заводская сборка Lynx переживает круг SLEF → Loadout без предупреждений.
+  const exported = JSON.parse(lib.toSlef(data, build, 'test').text);
+  const back = lib.fromSlef(data, exported, { strict: true });
+  assert.ok(back.build, 'сборка собирается обратно');
+  assert.deepEqual(back.issues, [], `предупреждений быть не должно: ${back.issues.map((issue) => lib.issueText(issue, 'ru')).join('; ')}`);
+  assert.equal(back.build.ship, 'lynx_highliner');
+
+  // Каюты Mk II и ангар SRV ставятся по точному имени Frontier.
+  const cabin = data.modules.pce.find((module) => module.id === 'mk2_5d');
+  const hangar = data.modules.pv.find((module) => module.id === 'large_2f');
+  assert.ok(cabin && hangar);
+  assert.equal(cabin.symbol, 'Int_MkII_PassengerCabin_Size5_Class1');
+  assert.equal(hangar.symbol, 'Int_LargeBuggyBay_Size2_Class3');
+  assert.equal(lib.moduleBySymbol(data, cabin.symbol)?.module.id, 'mk2_5d');
+  assert.equal(lib.moduleBySymbol(data, hangar.symbol)?.module.id, 'large_2f');
+  assert.equal(cabin.passengers, 24, 'каюта Mk II вмещает в полтора раза больше');
+  assert.equal(lib.moduleSymbol(cabin), cabin.symbol, 'выгрузка пишет то же имя, что игра');
+
+  // Ангар SRV ограничен корпусами из набора EDSY, а не «для всех».
+  assert.ok(hangar.ships?.includes('anaconda') && !hangar.ships?.includes('sidewinder'));
+
+  // Корабль из журнала узнаётся по игровому имени (`Loadout.Ship`).
+  assert.equal(lib.shipCoriolisId('MediumTransport01'), 'lynx_highliner');
+  assert.equal(lib.shipCoriolisId('AnacondaMkII'), 'anaconda_mk_ii');
+  assert.equal(lib.shipCoriolisId('LakonMiner'), 'type_11_prospector');
+  assert.equal(lib.shipCoriolisId('SmallCombat01_NX'), 'kestrel');
 });
 
 maybe('SLEF переносит корабль и его модули', async () => {
@@ -441,6 +510,58 @@ maybe('игровой Loadout различает обычный FSD и SCO-ва�
   const imported = lib.fromSlef(data, payload, { strict: true });
   assert.equal(imported.build.standard[2], `fsd:${sco.id}`);
   assert.deepEqual(imported.issues, []);
+});
+
+maybe('живой Loadout: общий Misc-чертёж, косметика и незнакомый модуль не ломают разбор', async () => {
+  const lib = await libPromise;
+  const build = lib.defaultBuild(data, 'anaconda');
+  const scoop = data.modules.fs.find((module) => module.class === 5 && module.rating === 'A');
+  assert.ok(scoop, 'нужен топливозаборник 5A');
+  const withScoop = lib.buildSlots(data, build)
+    .find((slot) => slot.section === 'internal' && !slot.module && slot.class >= 5);
+  assert.ok(withScoop, 'у Anaconda должен быть свободный отсек под 5A');
+  build.internal[withScoop.index] = lib.moduleRef(scoop);
+
+  const payload = JSON.parse(lib.toSlef(data, build, 'test').text);
+  const modules = payload[0].data.Modules;
+  const lifeSupport = modules.find((module) => module.Slot === 'LifeSupport');
+  assert.ok(lifeSupport, 'в SLEF есть жизнеобеспечение');
+  // Игра присылает общий чертёж как есть: у `ls` в справочнике он называется
+  // `LifeSupport_LightWeight`, и без алиаса масса считалась бы неточно.
+  lifeSupport.Engineering = { BlueprintName: 'Misc_LightWeight', Level: 5, Quality: 1 };
+  const fuelScoop = modules.find((module) => lib.parseSymbol(String(module.Item))?.group === 'fs');
+  assert.ok(fuelScoop, 'в SLEF есть топливозаборник');
+  // «Scoop rate enhanced» есть в игре, но отсутствует в наборе Coriolis.
+  fuelScoop.Engineering = { BlueprintName: 'FuelScoop_Efficiency', Level: 5, Quality: 1 };
+  // Косметика лежит в том же списке модулей и не имеет ни массы, ни слота.
+  modules.push({ Slot: 'PaintJob', Item: 'PaintJob_Anaconda_Default', On: true, Priority: 1 });
+  modules.push({ Slot: 'Decal1', Item: 'Decal_Explorer', On: true, Priority: 1 });
+  // Модуль, которого нет в справочнике: это предупреждение, а не отказ.
+  modules.push({ Slot: 'TinyHardpoint9', Item: 'Hpt_NoSuchModule_Unknown', On: true, Priority: 1 });
+
+  const baselinePayload = JSON.parse(lib.toSlef(data, build, 'test').text);
+  const baseline = lib.fromSlef(data, baselinePayload);
+  const imported = lib.fromSlef(data, payload, { strict: true });
+  assert.ok(imported.build, 'сборка собирается несмотря на предупреждения');
+  assert.deepEqual(imported.issues.filter((issue) => issue.level === 'error'), []);
+
+  // Общий чертёж встал на семейный идентификатор и реально облегчил модуль.
+  const lightweight = Object.values(imported.build.mods).map((mod) => mod.blueprint);
+  assert.ok(lightweight.includes('LifeSupport_LightWeight'), `ожидался алиас LifeSupport_LightWeight, получено ${lightweight.join(', ')}`);
+  assert.ok(lightweight.includes('FuelScoop_Efficiency'), 'чертёж топливозаборника должен распознаваться');
+  assert.ok(lib.computeStats(data, imported.build).jumpRange > lib.computeStats(data, baseline.build).jumpRange,
+    'облегчённое жизнеобеспечение должно прибавлять дальность');
+
+  // Эффект чертежа топливозаборника: +50 % к скорости заправки и +15 % к питанию.
+  const engineered = lib.effectiveModule(data, scoop, { blueprint: 'FuelScoop_Efficiency', grade: 5, quality: 1 });
+  assert.ok(Math.abs(Number(engineered.rate) - Number(scoop.rate) * 1.5) < 1e-6, 'скорость заправки +50 %');
+  assert.ok(Math.abs(Number(engineered.power) - Number(scoop.power) * 1.15) < 1e-6, 'потребление +15 %');
+
+  const texts = imported.issues.map((issue) => lib.issueText(issue, 'ru')).join('; ');
+  assert.doesNotMatch(texts, /PaintJob|Decal/, 'косметика не должна попадать в отчёт');
+  assert.doesNotMatch(texts, /Misc_LightWeight|FuelScoop_Efficiency/, `распознанные чертежи не должны ругаться: ${texts}`);
+  assert.match(texts, /модуль не распознан/, 'незнакомый модуль обязан остаться в отчёте');
+  assert.ok(imported.issues.every((issue) => issue.level === 'warn'), 'незнакомый модуль — предупреждение');
 });
 
 maybe('игровой Loadout переносит чертёж, качество и экспериментальный эффект', async () => {

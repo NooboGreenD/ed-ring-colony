@@ -1,0 +1,436 @@
+{
+  "source": {
+    "gameUpdate": "Elite Dangerous 4.3.3.0 (Lynx Highliner) и модули Operations",
+    "shipData": "taleden/EDSY (eddb.js: module, ship)",
+    "sourceCommit": "0f577f76e94d9c1aa06defdbb39ee92b249afa56",
+    "note": "Корабль Lynx Highliner и модули, которых ещё нет в EDCD/coriolis-data: крытые жилые отсеки Mk II (только Lynx) и большой ангар SRV. Имена Frontier взяты из набора EDSY, цены и масса — оттуда же."
+  },
+  "ships": {
+    "lynx_highliner": {
+      "id": "lynx_highliner",
+      "properties": {
+        "hullCost": 67992080,
+        "speed": 285,
+        "boost": 350,
+        "minthrust": 73.75,
+        "boostEnergy": 14,
+        "boostInt": 5,
+        "baseShieldStrength": 200,
+        "baseArmour": 350,
+        "hardness": 55,
+        "hullMass": 260,
+        "pitch": 26,
+        "roll": 60,
+        "yaw": 19,
+        "crew": 2,
+        "reserveFuelCapacity": 0.75,
+        "name": "Lynx Highliner",
+        "manufacturer": "Zorgon Peterson",
+        "class": 2,
+        "heatCapacity": 279,
+        "masslock": 16,
+        "pipSpeed": null,
+        "fighterHangars": false
+      },
+      "retailCost": 69289470,
+      "bulkheads": [
+        {
+          "id": "lx0",
+          "grp": "bh",
+          "cost": 0,
+          "mass": 0,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 0.8,
+          "name": "Lightweight Alloy"
+        },
+        {
+          "id": "lx1",
+          "grp": "bh",
+          "cost": 27715790,
+          "mass": 26,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 1.52,
+          "name": "Reinforced Alloy"
+        },
+        {
+          "id": "lx2",
+          "grp": "bh",
+          "cost": 62360520,
+          "mass": 53,
+          "causres": 0,
+          "explres": -0.4,
+          "kinres": -0.2,
+          "thermres": 0,
+          "hullboost": 2.5,
+          "name": "Military Grade Composite"
+        },
+        {
+          "id": "lx3",
+          "grp": "bh",
+          "cost": 147378700,
+          "mass": 53,
+          "causres": 0,
+          "explres": -0.5,
+          "kinres": -0.75,
+          "thermres": 0.5,
+          "hullboost": 2.5,
+          "name": "Mirrored Surface Composite"
+        },
+        {
+          "id": "lx4",
+          "grp": "bh",
+          "cost": 163315270,
+          "mass": 53,
+          "causres": 0,
+          "explres": 0.2,
+          "kinres": 0.25,
+          "thermres": -0.4,
+          "hullboost": 2.5,
+          "name": "Reactive Surface Composite"
+        }
+      ],
+      "slots": {
+        "standard": [
+          5,
+          6,
+          5,
+          6,
+          5,
+          3,
+          5
+        ],
+        "hardpoints": [
+          3,
+          2,
+          2,
+          2,
+          2,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          6,
+          {
+            "class": 6,
+            "name": "Passenger",
+            "eligible": {
+              "pce": 1,
+              "pci": 1
+            }
+          },
+          {
+            "class": 6,
+            "name": "Passenger",
+            "eligible": {
+              "pce": 1,
+              "pci": 1
+            }
+          },
+          {
+            "class": 5,
+            "name": "Passenger",
+            "eligible": {
+              "pce": 1,
+              "pci": 1
+            }
+          },
+          5,
+          4,
+          4,
+          3,
+          2,
+          1,
+          {
+            "class": 1,
+            "name": "PlanetaryApproachSuite",
+            "eligible": {
+              "pas": 1
+            }
+          }
+        ]
+      },
+      "defaults": {
+        "standard": [
+          "pp:pj",
+          "t:to",
+          "fsd:FN",
+          "ls:lt",
+          "pd:do",
+          "s:se",
+          "ft:f5"
+        ],
+        "hardpoints": [
+          0,
+          "pl:17",
+          "pl:17",
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "internal": [
+          "sg:4e",
+          "pce:md",
+          "pce:md",
+          "pce:mc",
+          "pce:mc",
+          0,
+          0,
+          0,
+          "sua:3w",
+          "dc:3x",
+          ""
+        ]
+      }
+    }
+  },
+  "modules": [
+    {
+      "id": "large_2f",
+      "name": "Large Planetary Vehicle Hangar",
+      "class": 2,
+      "rating": "F",
+      "cost": 32400,
+      "mass": 12,
+      "integrity": 30,
+      "power": 0.75,
+      "bays": 1,
+      "ammocost": 1030,
+      "grp": "pv",
+      "symbol": "Int_LargeBuggyBay_Size2_Class3",
+      "ships": [
+        "anaconda",
+        "alliance_crusader",
+        "krait_mkii",
+        "anaconda_mk_ii",
+        "federal_gunship",
+        "type_9_heavy",
+        "keelback",
+        "type_10_defender",
+        "type_11_prospector",
+        "explorer_nx",
+        "beluga",
+        "federal_corvette",
+        "imperial_cutter",
+        "panthermkii"
+      ],
+      "sourceName": "Large Planetary Vehicle Hangar"
+    },
+    {
+      "id": "large_4f",
+      "name": "Large Planetary Vehicle Hangar",
+      "class": 4,
+      "rating": "F",
+      "cost": 129600,
+      "mass": 20,
+      "integrity": 30,
+      "power": 1.2,
+      "bays": 2,
+      "ammocost": 1030,
+      "grp": "pv",
+      "symbol": "Int_LargeBuggyBay_Size4_Class3",
+      "ships": [
+        "anaconda",
+        "alliance_crusader",
+        "krait_mkii",
+        "anaconda_mk_ii",
+        "federal_gunship",
+        "type_9_heavy",
+        "keelback",
+        "type_10_defender",
+        "type_11_prospector",
+        "explorer_nx",
+        "beluga",
+        "federal_corvette",
+        "imperial_cutter",
+        "panthermkii"
+      ],
+      "sourceName": "Large Planetary Vehicle Hangar"
+    },
+    {
+      "id": "large_6f",
+      "name": "Large Planetary Vehicle Hangar",
+      "class": 6,
+      "rating": "F",
+      "cost": 1036800,
+      "mass": 34,
+      "integrity": 30,
+      "power": 1.8,
+      "bays": 4,
+      "ammocost": 1030,
+      "grp": "pv",
+      "symbol": "Int_LargeBuggyBay_Size6_Class3",
+      "ships": [
+        "anaconda",
+        "alliance_crusader",
+        "krait_mkii",
+        "anaconda_mk_ii",
+        "federal_gunship",
+        "type_9_heavy",
+        "keelback",
+        "type_10_defender",
+        "type_11_prospector",
+        "explorer_nx",
+        "beluga",
+        "federal_corvette",
+        "imperial_cutter",
+        "panthermkii"
+      ],
+      "sourceName": "Large Planetary Vehicle Hangar"
+    },
+    {
+      "id": "mk2_2d",
+      "name": "Mk II Economy Class Passenger Cabin",
+      "class": 2,
+      "rating": "D",
+      "cost": 5750,
+      "mass": 2.5,
+      "passengers": 3,
+      "grp": "pce",
+      "symbol": "Int_MkII_PassengerCabin_Size2_Class1",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Economy Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_3d",
+      "name": "Mk II Economy Class Passenger Cabin",
+      "class": 3,
+      "rating": "D",
+      "cost": 11540,
+      "mass": 5,
+      "passengers": 6,
+      "grp": "pce",
+      "symbol": "Int_MkII_PassengerCabin_Size3_Class1",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Economy Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_4d",
+      "name": "Mk II Economy Class Passenger Cabin",
+      "class": 4,
+      "rating": "D",
+      "cost": 25270,
+      "mass": 10,
+      "passengers": 12,
+      "grp": "pce",
+      "symbol": "Int_MkII_PassengerCabin_Size4_Class1",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Economy Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_5d",
+      "name": "Mk II Economy Class Passenger Cabin",
+      "class": 5,
+      "rating": "D",
+      "cost": 46610,
+      "mass": 20,
+      "passengers": 24,
+      "grp": "pce",
+      "symbol": "Int_MkII_PassengerCabin_Size5_Class1",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Economy Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_6d",
+      "name": "Mk II Economy Class Passenger Cabin",
+      "class": 6,
+      "rating": "D",
+      "cost": 81880,
+      "mass": 40,
+      "passengers": 48,
+      "grp": "pce",
+      "symbol": "Int_MkII_PassengerCabin_Size6_Class1",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Economy Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_3c",
+      "name": "Mk II Business Class Passenger Cabin",
+      "class": 3,
+      "rating": "C",
+      "cost": 35610,
+      "mass": 5,
+      "passengers": 4,
+      "grp": "pci",
+      "symbol": "Int_MkII_PassengerCabin_Size3_Class2",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Business Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_4c",
+      "name": "Mk II Business Class Passenger Cabin",
+      "class": 4,
+      "rating": "C",
+      "cost": 75820,
+      "mass": 10,
+      "passengers": 9,
+      "grp": "pci",
+      "symbol": "Int_MkII_PassengerCabin_Size4_Class2",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Business Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_5c",
+      "name": "Mk II Business Class Passenger Cabin",
+      "class": 5,
+      "rating": "C",
+      "cost": 123150,
+      "mass": 20,
+      "passengers": 15,
+      "grp": "pci",
+      "symbol": "Int_MkII_PassengerCabin_Size5_Class2",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Business Class Passenger Cabin"
+    },
+    {
+      "id": "mk2_6c",
+      "name": "Mk II Business Class Passenger Cabin",
+      "class": 6,
+      "rating": "C",
+      "cost": 245640,
+      "mass": 40,
+      "passengers": 24,
+      "grp": "pci",
+      "symbol": "Int_MkII_PassengerCabin_Size6_Class2",
+      "ships": [
+        "lynx_highliner"
+      ],
+      "sourceName": "Mk II Business Class Passenger Cabin"
+    }
+  ],
+  "symbols": {
+    "crl:mk2_6d": "Int_LargeCargoRack_Size6_Class1",
+    "fh:mk2_5d": "Int_FighterBayMk2_Size5_Class1",
+    "fh:mk2_6d": "Int_FighterBayMk2_Size6_Class1",
+    "fh:mk2_7d": "Int_FighterBayMk2_Size7_Class1",
+    "pv:mk2_2f": "Int_MkIILargeBuggyBay_Size2_Class3",
+    "pv:mk2_4f": "Int_MkIILargeBuggyBay_Size4_Class3",
+    "pv:mk2_6f": "Int_MkIILargeBuggyBay_Size6_Class3"
+  }
+}
