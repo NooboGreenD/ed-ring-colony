@@ -138,6 +138,10 @@ const CABIN_CLASS: Record<string, number> = { pce: 1, pci: 2, pcm: 3, pcq: 4 };
  */
 export function moduleSymbol(module: OutfittingModule): string | null {
   const grp = module.grp;
+  // Справочник хранит настоящее имя Frontier — оно главнее любого правила.
+  // Правило знает только типовые модули и молча ошибается на Mk II, наградах
+  // за общественные цели и многофункциональных контроллерах дронов.
+  if (module.symbol) return module.symbol;
   const size = module.class;
   const ratingClass = RATING_TO_CLASS[module.rating] ?? 1;
 
@@ -292,6 +296,7 @@ export const SHIP_FD_TO_CORIOLIS: Record<string, string> = {
   typex_2: 'alliance_crusader',
   typex_3: 'alliance_challenger',
   anaconda: 'anaconda',
+  anacondamkii: 'anaconda_mk_ii',
   asp: 'asp',
   asp_scout: 'asp_scout',
   belugaliner: 'beluga',
@@ -314,15 +319,18 @@ export const SHIP_FD_TO_CORIOLIS: Record<string, string> = {
   cutter: 'imperial_cutter',
   empire_eagle: 'imperial_eagle',
   independant_trader: 'keelback',
+  lakonminer: 'type_11_prospector',
   krait_mkii: 'krait_mkii',
   krait_light: 'krait_phantom',
   mamba: 'mamba',
   mandalay: 'mandalay',
+  mediumtransport01: 'lynx_highliner',
   orca: 'orca',
   panthermkii: 'panthermkii',
   python: 'python',
   python_nx: 'python_nx',
   sidewinder: 'sidewinder',
+  smallcombat01_nx: 'kestrel',
   type6: 'type_6_transporter',
   type7: 'type_7_transport',
   type8: 'type_8_transport',

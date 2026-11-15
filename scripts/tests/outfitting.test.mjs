@@ -81,6 +81,72 @@ test('справочник верфи содержит корабли, моду�
   assert.ok(anaconda.properties.hullMass > 0);
 });
 
+test('чертёж «Scoop rate enhanced» описан в справочнике, хотя его нет в наборе Coriolis', () => {
+  const group = data.moduleBlueprints.fs?.blueprints ?? {};
+  assert.ok(group.FuelScoop_Shielded, 'штатный чертёж топливозаборника на месте');
+  const scoop = group.FuelScoop_Efficiency;
+  assert.ok(scoop, 'без этого чертежа живой Loadout ругался «чертёж не распознан»');
+  const grades = Object.keys(scoop.grades ?? {});
+  assert.deepEqual(grades.sort(), ['1', '2', '3', '4', '5'], 'доступны все пять уровней');
+  assert.deepEqual(scoop.grades['5'].features.rate, [0.5, 0.5], '+50 % к скорости заправки на пятом уровне');
+  assert.deepEqual(scoop.grades['1'].features.rate, [0.1, 0.1]);
+  assert.deepEqual(data.blueprints.FuelScoop_Efficiency.grades['5'].features, scoop.grades['5'].features);
+  assert.deepEqual(scoop.grades['5'].engineers, ['Marsha Hicks'], 'пятый уровень делает только Марша Хикс');
+  assert.equal(data.engineers['Marsha Hicks']['fs:FuelScoop_Efficiency'], 5, 'инженерная карта знает новый чертёж');
+});
+
+test('у каждого модуля есть настоящее имя Frontier, и оно не повторяется у обычных модулей', () => {
+  const all = Object.entries(data.modules).flatMap(([group, list]) => list.map((module) => ({ group, ...module })));
+  const missing = all.filter((module) => !module.symbol).map((module) => `${module.group}:${module.id}`);
+  assert.deepEqual(missing, [], `без имени Frontier живой Loadout не узнаётся: ${missing.join(', ')}`);
+
+  const seen = new Map();
+  for (const module of all) {
+    const key = module.symbol.toLowerCase();
+    const previous = seen.get(key);
+    if (!previous) { seen.set(key, module); continue; }
+    // Заводские варианты и MercGear делят имя с базовым модулем — это норма,
+    // разбор выбирает обычный модуль. Всё остальное — ошибка данных.
+    assert.ok(module.preEngineered || module.merc || previous.preEngineered || previous.merc,
+      `${module.symbol} встречается у ${previous.group}:${previous.id} и ${module.group}:${module.id}`);
+  }
+});
+
+test('Lynx Highliner: Mk II каюты и большой ангар SRV из обновления 4.3.3.0', () => {
+  const ship = data.ships.lynx_highliner;
+  assert.ok(ship, 'Lynx Highliner должен быть в каталоге');
+  assert.equal(ship.properties.name, 'Lynx Highliner');
+  assert.equal(ship.properties.manufacturer, 'Zorgon Peterson');
+  assert.equal(ship.properties.class, 2, 'средний корабль');
+  assert.equal(ship.properties.hullMass, 260);
+  assert.equal(ship.bulkheads.length, 5);
+  assert.equal(ship.slots.standard.length, 7);
+  assert.equal(ship.slots.hardpoints.filter((size) => size > 0).length, 5);
+  assert.equal(ship.slots.internal.filter((slot) => typeof slot === 'object' && slot.name === 'Passenger').length, 3);
+
+  // Экономика: 2D…6D, вместимость в полтора раза выше обычной каюты.
+  const economy = data.modules.pce.filter((module) => /^mk2_/.test(module.id));
+  assert.deepEqual(economy.map((module) => `${module.class}${module.rating}`), ['2D', '3D', '4D', '5D', '6D']);
+  assert.deepEqual(economy.map((module) => module.passengers), [3, 6, 12, 24, 48]);
+  const business = data.modules.pci.filter((module) => /^mk2_/.test(module.id));
+  assert.deepEqual(business.map((module) => `${module.class}${module.rating}`), ['3C', '4C', '5C', '6C']);
+  assert.deepEqual(business.map((module) => module.passengers), [4, 9, 15, 24]);
+  for (const module of [...economy, ...business]) {
+    assert.deepEqual(module.ships, ['lynx_highliner'], 'каюты Mk II ставит только Lynx');
+    assert.match(module.symbol, /^Int_MkII_PassengerCabin_Size\d_Class[12]$/);
+  }
+
+  // Большой ангар SRV: обычный и Mk II, по три размера.
+  const hangars = data.modules.pv.filter((module) => /^large_/.test(module.id));
+  assert.deepEqual(hangars.map((module) => `${module.class}${module.rating}`), ['2F', '4F', '6F']);
+  assert.deepEqual(hangars.map((module) => module.bays), [1, 2, 4]);
+  assert.deepEqual(hangars.map((module) => module.symbol),
+    ['Int_LargeBuggyBay_Size2_Class3', 'Int_LargeBuggyBay_Size4_Class3', 'Int_LargeBuggyBay_Size6_Class3']);
+  assert.ok(hangars.every((module) => module.ships?.includes('anaconda') && !module.ships.includes('sidewinder')));
+  assert.ok(data.modules.pv.some((module) => module.symbol === 'Int_MkIILargeBuggyBay_Size2_Class3'),
+    'у Mk II Large PVH тоже есть настоящее имя');
+});
+
 test('обновление 2026-10-20 добавляет Anaconda Mk II и ребалансирует корабли', () => {
   const ship = data.ships.anaconda_mk_ii;
   assert.ok(ship, 'Anaconda Mk II должен быть в каталоге');

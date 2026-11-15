@@ -540,7 +540,9 @@ export default function ModulePicker({
               }}
             >
               {slotKind} · {t('outfitting.picker.class', { value: slot.class })}
-              {slot.special ? ` · ${slot.special === 'Military' ? t('outfitting.picker.military') : slot.special}` : ''}
+              {slot.special ? ` · ${slot.special === 'Military' ? t('outfitting.picker.military')
+                : slot.special === 'Passenger' ? t('outfitting.picker.passenger')
+                  : slot.special}` : ''}
             </span>
 
             {current ? (

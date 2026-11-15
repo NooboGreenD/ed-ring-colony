@@ -53,10 +53,13 @@ export default function AtlasShipRouteFinder({ initialTo = '', onRouteFound }: {
         const fuel = Math.max(0, Number(state.fuel_level) || 0);
         const profile = profileAt(data, imported.build, stats, cargo, fuel);
         if (!(profile.jumpRange > 0)) throw new Error(t('atlas.ui.shipRangeError'));
-        const unknownIssues = imported.issues.filter((issue) => issue.level !== 'error').map((issue) => issueText(issue, locale));
-        if (unknownIssues.length > 0) {
-          throw new Error(t('atlas.ui.shipUnknownLoadout', { issues: unknownIssues.slice(0, 5).join(' · ') }));
-        }
+        // Предупреждения не блокируют маршрут: это косметика, редкие чертежи
+        // или модули, которых нет в справочнике. Такой модуль просто не
+        // попадает в расчёт массы, о чём панель честно предупреждает строкой
+        // `rangeIssues` — но саму навигацию из-за этого отключать нельзя.
+        const unknownIssues = [...new Set(imported.issues
+          .filter((issue) => issue.level !== 'error')
+          .map((issue) => issueText(issue, locale)))];
         const shipName = data.ships[imported.build.ship]?.properties.name || imported.build.ship;
         const loadoutDate = state.loadout_at ? new Date(state.loadout_at) : null;
         const dateLabel = loadoutDate && Number.isFinite(loadoutDate.getTime())

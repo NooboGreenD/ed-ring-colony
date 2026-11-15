@@ -78,6 +78,13 @@ export interface OutfittingModule {
   coins?: number;
   /** Имя из набора данных до замены на официальное игровое. */
   sourceName?: string;
+  /**
+   * Внутреннее имя Frontier (`Int_…`, `Hpt_…`) — то самое, что игра пишет в
+   * журнал (`Loadout.Modules[].Item`) и что понимают EDSY, Coriolis и Inara.
+   * Хранится в справочнике, чтобы живой `Loadout` узнавался без догадок:
+   * вывести по правилу можно не всё (Mk II, награды за общественные цели).
+   */
+  symbol?: string;
   [key: string]: ModuleValue | undefined;
 }
 
