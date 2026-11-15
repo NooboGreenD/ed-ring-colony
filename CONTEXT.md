@@ -2439,3 +2439,65 @@ rewards, multi-limpet controllers or anything Frontier adds after a data update.
 - `node scripts/run-tests.mjs`: 2065 of 2067, the two failures
   (`carrier-jump-schedule`, `community-goal-admin-api`) reproduce on the base
   commit and are unrelated to the catalogue.
+
+### 8.38 Deploying on any server: parameters instead of server-specific paths — 16.11.2026
+
+The installer worked, but it assumed *this* server: `/opt/ed-ring-colony`,
+`/mnt/sdb/ed-ring-colony/spansh`, port 3000, and an upstream Supabase `master`.
+On fresh hardware those assumptions either fail late (after a 20–30 minute image
+build) or fail silently. The work is in `deploy/selfhost/install.sh` (flow and
+flags), `deploy/selfhost/smoke-test.sh` (new), `deploy/selfhost/fix-storage-limit.sh`
+(new), `DEPLOY-ANY.md` (new runbook) and one line of `docker-compose.yml`.
+
+- **Preflight before anything is touched** (`step "0/10"`): OS family
+  (Debian/Ubuntu; other distributions stop with an explanation, since apt/ufw/
+  nginx/certbot are assumed), RAM ≥ 3.5 GB, ≥ 20 GB free where the install root
+  lives, ports 80/443/`WEB_PORT`/8000 free (checked through `/dev/tcp`, so it
+  works before any package is installed), systemd present, and for a domain —
+  whether it resolves and whether it resolves to this server's public address.
+  A reinstall is detected by `credentials.txt`/`src/docker-compose.yml` and
+  skips the port check, because those ports are ours. `--force` continues
+  through objections for hosts where the warning is acceptable.
+- **Parameters**: `--root` (default `/opt/ed-ring-colony`, so nothing changes
+  for existing installs), `--web-port` (`WEB_HOST_PORT`, host side only — the
+  container still listens on 3000; nginx `proxy_pass` is generated with it),
+  `--galaxy-dir` (`GALAXY_DATA_HOST_DIR`), `--supabase-ref`. Resolved paths go
+  to `КАТАЛОГ/install-info.txt` (0600) so a repeat run does not need the
+  secrets file.
+- **The galaxy dump directory was a real defect**: the compose default
+  `/mnt/sdb/ed-ring-colony/spansh` exists on one server. Docker created it as
+  `root:root` on the system disk, while the site runs as uid 1001, so the first
+  dump download failed with EACCES. Now the default is
+  `КАТАЛОГ/data/spansh`, it is `chown 1001:1001`, and the free space is checked
+  (~10 GiB needed); `--galaxy-dir` keeps the separate-disk setup.
+- **`FILE_SIZE_LIMIT` was dead configuration**: `install.sh` wrote 70 MiB into
+  the Supabase `.env`, but upstream's `docker-compose.yml` hardcodes
+  `FILE_SIZE_LIMIT: 52428800`, so the effective cap stayed 50 MiB and the
+  64 MiB galaxy point cloud always got 413. The installer now rewrites that
+  line to `${FILE_SIZE_LIMIT:-52428800}` (also on re-runs), and
+  `fix-storage-limit.sh` repairs already-deployed servers by recreating only
+  the `storage` container.
+- **Supabase stack pinned** to release `v1.26.08` (Postgres image identical to
+  master, service patch versions slightly older) instead of `master.tar.gz`;
+  `--supabase-ref master` restores the old behaviour. All variables the
+  installer writes were checked against the tag, and a missing `db` service
+  aborts with a clear message.
+- **Certbot failure is no longer fatal**: an unpropagated DNS record or a
+  closed port 80 used to abort the run before the site was even built. Now it
+  warns, leaves the site on http, and prints the exact command to re-issue.
+- **Swap** falls back to `dd` when `fallocate` is unsupported (btrfs/ZFS,
+  overlay roots), and `/etc/fstab` is not duplicated on re-runs.
+- **`smoke-test.sh`** (also run by the installer as `9a/10`) checks containers
+  by compose label (project names vary with `--root`), `/api/health` both
+  directly and through nginx, `pg_isready` + `public` schema size, Kong
+  `/auth/v1/health` and `/storage/v1/version`, write access to
+  `/app/data/spansh` and `/data/uploader` **as uid 1001**, free space, and the
+  jobs state file. Exit code 1 on errors, warnings never fail the run. It is
+  read-only by design, and the test suite proves it with docker/curl stubs.
+- `deploy/selfhost/check-release-upload-limit.sh` now recognises a site block
+  by any loopback port, not just `:3000`.
+- Tests: `scripts/tests/deploy-any-server.test.mjs` (flags, preflight order,
+  pinned stack, Storage patch, non-fatal certbot, port plumbing, permissions,
+  smoke-test behaviour on healthy/broken/fake roots); `release-upload-limits`
+  learned `$WEB_PORT`; `update-agent` keeps `127.0.0.1` binding while allowing
+  `WEB_HOST_PORT`.

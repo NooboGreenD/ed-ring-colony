@@ -768,9 +768,14 @@ test('apply-env.sh: ошибка compose попадает в поле error и �
   assert.equal(failure.message, failure.error, 'для совместимости message дублирует ошибку, но state.error уже заполнен');
 });
 
-test('docker-compose.yml: порты сервиса web зафиксированы на 127.0.0.1:3000:3000 (состояние 24 часа назад)', () => {
+test('docker-compose.yml: web по умолчанию на 127.0.0.1:3000, порт хоста переопределяется WEB_HOST_PORT', () => {
   const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
-  assert.match(compose, /"127\.0\.0\.1:3000:3000"/, 'порт web зафиксирован как 127.0.0.1:3000:3000 без параметризации');
+  // Синологический PORT_BIND откатывали: он переписывал и порт, и биндинг
+  // сразу. Здесь только внешний порт на loopback, значение по умолчанию —
+  // прежнее 3000: установка без переменной ведёт себя как раньше.
+  assert.match(compose, /"127\.0\.0\.1:\$\{WEB_HOST_PORT:-3000\}:3000"/,
+    'web слушает только loopback, порт хоста — WEB_HOST_PORT (по умолчанию 3000)');
+  assert.doesNotMatch(compose, /0\.0\.0\.0:\$\{WEB_HOST_PORT/, 'наружу порт сайта не выставляется');
   assert.doesNotMatch(compose, /PORT_BIND/, 'PORT_BIND не используется после отката к состоянию 24 часа назад');
   assert.doesNotMatch(compose, /SYNOLOGY_SITE_BIND/, 'SYNOLOGY_SITE_BIND удалён при откате');
 });

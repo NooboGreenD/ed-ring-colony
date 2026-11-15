@@ -21,7 +21,7 @@
 | Лаунчер пишет «Сервер обновлений недоступен» и `latin-1` в тексте ошибки | [UPDATE-CHECK-HEADER-FIX.md](UPDATE-CHECK-HEADER-FIX.md) — длинное тире в `User-Agent` на свежей установке |
 | Цели сообщества: почему нет наград/тиров, куда уходят истёкшие CG | [COMMUNITY-GOALS.md](COMMUNITY-GOALS.md) |
 | «Не загружаются картинки», Supabase Storage упал: проверить и перезапустить | [STORAGE-RESTART.md](STORAGE-RESTART.md) — Админка → Мониторинг → «Хранилище файлов» |
-| Поставить сервер с нуля | [SELFHOST.md](SELFHOST.md), [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md), [SERVER-SETUP.md](SERVER-SETUP.md) |
+| Поставить сервер с нуля (любой VPS) | [DEPLOY-ANY.md](DEPLOY-ANY.md) — одна команда + проверка; подробности: [SELFHOST.md](SELFHOST.md), [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md), [SERVER-SETUP.md](SERVER-SETUP.md) |
 | Обновить ОС работающего сервера (20.04 → 22.04) | [OS-UPGRADE-2204.md](OS-UPGRADE-2204.md) — подготовка, бэкап, окно, проверки, откат |
 | Все переменные окружения | [.env.example](.env.example) |
 | Схема базы и миграции | [supabase/DATABASE.md](supabase/DATABASE.md) |
@@ -70,6 +70,7 @@
 | Документ | О чём |
 |---|---|
 | [MONITORING.md](MONITORING.md) | Админка → Мониторинг: состояние сервисов, обновление проекта кнопкой, миграции, ключи `.env.production`, SMTP, бэкапы, уборка диска |
+| [DEPLOY-ANY.md](DEPLOY-ANY.md) | Развёртывание на любом сервере: требования, флаги установщика, проверка `deploy/selfhost/smoke-test.sh`, первый админ, разбор типовых отказов |
 | [SELFHOST.md](SELFHOST.md) | Всё на одной машине: сайт + self-hosted Supabase (`deploy/selfhost/install.sh`) |
 | [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md) | То же пошагово для Ubuntu 20.04 с переносом архивом |
 | [SERVER-SETUP.md](SERVER-SETUP.md) | Свой сервер + облачный Supabase |

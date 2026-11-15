@@ -95,7 +95,8 @@ blocks="$(printf '%s\n' "$dump" | awk -v target="$TARGET_PATH" '
     }
     opened = gsub(/\{/, "{", line)
     closed = gsub(/\}/, "}", line)
-    if (line ~ /proxy_pass[[:space:]]+[^;]*:3000/) site = 1
+    # Порт сайта настраивается (--web-port): ищем любой loopback, а не 3000.
+    if (line ~ /proxy_pass[[:space:]]+[^;]*(127\.0\.0\.1|localhost):[0-9]+/) site = 1
     if (depth == 1) {
       if (line ~ /client_max_body_size/) srule = limitof(line)
       if (line ~ /(^|[[:space:]])listen([[:space:]]|$)/) { t = clean(line); listen = (listen == "-" ? t : listen ", " t) }
@@ -153,7 +154,7 @@ else
     fi
     note ""
   done <<< "$blocks"
-  [ "$site_blocks" = "0" ] && hint "ни один server-блок не проксирует сайт на :3000 — проверьте, что конфиг включён в sites-enabled"
+  [ "$site_blocks" = "0" ] && hint "ни один server-блок не проксирует сайт на loopback — проверьте, что конфиг включён в sites-enabled"
 fi
 
 # ── 2. что говорит error.log ────────────────────────────────────────────────

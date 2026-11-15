@@ -3,7 +3,9 @@
 # ED Ring Colony — автоматическая установка «всё на одной машине»
 # (сайт + self-hosted Supabase) одними командами терминала.
 #
-# Поддерживается: Ubuntu 20.04 / 22.04 / 24.04 (и Debian 11/12).
+# Поддерживается: Ubuntu 20.04 / 22.04 / 24.04 (и Debian 11/12) с Docker.
+# Любой хостинг с root-доступом и чистым Debian/Ubuntu подходит одинаково:
+# пути, порт сайта и каталог для дампов задаются флагами, а не зашиты в код.
 #
 # Использование (под root или через sudo, из корня репозитория/архива):
 #
@@ -21,26 +23,54 @@
 #                      останется без Docker/задач; включается позже скриптом
 #                      deploy/start-monitoring.sh)
 #   --no-ufw           не трогать файрвол
+#   --root КАТАЛОГ     куда ставить проект (по умолчанию /opt/ed-ring-colony;
+#                      env EDRC_ROOT); исходники — КАТАЛОГ/src, копии БД —
+#                      КАТАЛОГ/backups
+#   --web-port ПОРТ    порт сайта на 127.0.0.1 (по умолчанию 3000; env
+#                      WEB_HOST_PORT). Внутри контейнера всегда 3000 — порт
+#                      меняется только на хосте и в nginx
+#   --galaxy-dir ПУТЬ  где хранить дампы Spansh (по умолчанию КАТАЛОГ/data/
+#                      spansh; env GALAXY_DATA_HOST_DIR). Нужно ~10 ГиБ, лучше
+#                      отдельный диск — см. deploy/migrate-galaxy-dump.sh
+#   --supabase-ref REF версия стека Supabase (по умолчанию закреплённая
+#                      метка, env SUPABASE_REF; `master` — самый свежий)
+#   --force            продолжить несмотря на предупреждения проверки
+#                      (неподдерживаемая ОС, мало RAM/диска, занятый порт)
 #
-# Что делает: пакеты → ufw → swap → Docker → Supabase-стек → секреты →
-# схема БД → сайт → nginx → (certbot) → каталог копий → сводка.
-# Скрипт идемпотентен: перезапуск продолжает с недоделанного.
-# Все пароли/ключи сохраняются в /opt/ed-ring-colony/credentials.txt (0600).
+# Что делает: проверка сервера → пакеты → ufw → swap → Docker → Supabase-стек →
+# секреты → схема БД → nginx → сайт → (certbot) → каталог копий → проверка.
+# Скрипт идемпотентен: перезапуск продолжает с недоделанного и не теряет
+# секреты. Все пароли/ключи сохраняются в КАТАЛОГ/credentials.txt (0600),
+# несекретные параметры установки — в КАТАЛОГ/install-info.txt.
 # ═════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
+usage() {
+  # Печатаем шапку файла до `set -euo pipefail`: она всегда актуальна.
+  sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
 # ── разбор аргументов ────────────────────────────────────────────────
-MODE="" ADDR="" EMAIL="" DO_CERTBOT=1 DO_CRON=1 DO_MONITOR=1 DO_UFW=1
+MODE="" ADDR="" EMAIL="" DO_CERTBOT=1 DO_CRON=1 DO_MONITOR=1 DO_UFW=1 FORCE=0
+EDRC_ROOT="${EDRC_ROOT:-/opt/ed-ring-colony}"
+WEB_PORT="${WEB_HOST_PORT:-3000}"
+GALAXY_DIR="${GALAXY_DATA_HOST_DIR:-}"
+SUPABASE_REF="${SUPABASE_REF:-v1.26.08}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --ip)         MODE="ip";     ADDR="${2:?}"; shift 2;;
-    --domain)     MODE="domain"; ADDR="${2:?}"; shift 2;;
-    --email)      EMAIL="${2:?}"; shift 2;;
-    --no-certbot) DO_CERTBOT=0; shift;;
-    --no-cron)    DO_CRON=0; shift;;
-    --no-monitor) DO_MONITOR=0; shift;;
-    --no-ufw)     DO_UFW=0; shift;;
-    -h|--help)    grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -30; exit 0;;
+    --ip)           MODE="ip";     ADDR="${2:?}"; shift 2;;
+    --domain)       MODE="domain"; ADDR="${2:?}"; shift 2;;
+    --email)        EMAIL="${2:?}"; shift 2;;
+    --no-certbot)   DO_CERTBOT=0; shift;;
+    --no-cron)      DO_CRON=0; shift;;
+    --no-monitor)   DO_MONITOR=0; shift;;
+    --no-ufw)       DO_UFW=0; shift;;
+    --root)         EDRC_ROOT="${2:?}"; shift 2;;
+    --web-port)     WEB_PORT="${2:?}"; shift 2;;
+    --galaxy-dir)   GALAXY_DIR="${2:?}"; shift 2;;
+    --supabase-ref) SUPABASE_REF="${2:?}"; shift 2;;
+    --force)        FORCE=1; shift;;
+    -h|--help)      usage; exit 0;;
     *) echo "Неизвестный флаг: $1 (см. --help)" >&2; exit 1;;
   esac
 done
@@ -50,6 +80,23 @@ if [ "$MODE" = domain ] && [ "$DO_CERTBOT" = 1 ] && [ -z "$EMAIL" ]; then
   echo "С --domain нужен --email для Let's Encrypt (или добавьте --no-certbot)" >&2; exit 1
 fi
 [ "$(id -u)" = 0 ] || { echo "Запускайте под root: sudo bash $0 ..." >&2; exit 1; }
+
+# Каталог установки — абсолютный путь без хвостового слэша. Проверяем сразу:
+# опечатка в --root иначе всплывёт после получаса сборки.
+case "$EDRC_ROOT" in /*) ;; *) echo "--root должен быть абсолютным путём: $EDRC_ROOT" >&2; exit 1;; esac
+EDRC_ROOT="${EDRC_ROOT%/}"
+[ -n "$EDRC_ROOT" ] || { echo "--root не может быть /" >&2; exit 1; }
+case "$WEB_PORT" in ''|*[!0-9]*) echo "--web-port должен быть числом: $WEB_PORT" >&2; exit 1;; esac
+{ [ "$WEB_PORT" -ge 1 ] && [ "$WEB_PORT" -le 65535 ]; } \
+  || { echo "--web-port вне диапазона 1..65535: $WEB_PORT" >&2; exit 1; }
+[ "$WEB_PORT" != 80 ] && [ "$WEB_PORT" != 443 ] \
+  || { echo "--web-port не может быть 80/443 — их занимает nginx" >&2; exit 1; }
+
+warn() { echo "⚠ $*" >&2; }
+note() { echo "  • $*"; }
+die()  { echo "✗ $*" >&2; exit 1; }
+# Предупреждение проверки: с --force установка продолжается, без него — стоп.
+objection() { if [ "$FORCE" = 1 ]; then warn "$* (продолжаю: --force)"; else die "$* — исправьте или добавьте --force"; fi; }
 
 # ── адреса ───────────────────────────────────────────────────────────
 if [ "$MODE" = ip ]; then
@@ -63,12 +110,97 @@ else
 fi
 
 # ── пути ─────────────────────────────────────────────────────────────
-SRC_DIR="/opt/ed-ring-colony/src"
+# Стек Supabase живёт отдельно от каталога проекта: его compose-проект
+# называется `supabase`, и от этого имени зависят сеть `supabase_default`,
+# имена контейнеров и .env стека. Путь к нему не параметризуем намеренно.
+SRC_DIR="$EDRC_ROOT/src"
+BACKUP_DIR="$EDRC_ROOT/backups"
 SUPA_DIR="/opt/supabase"
-CRED="/opt/ed-ring-colony/credentials.txt"
+CRED="$EDRC_ROOT/credentials.txt"
+INFO="$EDRC_ROOT/install-info.txt"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 step() { echo; echo "════ $* ════"; }
+
+# ═════════════════════════════════════════════════════════════════════
+step "0/10 Проверка сервера"
+# ═════════════════════════════════════════════════════════════════════
+# Проверка ничего не меняет: она нужна, чтобы «не влезло» выяснилось до
+# получасовой сборки, а занятый порт — до того, как nginx затёрт.
+REINSTALL=0
+if [ -f "$CRED" ] || [ -f "$SRC_DIR/docker-compose.yml" ]; then
+  REINSTALL=1
+  note "в $EDRC_ROOT уже есть установка — режим продолжения/обновления"
+fi
+
+if [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  OS_ID="${ID:-unknown}"
+  OS_LIKE="${ID_LIKE:-}"
+  OS_PRETTY="${PRETTY_NAME:-$OS_ID}"
+  case "$OS_ID $OS_LIKE" in
+    *ubuntu*|*debian*) note "ОС: $OS_PRETTY — поддерживается" ;;
+    *) objection "ОС «$OS_PRETTY» не проверялась: скрипт рассчитан на Ubuntu/Debian (apt, ufw, nginx, certbot). Для AlmaLinux/Rocky нужны dnf/firewalld — см. DEPLOY-ANY.md" ;;
+  esac
+else
+  objection "не удалось прочитать /etc/os-release — не похоже на Debian/Ubuntu"
+fi
+
+# Память: самому Supabase-стеку нужно ~2 ГБ, сайту со сборкой — ещё ~2.
+MEM_MB="$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+if [ "${MEM_MB:-0}" -lt 3500 ]; then
+  objection "RAM ${MEM_MB} МБ: для «всё в одном» нужно минимум 4 ГБ (Supabase ~2 ГБ + сборка сайта ~2 ГБ). Вариант с меньшей памятью — внешний Supabase, см. SERVER-SETUP.md"
+else
+  note "RAM: ${MEM_MB} МБ"
+fi
+
+# Диск: образы + Supabase + запас под дампы Spansh (сам дамп 6 ГиБ и шарды).
+DISK_DIR="$EDRC_ROOT"
+while [ ! -d "$DISK_DIR" ] && [ "$DISK_DIR" != "/" ]; do DISK_DIR="$(dirname "$DISK_DIR")"; done
+DISK_GB="$(df -Pk "$DISK_DIR" | awk 'NR==2 {print int($4/1048576)}')"
+if [ "${DISK_GB:-0}" -lt 20 ]; then
+  objection "свободно ${DISK_GB} ГБ в $DISK_DIR: нужно минимум 20 ГБ (образы, Supabase, дампы). Отдельный диск для дампов задаётся флагом --galaxy-dir"
+else
+  note "диск: ${DISK_GB} ГБ свободно в $DISK_DIR"
+fi
+
+if [ "$REINSTALL" = 0 ]; then
+  port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
+  PORTS_FREE=1
+  for port in 80 443 "$WEB_PORT"; do
+    if port_busy "$port"; then
+      PORTS_FREE=0
+      objection "порт $port уже занят другой программой (освободите его или задайте --web-port)"
+    fi
+  done
+  if [ "$MODE" = domain ] && port_busy 8000; then
+    PORTS_FREE=0
+    objection "порт 8000 занят: его занимает Supabase (Kong)"
+  fi
+  [ "$PORTS_FREE" = 1 ] && note "порты 80/443/$WEB_PORT свободны"
+fi
+
+command -v systemctl >/dev/null 2>&1 || objection "нет systemd: nginx нечем перезагрузить (в контейнере/Docker-песочнице установщик не работает)"
+
+if [ "$MODE" = domain ] && ! command -v getent >/dev/null 2>&1; then
+  note "DNS проверить нечем (нет getent) — сертификат выпустится только при готовых A-записях"
+elif [ "$MODE" = domain ]; then
+  if getent hosts "$ADDR" >/dev/null 2>&1; then
+    RESOLVED="$(getent hosts "$ADDR" | awk 'NR==1 {print $1}')"
+    PUBLIC=""
+    command -v curl >/dev/null 2>&1 && PUBLIC="$(curl -fsS --max-time 6 https://api.ipify.org 2>/dev/null || true)"
+    if [ -n "$PUBLIC" ] && [ "$RESOLVED" != "$PUBLIC" ]; then
+      warn "DNS: $ADDR → $RESOLVED, внешний адрес сервера $PUBLIC — HTTPS не выпустится, пока A-запись не исправят (сайт поднимется по http)"
+    else
+      note "DNS: $ADDR → $RESOLVED"
+    fi
+  else
+    warn "DNS: $ADDR не резолвится — certbot не подтвердит домен; сайт поднимется по http, сертификат выпустите после правки A-записи"
+  fi
+  getent hosts "supabase.$ADDR" >/dev/null 2>&1 \
+    || warn "DNS: supabase.$ADDR не резолвится — Realtime/Storage на сабдомене не откроются снаружи"
+fi
 
 # ═════════════════════════════════════════════════════════════════════
 step "1/10 Пакеты, файрвол, swap"
@@ -88,10 +220,16 @@ if [ "$DO_UFW" = 1 ]; then
   echo "ufw: 22, 80, 443$([ "$MODE" = ip ] && echo ', 8000') открыты"
 fi
 
-if [ ! -f /swapfile ]; then
-  fallocate -l 2G /swapfile && chmod 600 /swapfile
+if [ ! -f /swapfile ] && ! swapon --show 2>/dev/null | grep -q .; then
+  rm -f /swapfile
+  # fallocate не работает на btrfs/ZFS и на overlay-корнях некоторых VPS —
+  # там файл подкачки создаётся обычной записью (медленнее, но всегда).
+  if ! { fallocate -l 2G /swapfile 2>/dev/null && chmod 600 /swapfile; }; then
+    dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+    chmod 600 /swapfile
+  fi
   mkswap /swapfile >/dev/null && swapon /swapfile
-  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
   echo "swap 2G создан"
 else
   echo "swap уже есть — пропуск"
@@ -179,13 +317,27 @@ step "5/10 Supabase-стек → $SUPA_DIR"
 # ═════════════════════════════════════════════════════════════════════
 if [ ! -f "$SUPA_DIR/docker-compose.yml" ]; then
   mkdir -p "$SUPA_DIR" /tmp/supabase-src
-  curl -fsSL -o /tmp/supabase.tar.gz \
-    https://github.com/supabase/supabase/archive/refs/heads/master.tar.gz
+  # Версия стека закреплена: `master` меняется без предупреждения, и тогда
+  # установка на новом сервере ставит не то, что проверено на этом проекте.
+  # `--supabase-ref master` возвращает прежнее поведение.
+  if [ "$SUPABASE_REF" = master ]; then
+    SUPA_ARCHIVE="https://github.com/supabase/supabase/archive/refs/heads/master.tar.gz"
+  else
+    SUPA_ARCHIVE="https://github.com/supabase/supabase/archive/refs/tags/$SUPABASE_REF.tar.gz"
+  fi
+  if ! curl -fsSL --retry 3 -o /tmp/supabase.tar.gz "$SUPA_ARCHIVE"; then
+    rm -rf /tmp/supabase-src /tmp/supabase.tar.gz
+    die "не скачался стек Supabase ($SUPABASE_REF). Нужен доступ к github.com; другую версию можно задать флагом --supabase-ref (например master)"
+  fi
   tar xzf /tmp/supabase.tar.gz -C /tmp/supabase-src --strip-components=1
   cp -r /tmp/supabase-src/docker/* "$SUPA_DIR/"
   cp /tmp/supabase-src/docker/.env.example "$SUPA_DIR/.env"
   rm -rf /tmp/supabase.tar.gz /tmp/supabase-src
-  echo "стек скачан"
+  echo "стек скачан: $SUPABASE_REF"
+  # Быстрая проверка, что скачался ожидаемый набор: без сервиса db дальше
+  # нечего делать, а падать лучше здесь, а не на «docker exec supabase-db».
+  grep -qE '^  db:' "$SUPA_DIR/docker-compose.yml" \
+    || die "в docker-compose.yml стека нет сервиса db — версия $SUPABASE_REF не подходит, попробуйте --supabase-ref master"
 else
   echo "стек уже на месте — пропуск скачивания"
 fi
@@ -200,6 +352,17 @@ set_env() { # file KEY VALUE — заменить или дописать
 }
 
 E="$SUPA_DIR/.env"
+# Глобальный лимит Storage (FILE_SIZE_LIMIT) в compose стека зашит числом
+# 52428800 — 50 МиБ. Облако точек карты галактики весит до 64 МиБ, и такая
+# загрузка получала бы постоянный 413 (по размеру она не повторяется).
+# Подставляем значение из .env стека, чтобы оно работало, а не лежало мёртвой
+# строкой. Проверка стоит вне блока скачивания: на установке, созданной
+# раньше, повторный запуск тоже исправляет файл. Пропатченный — не трогаем.
+if grep -q 'FILE_SIZE_LIMIT: 52428800' "$SUPA_DIR/docker-compose.yml"; then
+  sed -i 's|FILE_SIZE_LIMIT: 52428800|FILE_SIZE_LIMIT: ${FILE_SIZE_LIMIT:-52428800}|' \
+    "$SUPA_DIR/docker-compose.yml"
+  echo "Storage: лимит файла берётся из .env стека (было жёстко 50 МиБ)"
+fi
 set_env "$E" POSTGRES_PASSWORD        "$POSTGRES_PASSWORD"
 set_env "$E" JWT_SECRET               "$JWT_SECRET"
 set_env "$E" ANON_KEY                 "$ANON_KEY"
@@ -265,7 +428,7 @@ server {
     server_name $SERVER_NAME;
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:$WEB_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host              \$host;
         proxy_set_header X-Real-IP         \$remote_addr;
@@ -286,7 +449,7 @@ server {
         # Приложение само отклоняет базовую сборку крупнее 128 МиБ, поэтому
         # лимит location обязан быть выше: иначе 413 отвечает nginx, а не сайт.
         client_max_body_size 200m;
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:$WEB_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host              \$host;
         proxy_set_header X-Real-IP         \$remote_addr;
@@ -296,7 +459,7 @@ server {
         proxy_send_timeout 300s;
     }
     location /_next/static/ {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:$WEB_PORT;
         proxy_set_header Host \$host;
         add_header Cache-Control "public, max-age=31536000, immutable";
     }
@@ -307,7 +470,7 @@ server {
     location ^~ /api/supabase/api/pg-meta/ { return 404; }
     location = /api/capi/token {
         access_log off;
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:$WEB_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host              \$host;
         proxy_set_header X-Real-IP         \$remote_addr;
@@ -379,9 +542,17 @@ if [ "$MODE" = domain ] && [ "$DO_CERTBOT" = 1 ]; then
       apt-get install -y -qq certbot python3-certbot-nginx >/dev/null
     fi
   fi
-  certbot --nginx --non-interactive --agree-tos -m "$EMAIL" \
-    -d "$ADDR" -d "$SUPA_HOST"
-  echo "HTTPS выпущен для $ADDR и $SUPA_HOST"
+  # Неудача certbot не должна обрывать установку: чаще всего это ещё не
+  # обновлённая A-запись или закрытый 80-й порт, а сайт к этому моменту уже
+  # собран и работает по http. Повторный запуск скрипта или команда ниже
+  # довыпускает сертификат, когда DNS будет готов.
+  if certbot --nginx --non-interactive --agree-tos -m "$EMAIL" \
+      -d "$ADDR" -d "$SUPA_HOST"; then
+    echo "HTTPS выпущен для $ADDR и $SUPA_HOST"
+  else
+    warn "HTTPS не выпущен (DNS/порт 80). Сайт работает по http://$ADDR"
+    warn "когда A-записи указывают на сервер: certbot --nginx -d $ADDR -d $SUPA_HOST"
+  fi
 fi
 
 # ═════════════════════════════════════════════════════════════════════
@@ -404,15 +575,51 @@ set_env "$SE" UPDATE_AGENT_TOKEN            "$UPDATE_AGENT_TOKEN"
 set_env "$SE" UPDATE_AGENT_URL              "http://update-agent:8092"
 set_env "$SE" PROJECT_HOST_DIR              "$SRC_DIR"
 set_env "$SE" PROJECT_DEPLOY_MODE           "compose"
+# Каталог установки не обязан быть /opt/ed-ring-colony: копии БД и каталог
+# стека Supabase передаются в update-agent теми же путями, что видит хост
+# (агент монтирует их один-в-один), иначе кнопки админки ищут файлы не там.
+# Уже заданные в .env.production значения (копии на отдельном диске, стек в
+# другом месте) сохраняются: перезапуск установщика не должен их сбрасывать.
+env_value() { grep -q "^$1=" "$SE" && grep "^$1=" "$SE" | tail -n1 | cut -d= -f2- || true; }
+UPDATE_BACKUP_DIR="${UPDATE_BACKUP_DIR:-$(env_value UPDATE_BACKUP_DIR)}"
+UPDATE_BACKUP_DIR="${UPDATE_BACKUP_DIR:-$BACKUP_DIR}"
+mkdir -p "$UPDATE_BACKUP_DIR"
+set_env "$SE" UPDATE_BACKUP_DIR             "$UPDATE_BACKUP_DIR"
+SUPABASE_HOST_DIR_VAL="$(env_value SUPABASE_HOST_DIR)"
+set_env "$SE" SUPABASE_HOST_DIR             "${SUPABASE_HOST_DIR_VAL:-$SUPA_DIR}"
+# Порт сайта на хосте (внутри контейнера всегда 3000). Читает docker-compose.yml
+# и nginx выше; при смене порта пересоберите web: docker compose up -d web.
+set_env "$SE" WEB_HOST_PORT                 "$WEB_PORT"
 # Все релизы Helper храним не в Docker data-root, а рядом с backup'ами.
 # Если путь уже задан в env-файле, сохраняем пользовательский SDB mount.
 UPLOADER_HOST_DIR="${UPLOADER_STORE_HOST_DIR:-}"
 if [ -z "$UPLOADER_HOST_DIR" ] && grep -q '^UPLOADER_STORE_HOST_DIR=' "$SE"; then
   UPLOADER_HOST_DIR="$(grep '^UPLOADER_STORE_HOST_DIR=' "$SE" | tail -n1 | cut -d= -f2-)"
 fi
-UPLOADER_HOST_DIR="${UPLOADER_HOST_DIR:-/opt/ed-ring-colony/backups/uploader-releases}"
+UPLOADER_HOST_DIR="${UPLOADER_HOST_DIR:-$BACKUP_DIR/uploader-releases}"
 set_env "$SE" UPLOADER_STORE_HOST_DIR "$UPLOADER_HOST_DIR"
 mkdir -p "$UPLOADER_HOST_DIR"
+
+# ── дампы Spansh ─────────────────────────────────────────────────────
+# Раньше путь по умолчанию был /mnt/sdb/... — на новом сервере такого диска
+# нет, и Docker создавал каталог от root на системном разделе. Контейнер
+# сайта работает под uid 1001 и писать туда не мог: скачивание дампа падало
+# на первом же файле. Теперь по умолчанию — каталог внутри установки,
+# отдельный диск задаётся явно через --galaxy-dir (или в .env.production).
+if [ -z "$GALAXY_DIR" ] && grep -q '^GALAXY_DATA_HOST_DIR=' "$SE"; then
+  GALAXY_DIR="$(grep '^GALAXY_DATA_HOST_DIR=' "$SE" | tail -n1 | cut -d= -f2-)"
+fi
+GALAXY_DIR="${GALAXY_DIR:-$EDRC_ROOT/data/spansh}"
+mkdir -p "$GALAXY_DIR"
+# Владелец — uid/gid пользователя сайта в образе (nextjs, 1001). На отдельном
+# диске каталог обычно root:root, и без этого импорт получает Permission
+# denied уже после многогигабайтной загрузки.
+chown -R 1001:1001 "$GALAXY_DIR" 2>/dev/null || warn "не удалось сменить владельца $GALAXY_DIR на 1001:1001 — проверьте права вручную"
+set_env "$SE" GALAXY_DATA_HOST_DIR "$GALAXY_DIR"
+GALAXY_FREE_GB="$(df -Pk "$GALAXY_DIR" | awk 'NR==2 {print int($4/1048576)}')"
+if [ "${GALAXY_FREE_GB:-0}" -lt 12 ]; then
+  warn "в $GALAXY_DIR свободно ${GALAXY_FREE_GB} ГБ: полный дамп Spansh (~6 ГиБ) + шарды требуют ~10 ГиБ. Укажите --galaxy-dir на диск побольше (см. SPANSH-IMPORT.md)"
+fi
 if [ "$DO_CRON" != 1 ]; then set_env "$SE" JOBS_ENABLED ""; fi
 # Прямой Postgres для быстрого импорта каталога Spansh и замера размера БД:
 # web и monitor-agent ниже подключаются к сети стека Supabase (compose-lib.sh),
@@ -482,7 +689,7 @@ fi
 
 echo -n "жду ответа сайта"
 for i in $(seq 1 36); do
-  if curl -sf -o /dev/null http://127.0.0.1:3000; then echo " — работает"; break; fi
+  if curl -sf -o /dev/null "http://127.0.0.1:$WEB_PORT"; then echo " — работает"; break; fi
   echo -n "."; sleep 5
   [ "$i" = 36 ] && { echo " сайт не ответил — docker logs src-web-1" >&2; exit 1; }
 done
@@ -496,28 +703,65 @@ step "9/10 Каталог для резервных копий"
 # в произвольный момент (см. MONITORING.md).
 if [ "$DO_CRON" = 1 ]; then
   # Каталог, куда update-agent (deploy/db-backup.sh) складывает копии.
-  mkdir -p "${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}"
+  mkdir -p "${UPDATE_BACKUP_DIR:-$BACKUP_DIR}"
   # Старый файл с ночными заданиями больше не нужен — убираем, чтобы он не
   # продолжал дампить базу по своему расписанию.
   rm -f /etc/cron.d/ed-ring-colony
-  echo "каталог копий: ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}; запуск — Админка → Бэкапы (раз в неделю, вручную)"
+  echo "каталог копий: ${UPDATE_BACKUP_DIR:-$BACKUP_DIR}; запуск — Админка → Бэкапы (раз в неделю, вручную)"
   echo "фоновые задачи — docker compose --env-file .env.production logs jobs"
+fi
+
+# ═════════════════════════════════════════════════════════════════════
+step "9a/10 Проверка после установки"
+# ═════════════════════════════════════════════════════════════════════
+# Тот же смоук-тест, что запускают руками после переезда: он проверяет не
+# «контейнер запущен», а что сайт отвечает, шлюз Supabase жив и каталоги
+# дампов доступны на запись. Падение проверки не отменяет установку — она
+# уже состоялась, — но итог печатается явно.
+SMOKE_ARGS=(--root "$EDRC_ROOT" --web-port "$WEB_PORT")
+if [ "$MODE" = domain ] && [ "$DO_CERTBOT" = 1 ]; then SMOKE_ARGS+=(--site-url "$SITE_URL"); fi
+if bash "$SRC_DIR/deploy/selfhost/smoke-test.sh" "${SMOKE_ARGS[@]}"; then
+  echo "проверка пройдена"
+else
+  warn "проверка нашла проблемы — см. вывод выше и DEPLOY-ANY.md → «Если что-то не так»"
 fi
 
 # ═════════════════════════════════════════════════════════════════════
 step "10/10 ГОТОВО"
 # ═════════════════════════════════════════════════════════════════════
+# Несекретные параметры установки: по ним следующие запуски и смоук-тест
+# понимают, где что лежит, не заглядывая в .env.production с ключами.
+umask 077
+cat > "$INFO" <<EOF
+# ED Ring Colony — параметры установки $(date -Iseconds)
+MODE=$MODE
+ADDR=$ADDR
+SITE_URL=$SITE_URL
+SITE_ROOT=$EDRC_ROOT
+SRC_DIR=$SRC_DIR
+WEB_HOST_PORT=$WEB_PORT
+SUPABASE_REF=$SUPABASE_REF
+SUPABASE_DIR=$SUPA_DIR
+GALAXY_DATA_HOST_DIR=$GALAXY_DIR
+BACKUP_DIR=${UPDATE_BACKUP_DIR:-$BACKUP_DIR}
+UPLOADER_STORE_HOST_DIR=$UPLOADER_HOST_DIR
+MONITORING=$DO_MONITOR
+EOF
+
 cat <<EOF
 
-  Сайт:            $SITE_URL
-  Supabase Studio: $SUPA_URL  (логин: admin, пароль в $CRED)
+  Сайт:            $SITE_URL$([ "$WEB_PORT" != 3000 ] && echo " (порт на хосте: $WEB_PORT)")
+  Каталог:         $EDRC_ROOT  (исходники в src/, параметры — install-info.txt)
+  Supabase Studio: $SUPA_URL  (логин: admin, пароль в $CRED; стек $SUPABASE_REF)
+  Дампы Spansh:    $GALAXY_DIR
   Секреты:         $CRED  (сделайте копию в надёжное место!)
-  Бэкапы:          Админка → Бэкапы, раз в неделю вручную (копии в ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}, хранятся 4)
+  Бэкапы:          Админка → Бэкапы, раз в неделю вручную (копии в ${UPDATE_BACKUP_DIR:-$BACKUP_DIR}, хранятся 4)
   Helper-релизы:   $UPLOADER_HOST_DIR (все версии и откаты)
 $( [ "$DO_MONITOR" = 1 ] && echo "  Мониторинг:      Админка → Мониторинг (monitor-agent + update-agent, ключи в $CRED)" \
      || echo "  Мониторинг:      выключен (--no-monitor); включение: bash $SRC_DIR/deploy/start-monitoring.sh && bash $SRC_DIR/deploy/start-update-agent.sh" )
 
   Проверка:
+    bash $SRC_DIR/deploy/selfhost/smoke-test.sh --root $EDRC_ROOT
     docker compose -f $SUPA_DIR/docker-compose.yml ps
     docker ps
     curl -I $SITE_URL

@@ -583,7 +583,8 @@ docker compose --env-file .env.production --profile monitoring build web jobs mo
 docker compose --env-file .env.production --profile monitoring up -d web jobs monitor-agent
 ```
 
-Новый сервер — [SELFHOST.md](SELFHOST.md) (всё на одной машине, `deploy/selfhost/install.sh`),
+Новый сервер — [DEPLOY-ANY.md](DEPLOY-ANY.md) (одна команда `deploy/selfhost/install.sh` на любом
+Ubuntu/Debian VPS + проверка `smoke-test.sh`), подробности устройства — [SELFHOST.md](SELFHOST.md),
 [UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md) или [SERVER-SETUP.md](SERVER-SETUP.md) (облачный Supabase).
 Переход с Vercel и роль каждого файла в `deploy/` — [DEPLOY.md](DEPLOY.md).
 
