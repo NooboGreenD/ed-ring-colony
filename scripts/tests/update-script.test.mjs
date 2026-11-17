@@ -71,6 +71,14 @@ function setup() {
     '  *info*)',
     '    printf "/var/lib/docker\\n";',
     '    exit 0;;',
+    // Глубокая уборка (edrc_cleanup_docker_disk --deep): снимает
+    // неиспользуемые ТЕГИРОВАННЫЕ образы и весь кэш. STUB_DF_DEEP_FREE —
+    // сколько КБ освобождает именно она; не задан — не освобождает ничего.
+    '  *"image prune -af"*|*"builder prune -af"*|*"buildx prune -af"*)',
+    '    if [ -n "${STUB_DF_FILE:-}" ] && [ -n "${STUB_DF_DEEP_FREE:-}" ]; then',
+    '      printf "%s" "$STUB_DF_DEEP_FREE" > "$STUB_DF_FILE"',
+    '    fi',
+    '    exit 0;;',
     // Освобождение места имитирует только сабстантивная уборка:
     // container/image prune приходят из edrc_cleanup_docker_disk. Бюджетная
     // подрезка builder prune до сборки (edrc_trim_build_cache) файл df не
@@ -171,6 +179,14 @@ function setup() {
   // читается из файла STUB_DF_FILE (по умолчанию 51200 МБ — сборке хватает).
   // Так проверка места под Docker детерминирована и не зависит от CI-диска.
   stub(bin, 'df', [
+    // STUB_DF_BROKEN=1 — df отвечает без числа свободного места: ровно так
+    // ведёт себя контейнер update-agent, где хостового /var/lib/docker нет
+    // вовсе (именно поэтому страж молчал в прод-инциденте 17.11.2026).
+    'if [ "${STUB_DF_BROKEN:-0}" = "1" ]; then',
+    '  printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n"',
+    '  printf "/dev/sda1 104857600 31457280 100%% /\\n"',
+    '  exit 0',
+    'fi',
     'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n"',
     'free="$(cat "${STUB_DF_FILE:-/edrc-nonexistent}" 2>/dev/null || true)"',
     '[ -n "$free" ] || free=52428800',
@@ -751,6 +767,48 @@ test('страж диска: автоуборка освободила мест�
     assert.match(run.stdout, /после уборки свободно \d+ МБ — продолжаю/);
     assert.match(readFileSync(ctx.log, 'utf8'), / build --build-arg /);
     assert.equal(events(run.stdout).pop().stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('места мало и обычная уборка не помогла — эскалация до неиспользуемых образов', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    // Ровно прод-картина 17.11.2026: свободны сотни мегабайт, обычная уборка
+    // (висячие образы + кэш в бюджете) НЕ возвращает 12 ГБ неиспользуемых
+    // ТЕГИРОВАННЫХ образов. Раньше прогон падал на ENOSPC при `npm ci`
+    // (все три попытки), теперь второй заход снимает их и сборка идёт.
+    const dfFile = join(ctx.work, 'df-free');
+    writeFileSync(dfFile, '512000');
+    const run = ctx.run({
+      STUB_DF_FILE: dfFile,
+      STUB_DF_AFTER_PRUNE: '512000',
+      STUB_DF_DEEP_FREE: '52428800',
+    });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.match(calls, /image prune -af/, 'снимаются неиспользуемые тегированные образы');
+    assert.match(calls, / build --build-arg /, 'после глубокой уборки сборка идёт');
+    assert.match(run.stdout, /эскалирую/);
+    assert.match(run.stdout, /после глубокой уборки свободно \d+ МБ/);
+    assert.equal(events(run.stdout).pop().stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('место не измерить — страж говорит об этом, а не молчит', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    // Тихий пропуск проверки и был частью инцидента: в журнале не оставалось
+    // ни строки о месте. Теперь причина видна, а сборка не блокируется.
+    const run = ctx.run({ STUB_DF_BROKEN: '1' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /не удалось измерить свободное место под Docker/);
+    assert.match(readFileSync(ctx.log, 'utf8'), / build --build-arg /);
   } finally {
     ctx.cleanup();
   }

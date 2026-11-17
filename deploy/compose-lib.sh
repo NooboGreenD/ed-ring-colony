@@ -393,15 +393,45 @@ edrc_size_to_kb() {
   esac
 }
 
+# edrc_df_free_kb ПУТЬ — свободно КБ на ФС, где лежит путь (пусто — не узнать).
+edrc_df_free_kb() {
+  df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d ' \t\r'
+}
+
 # edrc_docker_free_kb — свободно КБ на ФС, где лежит корень Docker.
-# Пустой вывод (при невозможности узнать) НЕ должен мешать сборке: вызывающий
-# код трактует его как «пропустить проверку», а не как «диск пуст».
+#
+# Прод-инцидент (17.11.2026): сборка web падала на `npm ci` с «ENOSPC: no space
+# left on device», а страж места молчал — в журнале не было ни строки «свободно
+# под Docker», ни данных `df -h` (только заголовок). Уборка идёт ВНУТРИ
+# контейнера update-agent, где хостового /var/lib/docker нет вовсе: `df` на
+# несуществующем пути возвращает пустоту, а пустой ответ трактовался как
+# «измерить не удалось — проверку пропускаем». Дефицит места до сборки так и не
+# замечался, все три попытки умирали на том же ENOSPC.
+#
+# Поэтому путей несколько: корень Docker (если он виден из этой среды), затем
+# /var/lib/docker, затем «/». Последний — НЕ заглушка: в контейнере
+# записываемый слой живёт в /var/lib/docker/overlay2 хоста, то есть «/»
+# контейнера лежит на той же ФС, где Docker хранит образы и кэш. Что именно
+# измерили — печатаем, чтобы «свободно 8 ГБ» в журнале можно было проверить.
+# Пустой вывод остаётся возможным (нет df, нет прав) — вызывающий код
+# трактует его как «пропустить проверку», а не как «диск пуст».
 edrc_docker_free_kb() {
   command -v docker >/dev/null 2>&1 || return 0
-  local root
+  local root path free mount
   root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
-  [ -n "$root" ] || root="/var/lib/docker"
-  df -Pk "$root" 2>/dev/null | awk 'NR==2 {print $4}'
+  for path in "$root" /var/lib/docker /; do
+    [ -n "$path" ] || continue
+    [ -d "$path" ] || continue
+    free="$(edrc_df_free_kb "$path")"
+    case "$free" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    mount="$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $6}')"
+    printf 'место под Docker: свободно %s МБ (ФС %s)\n' "$(( free / 1024 ))" "${mount:-$path}" >&2
+    printf '%s\n' "$free"
+    return 0
+  done
+  return 0
 }
 
 # edrc_ensure_disk_for_build [min_free] — место под сборку или понятный отказ.
@@ -423,7 +453,12 @@ edrc_ensure_disk_for_build() {
   min_kb="$(edrc_size_to_kb "$min_free")"
   free_kb="$(edrc_docker_free_kb || true)"
   case "$free_kb" in
-    *[!0-9]*|"") return 0 ;;  # определить не удалось — сборку не блокируем
+    *[!0-9]*|"")
+      # Молчать здесь нельзя: именно тихий пропуск проверки скрыл дефицит места
+      # в прод-инциденте 17.11.2026 — «страж» был, а в журнале ни строки.
+      printf '⚠ не удалось измерить свободное место под Docker — проверка порога (%s) пропущена\n' \
+        "$min_free" >&2
+      return 0 ;;
   esac
   if [ "$free_kb" -ge "$min_kb" ]; then
     printf 'свободно под Docker: %s МБ (нужно минимум %s МБ)\n' \
@@ -439,6 +474,22 @@ edrc_ensure_disk_for_build() {
   esac
   if [ "$free_kb" -ge "$min_kb" ]; then
     printf '✓ после уборки свободно %s МБ — продолжаю\n' $(( free_kb / 1024 ))
+    return 0
+  fi
+  # Обычная уборка держит бюджет кэша и не трогает ТЕГИРОВАННЫЕ образы —
+  # а именно они и занимали 12 ГБ из 12.5 в прод-инциденте (docker system df:
+  # «reclaimable 12.08GB»). Второй заход снимает всё неиспользуемое и кэш
+  # целиком: следующая сборка будет холодной, зато она вообще состоится.
+  printf '⚠ и после обычной уборки свободно %s МБ — эскалирую: снимаю неиспользуемые образы и кэш сборки целиком\n' \
+    $(( free_kb / 1024 )) >&2
+  edrc_cleanup_docker_disk --deep >/dev/null 2>&1 || true
+  free_kb="$(edrc_docker_free_kb || true)"
+  case "$free_kb" in
+    *[!0-9]*|"") return 0 ;;
+  esac
+  if [ "$free_kb" -ge "$min_kb" ]; then
+    printf '✓ после глубокой уборки свободно %s МБ — продолжаю (сборка будет холодной)\n' \
+      $(( free_kb / 1024 ))
     return 0
   fi
   # Токен «no space» в фатальной строке — не для людей, а для run_step
@@ -785,7 +836,7 @@ edrc_prune_anonymous_volumes() {
   return 0
 }
 
-# edrc_cleanup_docker_disk [cache_keep] — ПОСЛЕ сборки: убрать то, что копит каждая сборка.
+# edrc_cleanup_docker_disk [--deep] — ПОСЛЕ сборки: убрать то, что копит каждая сборка.
 #
 # Источник «диск тает после каждого обновления, даже при правке в 3 КБ»:
 #   • кэш BuildKit. Любое изменение исходников инвалидирует слой COPY,
@@ -800,7 +851,23 @@ edrc_prune_anonymous_volumes() {
 #
 # Итоговая таблица docker system df и строка df по корню Docker печатаются
 # в журнал.
+#
+# Режим --deep — эскалация для забитого диска (см. edrc_ensure_disk_for_build):
+# обычная уборка НЕ трогает ТЕГИРОВАННЫЕ образы (`docker image prune -f` снимает
+# только висячие), а в прод-инциденте 17.11.2026 `docker system df` показывал
+# 16 образов / 12.49 ГБ, из них 12.08 ГБ «reclaimable», при свободных сотнях
+# мегабайт — то есть все три попытки сборки падали на ENOSPC при `npm ci`,
+# потому что освобождать было нечего из того, что уборка считала мусором.
+# Здесь снимаются ВСЕ неиспользуемые образы (`-a`: работающих контейнеров,
+# а значит и их образов, prune -a не касается — сайт не потеряет свой образ)
+# и кэш BuildKit целиком, без бюджета. Цена — следующая сборка холодная.
 edrc_cleanup_docker_disk() {
+  local deep=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --deep|deep) deep=1 ;;
+    esac
+  done
   command -v docker >/dev/null 2>&1 || return 0
   docker info >/dev/null 2>&1 || return 0
 
@@ -812,15 +879,32 @@ edrc_cleanup_docker_disk() {
   # следующее переключение.
   edrc_remove_stale_containers || true
   docker container prune -f >/dev/null 2>&1 || true
-  docker image prune -f >/dev/null 2>&1 || true
-  # Анонимные тома-сироты: невидимы в du по проекту, растут с пересозданиями.
-  edrc_prune_anonymous_volumes || true
-  # Кэш-маунты (/root/.npm, /app/.next/cache) — отдельный, невидимый для
-  # `docker builder prune` потребитель: с Next 16.3 Turbopack дописывает
-  # туда персистентный кэш КАЖДОЙ сборки. Держим их в собственном бюджете
-  # (UPDATE_NEXT_CACHE_KEEP / UPDATE_NPM_CACHE_KEEP, по умолчанию 2g).
-  edrc_trim_cache_mounts auto || true
-  edrc_builder_prune
+  if [ "$deep" = "1" ]; then
+    # Диагностика ДО уборки: по ней видно, куда ушли гигабайты (в образах,
+    # кэше или томах). Иначе «освободили, а места нет» остаётся загадкой.
+    docker system df 2>/dev/null | head -n 8 || true
+    printf 'глубокая уборка: снимаю неиспользуемые образы (image prune -a) и весь кэш сборки\n'
+    docker image prune -af >/dev/null 2>&1 || true
+    docker builder prune -af >/dev/null 2>&1 || true
+    if docker buildx version >/dev/null 2>&1; then
+      docker buildx prune -af >/dev/null 2>&1 || true
+    fi
+    # Кэш-маунты (/root/.npm, /app/.next/cache) не подрезает даже
+    # `builder prune -a`: единственный переносимый способ — вычистить их
+    # синтетической сборкой с тем же target (см. edrc_trim_cache_mounts).
+    edrc_trim_cache_mounts wipe || true
+    edrc_prune_anonymous_volumes || true
+  else
+    docker image prune -f >/dev/null 2>&1 || true
+    # Анонимные тома-сироты: невидимы в du по проекту, растут с пересозданиями.
+    edrc_prune_anonymous_volumes || true
+    # Кэш-маунты (/root/.npm, /app/.next/cache) — отдельный, невидимый для
+    # `docker builder prune` потребитель: с Next 16.3 Turbopack дописывает
+    # туда персистентный кэш КАЖДОЙ сборки. Держим их в собственном бюджете
+    # (UPDATE_NEXT_CACHE_KEEP / UPDATE_NPM_CACHE_KEEP, по умолчанию 2g).
+    edrc_trim_cache_mounts auto || true
+    edrc_builder_prune
+  fi
 
   # Краткий отчёт оператору: что именно занимает диск после уборки.
   docker system df 2>/dev/null | head -n 8 || true
