@@ -98,6 +98,10 @@ export async function ingestJournalBatch(svc: Svc, input: JournalBatchInput): Pr
       constructionEvents: body.constructionEvents ?? body.construction_events,
       systemScans: body.systemScans ?? body.system_scans ?? body.scans,
       pilotStats: body.pilotStats ?? body.pilot_stats,
+      // Эскадрилья пилота: Helper присылает событие в общей пачке, браузерный
+      // загрузчик — по одному на файл. Раскладка одна и та же (см.
+      // `persistJournalTelemetry`).
+      squadron: body.squadron ?? body.squadronInfo ?? body.squadron_info,
     }, cmdr || null, { source });
     for (const warning of telemetry.warnings) console.warn(logTag, warning);
   } catch (telemetryError) {

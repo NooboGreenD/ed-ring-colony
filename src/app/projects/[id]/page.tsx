@@ -161,12 +161,27 @@ export default function ProjectPage() {
         const profileRows = profileIds.length
           ? ((await supabase
               .from("public_profiles")
-              .select("id, cmdr_name, avatar_url, squadron")
+              .select("id, cmdr_name, avatar_url, squadron, game_squadron_name")
               .in("id", profileIds)).data || [])
           : [];
         const profileMap = new Map(profileRows.map((p: any) => [p.id, p]));
+        // Эскадрилья из журнала игры: у пилота без состава на сайте витрина
+        // `squadron` пуста, а Helper её сообщает (`game_squadron_name`).
+        const gameSquadron = new Map(
+          profileRows
+            .filter((p: any) => typeof p.game_squadron_name === 'string' && p.game_squadron_name.trim())
+            .map((p: any) => [p.id, String(p.game_squadron_name).trim()]),
+        );
         if (fbMembers?.length) {
-          finalMembers = fbMembers.map((m: any) => ({ ...m, profile: profileMap.get(m.user_id) ?? null }));
+          finalMembers = fbMembers.map((m: any) => {
+            const profile = profileMap.get(m.user_id) ?? null;
+            return {
+              ...m,
+              profile: profile
+                ? { ...profile, squadron: profile.squadron || gameSquadron.get(profile.id) || null }
+                : null,
+            };
+          });
         }
         if (fbSystems?.length) {
           finalSystems = fbSystems.map((s: any) => ({ ...s, assignee: profileMap.get(s.assigned_to) ?? null }));

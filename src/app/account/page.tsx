@@ -88,6 +88,16 @@ export default function AccountPage() {
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [mySquadron, setMySquadron] = useState<any>(null);
   const [squadronMsg, setSquadronMsg] = useState("");
+  // Эскадрилья из журнала игры: приходит с /api/cmdr/squadron и не зависит
+  // от состава на сайте (пилот мог не вступать в эскадрилью сайта).
+  const [gameSquadron, setGameSquadron] = useState<{
+    gameSquadronId: number | null;
+    gameSquadronName: string | null;
+    gameRank: number | null;
+    gameRankName: string | null;
+    syncedAt: string | null;
+    siteSquadronId: number | null;
+  } | null>(null);
   const [showCreateSquadron, setShowCreateSquadron] = useState(false);
   const [newSquadronName, setNewSquadronName] = useState("");
   const [newSquadronTag, setNewSquadronTag] = useState("");
@@ -200,6 +210,15 @@ export default function AccountPage() {
         if (active) setMySquadron(json.squadron ? json : null);
       } catch (error) {
         console.warn('[Account] Could not load squadron:', error);
+      }
+      // Эскадрилья из журнала игры — отдельный источник: она есть и у пилота
+      // без состава на сайте. Сбой этого запроса не должен ломать вкладку.
+      try {
+        const res = await authFetch('/api/cmdr/squadron', { cache: 'no-store' });
+        const json = await res.json().catch(() => ({}));
+        if (active && res.ok && json?.squadron?.gameSquadronId) setGameSquadron(json.squadron);
+      } catch (error) {
+        console.warn('[Account] Could not load in-game squadron:', error);
       }
     })();
     return () => { active = false; };
@@ -377,6 +396,11 @@ export default function AccountPage() {
       const allConstructionEvents: unknown[] = [];
       const allScans = new Map<string, any>();
       let pilotStats: Record<string, number> | null = null;
+      // Эскадрилья пилота (`SquadronStartup`/`SquadronPromotion`): последнее
+      // по времени событие во всех файлах — как и в Helper'е, отправляется
+      // одно состояние, а не история.
+      let squadronReport: Record<string, unknown> | null = null;
+      let squadronAt = 0;
       const telemetryStats = { constructionSnapshots: 0, constructionDuplicates: 0, scans: 0, bioSignals: 0 };
       let cmdr: string | null = null;
       const allStats = {
@@ -441,6 +465,13 @@ export default function AccountPage() {
         allConstructionEvents.push(...telemetryResult.constructionEvents);
         for (const scan of telemetryResult.scans) allScans.set(`${scan.system_name}\u0000${scan.body_name}`, scan);
         if (Object.keys(telemetryResult.pilotStats).length > 0) pilotStats = { ...(pilotStats ?? {}), ...telemetryResult.pilotStats };
+        if (telemetryResult.squadron) {
+          const at = Date.parse(String(telemetryResult.squadron.eventAt ?? ''));
+          if (!squadronReport || !Number.isFinite(at) || at >= squadronAt) {
+            squadronReport = { ...telemetryResult.squadron };
+            squadronAt = Number.isFinite(at) ? at : squadronAt;
+          }
+        }
         telemetryStats.constructionSnapshots += telemetryResult.stats.constructionSnapshots;
         telemetryStats.constructionDuplicates += telemetryResult.stats.constructionDuplicates;
         telemetryStats.scans += telemetryResult.stats.scans;
@@ -566,7 +597,7 @@ export default function AccountPage() {
 
       // Тот же набор данных, что отправляет Colonial Helper: иначе досье,
       // собранное браузером, всегда было бы беднее досье игрока с хелпером.
-      let telemetryResult = { constructionInserted: 0, constructionDuplicates: 0, snapshotInserted: 0, systemScansInserted: 0, pilotStatsUpdated: false };
+      let telemetryResult = { constructionInserted: 0, constructionDuplicates: 0, snapshotInserted: 0, systemScansInserted: 0, pilotStatsUpdated: false, squadronApplied: false };
       // Сколько пачек телеметрии не удалось отправить после всех повторов.
       // Раньше сбой тихо писался в console.warn — пилот видел «загрузка
       // успешна», а снимки строек и сканы тел пропадали: это и выглядело как
@@ -638,6 +669,13 @@ export default function AccountPage() {
       if (pilotStats) {
         const json = await postTelemetry({ pilotStats });
         if (json) telemetryResult.pilotStatsUpdated = Boolean(json.telemetry?.pilotStatsUpdated);
+      }
+      // Эскадрилья — до авианосцев и фракций: это одна запись на пилота, и
+      // именно её ждёт страница эскадрильи и списки участников проектов.
+      if (squadronReport) {
+        const json = await postTelemetry({ squadron: squadronReport });
+        if (json) telemetryResult.squadronApplied = Boolean(json.telemetry?.squadronApplied);
+        else telemetryFailedChunks += 1;
       }
 
       // Авианосцы: отдельный маршрут, пачками. Сбой здесь не отменяет загрузку
@@ -1011,11 +1049,39 @@ export default function AccountPage() {
 
       {tab === "squadron" && (
         <div>
+          {/* Эскадрилья из журнала игры (Colonial Helper): у пилота без
+              состава на сайте она всё равно есть, и именно она объясняет,
+              почему он видит проект эскадрильи или носитель. */}
+          {gameSquadron?.gameSquadronId && (
+            <div style={{ background: "#1e2124", border: "1px solid #2d3033", borderRadius: 8, padding: "12px 16px", marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "#9ca3af", fontFamily: "ui-monospace, monospace", letterSpacing: 1, textTransform: "uppercase" }}>{t('project.gameSquadron')}</div>
+              <div style={{ marginTop: 4, color: "#eeeeee", fontSize: 15 }}>
+                {gameSquadron.gameSquadronName || `${t('project.gameSquadron')} #${gameSquadron.gameSquadronId}`}
+                {gameSquadron.gameRankName || gameSquadron.gameRank != null
+                  ? ` · ${gameSquadron.gameRankName ?? `#${gameSquadron.gameRank}`}`
+                  : ''}
+              </div>
+              {gameSquadron.syncedAt && (
+                <div style={{ marginTop: 2, color: "#6b7280", fontSize: 11 }}>
+                  {new Date(gameSquadron.syncedAt).toLocaleString(locale)}
+                </div>
+              )}
+              {gameSquadron.siteSquadronId && mySquadron && gameSquadron.siteSquadronId === mySquadron.squadron.id
+                ? <div style={{ marginTop: 2, color: "#22c55e", fontSize: 11 }}>{t('project.gameSquadronJoined')}</div>
+                : !gameSquadron.siteSquadronId && (
+                  <div style={{ marginTop: 2, color: "#6b7280", fontSize: 11 }}>{t('project.gameSquadronUnknown')}</div>
+                )}
+            </div>
+          )}
+
           {!mySquadron && !showCreateSquadron && (
             <div style={{ textAlign: "center", padding: "48px 20px", color: "#9ca3af", border: "1px dashed #323538", borderRadius: 8 }}>
               <div style={{ width: 64, height: 64, borderRadius: "50%", background: "#1a1c1e", border: "2px solid #323538", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontSize: 28 }}>—</div>
               <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>{t('account.noSquadron')}</h3>
               <p style={{ margin: 0, fontSize: 13 }}>{t('account.noSquadronDesc')}</p>
+              {!gameSquadron?.gameSquadronId && (
+                <p style={{ margin: '8px 0 0', fontSize: 12, color: '#6b7280' }}>{t('project.gameSquadronUnknown')}</p>
+              )}
               <button onClick={() => setShowCreateSquadron(true)} className="btn btn-orange" style={{ marginTop: 16 }}>{t('account.createSquadron')}</button>
               <Link href="/squadrons" className="btn btn-cyan" style={{ marginTop: 16, marginLeft: 8 }}>{t('account.findSquadron')}</Link>
             </div>

@@ -38,10 +38,20 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
     const { data: members, error: mErr } = await admin
       .from('project_members')
-      .select('*, profile:profiles(cmdr_name, avatar_url, squadron)')
+      .select('*, profile:profiles(cmdr_name, avatar_url, squadron, game_squadron_name)')
       .eq('project_id', projectId)
       .order('role');
     if (mErr) console.error('[project GET] members error:', mErr);
+    // Эскадрилья из журнала игры (`SquadronStartup` от Colonial Helper'а):
+    // витрина `profiles.squadron` есть только у того, кто вступил в эскадрилью
+    // сайта, а игра знает её про каждого. Пустое поле не затирается.
+    for (const member of Array.isArray(members) ? members : []) {
+      const profile = member?.profile;
+      if (!profile) continue;
+      const game = typeof profile.game_squadron_name === 'string' ? profile.game_squadron_name.trim() : '';
+      if (!profile.squadron && game) profile.squadron = game;
+      delete profile.game_squadron_name;
+    }
 
     const { data: systems, error: sErr } = await admin
       .from('project_systems')

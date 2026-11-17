@@ -55,19 +55,40 @@ export async function GET(req: Request, { params }: Params) {
     const search = sanitizeSearch(new URL(req.url).searchParams.get('search') || '');
     if (search.length < 2) return NextResponse.json({ search, candidates: [] });
 
+    const searchQuery = () => svc.from('public_profiles')
+      .select('id, cmdr_name, avatar_url, squadron, game_squadron_name')
+      .ilike('cmdr_name', `%${search}%`)
+      .limit(12);
     const [{ data, error }, { data: members, error: membersError }] = await Promise.all([
-      svc.from('public_profiles').select('id, cmdr_name, avatar_url, squadron').ilike('cmdr_name', `%${search}%`).limit(12),
+      searchQuery(),
       svc.from('architect_project_members').select('user_id').eq('project_id', access.project.id),
     ]);
-    if (error) throw new Error(error.message);
     if (membersError) throw new Error(membersError.message);
+    // База без миграции эскадрильи из журнала: витрина `public_profiles` там
+    // ещё без `game_squadron_name`, и без повторного запроса поиск пилотов
+    // падал бы целиком — то есть приглашать в проект было бы нельзя.
+    let rows = (data ?? []) as Array<Record<string, unknown>>;
+    if (error) {
+      if (!/game_squadron/i.test(error.message ?? '')) throw new Error(error.message);
+      const retry = await svc.from('public_profiles')
+        .select('id, cmdr_name, avatar_url, squadron')
+        .ilike('cmdr_name', `%${search}%`)
+        .limit(12);
+      if (retry.error) throw new Error(retry.error.message);
+      rows = (retry.data ?? []) as Array<Record<string, unknown>>;
+    }
     const existing = new Set((members ?? []).map((row: { user_id: string }) => String(row.user_id)));
-    const candidates = ((data ?? []) as Array<Record<string, unknown>>)
+    const candidates = rows
       .map((row) => ({
         id: String(row.id ?? ''),
         name: String(row.cmdr_name ?? '').trim(),
         avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : null,
-        squadron: typeof row.squadron === 'string' ? row.squadron : null,
+        // Эскадрилья из журнала игры — для пилота без состава на сайте.
+        squadron: typeof row.squadron === 'string' && row.squadron
+          ? row.squadron
+          : (typeof row.game_squadron_name === 'string' && row.game_squadron_name.trim()
+            ? row.game_squadron_name.trim()
+            : null),
         member: existing.has(String(row.id ?? '')),
       }))
       .filter((row) => row.id && row.name)

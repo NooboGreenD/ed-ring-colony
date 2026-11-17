@@ -147,7 +147,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.28.3"
+VERSION = "2.29.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -1005,6 +1005,30 @@ class ColonialHelperApp:
         minutes = max(1.0, (len(series) - 1) * self.PILOT_SAMPLE_SECONDS / 60.0)
         return delta / minutes * 60.0
 
+    def _pilot_squadron_text(self) -> str:
+        """Строка «эскадрилья» для инфографики пилота.
+
+        Источника два, и они не спорят: `SquadronStartup` из журнала (то, что
+        игра сообщила в этом запуске) и ответ сайта после отправки (имя
+        эскадрильи сайта и назначенный ранг). Пока сайт не ответил, показываем
+        игровые сведения — они уже верны.
+        """
+        collector = self._squadron_collector()
+        state = collector.state or {}
+        name = str(state.get("squadron_name") or "").strip()
+        squadron_id = int(state.get("squadron_id") or 0)
+        rank = state.get("rank")
+        if not name and not squadron_id:
+            return tr("нет данных из журнала")
+        text = name or tr("ID {id}", id=squadron_id)
+        if rank is not None:
+            text += tr(" · ранг {rank}", rank=int(rank))
+        # «Отправлено» — это подтверждение сайта, а не факт отправки: пилот
+        # должен видеть, дошло ли состояние до сервера.
+        if self.api.is_connected and collector.pending_payload() is not None:
+            text += tr(" · на сайт не отправлено")
+        return text
+
     def _refresh_pilot_infographic(self):
         """Обновить инфографику только локальным состоянием приложения."""
         if not hasattr(self, "_pilot_tiles"):
@@ -1087,6 +1111,7 @@ class ColonialHelperApp:
             # --- статус и подключения ---
             self._pilot_set("commander",
                             self._current_cmdr_name() or tr("CMDR не определён"))
+            self._pilot_set("squadron", self._pilot_squadron_text())
             self._pilot_set("system", current)
             game_text = (tr("запущена (в фокусе)") if game_state.focused
                          else (tr("запущена") if game_state.running else tr("не запущена")))
@@ -6467,6 +6492,11 @@ class ColonialHelperApp:
         "Scan", "SAAScanComplete", "FSSDiscoveryScan", "FSSSignalDiscovered",
         "FSDJump", "ApproachBody", "LeaveBody", "LoadGame", "NavBeaconScan",
         "Touchdown", "Liftoff",
+        # `SquadronStartup` пишется при каждом запуске игры и восстанавливает
+        # эскадрилью пилота, если сессия началась раньше Helper'а. Это же
+        # событие нужно и при первом запуске программы: полный разбор истории
+        # идёт следом, но до него сайт уже знает эскадрилью.
+        "SquadronStartup", "SquadronPromotion",
     })
     #: Трекеру экзобиологии дополнительно нужны биосигналы и образцы: без них
     #: блок EXOBIO после перезапуска «не видел» отсканированную систему.
@@ -6564,6 +6594,15 @@ class ColonialHelperApp:
         for event in map_events:
             try:
                 self.system_map.handle(event)
+            except Exception:
+                continue
+        # Эскадрилья пилота: `SquadronStartup` пишется при запуске игры, то есть
+        # до Helper'а. Без этого хвоста окно «Эскадрилья» и состав на сайте
+        # оставались пустыми до следующего запуска игры.
+        squad_collector = self._squadron_collector()
+        for event in map_events:
+            try:
+                squad_collector.feed(event, live=False)
             except Exception:
                 continue
         # Тот же хронологический хвост кормит трекер экзобиологии: блок EXOBIO
@@ -7061,6 +7100,10 @@ class ColonialHelperApp:
                 self._flush_bgs_sync()
             except Exception as exc:
                 self.root.after(0, lambda message=str(exc): self.log(f"Фракции: {message}", "error"))
+            try:
+                self._flush_squadron_sync()
+            except Exception as exc:
+                self.root.after(0, lambda message=str(exc): self.log(f"Эскадрилья: {message}", "error"))
             # Frontier перезаписывает NavRoute.json при построении нового
             # маршрута. Подхватываем изменение без ручного импорта.
             self._auto_load_navroute()
@@ -7664,8 +7707,55 @@ class ColonialHelperApp:
             self._bgs_sync = collector
         return collector
 
+    def _squadron_collector(self):
+        """Эскадрилья пилота из журнала для сайта (см. squadron_sync.py)."""
+        collector = getattr(self, "_squadron_sync", None)
+        if collector is None:
+            from squadron_sync import SquadronInfoCollector
+            collector = SquadronInfoCollector(self.config_path.with_name(".squadron_outbox.json"))
+            self._squadron_sync = collector
+        return collector
+
+    def _flush_squadron_sync(self):
+        """Отправить эскадрилью пилота на сайт: профиль, состав эскадрильи, ранг.
+
+        События ``SquadronStartup``/``SquadronPromotion`` бывают раз в сессию,
+        поэтому отправка идёт сразу после разбора (в том же цикле watcher'а) и
+        повторяется, пока сервер не подтвердит. Ошибка не мешает остальной
+        работе Helper'а — она видна строкой в логе.
+        """
+        if not self.api.is_connected:
+            return
+        collector = self._squadron_collector()
+        if collector.pending_payload() is None:
+            return
+        result = collector.flush(self.api, self._journal_cmdr_name())
+        if not result.get("ok"):
+            now = time.monotonic()
+            if now - float(getattr(self, "_squadron_warning_at", 0.0)) > 120:
+                self._squadron_warning_at = now
+                self.root.after(0, lambda message=result.get("error", ""): self.log(
+                    f"Эскадрилья: сведения ждут отправки на сайт — {message}", "warn"))
+            return
+        if not result.get("sent"):
+            return
+        state = collector.state or {}
+        name = state.get('squadron_name') or state.get('squadron_id')
+        parts = [f"Эскадрилья: на сайте создана {name}" if result.get("created")
+                 else f"Эскадрилья: на сайте {name}"]
+        if result.get("joined"):
+            parts.append("пилот добавлен в состав")
+        elif result.get("member"):
+            parts.append("состав подтверждён")
+        if result.get("rank"):
+            parts.append(f"ранг {result['rank']}")
+        self.root.after(0, lambda text=", ".join(parts): self.log(text, "info"))
+
     def _flush_bgs_sync(self):
         """Отправить накопленные наблюдения фракций на сайт проекта (вкладка «Фракции» Atlas)."""
+        # Без API-токена отправлять некуда: цикл watcher'а крутится и до
+        # подключения, а каждая попытка — это таймаут запроса в потоке чтения
+        # журнала. Наблюдения остаются в outbox до подключения.
         if not self.api.is_connected:
             return
         collector = self._bgs_sync_collector()
@@ -7825,6 +7915,13 @@ class ColonialHelperApp:
             self._update_faction_infographic(ev)
         except Exception as exc:
             self.log(f"Faction sync queue: {exc}", "error")
+        # Эскадрилья пилота из журнала (`SquadronStartup` при каждом запуске
+        # игры, `SquadronPromotion` при повышении) → профиль и состав на сайте.
+        try:
+            if self._squadron_collector().feed(ev, live=live):
+                self._flush_squadron_sync()
+        except Exception as exc:
+            self.log(f"Squadron sync: {exc}", "error")
         # PowerPlay 2.0: держава, ранг и заслуги командира, состояние системы.
         try:
             self._update_powerplay(ev)

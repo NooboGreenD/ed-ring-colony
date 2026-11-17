@@ -161,6 +161,17 @@ type Props = {
     website_url: string | null;
     is_open_recruitment: boolean;
   } | null;
+  /**
+   * Эскадрилья из журнала игры (`SquadronStartup` от Colonial Helper).
+   * Заполняется и тогда, когда на сайте состава нет: пилот может быть в
+   * эскадрилье только в игре, и досье не должно показывать «не состоит».
+   */
+  gameSquadron?: {
+    name: string | null;
+    rank: number | null;
+    rankName: string | null;
+    syncedAt: string | null;
+  } | null;
   currentUserId?: string | null;
   profileUserId?: string | null;
   capiProfile?: {
@@ -1910,6 +1921,27 @@ export default function CmdrDossier(props: Props) {
                 </div>
               </div>
 
+              {/* Эскадрилья из журнала игры: игра знает её даже тогда, когда
+                  на сайте состава ещё нет (пилот только запустил игру). */}
+              {props.gameSquadron?.name && (
+                <div style={{ marginBottom: 24, padding: '10px 14px', border: '1px solid #323538', borderRadius: 6, background: 'rgba(255,255,255,0.02)' }}>
+                  <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'ui-monospace, monospace', letterSpacing: 1, textTransform: 'uppercase' }}>
+                    {t('project.gameSquadron')}
+                  </div>
+                  <div style={{ marginTop: 4, color: '#eeeeee', fontSize: 14 }}>
+                    {props.squadron.tag ? `[${props.squadron.tag}] ` : ''}{props.gameSquadron.name}
+                    {props.gameSquadron.rankName || props.gameSquadron.rank != null
+                      ? ` · ${props.gameSquadron.rankName ?? `#${props.gameSquadron.rank}`}`
+                      : ''}
+                  </div>
+                  {props.gameSquadron.syncedAt && (
+                    <div style={{ marginTop: 2, color: '#6b7280', fontSize: 11 }}>
+                      {new Date(props.gameSquadron.syncedAt).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Действия */}
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                 <Link href={`/squadrons/${props.squadron.id}`} className="btn btn-cyan">
@@ -1926,8 +1958,18 @@ export default function CmdrDossier(props: Props) {
               }}>
                 —
               </div>
-              <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>{t('dossier.sqNone')}</h3>
-              <p style={{ margin: 0, fontSize: 13 }}>{t('dossier.sqNoneText')}</p>
+              <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>
+                {props.gameSquadron?.name ? t('project.gameSquadron') : t('dossier.sqNone')}
+              </h3>
+              <p style={{ margin: 0, fontSize: 13 }}>
+                {props.gameSquadron?.name
+                  ? `${props.gameSquadron.name}${props.gameSquadron.rankName || props.gameSquadron.rank != null
+                    ? ` · ${props.gameSquadron.rankName ?? `#${props.gameSquadron.rank}`}` : ''}`
+                  : t('dossier.sqNoneText')}
+              </p>
+              {props.gameSquadron?.name && (
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: '#6b7280' }}>{t('project.gameSquadronJoined')}</p>
+              )}
               <Link href="/squadrons" className="btn btn-cyan" style={{ marginTop: 16, fontSize: 12 }}>
                 {t('dossier.sqFind')}
               </Link>
