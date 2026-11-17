@@ -1,6 +1,6 @@
 {
   "name": "ed-ring-colony",
-  "version": "2.28.0",
+  "version": "2.28.1",
   "private": true,
   "scripts": {
     "dev": "next dev",

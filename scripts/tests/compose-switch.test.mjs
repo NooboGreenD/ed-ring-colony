@@ -67,6 +67,12 @@ function setup() {
     '    mv "$STUB_NAMES.tmp" "$STUB_NAMES"',
     '    exit 0;;',
     '  "volume ls -qf dangling=true") cat "$STUB_VOLUMES"; exit 0;;',
+    // Глубокая уборка: docker system df перед снятием неиспользуемого и
+    // явные ответы на `image prune -a` / `builder prune -a`.
+    '  "system df") printf "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\\nImages          16        4         12.49GB   12.08GB (96%%)\\n"; exit 0;;',
+    '  "image prune -af") exit 0;;',
+    '  "builder prune -af") exit 0;;',
+    '  "buildx prune -af") exit 0;;',
     '  "volume rm "*) exit 0;;',
     '  *" stop -t "*) exit 0;;',
     '  *" up -d --no-build "*)',
@@ -194,6 +200,49 @@ test('удаляются только анонимные тома, именов�
   assert.doesNotMatch(log, /volume rm src_uploader-store/);
 });
 
+test('место под Docker меряется, даже когда хостового корня Docker нет (агент)', { skip }, () => {
+  // Уборка идёт внутри контейнера update-agent: `/var/lib/docker` там не
+  // существует, и раньше `df` на несуществующем пути возвращал пустоту —
+  // «измерить не удалось, проверку пропускаем». Так дефицит места и остался
+  // незамеченным, а сборка падала на ENOSPC. Теперь есть запасной путь «/»:
+  // записываемый слой контейнера лежит на той же ФС, что и образы Docker.
+  const ctx = setup();
+  const res = ctx.run('edrc_docker_free_kb');
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout.trim(), /^[0-9]+$/, 'свободное место всё-таки измерено: ' + res.stdout);
+  assert.ok(Number(res.stdout.trim()) > 0, 'и это не ноль');
+  assert.match(res.stderr, /место под Docker: свободно \d+ МБ \(ФС /, 'видно, какую ФС измерили');
+});
+
+test('глубокая уборка снимает неиспользуемые ТЕГИРОВАННЫЕ образы, а не только висячие', { skip }, () => {
+  // Прод-инцидент 17.11.2026: `docker system df` показывал 16 образов /
+  // 12.49 ГБ, из них 12.08 ГБ reclaimable, а обычная уборка (`image prune -f`
+  // — только dangling) не освобождала ничего: сборка web падала на ENOSPC.
+  const ctx = setup();
+  const res = ctx.run('edrc_cleanup_docker_disk --deep');
+  assert.equal(res.status, 0, res.stderr);
+  const log = ctx.log();
+  assert.match(log, /image prune -af/, 'снимаются все неиспользуемые образы');
+  assert.match(log, /builder prune -af/, 'кэш сборки вычищается целиком, без бюджета');
+  assert.match(log, /system df/, 'перед уборкой видно, куда ушли гигабайты');
+  // Бюджетная подрезка не должна подменять глубокую уборку: --keep-storage
+  // оставил бы 8 ГБ кэша ровно тогда, когда места нет вовсе.
+  assert.doesNotMatch(log, /builder prune -f --keep-storage/);
+});
+
+test('обычная уборка по-прежнему бережная: тегированные образы не трогает', { skip }, () => {
+  // Обратная сторона: --deep включается только по дефициту места. Обычный
+  // прогон после успешного обновления держит бюджет кэша и не снимает
+  // образы, нужные для отката (ed-ring-colony:prev).
+  const ctx = setup();
+  const res = ctx.run('edrc_cleanup_docker_disk');
+  assert.equal(res.status, 0, res.stderr);
+  const log = ctx.log();
+  assert.match(log, /\[docker\] image prune -f\n/);
+  assert.doesNotMatch(log, /image prune -af/);
+  assert.match(log, /builder prune -f --keep-storage 8g/);
+});
+
 test('уборка диска снимает остатки переключений до image prune', { skip }, () => {
   const ctx = setup();
   ctx.setContainers(['548bf7698162_src-web-1']);
@@ -211,6 +260,14 @@ test('update-project.sh переключает контейнеры через �
   assert.match(script, /edrc_compose_switch compose \$COMPOSE_ARGS -- \$COMPOSE_SERVICES/);
   // Запасной путь для частичного дерева без compose-lib.sh сохранён.
   assert.match(script, /compose \$COMPOSE_ARGS up -d --no-build \$COMPOSE_SERVICES/);
+});
+
+test('docker-disk-report --wipe тоже забирает неиспользуемые образы', { skip }, () => {
+  // Раньше --wipe делал только `docker image prune -f`: 12 ГБ тегированных
+  // образов переживали «почистил» — и человек шёл разбираться дальше.
+  const report = readFileSync(join(ROOT, 'deploy', 'docker-disk-report.sh'), 'utf8');
+  assert.match(report, /edrc_cleanup_docker_disk --deep/);
+  assert.match(report, /НЕИСПОЛЬЗУЕМЫЕ образы/);
 });
 
 test('отчёт о диске ищет место, которого «нет ни в одной папке»', { skip }, () => {
