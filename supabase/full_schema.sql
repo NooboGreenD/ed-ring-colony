@@ -20106,6 +20106,10 @@ GRANT EXECUTE ON FUNCTION public.carrier_catalog_page(TEXT, TEXT, TEXT, UUID, BI
 --      Заполняется сама, когда игровое имя совпало с названием эскадрильи
 --      сайта (см. `apply_pilot_squadron`), и больше не требует ручной сверки.
 --   3. `squadron_members.game_rank*` — ранг, который пилот имеет в игре.
+--   3a. Если эскадрильи на сайте нет вовсе, `apply_pilot_squadron` заводит её
+--       сама: владельцем становится сам пилот, звания и голосовые комнаты
+--       создаёт обычный триггер `on_squadron_created`. Дубли исключены
+--       сверкой по `SquadronID`, названию и тегу до создания.
 --   4. `apply_pilot_squadron()` — одна серверная точка приёма: нормализация
 --      имени, поиск эскадрильи (по game_squadron_id, затем по имени),
 --      автоматическое вступление в состав и запись ранга.
@@ -20226,6 +20230,10 @@ DECLARE
   v_game_rank   INTEGER := CASE WHEN p_rank IS NULL OR p_rank < 0 THEN NULL ELSE LEAST(p_rank, 99) END;
   v_target_rank BIGINT;
   v_rank_count  INTEGER;
+  v_created     BOOLEAN := false;
+  v_owner       UUID;
+  v_new_tag     TEXT;
+  v_suffix      INTEGER := 1;
 BEGIN
   IF p_user IS NULL THEN
     RETURN jsonb_build_object('ok', false, 'reason', 'user_required');
@@ -20271,6 +20279,114 @@ BEGIN
     IF FOUND THEN
       v_found_by := 'name';
     END IF;
+  END IF;
+
+  -- Тег: журнал иногда приносит `SquadronTag`, а название на сайте могло быть
+  -- переведено или дополнено («ENDURANCE EXPLORATION [ENEX]»). Совпадение по
+  -- тегу не даёт создавать дубль.
+  IF v_squadron_id IS NULL AND v_tag <> '' THEN
+    SELECT sq.id, sq.name INTO v_squadron_id, v_squadron_name
+      FROM public.squadrons AS sq
+     WHERE upper(btrim(coalesce(sq.tag, ''))) = v_tag
+     LIMIT 1;
+    IF FOUND THEN
+      v_found_by := 'tag';
+    END IF;
+  END IF;
+
+  -- ── Создание эскадрильи, которой на сайте ещё нет ────────────────────────
+  -- Игра знает эскадрилью пилота всегда, а сайт — только те, что кто-то завёл
+  -- вручную. Из-за этого пилоты крупных игровых эскадрилий ходили по сайту
+  -- «без эскадрильи», а их состав существовал только в игре.
+  --
+  -- Создаём эскадрилью от имени самого пилота: `created_by` = он, поэтому в
+  -- `/api/squadrons/my`, в правах и в интерфейсе он и остаётся владельцем —
+  -- пилот может переименовать её, описать и позвать остальных. Права из
+  -- журнала при этом по-прежнему не выдаются: ранг назначается ниже и только
+  -- среди званий без прав.
+  --
+  -- Что НЕ создаём: эскадрилью без имени (в журнале её нет — нечего показать)
+  -- и в ответ на старый журнал (проверка `stale` уже выше). Если создание
+  -- сорвалось (нет профиля-владельца, гонка, отставшая схема) — приём не
+  -- падает: сведения о пилоте записываются, а причина видна в ответе.
+  IF v_squadron_id IS NULL AND v_name <> ''
+     AND coalesce(p_join, true)
+     -- Пилот уже в эскадрилье сайта: журнал не повод заводить ему вторую.
+     -- Иначе на каждый чужой тег появлялась бы пустая эскадрилья без состава.
+     AND NOT EXISTS (SELECT 1 FROM public.squadron_members AS sm WHERE sm.user_id = p_user) THEN
+    BEGIN
+      SELECT id INTO v_owner FROM public.profiles WHERE id = p_user;
+      IF v_owner IS NOT NULL THEN
+        -- Тег: из журнала (`SquadronTag` бывает в событиях), иначе из слов
+        -- названия. Уникальности у тега нет, но повторять один и тот же тег
+        -- у десятка эскадрилий бессмысленно — добавляем цифру.
+        v_new_tag := CASE
+          WHEN v_tag <> '' THEN left(v_tag, 10)
+          ELSE left(upper(regexp_replace(v_name, '[^A-Za-z0-9]', '', 'g')), 10)
+        END;
+        IF v_new_tag = '' THEN
+          v_new_tag := 'SQDN';
+        END IF;
+
+        LOOP
+          BEGIN
+            INSERT INTO public.squadrons (name, tag, created_by, member_limit,
+                                          status, is_open_recruitment,
+                                          game_squadron_id, game_squadron_at,
+                                          game_squadron_source)
+            VALUES (left(v_name, 100), v_new_tag, v_owner, 600,
+                    'active', true,
+                    p_game_id, v_at, 'journal')
+            RETURNING id INTO v_squadron_id;
+            v_created := true;
+            v_found_by := 'created';
+            v_squadron_name := left(v_name, 100);
+            EXIT;
+          EXCEPTION
+            WHEN unique_violation THEN
+              -- Игровой ID уже занят другой эскадрильей сайта (её успели
+              -- связать параллельно) — берём её, а не создаём вторую.
+              SELECT sq.id, sq.name INTO v_squadron_id, v_squadron_name
+                FROM public.squadrons AS sq
+               WHERE sq.game_squadron_id = p_game_id
+               LIMIT 1;
+              IF v_squadron_id IS NOT NULL THEN
+                v_found_by := 'game_id';
+                EXIT;
+              END IF;
+              -- Иначе меняем тег и пробуем снова (не больше пяти раз).
+              v_suffix := v_suffix + 1;
+              IF v_suffix > 5 THEN
+                v_squadron_id := NULL;
+                EXIT;
+              END IF;
+              v_new_tag := left(regexp_replace(v_new_tag, '[0-9]+$', ''), 8) || v_suffix::text;
+            WHEN undefined_column THEN
+              -- Частично обновлённая база: нет `status`/`is_open_recruitment`
+              -- и прочих необязательных полей. Заводим эскадрилью тем, что
+              -- есть, — название и владелец обязательны всегда.
+              BEGIN
+                INSERT INTO public.squadrons (name, tag, created_by, game_squadron_id,
+                                              game_squadron_at, game_squadron_source)
+                VALUES (left(v_name, 100), v_new_tag, v_owner, p_game_id,
+                        v_at, 'journal')
+                RETURNING id INTO v_squadron_id;
+                v_created := true;
+                v_found_by := 'created';
+                v_squadron_name := left(v_name, 100);
+              EXCEPTION WHEN OTHERS THEN
+                v_squadron_id := NULL;
+              END;
+              EXIT;
+            WHEN OTHERS THEN
+              -- Схема отстала (нет колонок связи, триггеров и т.п.): сведения
+              -- о пилоте всё равно должны быть записаны.
+              v_squadron_id := NULL;
+              EXIT;
+          END;
+        END LOOP;
+      END IF;
+    END;
   END IF;
 
   -- Связь выучивается один раз: дальше достаточно SquadronID.
@@ -20368,6 +20484,14 @@ BEGIN
     ELSIF v_is_member THEN
       -- Состав уже есть: обновляем только игровые поля. `rank_id` не трогаем —
       -- ручное назначение офицера главнее журнала.
+      --
+      -- Исключение — эскадрилья, созданная этим же вызовом: триггер
+      -- `on_squadron_created` записал пилота командиром (он и есть владелец,
+      -- `created_by`). Для него приём считается вступлением, иначе Helper
+      -- показывал бы «состав не подтверждён» на собственной эскадрилье.
+      IF v_created THEN
+        v_joined := true;
+      END IF;
       UPDATE public.squadron_members AS sm
          SET game_rank = coalesce(v_game_rank, sm.game_rank),
              game_rank_name = CASE
@@ -20393,6 +20517,7 @@ BEGIN
     'foundBy', v_found_by,
     'member', v_is_member,
     'joined', v_joined,
+    'created', v_created,
     'rankId', v_rank_id,
     'rankName', v_rank_name,
     'reason', v_reason,

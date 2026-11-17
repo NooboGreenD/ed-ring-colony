@@ -95,6 +95,9 @@ def squadron_state_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]
     state: Dict[str, Any] = {
         "squadron_id": squadron_id,
         "squadron_name": _clean(event.get("SquadronName"), 120),
+        # Тег в событиях необязателен (`SquadronTag`), но если игра его дала —
+        # сайт по нему не создаст дубль эскадрильи с другим написанием имени.
+        "squadron_tag": _clean(event.get("SquadronTag"), 10),
         "rank": normalize_game_rank(
             event.get("NewRank") if name == "SquadronPromotion" else event.get("CurrentRank")
         ),
@@ -228,6 +231,8 @@ class SquadronInfoCollector:
             "game_squadron_name": payload.get("squadron_name") or "",
             "game_squadron_rank": payload.get("rank"),
         }
+        if payload.get("squadron_tag"):
+            body["game_squadron_tag"] = payload["squadron_tag"]
         if payload.get("timestamp"):
             body["event_at"] = payload["timestamp"]
 
@@ -247,6 +252,7 @@ class SquadronInfoCollector:
             "ok": True,
             "sent": True,
             "squadron": result.get("squadronName") or result.get("squadron_name"),
+            "created": bool(result.get("created")),
             "joined": bool(result.get("joined")),
             "member": bool(result.get("member")),
             "rank": result.get("rankName") or result.get("rank_name"),

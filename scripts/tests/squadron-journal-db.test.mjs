@@ -15,11 +15,21 @@ import { PGlite } from '@electric-sql/pglite';
    * ручной ранг офицера журнал не перетирает, игровые поля обновляются;
    * старый журнал (пере-импорт истории) не откатывает свежее состояние;
    * пилот из другой эскадрильи не переезжает автоматически;
-   * полная эскадрилья не переполняется. */
+   * полная эскадрилья не переполняется;
+   * эскадрильи, которой на сайте нет, создаётся (владелец — сам пилот), но
+     только вместе с вступлением и только при наличии названия. */
 
 const db = new PGlite();
 const PILOT = '00000000-0000-4000-8000-000000000001';
 const OTHER = '00000000-0000-4000-8000-000000000002';
+// «Посторонний» создатель: эскадрильи в тестах заводит не тот пилот, которого
+// мы проверяем, — иначе триггер сразу сделал бы его командиром.
+const LEAD = '00000000-0000-4000-8000-000000000004';
+// Свободные пилоты: тесты создания эскадрильи нельзя вести на тех, кого
+// предыдущие тесты уже записали в состав — автовступление тогда не сработает.
+const FRESH = '00000000-0000-4000-8000-000000000005';
+const FRESH2 = '00000000-0000-4000-8000-000000000006';
+const FRESH3 = '00000000-0000-4000-8000-000000000007';
 
 await db.exec(`
 CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;
@@ -29,7 +39,7 @@ GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 CREATE TABLE auth.users(id uuid PRIMARY KEY);
 CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
   $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
-INSERT INTO auth.users VALUES ('${PILOT}'), ('${OTHER}');
+INSERT INTO auth.users VALUES ('${PILOT}'), ('${OTHER}'), ('${LEAD}'), ('${FRESH}'), ('${FRESH2}'), ('${FRESH3}');
 
 CREATE TABLE public.profiles(
   id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -47,7 +57,10 @@ CREATE TABLE public.squadrons(
   name text NOT NULL,
   tag text,
   member_limit integer,
-  created_by uuid
+  status text NOT NULL DEFAULT 'active',
+  is_open_recruitment boolean NOT NULL DEFAULT true,
+  created_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE public.squadron_ranks(
@@ -60,6 +73,17 @@ CREATE TABLE public.squadron_ranks(
   can_manage_members boolean NOT NULL DEFAULT false,
   can_manage_ranks boolean NOT NULL DEFAULT false,
   can_edit_squadron boolean NOT NULL DEFAULT false
+);
+
+-- Как в настоящей базе: триггер создания эскадрильи создаёт и голосовые
+-- комнаты, поэтому без таблицы вставка эскадрильи падала бы.
+CREATE TABLE public.squadron_voice_rooms(
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  squadron_id bigint NOT NULL REFERENCES public.squadrons(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  description text,
+  is_officer_only boolean NOT NULL DEFAULT false,
+  sort_order integer NOT NULL DEFAULT 1
 );
 
 CREATE TABLE public.squadron_members(
@@ -80,6 +104,44 @@ CREATE VIEW public.public_profiles AS
     FROM public.profiles p;
 `);
 
+// Триггер создания эскадрильи и звания по умолчанию — те же, что ставит
+// 20260911030000. Без них созданная по журналу эскадрилья осталась бы без
+// владельца в составе и без званий, а ранг назначать было бы не из чего.
+await db.exec(`
+CREATE FUNCTION public.create_default_squadron_ranks(p_squadron_id bigint)
+RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO public.squadron_ranks (squadron_id, name, sort_order, is_default,
+    can_manage_projects, can_manage_members, can_manage_ranks, can_edit_squadron)
+  VALUES
+    (p_squadron_id, 'Командир эскадрильи', 1, true, true, true, true, true),
+    (p_squadron_id, 'Заместитель командира', 2, true, true, true, false, false),
+    (p_squadron_id, 'Офицер', 3, true, true, true, false, false),
+    (p_squadron_id, 'Ветеран', 4, true, true, false, false, false),
+    (p_squadron_id, 'Пилот', 5, true, false, false, false, false);
+END $$;
+
+CREATE FUNCTION public.on_squadron_created()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE commander_rank_id bigint;
+BEGIN
+  PERFORM public.create_default_squadron_ranks(NEW.id);
+  INSERT INTO public.squadron_voice_rooms (squadron_id, name) VALUES (NEW.id, 'Общий канал');
+  SELECT id INTO commander_rank_id FROM public.squadron_ranks
+   WHERE squadron_id = NEW.id AND name = 'Командир эскадрильи' ORDER BY id LIMIT 1;
+  IF commander_rank_id IS NOT NULL THEN
+    INSERT INTO public.squadron_members (squadron_id, user_id, rank_id)
+    VALUES (NEW.id, NEW.created_by, commander_rank_id)
+    ON CONFLICT (squadron_id, user_id) DO NOTHING;
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER trg_on_squadron_created
+  AFTER INSERT ON public.squadrons
+  FOR EACH ROW EXECUTE FUNCTION public.on_squadron_created();
+`);
+
 await db.exec(readFileSync(
   new URL('../../supabase/migrations/20261117090000_squadron_journal_sync.sql', import.meta.url), 'utf8',
 ));
@@ -88,9 +150,12 @@ await db.exec(readFileSync(
 async function createSquadron(name, options = {}) {
   const { rows } = await db.query(
     'INSERT INTO public.squadrons (name, tag, member_limit, created_by) VALUES ($1, $2, $3, $4) RETURNING id',
-    [name, options.tag ?? null, options.memberLimit ?? null, PILOT],
+    [name, options.tag ?? null, options.memberLimit ?? null, LEAD],
   );
   const id = rows[0].id;
+  // Триггер записал создателя командиром; в этих тестах состав задаём сами,
+  // иначе «свободных мест» и «уже участник» считались бы не с нуля.
+  await db.query('DELETE FROM public.squadron_members WHERE squadron_id = $1', [id]);
   await db.query(
     `INSERT INTO public.squadron_ranks (squadron_id, name, sort_order, can_edit_squadron, can_manage_members, can_manage_ranks, can_manage_projects)
      VALUES ($1, 'Командир эскадрильи', 1, true, true, true, true),
@@ -135,7 +200,9 @@ async function membersOf(squadronId) {
   return rows;
 }
 
-await db.exec(`INSERT INTO public.profiles (id, cmdr_name) VALUES ('${PILOT}', 'Nova'), ('${OTHER}', 'Vega')`);
+await db.exec(`INSERT INTO public.profiles (id, cmdr_name) VALUES
+  ('${PILOT}', 'Nova'), ('${OTHER}', 'Vega'), ('${LEAD}', 'Lead'),
+  ('${FRESH}', 'Rook'), ('${FRESH2}', 'Sable'), ('${FRESH3}', 'Wren')`);
 
 test('эскадрилья находится по названию, связывается с игровым ID и пилот вступает', async () => {
   const squadronId = await createSquadron('ENDURANCE EXPLORATION');
@@ -268,23 +335,117 @@ test('join=false сохраняет сведения, но состав не м�
   assert.equal(profile.game_squadron_name, 'QUIET WING');
 });
 
-test('эскадрилья без совпадения на сайте: сведения сохранены, причина названа', async () => {
-  const result = await apply(OTHER, { id: 31337, name: 'UNKNOWN WING', at: '2026-11-16T15:00:00Z' });
+test('эскадрильи, которой на сайте нет, создаётся — владельцем становится пилот', async () => {
+  const result = await apply(FRESH, {
+    id: 31337, name: 'UNKNOWN WING', rank: 2, at: '2026-11-16T15:00:00Z',
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.created, true);
+  assert.equal(result.foundBy, 'created');
+  assert.equal(result.joined, true, 'пилот сразу в составе своей же эскадрильи');
+
+  const { rows } = await db.query('SELECT * FROM public.squadrons WHERE id = $1', [result.squadronId]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, 'UNKNOWN WING');
+  assert.equal(rows[0].tag, 'UNKNOWNWIN', 'тег собран из названия (10 символов)');
+  assert.equal(rows[0].created_by, FRESH, 'создатель — сам пилот: эскадрилья остаётся его');
+  assert.equal(Number(rows[0].game_squadron_id), 31337);
+  assert.equal(rows[0].game_squadron_source, 'journal');
+  assert.equal(rows[0].member_limit, 600);
+
+  const members = await membersOf(result.squadronId);
+  assert.equal(members.length, 1);
+  assert.equal(members[0].user_id, FRESH);
+  // Строку завёл триггер создания: пилот — владелец сайта, значит командир.
+  // Права пришли не из журнала, а из того, что эскадрилья его собственная.
+  assert.equal(members[0].rank_name, 'Командир эскадрильи');
+  assert.equal(members[0].game_rank, 2, 'игровой ранг записан рядом');
+  assert.equal(members[0].joined_via, null, 'это не вступление по журналу, а владение');
+
+  // Звания и голосовые комнаты появились триггером создания эскадрильи.
+  const { rows: ranks } = await db.query(
+    'SELECT name FROM public.squadron_ranks WHERE squadron_id = $1 ORDER BY sort_order', [result.squadronId],
+  );
+  assert.equal(ranks.length, 5);
+  const { rows: rooms } = await db.query(
+    'SELECT count(*)::int AS n FROM public.squadron_voice_rooms WHERE squadron_id = $1', [result.squadronId],
+  );
+  assert.equal(rooms[0].n, 1);
+
+  // Витрина профиля показывает созданную эскадрилью.
+  const profile = await profileOf(FRESH);
+  assert.equal(Number(profile.game_squadron_site_id), result.squadronId);
+});
+
+test('создание не откатывается старым журналом', async () => {
+  // Сначала свежее состояние, потом событие из старой истории (пере-импорт):
+  // сайт обязан его пропустить, а не завести по нему эскадрилью.
+  const fresh = await apply(FRESH3, { id: 777777, name: 'GHOST WING', at: '2026-11-16T22:00:00Z' });
+  assert.equal(fresh.created, true, JSON.stringify(fresh));
+  const before = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  const result = await apply(FRESH3, { id: 999999, name: 'OLDER WING', at: '2026-01-01T00:00:00Z' });
+  assert.equal(result.skipped, 'stale', JSON.stringify(result));
+  const after = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  assert.equal(after.rows[0].n, before.rows[0].n, 'история не заводит эскадрилий');
+});
+
+test('join=false сведений не создаёт: сайт остаётся прежним', async () => {
+  const before = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  const result = await apply(FRESH2, {
+    id: 888888, name: 'HUSHED WING', at: '2026-11-17T01:00:00Z', join: false,
+  });
+  assert.equal(result.created, false, JSON.stringify(result));
+  assert.equal(result.squadronId, null, JSON.stringify(result));
+  assert.equal(result.reason, 'squadron_not_found', 'вступления нет — и создавать нечего');
+  const after = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  assert.equal(after.rows[0].n, before.rows[0].n);
+  const profile = await profileOf(FRESH2);
+  assert.equal(profile.game_squadron_name, 'HUSHED WING', 'сведения о пилоте записаны');
+});
+
+test('без названия эскадрилья не создаётся: показывать нечего', async () => {
+  const before = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  const result = await apply(FRESH3, { id: 606060, name: '', at: '2026-11-17T00:00:00Z' });
+  assert.equal(result.created, false, JSON.stringify(result));
+  assert.equal(result.squadronId, null, JSON.stringify(result));
+  const after = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  assert.equal(after.rows[0].n, before.rows[0].n);
+});
+
+test('тег из журнала ищет эскадрилью с другим написанием имени', async () => {
+  // На сайте имя могло быть записано по-другому (перевод, приписка), тег — тот.
+  const squadronId = await createSquadron('Deep Space Haulers', { tag: 'DSHA' });
+  const result = await apply(OTHER, {
+    id: 555001, name: 'DEEP SPACE HAULERS [OLD]', tag: 'dsha', at: '2026-11-16T19:00:00Z',
+  });
+  assert.equal(result.squadronId, Number(squadronId));
+  assert.equal(result.foundBy, 'tag', 'дубль не создан');
+  const members = await membersOf(squadronId);
+  assert.equal(members.length, 0, 'пилот уже в другой эскадрилье сайта — не переезжает автоматически');
+});
+
+test('пилот, уже состоящий в эскадрилье сайта, новую по журналу не создаёт', async () => {
+  const before = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  const result = await apply(PILOT, {
+    id: 999001, name: 'SOME OTHER WING', at: '2026-11-16T20:00:00Z',
+  });
+  assert.equal(result.created, false);
   assert.equal(result.squadronId, null);
   assert.equal(result.reason, 'squadron_not_found');
-  const profile = await profileOf(OTHER);
-  assert.equal(Number(profile.game_squadron_id), 31337);
-  assert.equal(profile.game_squadron_name, 'UNKNOWN WING');
+  const after = await db.query('SELECT count(*)::int AS n FROM public.squadrons');
+  assert.equal(after.rows[0].n, before.rows[0].n, 'иначе на каждый чужой тег появлялась бы пустая эскадрилья');
 });
 
 test('витрина public_profiles получила колонки эскадрильи из журнала', async () => {
-  const { rows } = await db.query('SELECT * FROM public.public_profiles WHERE id = $1', [PILOT]);
-  assert.equal(Number(rows[0].game_squadron_id), 424242);
+  // Sable (FRESH2) последней записью получила HUSHED WING (888888) — здесь
+  // важен и сам набор колонок, и то, что витрина видит именно последнее.
+  const { rows } = await db.query('SELECT * FROM public.public_profiles WHERE id = $1', [FRESH2]);
+  assert.equal(Number(rows[0].game_squadron_id), 888888);
   assert.equal(typeof rows[0].game_squadron_name, 'string');
   assert.ok('game_squadron_rank' in rows[0]);
   assert.ok('game_squadron_site_id' in rows[0]);
   // Прежние колонки никуда не делись.
-  assert.equal(rows[0].cmdr_name, 'Nova');
+  assert.equal(rows[0].cmdr_name, 'Sable');
 });
 
 test('функция недоступна anon и authenticated', async () => {

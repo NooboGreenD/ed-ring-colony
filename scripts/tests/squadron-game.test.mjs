@@ -23,6 +23,7 @@ test('SquadronStartup даёт ID, имя и ранг', () => {
   assert.deepEqual(report, {
     gameSquadronId: 75645,
     gameSquadronName: 'ENDURANCE EXPLORATION',
+    gameSquadronTag: null,
     gameRank: 4,
     gameRankName: null,
     eventAt: '2026-11-10T18:00:00.000Z',
@@ -68,6 +69,16 @@ test('поля в snake_case и camelCase понимаются одинаков�
   });
   assert.deepEqual(snake, camel);
   assert.equal(snake.gameSquadronName, 'Wing', 'пробелы по краям обрезаются');
+});
+
+test('тег из журнала сохраняется: по нему сайт не заводит дубль', () => {
+  const report = squadronReportFromEvent({
+    event: 'SquadronStartup', SquadronID: 10, SquadronName: 'Wing', SquadronTag: 'wng',
+  });
+  assert.equal(report.gameSquadronTag, 'wng');
+  const parsed = parseSquadronReport({ game_squadron_id: 10, game_squadron_name: 'Wing', game_squadron_tag: 'WNG1' });
+  assert.equal(parsed.gameSquadronTag, 'WNG1');
+  assert.equal(parseSquadronReport({ game_squadron_id: 10 }).gameSquadronTag, null);
 });
 
 test('битое время события не роняет разбор', () => {

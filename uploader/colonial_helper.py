@@ -7740,7 +7740,9 @@ class ColonialHelperApp:
         if not result.get("sent"):
             return
         state = collector.state or {}
-        parts = [f"Эскадрилья: на сайте {state.get('squadron_name') or state.get('squadron_id')}"]
+        name = state.get('squadron_name') or state.get('squadron_id')
+        parts = [f"Эскадрилья: на сайте создана {name}" if result.get("created")
+                 else f"Эскадрилья: на сайте {name}"]
         if result.get("joined"):
             parts.append("пилот добавлен в состав")
         elif result.get("member"):

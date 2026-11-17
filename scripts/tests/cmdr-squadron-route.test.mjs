@@ -19,6 +19,9 @@
  *  5. GET на отставшей базе отвечает `squadron: null, schemaOutdated: true`,
  *     а не 500.
  *  6. GET подставляет имя эскадрильи сайта по связи из миграции.
+ *  7. Эскадрильи, которой на сайте нет, создаётся по журналу: тег из журнала
+ *     доезжает до RPC (по нему сайт не заводит дубль), а признак «создана»
+ *     возвращается клиенту.
  */
 
 import test from 'node:test';
@@ -239,6 +242,41 @@ maybe('POST от Helper: пилот из токена, источник helper, 
     assert.equal(call.args.p_source, 'helper');
     assert.equal(call.args.p_join, true);
     assert.equal(new Date(call.args.p_at).toISOString(), '2026-11-10T18:00:00.000Z');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('POST: тег из журнала доезжает до раскладки, признак создания возвращается', async () => {
+  const { mod, dir } = await buildRoute();
+  try {
+    seedApiToken(mod);
+    mod.db.user = null;
+    mod.db.rpcResult = { ok: true, created: true, squadronId: 33, joined: true, foundBy: 'created' };
+
+    const res = await post(mod, {
+      token: HELPER_TOKEN,
+      game_squadron_id: 424242,
+      game_squadron_name: 'UNKNOWN WING',
+      game_squadron_tag: 'unkw',
+    });
+    const json = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(json.created, true, 'сайт завёл эскадрилью по журналу');
+    assert.equal(json.foundBy, 'created');
+    assert.equal(mod.db.rpcCalls[0].args.p_tag, 'unkw', 'тег нужен, чтобы не создать дубль');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('POST без тега передаёт null, а не пустую строку', async () => {
+  const { mod, dir } = await buildRoute();
+  try {
+    seedApiToken(mod);
+    mod.db.user = null;
+    await post(mod, { token: HELPER_TOKEN, game_squadron_id: 1, game_squadron_name: 'X' });
+    assert.equal(mod.db.rpcCalls[0].args.p_tag, null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

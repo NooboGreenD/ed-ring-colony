@@ -21,6 +21,8 @@ export interface SquadronReport {
   gameSquadronId: number;
   /** SquadronName: имя может прийти пустым (пилот в эскадрилье без имени). */
   gameSquadronName: string;
+  /** `SquadronTag`, если журнал его принёс (в событиях он необязателен). */
+  gameSquadronTag: string | null;
   /** CurrentRank / NewRank. `null` — ранг неизвестен. */
   gameRank: number | null;
   /**
@@ -43,6 +45,8 @@ export interface SquadronApplyResult {
   foundBy: string | null;
   member: boolean;
   joined: boolean;
+  /** Сайт завёл эскадрилью по журналу: раньше её здесь не было. */
+  created: boolean;
   rankId: number | null;
   rankName: string | null;
   reason: string | null;
@@ -51,6 +55,7 @@ export interface SquadronApplyResult {
 }
 
 const MAX_NAME = 120;
+const MAX_TAG = 10;
 const MAX_RANK_NAME = 80;
 const MAX_GAME_RANK = 20;
 
@@ -86,6 +91,7 @@ export function parseSquadronReport(body: Record<string, unknown>): SquadronRepo
   return {
     gameSquadronId: id,
     gameSquadronName: text(body.game_squadron_name ?? body.gameSquadronName, MAX_NAME),
+    gameSquadronTag: text(body.game_squadron_tag ?? body.gameSquadronTag, MAX_TAG) || null,
     gameRank: rankOf(body.game_squadron_rank ?? body.gameSquadronRank ?? body.gameRank ?? body.rank),
     gameRankName: text(body.game_squadron_rank_name ?? body.gameRankName, MAX_RANK_NAME) || null,
     eventAt: isoAt(body.event_at ?? body.eventAt ?? body.timestamp),
@@ -99,6 +105,7 @@ export function squadronReportFromEvent(event: Record<string, unknown>): Squadro
   return parseSquadronReport({
     gameSquadronId: event.SquadronID,
     gameSquadronName: event.SquadronName,
+    gameSquadronTag: event.SquadronTag ?? event.Tag,
     // У повышения ранг лежит в NewRank: CurrentRank пишется и в старом, и в
     // новом событии, но у `SquadronPromotion` его может не быть вовсе.
     gameRank: name === 'SquadronPromotion' ? event.NewRank : event.CurrentRank,
@@ -124,7 +131,7 @@ export async function applyPilotSquadron(
     p_user: userId,
     p_game_id: report.gameSquadronId,
     p_name: report.gameSquadronName,
-    p_tag: null,
+    p_tag: report.gameSquadronTag,
     p_rank: report.gameRank,
     p_rank_name: report.gameRankName,
     p_at: report.eventAt ?? new Date().toISOString(),
@@ -165,6 +172,7 @@ function normaliseResult(data: unknown): SquadronApplyResult {
     foundBy: str(row.foundBy),
     member: row.member === true,
     joined: row.joined === true,
+    created: row.created === true,
     rankId: int(row.rankId),
     rankName: str(row.rankName),
     reason: str(row.reason),

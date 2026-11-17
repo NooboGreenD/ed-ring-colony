@@ -170,6 +170,35 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(collector.flush(api), {"ok": True, "sent": False})
         self.assertEqual(api.calls, [])
 
+    def test_tag_goes_to_site_when_journal_has_it(self):
+        # `SquadronTag` в событиях необязателен, но если игра его дала — сайт
+        # по нему не создаст дубль эскадрильи с другим написанием имени.
+        collector = SquadronInfoCollector(self.path)
+        event = startup(75645, 'ENDURANCE EXPLORATION', 4)
+        event['SquadronTag'] = 'enex'
+        collector.feed(event)
+        api = FakeApi()
+        collector.flush(api)
+        self.assertEqual(api.calls[0]['squadron']['game_squadron_tag'], 'enex')
+
+    def test_payload_has_no_tag_when_journal_does_not(self):
+        collector = SquadronInfoCollector(self.path)
+        collector.feed(startup(75645, 'ENDURANCE EXPLORATION', 4))
+        api = FakeApi()
+        collector.flush(api)
+        self.assertNotIn('game_squadron_tag', api.calls[0]['squadron'],
+                         'пустой тег не отправляем: сервер сам соберёт его из названия')
+
+    def test_created_squadron_is_reported(self):
+        collector = SquadronInfoCollector(self.path)
+        collector.feed(startup(1, 'NEW WING', 0))
+        api = FakeApi(response={'created': True, 'squadronName': 'NEW WING', 'joined': True})
+        result = collector.flush(api)
+        self.assertTrue(result['created'], 'сайт завёл эскадрилью по журналу')
+        api2 = FakeApi(response={'squadronName': 'NEW WING'})
+        collector.feed(startup(1, 'NEW WING', 1))
+        self.assertFalse(collector.flush(api2)['created'])
+
     def test_payload_matches_route_contract(self):
         collector = SquadronInfoCollector(self.path)
         collector.feed(startup(75645, "ENDURANCE EXPLORATION", 4))
@@ -266,6 +295,14 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNotNone(collector.pending_payload(), "после смены аккаунта состояние шлётся заново")
         # Состояние при этом живо.
         self.assertEqual(collector.state["squadron_id"], 1)
+
+
+class HelperLogTests(unittest.TestCase):
+    """Строка журнала Helper'а различает «эскадрилья уже была» и «создана»."""
+
+    def test_log_says_created(self):
+        self.assertIn('на сайте создана', HELPER_SOURCE)
+        self.assertIn('result.get("created")', HELPER_SOURCE)
 
 
 class HelperWiringTests(unittest.TestCase):
