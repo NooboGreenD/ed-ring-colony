@@ -32,11 +32,20 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
   const currentUserId = user?.id ?? null;
 
   // 1. Находим профиль по cmdr_name (единственный источник имени)
-  const { data: profile } = await svc
+  const PROFILE_COLUMNS = 'id, cmdr_name, avatar_url, created_at, privacy_settings';
+  // Эскадрилья из журнала игры (`game_squadron_*`) появилась миграцией
+  // 20261117090000. На отставшей базе её просто нет — досье обязано
+  // открываться и без неё, поэтому второй попытки с прежним набором колонок
+  // достаточно.
+  let profile: Record<string, any> | null = (await svc
     .from('profiles')
-    .select('id, cmdr_name, avatar_url, created_at, privacy_settings')
+    .select(`${PROFILE_COLUMNS}, game_squadron_name, game_squadron_rank, game_squadron_at, game_squadron_site_id`)
     .eq('cmdr_name', name)
-    .maybeSingle();
+    .maybeSingle()).data;
+  if (!profile) {
+    const fallback = await svc.from('profiles').select(PROFILE_COLUMNS).eq('cmdr_name', name).maybeSingle();
+    profile = fallback.data;
+  }
 
   // 2. ВСЕ данные агрегируем по profile.id (UUID), а не по имени!
   // Это решает проблему: при смене ника досье не отвязывается.
@@ -236,6 +245,33 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
       if (squadronError) console.warn('[cmdr profile] Could not load created squadron:', squadronError.message);
       squadron = createdSquadron;
     }
+    // Эскадрилья из журнала игры (`SquadronStartup`, отгружает Colonial
+    // Helper): у пилота, который не вступал в эскадрилью сайта, состав пуст,
+    // а игра её знает. Показываем её хотя бы названием.
+    if (!squadron) {
+      const gameSquadronId = profile?.game_squadron_site_id;
+      const gameSquadronName = String(profile?.game_squadron_name ?? '').trim();
+      if (gameSquadronId) {
+        const { data: gameSquadron } = await supabase
+          .from('squadrons')
+          .select('*')
+          .eq('id', gameSquadronId)
+          .maybeSingle();
+        squadron = gameSquadron;
+      }
+      if (!squadron && gameSquadronName) {
+        const { data: byName } = await supabase
+          .from('squadrons')
+          .select('*')
+          .ilike('name', gameSquadronName)
+          .limit(1)
+          .maybeSingle();
+        squadron = byName;
+      }
+      if (!squadron && gameSquadronName) {
+        squadron = { name: gameSquadronName } as any;
+      }
+    }
   }
 
   if (!profile && (allRows?.length || 0) === 0 && rcData.architectCount === 0) {
@@ -284,6 +320,12 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
         architectCount={rcData.architectCount}
         architectSystems={rcData.architectSystems}
         squadron={squadron}
+        gameSquadron={profile?.game_squadron_name || profile?.game_squadron_id ? {
+          name: String(profile?.game_squadron_name ?? '').trim() || null,
+          rank: profile?.game_squadron_rank ?? null,
+          rankName: null,
+          syncedAt: profile?.game_squadron_at ?? null,
+        } : null}
         currentUserId={currentUserId}
         profileUserId={profileId}
         capiProfile={publicCapiProfile}

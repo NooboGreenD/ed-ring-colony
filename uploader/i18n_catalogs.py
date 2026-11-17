@@ -13787,6 +13787,50 @@ _STRINGS.update({
     },
 })
 
+_STRINGS.update({
+    # ------------------------------- страница «Пилот»: эскадрилья из журнала
+    "Эскадрилья": {
+        "en": "Squadron",
+        "de": "Staffel",
+        "it": "Squadriglia",
+        "ko": "스쿼드론",
+        "zh": "中队",
+        "ja": "スコードロン",
+    },
+    "нет данных из журнала": {
+        "en": "no journal data",
+        "de": "keine Journaldaten",
+        "it": "nessun dato dal diario",
+        "ko": "저널 데이터 없음",
+        "zh": "无日志数据",
+        "ja": "ジャーナル情報なし",
+    },
+    "ID {id}": {
+        "en": "ID {id}",
+        "de": "ID {id}",
+        "it": "ID {id}",
+        "ko": "ID {id}",
+        "zh": "ID {id}",
+        "ja": "ID {id}",
+    },
+    " · ранг {rank}": {
+        "en": " · rank {rank}",
+        "de": " · Rang {rank}",
+        "it": " · grado {rank}",
+        "ko": " · 랭크 {rank}",
+        "zh": " · 等级 {rank}",
+        "ja": " · ランク {rank}",
+    },
+    " · на сайт не отправлено": {
+        "en": " · not sent to the site",
+        "de": " · nicht an die Website gesendet",
+        "it": " · non inviato al sito",
+        "ko": " · 사이트로 전송되지 않음",
+        "zh": " · 尚未发送到网站",
+        "ja": " · サイトへ未送信",
+    },
+})
+
 
 def _build_catalogs() -> Dict[str, Dict[str, str]]:
     """Развернуть «строка → {язык: текст}» в «язык → {строка: текст}»."""

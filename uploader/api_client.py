@@ -419,6 +419,30 @@ class ApiClient:
         except requests.RequestException as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def upload_squadron(self, squadron: dict, cmdr: str = None) -> dict:
+        """Эскадрилья пилота из журнала → POST /api/cmdr/squadron.
+
+        Сайт сам раскладывает сведения: профиль пилота, связь эскадрильи сайта
+        с игровой, состав и игровой ранг. Повторная отправка безопасна —
+        сервер сравнивает время события и не откатывает состояние назад.
+        """
+        if not self.token or not squadron:
+            return {"ok": False, "error": tr("Нет токена или данных")}
+        payload = {"token": self.token, "cmdr": cmdr or self.cmdr_name, **squadron}
+        try:
+            resp = _session_for_thread().post(
+                f"{self.api_base}/cmdr/squadron",
+                json=payload,
+                allow_redirects=False,
+                timeout=20,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except requests.RequestException as exc:
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
+
     def fetch_my_carriers(self) -> dict:
         """Личный авианосец и носители эскадрильи → GET /api/carriers/mine."""
         if not self.token:

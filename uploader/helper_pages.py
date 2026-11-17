@@ -2557,7 +2557,8 @@ class PilotPage(QWidget):
         "ship": ("ship", "modules"),
         "route": ("route_status", "route_current", "route_next",
                   "route_remaining", "last_delivery"),
-        "status": ("commander", "system", "game", "watcher", "services", "exobio"),
+        "status": ("commander", "squadron", "system", "game", "watcher",
+                   "services", "exobio"),
         "journal": ("balance", "rebuy", "legal", "journal_state",
                     "event_summary", "last_event"),
     }
@@ -2572,6 +2573,7 @@ class PilotPage(QWidget):
         "route_status": "Пройдено", "route_current": "Текущая",
         "route_next": "Следующая", "route_remaining": "Осталось",
         "last_delivery": "Последняя доставка", "commander": "CMDR",
+        "squadron": tr("Эскадрилья"),
         "system": "Система", "game": "Игра", "watcher": "Watcher",
         "services": "Сервисы", "exobio": "Экзобиология", "balance": "Баланс",
         "rebuy": "Страховка", "legal": "Правовой статус",

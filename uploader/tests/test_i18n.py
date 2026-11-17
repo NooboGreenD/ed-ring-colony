@@ -95,6 +95,7 @@ AUTH_HELPER_FUNCTIONS = ("_build_tab_auth", "_save_edsm_settings", "_save_inara_
 
 #: Уже переведённые части инфографики пилота.
 PILOT_HELPER_FUNCTIONS = ("_refresh_pilot_infographic", "_pilot_journal_state",
+                           "_pilot_squadron_text",
                            "_refresh_pilot_equipment", "_on_equipment_selected",
                            "_on_equipment_refresh")
 
@@ -251,6 +252,17 @@ class CatalogTests(unittest.TestCase):
                                                     functions=PILOT_HELPER_FUNCTIONS)
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "значения инфографики: " + "; ".join(missing))
+
+    def test_squadron_tile_strings_are_in_the_catalog(self):
+        # Плитка «Эскадрилья» на странице «Пилот»: подпись строки и значения из
+        # журнала (`SquadronStartup` от Helper'а) — переводятся как остальные.
+        for text in ("Эскадрилья", "нет данных из журнала", "ID {id}",
+                     " · ранг {rank}", " · на сайт не отправлено"):
+            self.assertIn(text, i18n_catalogs._STRINGS, text)
+            translated = i18n_catalogs.CATALOGS["en"].get(text) or ""
+            self.assertTrue(translated.strip(), f"нет английского перевода: {text!r}")
+            self.assertEqual(placeholders(text), placeholders(translated),
+                             f"подстановки разошлись: {text!r}")
 
     def test_upload_page_strings_are_in_the_catalog(self):
         missing = [f"helper_pages.py:{line}: {text!r}"

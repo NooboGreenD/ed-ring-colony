@@ -123,6 +123,7 @@ export async function POST(req: Request) {
       communityGoalCatalogUpdated: ingest.communityGoalCatalogUpdated,
       snapshotInserted: telemetry?.snapshotInserted ?? 0,
       pilotStatsUpdated: telemetry?.pilotStatsUpdated ?? false,
+      squadronApplied: telemetry?.squadronApplied ?? false,
       // 'web_source' — сводка пилота защищена загрузкой журналов на сайте
       pilotStatsSkipped: telemetry?.pilotStatsSkipped ?? null,
       systemScansInserted: telemetry?.systemScansInserted ?? 0,

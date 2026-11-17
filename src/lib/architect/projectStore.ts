@@ -125,14 +125,26 @@ export async function loadProfiles(svc: Svc, ids: Iterable<string | null | undef
   for (const part of chunks(unique)) {
     const { data, error } = await svc
       .from('profiles')
-      .select('id, cmdr_name, avatar_url, squadron, privacy_settings')
+      .select('id, cmdr_name, avatar_url, squadron, game_squadron_name, game_squadron_id, privacy_settings')
       .in('id', part);
-    if (error) fail('Profiles', error);
-    for (const row of Array.isArray(data) ? data : []) {
+    // База без миграции эскадрильи из журнала: дочитываем прежний набор
+    // колонок, иначе одно отсутствующее поле ломало бы всю карточку проекта.
+    const rows = error && /game_squadron/i.test(error.message ?? '')
+      ? (await svc.from('profiles').select('id, cmdr_name, avatar_url, squadron, privacy_settings').in('id', part)).data
+      : data;
+    if (error && !Array.isArray(rows)) fail('Profiles', error);
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const siteSquadron = typeof row.squadron === 'string' && row.squadron ? row.squadron : null;
+      // Эскадрилья из журнала игры (`SquadronStartup` от Helper'а) главнее
+      // пустой витрины профиля: у пилота, который не вступал в эскадрилью на
+      // сайте, `squadron` пуст, а игра её знает.
+      const gameSquadron = typeof row.game_squadron_name === 'string' && row.game_squadron_name.trim()
+        ? row.game_squadron_name.trim()
+        : null;
       result.set(String(row.id), {
         name: String(row.cmdr_name ?? '').trim(),
         avatarUrl: typeof row.avatar_url === 'string' && row.avatar_url ? row.avatar_url : null,
-        squadron: typeof row.squadron === 'string' && row.squadron ? row.squadron : null,
+        squadron: siteSquadron ?? gameSquadron,
         showDeliveries: resolvePrivacy(row.privacy_settings).deliveries,
       });
     }

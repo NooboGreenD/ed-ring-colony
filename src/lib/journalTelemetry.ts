@@ -19,6 +19,13 @@ import {
   type ColonisationSiteRow,
 } from './colonisationEvents.ts';
 import { signalsFromList } from './bodySignals.ts';
+import {
+  SquadronApplyError,
+  applyPilotSquadron,
+  parseSquadronReport,
+  squadronReportFromEvent,
+  type SquadronReport,
+} from './squadronGame.ts';
 import { upsertResilient, schemaWarning } from './capi/persist.ts';
 
 /**
@@ -142,6 +149,8 @@ export interface JournalTelemetryStats {
 export interface JournalTelemetry {
   cmdrName: string | null;
   currentSystem: string | null;
+  /** Эскадрилья пилота из журнала (последнее по времени сообщение игры). */
+  squadron: SquadronReport | null;
   constructionEvents: ConstructionSnapshotEvent[];
   scans: SystemScanRow[];
   pilotStats: PilotStats;
@@ -151,6 +160,10 @@ export interface JournalTelemetry {
 export interface TelemetryState {
   cmdrName: string | null;
   currentSystem: string | null;
+  /** Последнее сообщение игры об эскадрилье пилота (самое свежее по времени). */
+  squadronReport: SquadronReport | null;
+  /** Время этого сообщения (мс), чтобы история не перетирала свежее состояние. */
+  squadronAt: number;
   /**
    * Подписи всех принятых snapshot'ов стройки — дубли журнала режут шум.
    * Именно множество, а не «последняя подпись»: игрок возит ресурсы между
@@ -170,6 +183,8 @@ export function createTelemetryState(): TelemetryState {
   return {
     cmdrName: null,
     currentSystem: null,
+    squadronReport: null,
+    squadronAt: 0,
     constructionSignatures: new Set(),
     scanByKey: new Map(),
     pilotStats: {},
@@ -247,6 +262,20 @@ export class TelemetryCollector {
 
     if (name === 'Commander' && str(event.Name)) {
       state.cmdrName = str(event.Name);
+      return;
+    }
+    if (name === 'SquadronStartup' || name === 'SquadronPromotion') {
+      // Эскадрилья пилота: игра сообщает её при каждом запуске и при
+      // повышении. Раскладка по профилю/составу — на сервере
+      // (`apply_pilot_squadron`), здесь только сбор последнего состояния.
+      const report = squadronReportFromEvent(event);
+      if (report) {
+        const at = report.eventAt ? Date.parse(report.eventAt) : NaN;
+        if (!Number.isFinite(at) || at >= state.squadronAt) {
+          state.squadronReport = report;
+          state.squadronAt = Number.isFinite(at) ? at : state.squadronAt;
+        }
+      }
       return;
     }
     if (name === 'LoadGame') {
@@ -433,6 +462,7 @@ export class TelemetryCollector {
     return {
       cmdrName: this.state.cmdrName,
       currentSystem: this.state.currentSystem,
+      squadron: this.state.squadronReport,
       constructionEvents: this.constructionEvents,
       scans: Array.from(this.state.scanByKey.values()),
       pilotStats: this.state.pilotStats,
@@ -464,6 +494,7 @@ export class TelemetryCollector {
     return {
       cmdrName: this.state.cmdrName,
       currentSystem: this.state.currentSystem,
+      squadron: this.state.squadronReport,
       constructionEvents: this.constructionEvents.splice(0, this.constructionEvents.length),
       scans: Array.from(this.state.scanByKey.values()),
       pilotStats: this.state.pilotStats,
@@ -559,6 +590,8 @@ export interface JournalTelemetryPayload {
   systemScans?: unknown;
   scans?: unknown;
   pilotStats?: unknown;
+  /** `SquadronStartup`/`SquadronPromotion` из журнала (или готовый отчёт). */
+  squadron?: unknown;
 }
 
 export interface JournalTelemetryOutcome {
@@ -576,6 +609,13 @@ export interface JournalTelemetryOutcome {
    * программы (Colonial Helper) не имеют права её перетереть.
    */
   pilotStatsSkipped: 'web_source' | null;
+  /** Эскадрилья пилота из журнала применена к профилю и составу. */
+  squadronApplied: boolean;
+  /**
+   * Почему эскадрилья не применена: `schema_outdated` — миграция ещё не
+   * накатана; иначе текст ошибки в `warnings`.
+   */
+  squadronSkipped: 'schema_outdated' | null;
   /**
    * Системы, где состояние площадки изменилось: по ним сервер продвигает
    * статусы проектов эскадрилий (`projects/projectSync.ts`).
@@ -669,10 +709,34 @@ export async function persistJournalTelemetry(
     snapshotDuplicates: 0,
     systemScansInserted: 0,
     pilotStatsUpdated: false,
+    squadronApplied: false,
+    squadronSkipped: null,
     pilotStatsSkipped: null,
     changedSystems: [],
     warnings,
   };
+
+  // ── Эскадрилья пилота ────────────────────────────────────────────────────
+  // Загрузчик журналов на сайте передаёт то же событие, что и Helper
+  // (`SquadronStartup`/`SquadronPromotion`), поэтому раскладка по профилю и
+  // составу одна — SQL-функция `apply_pilot_squadron`. Ошибка здесь не делает
+  // загрузку неудачной: доставки уже записаны, а событие придёт снова.
+  const squadronEntry = Array.isArray(payload.squadron) ? payload.squadron[0] : payload.squadron;
+  const squadronReport = squadronEntry && typeof squadronEntry === 'object'
+    ? (squadronReportFromEvent(squadronEntry as Record<string, unknown>)
+      ?? parseSquadronReport(squadronEntry as Record<string, unknown>))
+    : null;
+  if (squadronReport) {
+    try {
+      await applyPilotSquadron(svc, userId, squadronReport, { source: options.source ?? 'web' });
+      outcome.squadronApplied = true;
+    } catch (error) {
+      if (error instanceof SquadronApplyError && error.schemaOutdated) {
+        outcome.squadronSkipped = 'schema_outdated';
+      }
+      warnings.push(`squadron: ${(error as Error).message}`);
+    }
+  }
 
   const events = (Array.isArray(payload.constructionEvents) ? payload.constructionEvents : [])
     .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object');

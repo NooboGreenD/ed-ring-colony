@@ -111,7 +111,7 @@ class PilotPageTests(unittest.TestCase):
         for key in helper_pages.PILOT_KPI_KEYS:
             self.assertIn(key, self.page.values)
             self.assertIn(f"{key}_sub", self.page.subs)
-        for key in ("ship", "route_status", "commander", "balance", "game", "exobio"):
+        for key in ("ship", "route_status", "commander", "squadron", "balance", "game", "exobio"):
             self.assertIn(key, self.page.values)
         for key in ("hull_bar", "shield_bar", "fuel_bar", "power_bar", "route_progress"):
             self.assertIn(key, self.page.bars)
