@@ -20639,3 +20639,41 @@ UPDATE public.site_content SET
   donation_widget_url_ru = COALESCE(donation_widget_url_ru, donation_widget_url),
   donation_button_url_ru = COALESCE(donation_button_url_ru, donation_button_url)
 WHERE id = 1;
+
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261118000000_billing_subscription_bonuses.sql      │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ══════════════════════════════════════════════════════════════════
+-- 20261118000000_billing_subscription_bonuses.sql — бонусы подписок
+-- ══════════════════════════════════════════════════════════════════
+-- Бонусы тарифных подписок: лимит избранного в Атласе, бонус к лимиту
+-- эскадрильи, бонусные кредиты при пополнении, бонусный тонаж груза.
+-- Идемпотентна.
+
+ALTER TABLE public.billing_plans
+  ADD COLUMN IF NOT EXISTS atlas_favorites_limit INTEGER,
+  ADD COLUMN IF NOT EXISTS squadron_member_limit_bonus INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS topup_credit_bonus_pct INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS delivery_tonnage_bonus_pct INTEGER NOT NULL DEFAULT 0;
+
+UPDATE public.billing_plans SET
+  squadron_member_limit_bonus = CASE id
+    WHEN 'pioneer' THEN 25
+    WHEN 'elite' THEN 75
+    WHEN 'admiral' THEN 200
+    ELSE squadron_member_limit_bonus
+  END,
+  topup_credit_bonus_pct = CASE id
+    WHEN 'pioneer' THEN 5
+    WHEN 'elite' THEN 10
+    WHEN 'admiral' THEN 20
+    ELSE topup_credit_bonus_pct
+  END,
+  delivery_tonnage_bonus_pct = CASE id
+    WHEN 'pioneer' THEN 5
+    WHEN 'elite' THEN 10
+    WHEN 'admiral' THEN 20
+    ELSE delivery_tonnage_bonus_pct
+  END;

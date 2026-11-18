@@ -28,6 +28,7 @@ import type {
   CreditPack,
   CosmeticCategory,
 } from '@/types/billing';
+import { computeTopupBonus, type SubscriptionBonus } from './billing/subscriptionBonus';
 import { getBillingAdapter, type TableAdapter } from './billing/storage';
 import { INITIAL_PLANS, INITIAL_SHOP_ITEMS } from './billing/catalogSeed';
 import { PROVIDER_DRIVERS } from './billing/providers';
@@ -296,6 +297,23 @@ class BillingRepository {
     if (!userId) return { pct: 0, sub: null };
     const sub = await this.getUserSubscription(userId);
     return { pct: sub?.plan?.discount_pct || 0, sub };
+  }
+
+  /** Полный набор бонусов для пользователя по активной подписке. */
+  async getUserSubscriptionBonus(userId: string | null | undefined): Promise<{
+    planId: string;
+    planName: string;
+    color: string;
+    atlasFavoritesLimit: number | null;
+    squadronMemberLimitBonus: number;
+    topupCreditBonusPct: number;
+    deliveryTonnageBonusPct: number;
+    shopDiscountPct: number;
+  }> {
+    const { getPlanBonus } = await import('./billing/subscriptionBonus');
+    if (!userId) return getPlanBonus(null);
+    const sub = await this.getUserSubscription(userId);
+    return getPlanBonus(sub?.plan ?? null);
   }
 
   async grantSubscription(params: {
@@ -1040,8 +1058,17 @@ class BillingRepository {
     let txIdOut: string | null = null;
     try {
       if (intent.purpose === 'credit_topup') {
-        const r = await this.topupBalance({ userId: intent.user_id, cmdrName: cmdr, amountCredits: intent.amount_credits, amountRub: num(intent.amount_rub), paymentMethod: method, providerId: intent.provider_id, externalId: ext.externalId || intent.external_id });
+        // Бонусные кредиты от активной подписки начисляются сверх суммы пачки.
+        const bonus = await this.getUserSubscriptionBonus(intent.user_id);
+        const { totalCredits, bonusCredits } = computeTopupBonus(bonus, intent.amount_credits);
+        const r = await this.topupBalance({ userId: intent.user_id, cmdrName: cmdr, amountCredits: totalCredits, amountRub: num(intent.amount_rub), paymentMethod: method, providerId: intent.provider_id, externalId: ext.externalId || intent.external_id });
         txIdOut = r.transaction.id;
+        if (bonusCredits > 0) {
+          const a = await this.db();
+          await a.update('billing_transactions', r.transaction.id, {
+            metadata: { ...(r.transaction?.metadata || {}), subscriptionBonusCredits: bonusCredits, bonusPlan: bonus.planId },
+          });
+        }
       } else if (intent.purpose === 'subscription' && intent.target_id) {
         const plan = await this.getPlanById(intent.target_id);
         const sub = await this.grantSubscription({

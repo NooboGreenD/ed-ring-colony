@@ -28,6 +28,15 @@ export interface BillingPlan {
   discount_pct?: number;
   created_at: string;
   updated_at?: string;
+  // ── Бонусы уровня подписки (реальный функционал, а не только описание) ──
+  /** Лимит избранных систем в Атласе. `null` — без ограничений. */
+  atlas_favorites_limit?: number | null;
+  /** Добавка к лимиту участников эскадрильи, которую может создать/вести владелец подписки. */
+  squadron_member_limit_bonus?: number;
+  /** Бонусный процент кредитов при пополнении баланса (top-up). */
+  topup_credit_bonus_pct?: number;
+  /** Бонусный процент тонажа при сдаче груза (доставки). */
+  delivery_tonnage_bonus_pct?: number;
 }
 
 export interface UserSubscription {
