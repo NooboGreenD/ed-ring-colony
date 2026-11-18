@@ -736,6 +736,30 @@ else
   say "исходники: ${CURRENT_SHA:0:12} — перемотка не требуется (отставания от $BRANCH нет)"
 fi
 
+# ── 4b. ключевые файлы из git не пустые ─────────────────────────────
+# Разрешение конфликта в индексе легко оставляет «пустую» версию: после снятия
+# записей слияния файл выглядит нетронутым, а внутри — грабли. Так сервер
+# молча соберётся с пустым .env.example (Dockerfile делает COPY . ., файл
+# копируется в контекст) и с пустой миграцией, которую psql «применит»
+# без ошибки. Проверяем то, что git знает как непустое.
+tracked_empty_files() {
+  local path size
+  git ls-tree -r -l HEAD 2>/dev/null | while read -r mode type sha size path; do
+    case "$type" in blob) ;; *) continue ;; esac
+    case "$size" in '' | -) continue ;; esac
+    [ "$size" -gt 0 ] 2>/dev/null || continue
+    [ -e "$path" ] || continue
+    if [ ! -s "$path" ]; then printf '%s\n' "$path"; fi
+  done || true
+}
+
+if [ "$NEW_SHA" != "$CURRENT_SHA" ] || [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+  EMPTY_TRACKED="$(tracked_empty_files)"
+  if [ -n "$EMPTY_TRACKED" ]; then
+    die "в рабочем дереве пустые файлы, которые в git непустые: $(printf '%s' "$EMPTY_TRACKED" | tr '\n' ' ') — так бывает после ручного разрешения конфликта; верните содержимое (git checkout HEAD -- <файл>) и повторите обновление"
+  fi
+fi
+
 # ── 4c. Compose-файлы стека: та же сеть Supabase, что у start-monitoring.sh ──
 # Без одинаковых -f у всех скриптов очередное up пересоздало бы web/monitor-agent
 # без сети Supabase, и «getaddrinfo EAI_AGAIN db» вернулся бы после обновления.

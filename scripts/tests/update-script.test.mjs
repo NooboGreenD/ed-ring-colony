@@ -1300,3 +1300,90 @@ test('перемотка уже сделана: правки из брошенн
     ctx.cleanup();
   }
 });
+
+test('пустой файл вместо версии из git останавливает обновление до сборки', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Так выглядит клон после ручного разрешения конфликта: записи слияния
+    // сняты, файл «нетронут» для git, но содержимое потеряно. Dockerfile
+    // делает COPY . . — пустой .env.example уехал бы в образ, а пустая
+    // миграция «применилась» бы через psql без единой ошибки.
+    // .env.example должен быть ОТСЛЕЖИВАЕМЫМ (так на сервере после 2.28.2):
+    // сначала он появляется в ветке, клон её догоняет, и только потом файл
+    // «портится» — ровно как после неудачного ручного разрешения конфликта.
+    ctx.release({ '.env.example': 'JOBS_ENABLED=factions-sync\n', 'CHANGELOG.md': '# release\n' });
+    ctx.git(ctx.src, 'fetch', '-q', 'origin');
+    ctx.git(ctx.src, 'merge', '-q', '--ff-only', 'origin/main');
+    writeFileSync(join(ctx.src, '.env.example'), '');
+    // ctx.git обрезает ведущий пробел — сверяем по фактам, а не по отступу.
+    assert.equal(readFileSync(join(ctx.src, '.env.example'), 'utf8'), '');
+    assert.equal(ctx.git(ctx.src, 'ls-files', '.env.example'), '.env.example', 'файл непустой в git и пустой на диске');
+    assert.match(ctx.git(ctx.src, 'status', '--short'), /M \.env\.example/, 'git видит файл изменённым');
+
+    const run = ctx.run();
+    assert.notEqual(run.status, 0);
+    assert.match(run.stdout, /пустые файлы, которые в git непустые/);
+    assert.match(run.stdout, /\.env\.example/);
+    assert.match(run.stdout, /после ручного разрешения конфликта/);
+    assert.equal(readFileSync(ctx.log, 'utf8').includes(' build '), false, 'сборка не начинается');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('нормальное обновление с непустыми файлами проверку не задевает', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Обратная сторона проверки: она не должна срабатывать на исправном дереве
+    // (иначе кнопка перестала бы работать вообще).
+    ctx.release({ '.env.example': 'TEMPLATE=1\n', 'CHANGELOG.md': '# release\n' });
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.equal(events(run.stdout).at(-1).stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('в клоне на старой ревизии спасение разрывает круг «needs merge»', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Суть инцидента 19.11.2026: обновление запускает скрипт ИЗ КЛОНА, поэтому
+    // на застрявшей ревизии исправление не может доставить само себя —
+    // перемотку блокирует тот самый сбой. Спасательный скрипт снимает записи
+    // индекса, после чего штатное обновление снова может перемотать ветку.
+    const rescue = join(ROOT, 'deploy', 'fix-update-stuck.sh');
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    writeFileSync(join(ctx.src, '.env.example'), 'LOCAL=1\n');
+    const common = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'BASE=1\n', encoding: 'utf8' }).stdout.trim();
+    const ours = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'LOCAL=1\n', encoding: 'utf8' }).stdout.trim();
+    spawnSync('git', ['update-index', '--index-info'], {
+      cwd: ctx.src,
+      input: '0 0000000000000000000000000000000000000000\t.env.example\n'
+        + '100644 ' + common + ' 1\t.env.example\n'
+        + '100644 ' + ours + ' 2\t.env.example\n',
+      encoding: 'utf8',
+    });
+    assert.match(ctx.git(ctx.src, 'status', '--short'), /^UD \.env\.example$/m);
+
+    // Осмотр ничего не меняет.
+    const dry = spawnSync('bash', [rescue], { cwd: ctx.src, encoding: 'utf8', env: { ...ctx.env, PROJECT_DIR: ctx.src } });
+    assert.equal(dry.status, 0, dry.stdout + dry.stderr);
+    assert.match(dry.stdout, /это осмотр: ничего не изменено/);
+    assert.match(ctx.git(ctx.src, 'status', '--short'), /^UD \.env\.example$/m, 'без --apply индекс не тронут');
+
+    // --apply снимает записи слияния и не трогает stash и файлы.
+    const fix = spawnSync('bash', [rescue, '--apply'], { cwd: ctx.src, encoding: 'utf8', env: { ...ctx.env, PROJECT_DIR: ctx.src } });
+    assert.equal(fix.status, 0, fix.stdout + fix.stderr);
+    assert.equal(ctx.git(ctx.src, 'ls-files', '-u'), '', 'записи слияния сняты');
+    // Файл был неотслеживаемым и лежал на диске — спасение его не удаляет.
+    assert.equal(readFileSync(join(ctx.src, '.env.example'), 'utf8'), 'LOCAL=1\n', 'локальный файл остался на месте');
+
+    // После спасения штатное обновление проходит до конца.
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.equal(events(run.stdout).at(-1).stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
