@@ -58,6 +58,7 @@ from journal_parser import (
 from route_tracker import RouteTracker
 import route_export
 import route_hint
+import route_travel
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from helper_shell import PageHost, build_shell
 from overlay import (
@@ -147,7 +148,7 @@ NON_UI_LITERALS = frozenset({
     "\n\nПодробности сохранены в:\n",
 })
 
-VERSION = "2.29.0"
+VERSION = "2.30.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
@@ -273,6 +274,20 @@ class ColonialHelperApp:
         # стройка и первооткрыватель известных систем видны сразу.
         self.route = RouteTracker(
             self.config_path.with_name(".colonial_helper_route_hints.json"))
+        # «Путешествия»: замеры текущей сессии (старт, прыжки, темп) и режим
+        # слежения. Замеры живут только в памяти: после перезапуска неизвестно,
+        # сколько пилот уже в пути, и выдумывать это время нельзя.
+        self.travel_session = route_travel.TravelSession()
+        #: Слежение включено — следующая система маршрута уходит в буфер обмена.
+        self._travel_follow = False
+        #: Название системы копировали, только когда оно МЕНЯЕТСЯ: иначе один и
+        #: тот же прыжок каждый тик затирал бы буфер, куда пилот уже что-то
+        #: вставил (например, имя станции для поиска).
+        self._travel_last_copied = ""
+        self._travel_last_state = {}
+        #: Система, для которой уже запускали запрос подсказки на этой вкладке.
+        self._travel_hint_name = ""
+        self._travel_hint_at = 0.0
         # Выгрузка маршрута в CSV: фон идёт отдельным потоком, а столбцы
         # запоминаются между запусками (в следующий раз галочки уже стоят).
         self._route_export_inflight = False
@@ -554,6 +569,9 @@ class ColonialHelperApp:
         self._modules_log_prev_sig = None
         self._state_files_log_sig = None
         self.after(1000, self._tick_game_status)
+        # «Путешествия»: раз в 15 с обновляются время в пути, темп и оценка
+        # прибытия — без этого счётчик замирал бы между прыжками.
+        self.after(3000, self._tick_travel)
 
         # Проверка обновлений — через пару секунд после старта, чтобы не
         # мешать отрисовке окна и автопроверке токена.
@@ -1305,8 +1323,17 @@ class ColonialHelperApp:
     #  Вкладка: Маршрут
     # ============================================================
     def _build_tab_route(self):
-        """Вкладка «Маршрут» на чистом Qt (helper_pages.RoutePage)."""
-        from helper_pages import RoutePage, RoutePageActions
+        """Вкладка «Маршрут»: отслеживание и «Путешествия» (Qt).
+
+        Внутри раздела две вкладки: прежнее отслеживание со своими кнопками и
+        новая «Путешествия» — готовый маршрут вставкой или файлом, слежение с
+        буфером обмена, статистика пути и подсказки о следующей системе.
+        Приложение держит `route_section`, а прежние имена (`route_page`,
+        `route_tree`, `route_counter`) остаются рабочими: на них ссылаются
+        остальной код и тесты.
+        """
+        from helper_pages import (RoutePageActions, RouteSection,
+                                  TravelPageActions)
 
         actions = RoutePageActions(
             import_route=self._on_import_route,
@@ -1314,13 +1341,24 @@ class ColonialHelperApp:
             import_atlas=self._on_import_atlas_route,
             clear=self._on_clear_route,
         )
-        self.route_page = RoutePage(actions)
-        self.tab_route._get_tk_layout("pack").addWidget(self.route_page)
-        self._show_page(self.route_page)
+        travel_actions = TravelPageActions(
+            paste_route=self._on_travel_paste,
+            load_file=self._on_travel_load_file,
+            follow_changed=self._on_travel_follow_changed,
+            copy_next=self._on_travel_copy_next,
+            refresh_info=self._on_travel_refresh_info,
+            restart=self._on_travel_restart,
+            clear=self._on_travel_clear,
+        )
+        self.route_section = RouteSection(actions, travel_actions)
+        self.tab_route._get_tk_layout("pack").addWidget(self.route_section)
+        self._show_page(self.route_section)
 
         # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
+        self.route_page = self.route_section.route
         self.route_tree = self.route_page.table
         self.route_counter = self.route_page.counter
+        self.travel_page = self.route_section.travel
 
     # ============================================================
     #  Вкладка: Колонизатор (Raven Colonial)
@@ -4910,6 +4948,10 @@ class ColonialHelperApp:
         finally:
             self.after(1500, self._tick_game_status)
 
+    def _tick_travel(self):
+        """Первый запуск таймера «Путешествий» (дальше он переносит себя сам)."""
+        self._travel_tick()
+
     # ============================================================
     #  Логирование
     # ============================================================
@@ -7935,8 +7977,18 @@ class ColonialHelperApp:
                 self._session_systems_visited.add(sys_name)
                 if live:
                     self._ensure_system_exobio(sys_name)
+                # Замеры путешествия — ДО отметки о посещении: имя следующей
+                # системы считается от того, где пилот находится сейчас, а не
+                # от того, что уже зачёркнуто в маршруте.
+                try:
+                    self._travel_note_jump(sys_name)
+                except Exception as exc:
+                    self.log(tr("Вкладка «Путешествия»: {error}", error=exc), "warn")
                 if self.route.mark_visited(sys_name):
                     self.root.after(0, self._refresh_route_tree)
+                    # Буфер обмена — уже с новой позицией: «следующая система»
+                    # должна смениться сразу после прыжка, а не через 15 с.
+                    self.root.after(0, lambda: self._refresh_travel())
                     if live:
                         self.overlay_manager.log(f"Jump: {sys_name}", "info")
         if ev.get("event") in ("ApproachBody", "Touchdown"):
@@ -9302,6 +9354,277 @@ class ColonialHelperApp:
         self.route.clear()
         self._refresh_route_tree()
         self.log("Маршрут очищен", "info")
+
+    # ============================================================
+    #  Вкладка «Путешествия»: приём маршрута, слежение, статистика
+    # ============================================================
+    #: Сколько систем впереди показывать в таблице вкладки. Длинный маршрут на
+    #: 500 систем превратил бы таблицу в простыню; «осталось прыжков» и полный
+    #: маршрут при этом никуда не деваются — на это есть строка «показаны
+    #: первые N из M» и вкладка «Отслеживание».
+    TRAVEL_UPCOMING_LIMIT = 60
+    #: Сколько секунд снимок подсказки о следующей системе считается свежим.
+    TRAVEL_HINT_TTL = 300
+
+    def _travel_next_system(self) -> str:
+        """Следующая система — по месту пилота, а не по первой неотмеченной.
+
+        `RouteTracker.next_name()` смотрит на отметки «посещена», а они
+        ставятся только на прыжках: система, в которой пилот находится сейчас,
+        остаётся в маршруте непомеченной. Из-за этого «следующей» называлась
+        та, в которой он и так стоит. Здесь позиция считается по имени системы
+        из журнала — как в статистике вкладки (`route_travel.travel_state`).
+        """
+        return route_travel.next_system_name(self.route.systems,
+                                             self._travel_current_system())
+
+    def _travel_current_system(self) -> str:
+        """Где пилот сейчас — по состоянию корабля, а не по гаданию."""
+        state = getattr(getattr(self, "ship", None), "state", None)
+        return str(getattr(state, "current_system", "") or "").strip()
+
+    def _travel_state(self) -> dict:
+        """Снимок вкладки: считает `route_travel.travel_state`, экран только рисует."""
+        current = self._travel_current_system()
+        hint = self.route.get_system_hint() if self._travel_next_system() else {}
+        return route_travel.travel_state(
+            self.route.systems,
+            current=current,
+            session=self.travel_session,
+            hint=hint,
+            follow=self._travel_follow,
+            translate=tr,
+            upcoming_limit=self.TRAVEL_UPCOMING_LIMIT,
+        )
+
+    def _refresh_travel(self, *, copy_next: bool = True) -> dict:
+        """Перерисовать «Путешествия» и, если нужно, обновить буфер обмена."""
+        page = getattr(self, "travel_page", None)
+        state = self._travel_state()
+        self._travel_last_state = state
+        # `_travel_last_copied` здесь НЕ трогаем: его ставит `_travel_copy_next`.
+        # Иначе отметка обновлялась бы до сравнения, и автокопирование считало
+        # бы имя уже скопированным — буфер не пополнялся бы никогда.
+        if page is not None:
+            try:
+                page.set_state(state)
+            except Exception as exc:          # экран не должен ронять цикл
+                self.log(tr("Вкладка «Путешествия»: {error}", error=exc), "warn")
+        if copy_next and self._travel_follow:
+            self._travel_copy_next(state.get("next") or "", automatic=True)
+        return state
+
+    def _travel_copy_next(self, name: str, *, automatic: bool = False) -> bool:
+        """Положить следующую систему в буфер обмена.
+
+        Автоматическое копирование (`automatic=True`) срабатывает только когда
+        имя ДЕЙСТВИТЕЛЬНО сменилось: иначе каждый тик затирал бы буфер, куда
+        пилот уже вставил что-то своё.
+        """
+        text = str(name or "").strip()
+        if not text:
+            return False
+        if automatic and text == self._travel_last_copied:
+            return False
+        self._travel_last_copied = text
+        self._travel_set_clipboard(text)
+        if automatic:
+            self.log(tr("Следующая система скопирована: {name}", name=text), "success")
+        else:
+            self.log(tr("Скопировано: {name}", name=text), "info")
+        return True
+
+    def _travel_set_clipboard(self, text: str) -> None:
+        """Буфер обмена: сначала Qt-оболочка, затем pyperclip, затем Tk."""
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            return
+        except Exception:
+            pass
+        try:
+            import pyperclip
+
+            pyperclip.copy(text)
+        except Exception:
+            pass
+
+    def _on_travel_paste(self):
+        """Принять маршрут из поля вставки."""
+        page = getattr(self, "travel_page", None)
+        if page is None:
+            return
+        text = page.route_text()
+        self._travel_accept(text, origin=tr("вставленный текст"))
+        # Поле чистим только при удачном приёме: иначе нераспознанный текст
+        # (лишняя строка из Discord, обрезанный JSON) пропадал бы вместе с
+        # единственной возможностью его поправить.
+        if route_travel.parse_route_text(text).error:
+            return
+        if not self.route.systems:
+            return
+        page.clear_route_text()
+
+    def _on_travel_load_file(self):
+        """Маршрут из файла: NavRoute.json, JSON, CSV или список систем."""
+        filepath = ask_open_file(
+            filetypes=[
+                ("NavRoute JSON", "NavRoute.json"),
+                ("JSON", "*.json"),
+                ("CSV", "*.csv"),
+                ("Text", "*.txt"),
+                ("All files", "*.*"),
+            ],
+            title=tr("Выбор файла маршрута"),
+        )
+        if not filepath:
+            return
+        try:
+            with open(filepath, "r", encoding="utf-8-sig") as fh:
+                text = fh.read()
+        except Exception as exc:
+            self.log(tr("Не удалось прочитать файл маршрута: {error}", error=exc), "error")
+            return
+        self._travel_accept(text, origin=Path(filepath).name)
+
+    def _travel_accept(self, text: str, *, origin: str = "") -> None:
+        """Разобрать маршрут и загрузить его в общий трекер.
+
+        Разбор один на все способы (см. `route_travel.parse_route_text`), но
+        CSV отдаётся `RouteTracker.load_from_csv`: правила чтения собственной
+        выгрузки (заголовки на языке интерфейса, координаты, адрес) живут там.
+        """
+        parsed = route_travel.parse_route_text(text)
+        if parsed.error:
+            self.log(tr("Маршрут не распознан: {error}", error=tr(parsed.error)), "error")
+            return
+        if not parsed.systems and parsed.format != "csv":
+            self.log(tr("В маршруте не нашлось ни одной системы"), "warn")
+            return
+        if parsed.format == "csv":
+            self.route.load_from_csv(parsed.raw)
+        else:
+            self.route.systems = [
+                {"index": index + 1, "name": system["name"], "status": "pending",
+                 "visited_at": None,
+                 **{key: value for key, value in system.items()
+                    if key in ("star_pos", "star_class", "system_address")}}
+                for index, system in enumerate(parsed.systems)
+            ]
+        if not self.route.systems:
+            self.log(tr("В маршруте не нашлось ни одной системы"), "warn")
+            return
+        # Новая точка отсчёта: прежние замеры относятся к другому маршруту.
+        self.travel_session.restart()
+        self.travel_session.start()
+        self._travel_last_copied = ""
+        current = self._travel_current_system()
+        if current:
+            self.route.mark_visited(current)
+        self._refresh_route_tree()
+        state = self._refresh_travel()
+        self.log(tr("Маршрут принят ({format}): {count} систем, впереди {left}").format(
+            format=route_travel.route_format_title(parsed.format, tr),
+            count=len(self.route.systems),
+            left=state.get("stats", {}).get("jumps_left", "—")) +
+            (tr(" · источник: {origin}", origin=origin) if origin else ""), "success")
+        # Подсказка о следующей системе: сначала то, что уже в кэше.
+        self._travel_request_hint(force=False)
+
+    def _on_travel_follow_changed(self, following: bool):
+        """Слежение включили/выключили."""
+        self._travel_follow = bool(following)
+        self._travel_last_copied = ""
+        state = self._refresh_travel(copy_next=bool(following))
+        if following:
+            name = state.get("next") or ""
+            if name:
+                self._travel_copy_next(name, automatic=True)
+            else:
+                self.log(tr("Слежение включено, но впереди систем нет"), "warn")
+        else:
+            self.log(tr("Слежение за маршрутом выключено"), "info")
+
+    def _on_travel_copy_next(self):
+        """Кнопка «Скопировать следующую» — вручную, без слежения."""
+        state = self._travel_last_state or self._travel_state()
+        if not self._travel_copy_next(state.get("next") or "", automatic=False):
+            self.log(tr("Впереди нет систем: копировать нечего"), "warn")
+
+    def _on_travel_restart(self):
+        """Начать путешествие заново: сбросить старт и замеры прыжков."""
+        self.travel_session.restart()
+        self.travel_session.start()
+        self._travel_last_copied = ""
+        self._refresh_travel()
+        self.log(tr("Путешествие начато заново: время и прыжки считаются с этой минуты"), "info")
+
+    def _on_travel_refresh_info(self):
+        """Спросить у сайта сведения о следующей системе (вручную)."""
+        self._travel_request_hint(force=True)
+
+    def _on_travel_clear(self):
+        """Убрать маршрут целиком — и из отслеживания, и из «Путешествий»."""
+        self.route.clear()
+        self.travel_session.reset()
+        self._travel_last_copied = ""
+        self._travel_hint_name = ""
+        self._travel_hint_at = 0.0
+        page = getattr(self, "travel_page", None)
+        if page is not None:
+            page.clear_route_text()
+        self._refresh_route_tree()
+        self._refresh_travel(copy_next=False)
+        self.log(tr("Маршрут очищен"), "info")
+
+    def _travel_request_hint(self, *, force: bool = False) -> None:
+        """Запросить подсказку о следующей системе с сайта (фоном)."""
+        name = self._travel_next_system()
+        if not name:
+            return
+        now = time.time()
+        if not force and name == self._travel_hint_name \
+                and now - self._travel_hint_at < self.TRAVEL_HINT_TTL:
+            return
+        self._travel_hint_name = name
+        self._travel_hint_at = now
+        self.route.refresh_system_hint(self.api.get_route_hint, force=force)
+        self.after(1500, lambda: self._refresh_travel(copy_next=False))
+
+    def _travel_note_jump(self, system_name: str) -> None:
+        """Записать прыжок в замеры путешествия и обновить вкладку.
+
+        Вызывается на каждое событие системы (прыжок, стыковка, старт игры):
+        `TravelSession.record` сам игнорирует повтор той же системы, поэтому
+        «прыжок» здесь — это первое появление новой системы подряд.
+        """
+        name = str(system_name or "").strip()
+        if not name:
+            return
+        if not self.travel_session.record(name):
+            return
+        state = self._refresh_travel()
+        if self._travel_follow and state.get("next"):
+            self.overlay_manager.log(
+                tr("Следующая система: {name}", name=state["next"]), "info")
+
+    def _travel_tick(self) -> None:
+        """Раз в ~15 с обновлять время в пути, темп и оценку прибытия.
+
+        Считать «в пути» только в момент прыжка нельзя: пока пилот летит,
+        счётчик времени замирает, а оценка прибытия остаётся старой.
+        """
+        try:
+            page = getattr(self, "travel_page", None)
+            if page is not None and self.route.systems:
+                self._refresh_travel(copy_next=True)
+                self._travel_request_hint(force=False)
+        except Exception:
+            pass
+        finally:
+            # Перенос таймера внутри самого тика: страница могла ещё не
+            # существовать на старте, поэтому цепочку продолжает она сама.
+            self.after(15000, self._travel_tick)
 
     def _refresh_route_tree(self):
         page = getattr(self, "route_page", None)
