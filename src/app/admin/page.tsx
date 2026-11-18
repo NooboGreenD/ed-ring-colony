@@ -128,6 +128,14 @@ export default function AdminPage() {
     window.history.pushState(null, '', url);
   };
   const [users, setUsers] = useState<any[]>([]);
+  // Подтверждение адреса — гостевая часть аккаунта, в `profiles` её нет:
+  // `email_confirmed_at` живёт в GoTrue, поэтому статус приходит отдельным
+  // маршрутом и хранится по id пилота. Без него кнопка «Подтвердить email»
+  // показывалась бы и тем, у кого адрес уже подтверждён.
+  const [mailStatus, setMailStatus] = useState<Record<string, string | null>>({});
+  const [mailStatusError, setMailStatusError] = useState('');
+  const [mailBusy, setMailBusy] = useState<string | null>(null);
+  const [mailNotice, setMailNotice] = useState<{ id: string; ok: boolean; text: string } | null>(null);
   const [hubs, setHubs] = useState<any[]>([]);
   const [hubLoadError, setHubLoadError] = useState('');
   const [hubBusy, setHubBusy] = useState(false);
@@ -220,6 +228,7 @@ export default function AdminPage() {
         supabase.from('news').select('*, author:profiles(cmdr_name)').order('published_at', { ascending: false }),
       ]);
       setUsers(us ?? []);
+      void loadMailStatus();
       setHubs(hs ?? []);
       setHubLoadError(hubError?.message || '');
       setRouteSystems(rs ?? []);
@@ -258,6 +267,52 @@ export default function AdminPage() {
           message: error instanceof Error ? error.message : 'Admin access check failed',
         });
       }
+    }
+  };
+
+  /**
+   * Статусы подтверждения: `GET /api/admin/users/confirm-email`.
+   *
+   * Список профилей читается браузером, а подтверждение адреса — в GoTrue.
+   * Отдельный маршрут отвечает `{ confirmed, unavailable?, reason? }`, чтобы
+   * панель не выдумывала статус, когда сервисная роль недоступна.
+   */
+  const loadMailStatus = async () => {
+    try {
+      const res = await authFetch('/api/admin/users/confirm-email', { cache: 'no-store' });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body) { setMailStatusError(body?.error || t('admin.mailStatusFailed')); return; }
+      setMailStatusError(body.unavailable ? (body.error || t('admin.mailStatusUnavailable')) : '');
+      setMailStatus(body.confirmed ?? {});
+    } catch {
+      setMailStatusError(t('admin.mailStatusFailed'));
+    }
+  };
+
+  /** Одно действие над адресом одного пилота: подтвердить или выслать письмо. */
+  const mailAction = async (id: string, action: 'confirm' | 'resend') => {
+    setMailBusy(`${id}:${action}`); setMailNotice(null);
+    try {
+      const res = await authFetch(`/api/admin/users/${encodeURIComponent(id)}/${action === 'confirm' ? 'confirm-email' : 'resend-confirmation'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        setMailNotice({ id, ok: false, text: body?.error || t('admin.emailConfirmGenericFailed') });
+        // Отказ не меняет статус, но список мог устареть (адрес подтвердили в
+        // другой вкладке) — перечитываем без спешки, ошибку уже показали.
+        return;
+      }
+      setMailNotice({ id, ok: true, text: body?.message || t('admin.emailConfirmGenericDone') });
+      if (action === 'confirm' && body?.confirmedAt) {
+        setMailStatus((prev) => ({ ...prev, [id]: body.confirmedAt }));
+      }
+    } catch {
+      setMailNotice({ id, ok: false, text: t('admin.emailUnavailable') });
+    } finally {
+      setMailBusy(null);
     }
   };
 
@@ -765,15 +820,50 @@ export default function AdminPage() {
       {tab === 'manage' && (
         <div>
           <h2>{t('admin.users')}</h2>
-          <table><thead><tr><th>{t('admin.email')}</th><th>{t('admin.cmdr')}</th><th>{t('admin.role')}</th></tr></thead>
-            <tbody>{users.map((u) => (
-              <tr key={u.id}><td>{u.email}</td><td>{u.cmdr_name ?? '—'}</td>
-                <td><select value={u.role} onChange={(e) => setUserRole(u.id, e.target.value)}>
-                  <option value="user">user</option><option value="moderator">moderator</option><option value="admin">admin</option>
-                </select></td>
-              </tr>
-            ))}</tbody>
-          </table>
+          <p style={{ color: '#9ca3af', fontSize: 13, margin: '0 0 10px' }}>{t('admin.mailHint')}</p>
+          {mailStatusError && <p role="alert" style={{ color: '#fca5a5', fontSize: 13 }}>{mailStatusError}</p>}
+          <div className="table-scroll">
+            <table><thead><tr>
+              <th>{t('admin.email')}</th><th>{t('admin.cmdr')}</th><th>{t('admin.role')}</th><th>{t('admin.mailColumn')}</th><th>{t('admin.actionsColumn')}</th>
+            </tr></thead>
+              <tbody>{users.map((u) => {
+                // null — «неизвестно» (статуса ещё нет), а не «не подтверждён»:
+                // иначе все строки мигали бы «не подтверждён» при загрузке.
+                const status = Object.prototype.hasOwnProperty.call(mailStatus, u.id) ? mailStatus[u.id] : undefined;
+                const confirmed = typeof status === 'string' && status.length > 0;
+                const busy = mailBusy?.startsWith(`${u.id}:`);
+                return (
+                  <tr key={u.id}><td>{u.email}</td><td>{u.cmdr_name ?? '—'}</td>
+                    <td><select value={u.role} onChange={(e) => setUserRole(u.id, e.target.value)}>
+                      <option value="user">user</option><option value="moderator">moderator</option><option value="admin">admin</option>
+                    </select></td>
+                    <td style={{ color: confirmed ? '#22c55e' : status === null ? '#fca5a5' : '#9ca3af', fontSize: 12.5, whiteSpace: 'nowrap' }}>
+                      {confirmed
+                        ? `${t('admin.mailConfirmed')} · ${new Date(String(status)).toLocaleDateString('ru-RU')}`
+                        : status === null ? t('admin.mailNotConfirmed') : t('admin.mailStatusUnknown')}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {status === null && (<>
+                        <button type="button" className={adminStyles.primaryAction} disabled={busy}
+                          onClick={() => void mailAction(u.id, 'confirm')}>
+                          {mailBusy === `${u.id}:confirm` ? t('admin.mailConfirming') : t('admin.mailConfirm')}
+                        </button>
+                        <button type="button" disabled={busy} style={{ marginLeft: 8 }}
+                          onClick={() => void mailAction(u.id, 'resend')}>
+                          {mailBusy === `${u.id}:resend` ? t('admin.mailSending') : t('admin.mailResend')}
+                        </button>
+                      </>)}
+                      {mailNotice && mailNotice.id === u.id && (
+                        <div role="status" style={{ color: mailNotice.ok ? '#22c55e' : '#fca5a5', fontSize: 12, marginTop: 4, whiteSpace: 'normal', maxWidth: 320 }}>
+                          {mailNotice.text}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
 
           <h2 style={{ marginTop: 32 }}>{t('admin.deliveryModeration')}</h2>
           <p style={{ color: '#9ca3af', fontSize: 14 }}>{t('admin.cheaterHint')}</p>
