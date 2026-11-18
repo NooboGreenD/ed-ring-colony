@@ -1,6 +1,6 @@
 # Документация ED Ring Colony — карта
 
-> Состояние на **18.11.2026**: сайт **2.28.2**, Colonial Helper **2.30.0**
+> Состояние на **18.11.2026**: сайт **2.28.5**, Colonial Helper **2.30.0**
 > (лаунчер 1.5.0), 115 SQL-миграций, 263 API-маршрута, 203 файла автотестов
 > сайта, 2378 тестов Helper.
 > Документы лежат там же, где лежали всегда: на их имена ссылаются код, тесты и
@@ -16,6 +16,7 @@
 | Что и когда менялось | [CHANGELOG.md](CHANGELOG.md) (сайт), [uploader/CHANGES.md](uploader/CHANGES.md) (Helper) |
 | Внешний вид: палитра, компоненты, иконки | [DESIGN.md](DESIGN.md) |
 | Обновить работающий сервер | [MONITORING.md](MONITORING.md) → «Ручное обновление проекта» (Админка → Мониторинг → «Обновить сейчас») |
+| Обновление падает на `git stash … needs merge` (статус `UD <файл>`) | [UPDATE-STASH-NEEDS-MERGE-FIX.md](UPDATE-STASH-NEEDS-MERGE-FIX.md) — записи незавершённого слияния в индексе, локальный файл, который релиз забрал в git |
 | Регистрация отвечает «временно закрыта», хотя SMTP настроен | [SIGNUP-DISABLED-FIX.md](SIGNUP-DISABLED-FIX.md) |
 | Сайт не открывается: «слишком длинные cookie» (400/431), инкогнито помогает | [COOKIE-SIZE-FIX.md](COOKIE-SIZE-FIX.md) — диагностика: `sh deploy/diag-cookies.sh` |
 | Лаунчер пишет «Сервер обновлений недоступен» и `latin-1` в тексте ошибки | [UPDATE-CHECK-HEADER-FIX.md](UPDATE-CHECK-HEADER-FIX.md) — длинное тире в `User-Agent` на свежей установке |
