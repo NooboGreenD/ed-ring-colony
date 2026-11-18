@@ -212,24 +212,16 @@ export default function SubscriptionsPage() {
       </div>
 
       {donation && (
-        <div className="card" style={{ margin: 0, padding: "18px 16px 16px", display: "flex", flexDirection: "column", gap: 12, alignItems: "center", textAlign: "center" }}>
+        <div className="card" style={{ margin: 0, padding: "18px 16px 16px", display: "flex", flexDirection: "column", gap: 10, alignItems: "center", textAlign: "center" }}>
           <div style={{ fontSize: 12, color: "var(--muted)" }}>{t("sp.donationTitle")}</div>
-          <iframe
-            src={donation.widgetUrl}
-            title={t("sp.donationTitle")}
-            aria-label={t("sp.donationTitle")}
-            width="100%"
-            height="250"
-            style={{ maxWidth: 430, width: "100%", borderRadius: 8, border: "none", background: "#1c1e20" }}
-            loading="lazy"
-          />
+          <p style={{ fontSize: 11, color: "var(--muted)", margin: 0 }}>{t("sp.donationNewTab")}</p>
           <a
-            href={donation.buttonUrl}
+            href={donation.widgetUrl}
             target="_blank"
             rel="noopener noreferrer"
             style={{
-              padding: "10px 18px",
-              fontSize: 13,
+              padding: "12px 22px",
+              fontSize: 14,
               fontWeight: 700,
               color: "#fff",
               textDecoration: "none",
@@ -241,7 +233,7 @@ export default function SubscriptionsPage() {
               border: "1px solid var(--orange)",
             }}
           >
-            <IconHeart size={14} color="#fff" /> {t("sp.donationButton")}
+            <IconHeart size={15} color="#fff" /> {t("sp.donationButton")}
           </a>
         </div>
       )}
