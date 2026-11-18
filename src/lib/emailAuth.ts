@@ -94,3 +94,47 @@ export async function requireEmailDelivery(signup = false, fetchImpl = fetch) {
   if (signup && settings.disable_signup !== false) throw new EmailAuthError('Новые регистрации временно закрыты.', 503);
 }
 export const EMAIL_SENT_MESSAGE = 'Если адрес подходит для этой операции, письмо отправлено. Проверьте входящие и спам. Повторить запрос можно через минуту.';
+
+/**
+ * Причина отказа проверки ссылки из письма — по ответу GoTrue, а не одна на всех.
+ *
+ * Прод-случай: пилот нажал «Подтвердить», увидел «Ссылка недействительна или уже
+ * использована», запросил новое письмо, и всё повторилось. При этом настоящей
+ * причиной были 500 от GoTrue и таймаут апстрима: токен никто не тратил, письмо
+ * было рабочим. Одно сообщение на любой сбой заставляет пилота бросать рабочую
+ * ссылку и подозревать, что учётка сломана.
+ *
+ * Поэтому причину разбираем по классу ошибки supabase-js:
+ *
+ *   `AuthRetryableFetchError` (status 0 — сеть, 5xx — GoTrue/шлюз) и любые
+ *   нераспознанные ответы: ссылка НЕ признана плохой, сервис не ответил;
+ *   `AuthApiError` с 429: слишком много попыток, подождать;
+ *   `AuthApiError` с 4xx (`otp_expired`, `otp_disabled`, 403/401/404): токен
+ *   истёк, потрачен или относится к другому типу письма.
+ *
+ * Функция чистая: маршрут переводит ключ и отдаёт статус. Тесты проверяют её
+ * без Next и без GoTrue.
+ */
+export type VerifyFailure = { key: string; status: number };
+
+export function classifyVerifyFailure(error: unknown): VerifyFailure {
+  if (!error || typeof error !== 'object') {
+    // `verifyOtp` без ошибки, но и без сессии: GoTrue ответил не тем, что ждём.
+    return { key: 'auth.emailVerifyUnavailable', status: 503 };
+  }
+  const { status, code, message } = error as { status?: unknown; code?: unknown; message?: unknown };
+  const httpStatus = typeof status === 'number' ? status : 0;
+
+  // 0 — запрос не дошёл до GoTrue; 5xx — упал сам сервис или шлюз перед ним.
+  if (httpStatus === 0 || httpStatus >= 500) return { key: 'auth.emailVerifyUnavailable', status: 503 };
+  if (httpStatus === 429) return { key: 'auth.emailTooManyAttempts', status: 429 };
+
+  // Текст нужен для старых GoTrue без `error_code`: код появляется только
+  // вместе с версией API, а смысл сообщения тот же.
+  const text = `${typeof code === 'string' ? code : ''} ${typeof message === 'string' ? message : ''}`;
+  if (/otp_expired|token\s+has\s+expired|invalid\s+or\s+has\s+expired|otp_disabled/i.test(text)) {
+    return { key: 'auth.emailLinkUsed', status: 400 };
+  }
+  if (httpStatus >= 400 && httpStatus < 500) return { key: 'auth.emailLinkUsed', status: 400 };
+  return { key: 'auth.emailVerifyUnavailable', status: 503 };
+}

@@ -57,7 +57,8 @@ function reset() {
   const state = { factories: [], signup: [], send: [], verify: [], inserts: [], passwords: [], revoke: [], signouts: [], settingsCalls: 0,
     rateAllowed: true, settings: { mailer_autoconfirm: false, disable_signup: false, external: { email: true } },
     user, session: { user, access_token: token }, signupSession: null, signupError: null, sendError: null,
-    verifyError: false, revokeError: false, passwordError: false, signoutError: false,
+    verifyError: false, verifyStatus: undefined, verifyCode: undefined,
+    userLookupError: null, revokeError: false, passwordError: false, signoutError: false,
     cookies: { values: new Map(), get(name) { return this.values.get(name); },
       getAll() { return [...this.values].map(([name,cookie])=>({name,value:cookie.value})); } },
   };
@@ -69,9 +70,13 @@ function reset() {
       verifyOtp: async input => {
         state.verify.push(input);
         state.stagedCookies.setAll([{ name:'sb-test-auth-token',value:'verified-session',options:{path:'/'} }]);
-        return { data: { session:state.session }, error:state.verifyError ? { message:'bad OTP' } : null };
+        return { data: { session:state.verifyError ? null : state.session },
+          error: state.verifyError ? { message:'bad OTP', status: state.verifyStatus, code: state.verifyCode } : null };
       },
-      getUser: async () => ({ data: { user:state.user }, error:null }),
+      // Прод-случай: ссылка уже потрачена, а повторный getUser() не ответил.
+      getUser: async () => state.userLookupError
+        ? { data: { user:null }, error: state.userLookupError }
+        : ({ data: { user:state.user }, error:null }),
       getSession: async () => ({ data: { session:state.session }, error:null }),
       updateUser: async input => { state.passwords.push(input); return { error: state.passwordError }; },
       signOut: async input => { state.signouts.push(input); return { error: state.signoutError }; },
@@ -196,7 +201,9 @@ test('valid signup confirmation writes a verified session but no password-reset 
 });
 
 test('invalid, consumed or wrong-type verification never applies staged auth cookies', async () => {
-  const state=reset();state.verifyError=true;
+  // Настоящий GoTrue на истёкший/потраченный токен отвечает 403 с кодом
+  // `otp_expired` — только такой ответ и означает «ссылка уже использована».
+  const state=reset();state.verifyError=true;state.verifyStatus=403;state.verifyCode='otp_expired';
   const result=await verify.POST(request({type:'recovery',token_hash:tokenHash}));
   assert.equal(result.status,400);
   assert.equal(result.cookies.get('sb-test-auth-token'),undefined);
@@ -291,6 +298,80 @@ test('old-template confirmation links are recognised and explained, not left as 
   // Семь локалей — семь ключей: иначе часть пилотов снова увидит общее
   // «ссылка неверного формата» и не поймёт, что запросить письмо заново.
   assert.equal(dict.split("'ae.oldLink':").length - 1, 7, 'сообщение заведено во всех локалях');
+});
+
+test('сбой проверки сессии после подтверждения не отменяет подтверждение', async () => {
+  // Прод-случай: GoTrue подтвердил адрес и выдал сессию, но следующий
+  // getUser() ответил 500. Код считал это провалом, куки сессии не отдавал, а
+  // пилот видел ошибку. Ссылка к этому моменту уже потрачена, поэтому второе
+  // нажатие честно отвечало «ссылка уже использована» — учётка при этом была
+  // подтверждена, и войти по паролю тоже не получалось (сессии не было).
+  const state = reset();
+  state.userLookupError = { message: 'boom', status: 500 };
+  const result = await verify.POST(request({ type:'signup', token_hash: tokenHash }));
+
+  assert.equal(result.status, 200, 'подтверждение состоялось — его нельзя отменять');
+  assert.equal((await result.json()).next, '/account');
+  assert.equal(result.cookies.get('sb-test-auth-token').value, 'verified-session',
+    'сессия из ответа GoTrue должна дойти до браузера');
+  assert.equal(state.inserts.length, 1, 'профиль создаётся по данным сессии');
+});
+
+test('причина отказа называется честно: «ссылка использована» — только про саму ссылку', async () => {
+  // Пять причин, которые раньше давали один и тот же текст «ссылка
+  // недействительна или уже использована»: пилот шёл за новым письмом, хотя
+  // рабочая ссылка оставалась целой.
+  const cases = [
+    { name:'GoTrue ответил 500', verifyStatus: 500, wait: 503, retry: true },
+    { name:'шлюз ответил 502', verifyStatus: 502, wait: 503, retry: true },
+    { name:'сеть не дошла', verifyStatus: 0, wait: 503, retry: true },
+    { name:'слишком много попыток', verifyStatus: 429, wait: 429, retry: true },
+    { name:'токен истёк', verifyStatus: 403, code: 'otp_expired', wait: 400, retry: false },
+    { name:'токен потрачен', verifyStatus: 403, code: 'otp_expired', wait: 400, retry: false },
+  ];
+  for (const item of cases) {
+    const state = reset();
+    state.verifyError = true;
+    state.verifyStatus = item.verifyStatus;
+    state.verifyCode = item.code;
+    const response = await verify.POST(request({ type:'signup', token_hash: tokenHash }));
+    const body = await response.json();
+    assert.equal(response.status, item.wait, item.name);
+    if (item.retry) {
+      assert.doesNotMatch(body.error, /уже использован|недействительн/i,
+        `${item.name}: нельзя обвинять ссылку, когда её никто не трогал`);
+      assert.match(body.error, /не потрачена|не потрачен/i,
+        `${item.name}: пилоту нужно знать, что ссылка цела`);
+    } else {
+      assert.match(body.error, /уже использован|недействительн/i, `${item.name}: причина — сама ссылка`);
+    }
+    assert.equal(response.cookies.get('sb-test-auth-token'), undefined, `${item.name}: куки не выдаются`);
+  }
+});
+
+test('классификатор разбирает ответы GoTrue по классу ошибки, а не по одному тексту', () => {
+  const at = (status, code, message) => helpers.classifyVerifyFailure({ status, code, message });
+  assert.deepEqual(at(500, undefined, 'Database error'), { key:'auth.emailVerifyUnavailable', status:503 });
+  assert.deepEqual(at(0, undefined, 'fetch failed'), { key:'auth.emailVerifyUnavailable', status:503 });
+  assert.deepEqual(at(undefined, undefined, undefined), { key:'auth.emailVerifyUnavailable', status:503 });
+  assert.deepEqual(at(429, undefined, 'slow down'), { key:'auth.emailTooManyAttempts', status:429 });
+  // Старые GoTrue не отдают error_code — тогда причину видно только по тексту.
+  assert.deepEqual(at(403, undefined, 'Email link is invalid or has expired'), { key:'auth.emailLinkUsed', status:400 });
+  assert.deepEqual(at(403, 'otp_expired', 'x'), { key:'auth.emailLinkUsed', status:400 });
+  assert.deepEqual(at(400, 'validation_failed', 'Verify requires a verification type'), { key:'auth.emailLinkUsed', status:400 });
+  // Неизвестный 5xx — всё равно «сервис не ответил», а не «ссылка плохая».
+  assert.deepEqual(at(504, 'unexpected_failure', 'gateway timeout'), { key:'auth.emailVerifyUnavailable', status:503 });
+});
+
+test('страница подтверждения оставляет кнопку только когда ссылка цела', () => {
+  const page = readFileSync('src/app/auth/email/page.tsx','utf8');
+  // 5xx и 429 — сервер не тронул ссылку, кнопка нужна: иначе пилот с рабочей
+  // ссылкой остаётся без единственного действия.
+  assert.match(page, /setRetryable\(response\.status >= 500 \|\| response\.status === 429\)/,
+    'сервер сам сообщает, что ссылка не потрачена');
+  assert.match(page, /link && \(!error \|\| retryable\)/, 'кнопка исчезает только после настоящего отказа');
+  assert.match(page, /catch \{ setError\(t\('ae\.connectionRetry'\)\); setRetryable\(true\); \}/,
+    'обрыв сети тоже не сжигает ссылку');
 });
 
 test('signup errors do not reveal whether the address already exists', async () => {

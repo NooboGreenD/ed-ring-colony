@@ -54,6 +54,7 @@
 | [uploader/README.md](uploader/README.md) | Что умеет программа, установка, сборка, как обновляется, заметки к версиям |
 | [uploader/CHANGES.md](uploader/CHANGES.md) | Подробный журнал по «раундам». **Первый раздел — заметки текущего релиза** (их берёт `build_bundle.py`) |
 | [UPLOADER-UPDATE-STRUCTURE.md](UPLOADER-UPDATE-STRUCTURE.md) | Канал обновлений: лаунчер + пакет кода, подпись Ed25519, публикация из админки |
+| [EMAIL-CONFIRM-FAILURE-FIX.md](EMAIL-CONFIRM-FAILURE-FIX.md) | Подтверждение не срабатывало: любой сбой `verifyOtp` (включая 500 и таймаут) выдавался за «ссылка уже использована», а сбой `getUser()` после успешного подтверждения отменял его. Честные причины, сохранение кнопки и проверка «Подтверждение адресов» в панели |
 | [EMAIL-LINK-404-FIX.md](EMAIL-LINK-404-FIX.md) | Письмо подтверждения вело на `supabase.<домен>/auth/v1/verify` и отвечало 404: `SITE_URL` стека был адресом API. Как исправлено в `apply-smtp.sh`/`upgrade.py` и как починить на сервере |
 | [UPDATE-CHECK-HEADER-FIX.md](UPDATE-CHECK-HEADER-FIX.md) | Почему проверка обновлений на свежей установке сообщала «сервер недоступен»: заглушка версии `"—"` в `User-Agent` (latin-1) и как это закрыто |
 | [INARA-WHITELIST.md](INARA-WHITELIST.md) | Inara API: заявка на белый список (готовый текст письма CMDR Artie, порядок действий, проверка ответа), батчинг событий и лимит запросов в Helper |

@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
-import { authError, authJson, EmailAuthError, readAuthBody } from '@/lib/emailAuth';
+import { authError, authJson, classifyVerifyFailure, EmailAuthError, readAuthBody } from '@/lib/emailAuth';
 import { getSiteUrl } from '@/lib/siteUrl';
 import { ensureUserProfile } from '@/lib/ensureProfile';
 import { createRecoveryGrant, RECOVERY_COOKIE, RECOVERY_TTL, sessionId } from '@/lib/passwordRecovery';
@@ -32,9 +32,25 @@ export async function POST(request: Request) {
       },
     });
     const { data, error } = await client.auth.verifyOtp({ type: body.type, token_hash: body.token_hash });
-    if (error || !data.session) throw new EmailAuthError(t('auth.emailLinkUsed'));
-    const { data: { user }, error: userError } = await client.auth.getUser();
-    if (userError || !user || user.id !== data.session.user.id) throw new EmailAuthError(t('auth.userConfirmFailed'), 401);
+    if (error || !data.session || !data.session.user) {
+      // Причину называем честно: «ссылка уже использована» на 500 от GoTrue
+      // отправляло пилота за новым письмом, хотя рабочая ссылка была цела.
+      const failure = classifyVerifyFailure(error);
+      if (failure.status >= 500) {
+        console.warn('[auth/email/verify] GoTrue did not answer the confirmation; the link was not consumed');
+      }
+      throw new EmailAuthError(t(failure.key), failure.status);
+    }
+    // Дальше ссылка УЖЕ потрачена, а адрес подтверждён ответом GoTrue. Поэтому
+    // повторный getUser() — только сверка, а не условие успеха: раньше сбой
+    // этого запроса (таймаут, 5xx) отменял всю операцию, пилот не получал
+    // сессию, а второе нажатие честно отвечало «ссылка уже использована».
+    const sessionUser = data.session.user;
+    const { data: { user: checked }, error: userError } = await client.auth.getUser();
+    if (userError || !checked || checked.id !== sessionUser.id) {
+      console.warn('[auth/email/verify] Session check after confirmation failed; using the verify response');
+    }
+    const user = checked && checked.id === sessionUser.id ? checked : sessionUser;
     let grant: string | null = null;
     if (body.type === 'recovery') {
       const sid = sessionId(data.session.access_token);

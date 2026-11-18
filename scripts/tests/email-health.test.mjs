@@ -68,32 +68,61 @@ const originalFetch = globalThis.fetch;
 after(() => { globalThis.fetch = originalFetch; });
 
 /** Заглушка GoTrue: /auth/v1/settings отвечает заданным набором полей. */
-function gotrue(settings, { reachable = true } = {}) {
+function gotrue(settings, { reachable = true, users = null, usersStatus = 200 } = {}) {
   globalThis.__health = { adminDenied: false, publicUrl: undefined, serverUrl: undefined };
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, options = {}) => {
     if (!reachable) throw Object.assign(new TypeError('fetch failed'), { cause: 'connect ECONNREFUSED' });
+    if (String(url).includes('/auth/v1/admin/users')) {
+      // Админский список закрыт ключом сервисной роли — без него проверка
+      // «подтверждён ли адрес» не должна выглядеть пройденной.
+      assert.equal(options.headers?.Authorization, 'Bearer test-service-role',
+        'список пользователей читается только сервисной ролью');
+      return new Response(JSON.stringify(users ?? { users: [] }), { status: usersStatus });
+    }
     assert.match(String(url), /\/auth\/v1\/settings$/);
     return new Response(JSON.stringify(settings), { status: 200 });
   };
 }
 
+/** Пользователь GoTrue: `email_confirmed_at` — единственный признак подтверждения. */
+function pilot(id, { confirmed = true, ageMinutes = 120 } = {}) {
+  const created = new Date(Date.now() - ageMinutes * 60_000).toISOString();
+  return {
+    id, email: `${id}@example.net`, created_at: created,
+    email_confirmed_at: confirmed ? created : null,
+  };
+}
+
+/**
+ * Подменяет переменные окружения до конца файла.
+ *
+ * Исходные значения запоминаются ОДИН раз, на первый вызов. Раньше каждая
+ * подмена регистрировала свой `after` и запоминала то, что стояло на момент
+ * вызова: второй `env({ AUTH_EMAIL_ENABLED: 'true' })` запоминал уже
+ * выставленное `'false'`, и после файла переменная оставалась выключенной —
+ * проверки, идущие следом, видели чужое состояние.
+ */
+const SAVED_ENV = new Map();
 function env(patch) {
-  const saved = {};
+  const first = SAVED_ENV.size === 0;
   for (const [key, value] of Object.entries(patch)) {
-    saved[key] = process.env[key];
+    if (!SAVED_ENV.has(key)) SAVED_ENV.set(key, process.env[key]);
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  if (!first) return;
   after(() => {
-    for (const [key, value] of Object.entries(saved)) {
+    for (const [key, value] of SAVED_ENV) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    SAVED_ENV.clear();
   });
 }
 
 env({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: 'test-anon',
+  SUPABASE_SERVICE_ROLE_KEY: 'test-service-role',
   AUTH_EMAIL_ENABLED: 'true',
   NEXT_PUBLIC_SITE_URL: 'https://edringcolony.ru',
 });
@@ -202,6 +231,57 @@ test('диагностика: включённый autoconfirm — подска�
   assert.equal(autoconfirm.ok, false);
   assert.equal(autoconfirm.action, 'configure-smtp', 'за админа SMTP-пароль не подставить');
   assert.match(autoconfirm.fix, /SMTP/);
+});
+
+test('диагностика: адрес так и не подтвердился — это отдельная причина, а не «всё хорошо»', async () => {
+  // Прод-случай: пилот нажал «Подтвердить», увидел ошибку, и учётка осталась
+  // неподтверждённой. Остальные проверки при этом зелёные — SMTP настроен,
+  // GoTrue отвечает, регистрация открыта. Без этой проверки панель говорила
+  // «всё в порядке», хотя войти по паролю нельзя.
+  gotrue({ mailer_autoconfirm: false, disable_signup: false, external: { email: true } }, {
+    users: { users: [pilot('pilot-a', { confirmed: false }), pilot('pilot-b', { confirmed: false }), pilot('pilot-c')] },
+  });
+  const body = await diagnose();
+
+  const mailboxes = check(body, 'confirmed-mailboxes');
+  assert.equal(mailboxes.ok, false, 'неподтверждённые адреса — не «всё хорошо»');
+  assert.equal(body.ok, false);
+  assert.match(mailboxes.detail, /^(Не подтверждено адресов: )?2\b/, 'считаем только неподтверждённые');
+  assert.match(mailboxes.detail, /одноразов/i, 'и объясняем, почему ссылка «уже использована»');
+  assert.match(mailboxes.fix, /новое письмо|Подтверждение|подтверждени/i, 'подсказка ведёт к рабочему шагу');
+  // Пароль SMTP и адреса пилотов наружу не уходят.
+  assert.doesNotMatch(JSON.stringify(body), /@example\.net/, 'письма-адреса в отчёт не попадают');
+});
+
+test('диагностика: все адреса подтверждены — проверка зелёная', async () => {
+  gotrue({ mailer_autoconfirm: false, disable_signup: false, external: { email: true } }, {
+    users: { users: [pilot('pilot-a'), pilot('pilot-b')] },
+  });
+  const body = await diagnose();
+
+  const mailboxes = check(body, 'confirmed-mailboxes');
+  assert.equal(mailboxes.ok, true);
+  assert.equal(mailboxes.fix, undefined, 'чинить нечего');
+  assert.equal(body.ok, true);
+});
+
+test('диагностика: только что зарегистрированный адрес не считается брошенным', async () => {
+  // Пилот открыл форму минуту назад и ещё читает письмо: это не дефект.
+  gotrue({ mailer_autoconfirm: false, disable_signup: false, external: { email: true } }, {
+    users: { users: [pilot('pilot-new', { confirmed: false, ageMinutes: 2 })] },
+  });
+  const body = await diagnose();
+
+  assert.equal(check(body, 'confirmed-mailboxes').ok, true, 'льгота на чтение письма');
+});
+
+test('диагностика: админский список недоступен — проверки нет, чужих вердиктов нет', async () => {
+  gotrue({ mailer_autoconfirm: false, disable_signup: false, external: { email: true } }, { usersStatus: 403 });
+  const body = await diagnose();
+
+  assert.equal(check(body, 'confirmed-mailboxes'), undefined, 'неизвестное состояние не выдаём за рабочее');
+  assert.equal(body.ok, true, 'остальные проверки не задеты');
+  assert.equal(globalThis.__health.agent, undefined, 'агент тут ни при чём');
 });
 
 test('панель: кнопка «Включить и применить» пишет DISABLE_SIGNUP=false и запускает применение', () => {
