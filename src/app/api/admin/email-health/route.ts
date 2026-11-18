@@ -81,6 +81,52 @@ async function probeGoTrue(url: string, key: string): Promise<{
   }
 }
 
+/**
+ * Сколько адресов зарегистрировались и так и не подтвердились.
+ *
+ * Зачем в диагностике: пилот нажимает «Подтвердить», видит ошибку и говорит
+ * «учётка не подтвердилась». По одному сообщению не понять, письмо не дошло,
+ * ссылку потратил почтовый сканер или сломался сам GoTrue. `email_confirmed_at`
+ * у пилота в базе отвечает на это прямо, а в панели такого поля не было.
+ *
+ * Свежие регистрации не считаем: пилот мог открыть форму только что и ещё
+ * читает письмо (льгота `MAILBOX_GRACE_MS`). Адреса не раскрываем — в отчёте
+ * только количество и самый старый случай.
+ */
+const MAILBOX_GRACE_MS = 30 * 60 * 1000;
+const MAILBOX_PAGE_SIZE = 200;
+const MAILBOX_MAX_PAGES = 5;
+
+async function probeMailboxes(url: string, key: string, serviceKey: string) {
+  const now = Date.now();
+  let unconfirmed = 0;
+  let oldest = '';
+  let confirmed = 0;
+  for (let page = 1; page <= MAILBOX_MAX_PAGES; page++) {
+    const response = await fetch(
+      `${url}/auth/v1/admin/users?page=${page}&per_page=${MAILBOX_PAGE_SIZE}`,
+      {
+        headers: { apikey: key, Authorization: `Bearer ${serviceKey}` },
+        cache: 'no-store',
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!response.ok) return { ok: false as const, error: `HTTP ${response.status}` };
+    const body = await response.json().catch(() => null) as { users?: unknown } | null;
+    const users = Array.isArray(body?.users) ? body.users as Array<Record<string, unknown>> : [];
+    for (const user of users) {
+      if (typeof user.email_confirmed_at === 'string' && user.email_confirmed_at) { confirmed++; continue; }
+      const created = Date.parse(String(user.created_at ?? ''));
+      if (!Number.isFinite(created) || now - created < MAILBOX_GRACE_MS) continue;
+      unconfirmed++;
+      if (!oldest || created < Date.parse(oldest)) oldest = new Date(created).toISOString();
+    }
+    if (users.length < MAILBOX_PAGE_SIZE) break;
+  }
+  return { ok: true as const, unconfirmed, oldest, confirmed };
+}
+
 export async function GET(req: Request) {
   const t = await apiTranslate();
   try {
@@ -151,6 +197,34 @@ export async function GET(req: Request) {
       }
     } catch {
       // Агента нет или он старой версии: проверка недоступна, остальные — есть.
+    }
+
+    // Подтвердился ли адрес на самом деле — отдельная проверка. Её нет, если
+    // сервисной роли нет: без неё админский список пользователей закрыт, а
+    // выдумывать вердикт по недоступным данным нельзя.
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (key && serviceKey) {
+      try {
+        const mailboxes = await probeMailboxes(url, key, serviceKey);
+        if (mailboxes.ok) {
+          checks.push({
+            id: 'confirmed-mailboxes',
+            ok: mailboxes.unconfirmed === 0,
+            title: t('mail.titleMailboxes'),
+            detail: mailboxes.unconfirmed === 0
+              ? t('mail.mailboxesOk', { count: mailboxes.confirmed })
+              : t('mail.mailboxesPending', {
+                count: mailboxes.unconfirmed,
+                // Дата без локали сервера: отчёт читают и на других языках, а
+                // `toLocaleDateString` за nginx может отдать что угодно.
+                date: mailboxes.oldest ? mailboxes.oldest.slice(0, 10) : '—',
+              }),
+            fix: mailboxes.unconfirmed === 0 ? undefined : t('mail.mailboxesFix'),
+          });
+        }
+      } catch {
+        // Админский список не ответил — остальные проверки всё равно нужны.
+      }
     }
 
     const probe = key ? await probeGoTrue(url, key) : null;

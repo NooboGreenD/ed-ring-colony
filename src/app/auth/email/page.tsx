@@ -10,6 +10,9 @@ export default function EmailConfirmationPage() {
   const [link, setLink] = useState<LinkData | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // 5xx/429 — не приговор ссылке: сервис не ответил, и кнопку надо оставить.
+  // Раньше здесь был один путь — «попробуйте ещё раз», но кнопки уже не было.
+  const [retryable, setRetryable] = useState(false);
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -35,16 +38,23 @@ export default function EmailConfirmationPage() {
   }, []);
   const confirm = async () => {
     if (!link) return;
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setRetryable(false);
     try {
       const response = await fetch('/api/auth/email/verify', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(link),
       });
       const result = await response.json();
-      if (!response.ok) { setError(result.error || t('ae.confirmFailed')); return; }
+      if (!response.ok) {
+        setError(result.error || t('ae.confirmFailed'));
+        // Ссылка одноразовая, поэтому кнопку оставляем только когда сервер сам
+        // сказал, что её не тронул: иначе второе нажатие гарантированно упрётся
+        // в «ссылка уже использована».
+        setRetryable(response.status >= 500 || response.status === 429);
+        return;
+      }
       // Fixed destinations only; never follow a caller-provided `next` URL.
       window.location.assign(link.type === 'recovery' ? '/reset-password' : '/account');
-    } catch { setError(t('ae.connectionRetry')); }
+    } catch { setError(t('ae.connectionRetry')); setRetryable(true); }
     finally { setBusy(false); }
   };
   return <main className="card auth-card">
@@ -52,7 +62,7 @@ export default function EmailConfirmationPage() {
     <h1>{link?.type === 'recovery' ? t('ae.recoveryTitle') : t('ae.confirmEmailTitle')}</h1>
     <p>{t('ae.note')}</p>
     {error && <p role="alert" className="auth-error">{error}</p>}
-    {link && <button disabled={busy} onClick={() => void confirm()}>{busy ? t('ae.checking') : link.type === 'recovery' ? t('ae.toNewPassword') : t('ae.confirmMine')}</button>}
+    {link && (!error || retryable) && <button disabled={busy} onClick={() => void confirm()}>{busy ? t('ae.checking') : link.type === 'recovery' ? t('ae.toNewPassword') : t('ae.confirmMine')}</button>}
     <p className="auth-switch"><Link href="/resend-confirmation">{t('ae.repeatConfirm')}</Link> · <Link href="/forgot-password">{t('ef.recoverTitle')}</Link></p>
   </main>;
 }
