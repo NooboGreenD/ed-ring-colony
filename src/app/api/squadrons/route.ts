@@ -3,6 +3,7 @@ import { authFromRequest, createClient, createServiceClient } from '@/lib/supaba
 import { loadSquadronSummaries } from '@/lib/squadronData';
 import { parseSquadronInput, squadronWriteError, tagFromName } from '@/lib/squadronForm';
 import { apiTranslate } from '@/lib/i18n/apiT';
+import { getSquadronMemberLimit } from '@/lib/billing/subscriptionBonus';
 
 export const dynamic = 'force-dynamic';
 
@@ -114,7 +115,10 @@ export async function POST(req: Request) {
       }
     }
 
-    const row = { ...parsed.value, created_by: user.id };
+    // Лимит участников эскадрильи зависит от подписки создателя: базовый лимит
+    // плюс бонус от тарифа (Пионер +25, Элита +75, Флотоводец +200).
+    const memberLimit = await getSquadronMemberLimit(user.id);
+    const row = { ...parsed.value, member_limit: memberLimit, created_by: user.id };
     let { data: squadron, error } = await service
       .from('squadrons')
       .insert(row)
