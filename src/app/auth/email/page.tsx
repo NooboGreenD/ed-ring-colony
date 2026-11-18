@@ -19,12 +19,19 @@ export default function EmailConfirmationPage() {
     const params = fragment.has('token_hash') ? fragment : url.searchParams;
     const token = params.get('token_hash');
     const type = params.get('type');
+    // Письмо, отправленное встроенным шаблоном GoTrue, приносит `token`
+    // (и `type=signup`, и `redirect_to`). Проверить его нашим POST-ом нельзя:
+    // это не TokenHash, а одноразовый токен самого эндпоинта Supabase —
+    // именно поэтому такая ссылка ведёт на API и отвечает 404. Но понять, что
+    // перед нами старый формат, можно, и это лучше общего «ссылка неверного
+    // формата»: пилоту нужно просто запросить новое письмо.
+    const legacyToken = !token && Boolean(params.get('token'));
     // Drop the bearer secret from browser history immediately. There is no
     // verification/automatic sign-in until the visitor explicitly presses a button.
     window.history.replaceState(window.history.state, '', '/auth/email');
     if (token && /^[a-zA-Z0-9_-]{32,256}$/.test(token) && (type === 'signup' || type === 'recovery')) {
       setLink({ token_hash: token, type });
-    } else setError(t('ae.badLink'));
+    } else setError(legacyToken ? t('ae.oldLink') : t('ae.badLink'));
   }, []);
   const confirm = async () => {
     if (!link) return;

@@ -1541,6 +1541,75 @@ test('apply-smtp.sh: открытая регистрация подтвержд�
   assert.match(run.stdout, /"stage":"done"/);
 });
 
+test('apply-smtp.sh: ссылка из письма ведёт на сайт, а не на API Supabase', { skip: needsBash }, () => {
+  // Прод-случай: новый пилот получает письмо, открывает подтверждение и
+  // попадает на https://supabase.<домен>/auth/v1/verify?token=…&type=signup —
+  // «страницы не существует» (404 от шлюза Supabase). Причина — SITE_URL стека
+  // указывал на API: встроенный шаблон GoTrue подставляет именно его.
+  const stand = smtpStand('edrc-apply-smtp-siteurl-', { authCode: '200' });
+  writeFileSync(join(stand.supaDir, '.env'), [
+    'SMTP_HOST=smtp.example.test', 'SMTP_PORT=587', 'SMTP_USER=no-reply@example.test',
+    'SMTP_PASS=mail-secret', 'SMTP_ADMIN_EMAIL=no-reply@example.test',
+    'DISABLE_SIGNUP=true',
+    'API_EXTERNAL_URL=https://supabase.edringcolony.ru',
+    'SITE_URL=https://supabase.edringcolony.ru',
+  ].join('\n'));
+  writeFileSync(join(stand.projectDir, '.env.production'),
+    'PROJECT_REPOSITORY=test\nNEXT_PUBLIC_SITE_URL=https://edringcolony.ru\n');
+  const run = stand.run({ STUB_SETTINGS: '{"disable_signup":false,"mailer_autoconfirm":false}' });
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+  const env = readFileSync(join(stand.supaDir, '.env'), 'utf8');
+  assert.match(env, /^SITE_URL=https:\/\/edringcolony\.ru$/m, 'SITE_URL стека стал адресом сайта');
+  assert.match(env, /^API_EXTERNAL_URL=https:\/\/supabase\.edringcolony\.ru$/m, 'адрес API не тронут');
+  assert.match(run.stdout, /указывал на https:\/\/supabase\.edringcolony\.ru/, 'в журнале видно прежнее значение и почему это ломало письма');
+});
+
+test('apply-smtp.sh: верный SITE_URL не переписывается, адрес API остаётся предупреждением', { skip: needsBash }, () => {
+  const stand = smtpStand('edrc-apply-smtp-siteurl-ok-', { authCode: '200' });
+  writeFileSync(join(stand.supaDir, '.env'), [
+    'SMTP_HOST=smtp.example.test', 'SMTP_PORT=587', 'SMTP_USER=no-reply@example.test',
+    'SMTP_PASS=mail-secret', 'SMTP_ADMIN_EMAIL=no-reply@example.test',
+    'DISABLE_SIGNUP=true', 'SITE_URL=https://edringcolony.ru',
+  ].join('\n'));
+  writeFileSync(join(stand.projectDir, '.env.production'),
+    'PROJECT_REPOSITORY=test\nNEXT_PUBLIC_SITE_URL=https://edringcolony.ru\n');
+  const run = stand.run({ STUB_SETTINGS: '{"disable_signup":false,"mailer_autoconfirm":false}' });
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+  assert.match(run.stdout, /SITE_URL стека Supabase — адрес сайта/, 'верное значение подтверждено, а не перезаписано');
+});
+
+test('apply-smtp.sh: сайт не отдаёт шаблоны писем — об этом сказано в журнале задачи', { skip: needsBash }, () => {
+  // Без доступного шаблона GoTrue молча отправляет встроенное письмо со
+  // ссылкой /auth/v1/verify: пилот видит 404 на чужом домене и не понимает,
+  // что делать. Задача обязана назвать причину и следующий шаг.
+  const stand = smtpStand('edrc-apply-smtp-templates-missing-', { authCode: '200' });
+  writeFileSync(join(stand.projectDir, '.env.production'),
+    'PROJECT_REPOSITORY=test\nNEXT_PUBLIC_SITE_URL=https://edringcolony.ru\n');
+  const run = stand.run({ STUB_SETTINGS: '{"disable_signup":false,"mailer_autoconfirm":false}' });
+  const out = run.stdout + run.stderr;
+  assert.match(out, /не отдаёт шаблоны писем/, 'сказано, что шаблон не пришёл');
+  assert.match(out, /\/auth\/v1\/verify/, 'объяснено, какую ссылку тогда отправит GoTrue');
+  assert.match(out, /404/, 'и что она отвечает');
+});
+
+test('агент: SITE_URL стека виден панели — с признаком «это адрес API»', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-smtp-siteurl-'));
+  writeFileSync(join(dir, '.env'), ['SITE_URL=https://supabase.edringcolony.ru', 'API_EXTERNAL_URL=https://supabase.edringcolony.ru'].join('\n'));
+  const api = readSupabaseSmtpState({ supabaseDir: dir, supabaseEnvFile: join(dir, '.env') });
+  assert.equal(api.siteUrl, 'https://supabase.edringcolony.ru');
+  assert.equal(api.siteUrlIsApi, true, 'адрес API распознан: ссылки писем уводят не туда');
+
+  writeFileSync(join(dir, '.env'), 'SITE_URL=https://edringcolony.ru\n');
+  const site = readSupabaseSmtpState({ supabaseDir: dir, supabaseEnvFile: join(dir, '.env') });
+  assert.equal(site.siteUrl, 'https://edringcolony.ru');
+  assert.equal(site.siteUrlIsApi, false, 'адрес сайта принимается как верный');
+
+  writeFileSync(join(dir, '.env'), 'API_EXTERNAL_URL=https://supabase.edringcolony.ru\n');
+  const missing = readSupabaseSmtpState({ supabaseDir: dir, supabaseEnvFile: join(dir, '.env') });
+  assert.equal(missing.siteUrl, null, 'незаданный SITE_URL честно пуст');
+  assert.equal(missing.siteUrlIsApi, false);
+});
+
 test('smtp обрамление: маршруты за requireAdmin, блок в разделе авторизации, агент видит стек', () => {
   const route = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'smtp', 'route.ts'), 'utf8');
   const applyRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'smtp', 'apply', 'route.ts'), 'utf8');

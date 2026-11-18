@@ -404,6 +404,17 @@ export type SmtpStatus = {
    * рабочее имя — `DISABLE_SIGNUP` (apply-smtp.sh переименует ключ сам).
    */
   legacySignupKey?: boolean;
+  /**
+   * `SITE_URL` стека Supabase — то, что GoTrue подставляет в письмо. Для
+   * подтверждения адреса это обязан быть адрес САЙТА: ссылка из письма ведёт
+   * на `{SITE_URL}`, и с адресом API (`https://supabase.<домен>`) она уводит
+   * нового пилота на `/auth/v1/verify?token=…` → «страницы не существует».
+   */
+  siteUrl?: string | null;
+  /** `SITE_URL` указывает на API Supabase, а не на сайт — ссылки писем уводят не туда. */
+  siteUrlIsApi?: boolean;
+  /** Override с адресами шаблонов писем: без них GoTrue шлёт встроенный шаблон. */
+  authTemplates?: { file: string; passesTemplates: boolean } | null;
   keys?: SmtpKeyEntry[];
 };
 

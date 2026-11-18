@@ -45,6 +45,9 @@ writeFileSync(join(dir, 'public-url.mjs'), `export function getPublicSupabaseUrl
 writeFileSync(join(dir, 'server-url.mjs'), `export function getServerSupabaseUrl() {
   return globalThis.__health.serverUrl ?? 'http://192.168.8.177:9100';
 }`);
+writeFileSync(join(dir, 'agent.mjs'), `export async function listSmtpKeys() {
+  return globalThis.__health.agent ?? { ok: false, status: 503, error: 'agent unavailable' };
+}`);
 
 const outfile = join(dir, 'email-health.mjs');
 await build({
@@ -55,6 +58,7 @@ await build({
     '@/lib/billing/auth': join(dir, 'billing-auth.mjs'),
     '@/lib/supabaseUrl': join(dir, 'public-url.mjs'),
     '@/lib/supabaseServerUrl': join(dir, 'server-url.mjs'),
+    '@/lib/updateAgent': join(dir, 'agent.mjs'),
     '@': join(ROOT, 'src'),
   },
 });
@@ -119,6 +123,42 @@ test('диагностика: закрытая регистрация — раб
   assert.doesNotMatch(signup.fix, /^Выставьте GOTRUE_DISABLE_SIGNUP=false\.$/);
   // …и это сказано прямо, чтобы админ не искал причину второй раз.
   assert.match(signup.fix, /GOTRUE_DISABLE_SIGNUP\s+в\s+\.env\s+игнорируется/);
+});
+
+test('диагностика: SITE_URL стека ведёт на API — это отдельная проверка с починкой', async () => {
+  // Прод-случай: письмо приходило со ссылкой на supabase.<домен>/auth/v1/verify
+  // и отвечало 404, потому что в SITE_URL стека лежал адрес API.
+  gotrue({ mailer_autoconfirm: false, disable_signup: false, external: { email: true } });
+  globalThis.__health.agent = { ok: true, payload: { siteUrl: 'https://supabase.edringcolony.ru', siteUrlIsApi: true } };
+  const body = await diagnose();
+
+  assert.equal(body.ok, false, 'неподтверждаемые адреса — не «всё хорошо»');
+  const site = check(body, 'mail-site-url');
+  assert.equal(site.ok, false);
+  assert.equal(site.action, 'fix-site-url', 'панель получает машиночитаемую причину');
+  assert.match(site.detail, /auth\/v1\/verify/, 'объяснено, какую ссылку откроет пилот');
+  assert.match(site.detail, /404/, 'и почему он видит 404');
+  assert.match(site.fix, /Применить и перезапустить/, 'подсказка ведёт к рабочей кнопке');
+});
+
+test('диагностика: адрес сайта в письмах верный — проверка пройдена', async () => {
+  gotrue({ mailer_autoconfirm: false, disable_signup: false, external: { email: true } });
+  globalThis.__health.agent = { ok: true, payload: { siteUrl: 'https://edringcolony.ru', siteUrlIsApi: false } };
+  const body = await diagnose();
+
+  const site = check(body, 'mail-site-url');
+  assert.equal(site.ok, true);
+  assert.equal(site.action, undefined, 'чинить нечего');
+  assert.match(site.detail, /https:\/\/edringcolony\.ru/);
+});
+
+test('диагностика: агент недоступен — проверки адреса нет, остальное работает', async () => {
+  gotrue({ mailer_autoconfirm: false, disable_signup: false, external: { email: true } });
+  globalThis.__health.agent = { ok: false, status: 503, error: 'agent unavailable' };
+  const body = await diagnose();
+
+  assert.equal(check(body, 'mail-site-url'), undefined, 'без агента — без выдуманного вердикта');
+  assert.equal(body.ok, true, 'остальные проверки не задеты');
 });
 
 test('диагностика: открытая регистрация — без действия и без подсказки', async () => {

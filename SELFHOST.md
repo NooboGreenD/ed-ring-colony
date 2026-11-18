@@ -168,6 +168,13 @@ SUPABASE_PUBLIC_URL=http://ВАШ_IP:8000
 # API_EXTERNAL_URL=https://supabase.ваш-домен
 # SUPABASE_PUBLIC_URL=https://supabase.ваш-домен
 
+# SITE_URL — это адрес САЙТА, а не API: GoTrue подставляет его в ссылку из
+# письма подтверждения. Если здесь оказался адрес Supabase, письмо уводит
+# нового пилота на {SITE_URL}/auth/v1/verify и отвечает 404 — «страницы не
+# существует», адрес остаётся неподтверждённым. Адрес API живёт в
+# API_EXTERNAL_URL/SUPABASE_PUBLIC_URL выше. Проверить: Админка → Авторизация
+# → «Отправка писем» → «Диагностика» → «Адрес сайта в письмах».
+
 # Разрешённые OAuth-редиректы (вход/привязка Discord)
 ADDITIONAL_REDIRECT_URLS=http://ВАШ_IP/api/auth/callback,http://ВАШ_IP/auth/email
 # [DOMAIN]: ADDITIONAL_REDIRECT_URLS=https://ваш-домен/api/auth/callback,https://ваш-домен/auth/email

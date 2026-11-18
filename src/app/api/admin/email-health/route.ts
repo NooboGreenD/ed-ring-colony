@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireAdmin, errorResponse } from '@/lib/billing/auth';
 import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
+import { listSmtpKeys } from '@/lib/updateAgent';
 import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
@@ -36,7 +37,7 @@ const headers = { 'Cache-Control': 'no-store' };
  * одним нажатием. `fix` остаётся текстовой инструкцией для тех, кто чинит
  * руками (и для отчёта, который копируют в переписку).
  */
-type CheckAction = 'enable-signup' | 'enable-site-forms' | 'configure-smtp';
+type CheckAction = 'enable-signup' | 'enable-site-forms' | 'configure-smtp' | 'fix-site-url';
 
 interface Check {
   id: string;
@@ -121,6 +122,36 @@ export async function GET(req: Request) {
       detail: key ? t('mail.keySet') : t('mail.keyMissing'),
       fix: key ? undefined : t('mail.keyFix'),
     });
+
+    // Ссылка из письма подтверждения строится от SITE_URL стека Supabase.
+    // Когда там адрес API (https://supabase.<домен>), письмо уводит нового
+    // пилота на /auth/v1/verify?token=…&type=signup — «страницы не существует»,
+    // а адрес так и остаётся неподтверждённым. Ставим проверку рядом с
+    // остальными: причина видна до жалобы пилота, а починка — та же кнопка
+    // «Применить и перезапустить» (apply-smtp.sh перепишет SITE_URL сам).
+    try {
+      const smtp = await listSmtpKeys();
+      const stackSite = smtp.ok ? (smtp.payload?.siteUrl ?? null) : null;
+      if (smtp.payload?.siteUrlIsApi === true) {
+        checks.push({
+          id: 'mail-site-url',
+          ok: false,
+          title: t('mail.titleMailSiteUrl'),
+          detail: t('mail.mailSiteUrlApi', { url: String(stackSite ?? '') }),
+          fix: t('mail.mailSiteUrlFix'),
+          action: 'fix-site-url',
+        });
+      } else if (smtp.ok && stackSite) {
+        checks.push({
+          id: 'mail-site-url',
+          ok: true,
+          title: t('mail.titleMailSiteUrl'),
+          detail: t('mail.mailSiteUrlOk', { url: String(stackSite) }),
+        });
+      }
+    } catch {
+      // Агента нет или он старой версии: проверка недоступна, остальные — есть.
+    }
 
     const probe = key ? await probeGoTrue(url, key) : null;
 

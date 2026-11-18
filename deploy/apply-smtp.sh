@@ -27,6 +27,9 @@
 #   SUPABASE_AUTH_CONTAINER  имя контейнера GoTrue (default supabase-auth)
 #   AUTH_TRIES          сколько раз по 2с ждать готовности контейнера auth
 #   AUTH_HTTP_TRIES     сколько раз по 4с опрашивать AUTH_HEALTH_URL
+#   SITE_URL            публичный адрес сайта (ссылки писем ведут на него);
+#                       пусто → NEXT_PUBLIC_SITE_URL из env сайта
+#   WEB_HEALTH_PORT     порт web на хосте (проверка доступа к шаблонам писем)
 # ─────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
@@ -41,6 +44,11 @@ HEALTH_TRIES="${HEALTH_TRIES:-45}"
 AUTH_CONTAINER_NAME="${SUPABASE_AUTH_CONTAINER:-supabase-auth}"
 AUTH_TRIES="${AUTH_TRIES:-45}"            # 45 × 2с = 90с на старт GoTrue
 AUTH_HTTP_TRIES="${AUTH_HTTP_TRIES:-15}"  # 15 × 4с = 60с на публичный адрес
+SITE_URL="${SITE_URL:-}"
+WEB_HEALTH_PORT="${WEB_HEALTH_PORT:-3000}"
+#: SITE_URL стека был неверным и переписан: тогда auth нужно пересоздать даже
+#: при удачной проверке живости — GoTrue читает окружение только на старте.
+AUTH_SITE_CHANGED=0
 
 # Текст для JSON-канала: без кавычек, переводов строк и длинных «простыней».
 # Обрез считает БАЙТЫ, а кириллица в UTF-8 занимает два: срез ровно по 200
@@ -105,6 +113,49 @@ env_del() { # $1=file $2=key
   chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp" 2>/dev/null || true
   mv "$tmp" "$file"
   return 0
+}
+
+# Значение ключа из env сайта (.env.production): публичный адрес нужен, чтобы
+# ссылки писем вели на сайт, а не на API Supabase.
+site_env_value() {
+  grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"' || true
+}
+
+# ── адреса в письмах: SITE_URL стека обязан быть адресом САЙТА ───────
+# Письмо, отправленное встроенным шаблоном GoTrue, содержит ссылку
+#   {SITE_URL}/auth/v1/verify?token=…&type=signup&redirect_to={SITE_URL}
+# Её обрабатывает САМ Supabase (эндпоинт /auth/v1/verify), а не сайт. Если
+# SITE_URL указывает на API (https://supabase.<домен>), подтверждение уводит
+# нового пилота на чужой сервис: ссылка выглядит правильной, но «страницы не
+# существует» — 404 от шлюза Supabase, и адрес так и остаётся неподтверждённым.
+# Наш шаблон (GOTRUE_MAILER_TEMPLATES_*) кладёт TokenHash в адрес сайта, но
+# пока GoTrue скачивает шаблон, он отправляет встроенный. Поэтому SITE_URL
+# приводим к публичному адресу сайта: это дешёвая правка, которая держит
+# любой шаблон на сайте, а не на API.
+fix_auth_site_url() {
+  local site="$1" current
+  if [ -z "$site" ]; then
+    # Адрес сайта неизвестен: молча оставить SITE_URL стека как есть нельзя —
+    # именно неверный адрес отправляет ссылку из письма на API Supabase.
+    current="$(supa_env_value SITE_URL)"
+    case "$current" in
+      ''|*/api/supabase) say "⚠ SITE_URL стека Supabase не похож на адрес сайта (${current:-пусто}), а NEXT_PUBLIC_SITE_URL сайта не задан: ссылки писем могут вести на API Supabase. Задайте NEXT_PUBLIC_SITE_URL в .env.production сайта." ;;
+    esac
+    return 0
+  fi
+  current="$(supa_env_value SITE_URL)"
+  if [ "$current" = "$site" ]; then
+    say "✓ SITE_URL стека Supabase — адрес сайта ($site)"
+    return 0
+  fi
+  if [ -z "$current" ]; then
+    say "SITE_URL стека Supabase не задан — записываю адрес сайта ($site)"
+  else
+    say "SITE_URL стека Supabase указывал на $current — исправляю на адрес сайта ($site)"
+    say "  (со старым значением ссылка из письма уходила на API Supabase и отвечала 404)"
+  fi
+  env_set "$SUPABASE_ENV" SITE_URL "$site"
+  AUTH_SITE_CHANGED=1
 }
 
 # ── HTTP-проверки ───────────────────────────────────────────────────
@@ -250,6 +301,17 @@ if [ -n "$SUPABASE_LEGACY_SIGNUP" ]; then
   say "ключ GOTRUE_DISABLE_SIGNUP → DISABLE_SIGNUP (compose передаёт в auth только второе имя)"
 fi
 
+# Публичный адрес сайта: из переменной панели, иначе из env сайта. Письмо
+# должно возвращать пилота на сайт — см. fix_auth_site_url.
+[ -n "$SITE_URL" ] || SITE_URL="$(site_env_value NEXT_PUBLIC_SITE_URL)"
+SITE_URL="${SITE_URL%/}"
+case "$SITE_URL" in
+  http://*|https://*) ;;
+  *) SITE_URL="" ;;
+esac
+[ -n "$SITE_URL" ] || say "⚠ NEXT_PUBLIC_SITE_URL сайта не задан — SITE_URL стека Supabase не проверяю"
+fix_auth_site_url "$SITE_URL"
+
 for required in SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_ADMIN_EMAIL; do
   [ -n "$(supa_env_value "$required")" ] || die "в .env стека не заполнен $required: заполните SMTP в админке и сохраните"
 done
@@ -272,6 +334,42 @@ TEMPLATE="$PROJECT_DIR/deploy/selfhost/supabase-auth.override.yml"
 cp "$TEMPLATE" "$SMTP_OVERRIDE"
 chmod 600 "$SMTP_OVERRIDE" 2>/dev/null || true
 say "SMTP override установлен автоматически: $SMTP_OVERRIDE"
+
+# ── 2b. шаблоны писем: письмо должно вести на сайт, а не на API ─────
+# GoTrue скачивает шаблон подтверждения с сайта по GOTRUE_MAILER_TEMPLATES_*.
+# Если сайт этот адрес не отдаёт (web не поднялся, за прокси 404, неверный
+# домен в SITE_URL), GoTrue молча отправляет ВСТРОЕННЫЙ шаблон — со ссылкой
+# вида {SITE_URL}/auth/v1/verify?token=…&type=signup. Такую ссылку обрабатывает
+# API Supabase, а не сайт: новый пилот видит «страницы не существует», и адрес
+# остаётся неподтверждённым. Проверяем, что шаблон действительно отдаётся, и
+# после пересоздания auth спрашиваем у контейнера, какой шаблон он взял.
+if [ -n "$SITE_URL" ]; then
+  mail_template_ok() { # $1=signup|recovery
+    local url="$SITE_URL/auth/templates/$1" body=""
+    if command -v curl >/dev/null 2>&1; then
+      body="$(curl -fsS --max-time 8 "$url" 2>/dev/null || true)"
+    elif command -v wget >/dev/null 2>&1; then
+      body="$(wget -q -T 8 -O - "$url" 2>/dev/null || true)"
+    else
+      return 0   # проверить нечем — не обвиняем сайт
+    fi
+    case "$body" in *'{{ .TokenHash }}'*) return 0 ;; esac
+    return 1
+  }
+  MISSING_TEMPLATES=""
+  for tpl in signup recovery; do
+    mail_template_ok "$tpl" || MISSING_TEMPLATES="$MISSING_TEMPLATES $tpl"
+  done
+  if [ -z "$MISSING_TEMPLATES" ]; then
+    say "✓ шаблоны писем (signup, recovery) отдаёт сайт: ссылки ведут в /auth/email"
+  else
+    say "⚠ сайт не отдаёт шаблоны писем:$MISSING_TEMPLATES ($SITE_URL/auth/templates/…)"
+    say "  Тогда GoTrue отправит встроенный шаблон со ссылкой /auth/v1/verify —"
+    say "  она ведёт на API Supabase и отвечает 404. Проверьте, что web поднят и"
+    say "  доступен по $SITE_URL (контейнер web, nginx, сертификат), и повторите."
+  fi
+fi
+
 
 # ── 3. пересоздание auth с новыми SMTP-ключами ─────────────────────
 report smtp_switch 35 "Пересоздаю контейнер auth (GoTrue)"
@@ -486,6 +584,37 @@ if [ -n "$AUTH_ID" ] && [ "$AUTH_READY" = 1 ]; then
     *) say "⚠ прочитать disable_signup из GoTrue не удалось — проверьте регистрацию кнопкой «Диагностика» в админке" ;;
   esac
 fi
+
+# ── 4c. какой шаблон писем взял GoTrue? ─────────────────────────────
+# GoTrue пишет при старте только факт загрузки шаблона, поэтому сверяем
+# окружение контейнера: GOTRUE_MAILER_TEMPLATES_CONFIRMATION и _RECOVERY должны
+# указывать на сайт. Пустое значение (или адрес API Supabase) означает
+# встроенный шаблон — ровно ту ссылку /auth/v1/verify из жалобы. Значения этих
+# ключей не секретны: печатаем их как есть.
+AUTH_TEMPLATES_OK=1
+if [ -n "${AUTH_ID:-}" ]; then
+  templates_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$AUTH_ID" 2>/dev/null \
+    | grep -E '^GOTRUE_MAILER_TEMPLATES_(CONFIRMATION|RECOVERY)=' || true)"
+  confirmation="$(printf '%s\n' "$templates_env" | grep -E '^GOTRUE_MAILER_TEMPLATES_CONFIRMATION=' | tail -n1 | cut -d= -f2- || true)"
+  recovery="$(printf '%s\n' "$templates_env" | grep -E '^GOTRUE_MAILER_TEMPLATES_RECOVERY=' | tail -n1 | cut -d= -f2- || true)"
+  if [ -z "$templates_env" ]; then
+    say "⚠ GoTrue не получил адреса шаблонов (GOTRUE_MAILER_TEMPLATES_*): письма уйдут"
+    say "  встроенным шаблоном со ссылкой /auth/v1/verify — она ведёт на API Supabase и"
+    say "  отвечает 404. Проверьте, что auth пересоздан с docker-compose.smtp-override.yml"
+    say "  из deploy/selfhost/supabase-auth.override.yml (панель делает это сама)."
+    AUTH_TEMPLATES_OK=0
+  else
+    for pair in "signup:$confirmation" "recovery:$recovery"; do
+      label="${pair%%:*}"; value="${pair#*:}"
+      case "$value" in
+        "$SITE_URL"/auth/templates/*) say "✓ шаблон $label берётся с сайта: $value" ;;
+        "") say "⚠ шаблон $label не задан — GoTrue отправит встроенное письмо со ссылкой /auth/v1/verify (404)"; AUTH_TEMPLATES_OK=0 ;;
+        *) say "⚠ шаблон $label указывает на $value, а не на сайт ($SITE_URL/auth/templates/$label): письмо уведёт на API Supabase"; AUTH_TEMPLATES_OK=0 ;;
+      esac
+    done
+  fi
+fi
+
 
 # ── 5. пересоздание web: ключи сайта (AUTH_EMAIL_ENABLED и др.) ─────
 report smtp_web 70 "Пересоздаю web, чтобы поднялись ключи сайта"
