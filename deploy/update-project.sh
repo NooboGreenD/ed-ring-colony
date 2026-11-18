@@ -201,17 +201,204 @@ git_dirty_summary() {
     | cut -c1-160 || true
 }
 
-stash_local_changes() {
-  local message="$1" log code reason dirty
+# Пути, у которых в индексе остались записи незавершённого слияния (git status
+# показывает их как UU/AA/DU/UD). Пока такая запись есть, `git stash` молча
+# отказывается работать: «<файл>: needs merge / could not write index».
+unmerged_paths() {
+  git ls-files -u 2>/dev/null | cut -f2 | sort -u || true
+}
+
+# Какая операция оставила эти записи: настоящий merge/rebase/cherry-pick —
+# его разбирает человек — или хвост прошлого `git stash pop --index`.
+pending_operation() {
+  local marker path
+  for marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+    path="$(git rev-parse --git-path "$marker" 2>/dev/null || true)"
+    if [ -n "$path" ] && [ -f "$path" ]; then printf '%s\n' "$marker"; return 0; fi
+  done
+  for marker in rebase-merge rebase-apply; do
+    path="$(git rev-parse --git-path "$marker" 2>/dev/null || true)"
+    if [ -n "$path" ] && [ -d "$path" ]; then printf '%s\n' rebase; return 0; fi
+  done
+  return 0
+}
+
+# git stash не умеет прятать дерево с незавершённым слиянием. Хвост прошлого
+# сбоя (записи в индексе есть, операции нет) снимаем сами: иначе кнопка
+# «Обновить сейчас» не работает до ручного git reset — ровно так 18.11.2026
+# встал сервер («UD .env.example», «needs merge»). Файлы на диске при этом не
+# трогаем, меняется только индекс. Настоящее незавершённое слияние, наоборот,
+# не разбираем за оператора: там решение принимает человек.
+heal_stale_index() {
+  local paths p
+  # Настоящее слияние — не наш случай: пусть остановится с командой разбора.
+  pending_conflict_guard
+  paths="$(unmerged_paths)"
+  [ -n "$paths" ] || return 0
+  say "⚠ в индексе остались записи незавершённого слияния от прошлого сбоя ($(printf '%s' "$paths" | tr '\n' ' ')): снимаю их, файлы на диске не трогаю"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    git reset -q -- "$p" 2>/dev/null || true
+  done <<< "$paths"
+}
+
+# Остановка на настоящем незавершённом слиянии. Нужна и при перемотке 0:
+# тогда stash не вызывается, и без этой проверки конфликтные записи индекса
+# спокойно дожили бы до миграций и сборки.
+pending_conflict_guard() {
+  local paths op hint stash
+  paths="$(unmerged_paths)"
+  [ -n "$paths" ] || return 0
+  op="$(pending_operation)"
+  [ -n "$op" ] || return 0
+  hint="git merge --abort"
+  case "$op" in
+    CHERRY_PICK_HEAD) hint="git cherry-pick --abort" ;;
+    REVERT_HEAD) hint="git revert --abort" ;;
+    rebase) hint="git rebase --abort" ;;
+  esac
+  # Если правки админа лежат в stash прошлого прогона, оператору это важнее
+  # всего знать: команда abort stash не трогает.
+  stash="$(git stash list --format='%gd %gs' 2>/dev/null | grep -E ': edrc-update-' | head -n1 || true)"
+  die "на сервере незавершённое слияние ($op): обновиться поверх него нельзя — разберите вручную ($hint либо допишите конфликт и git commit), затем повторите${stash:+; правки прошлого прогона лежат в stash ($(printf '%s' "$stash" | cut -d' ' -f1)): git stash pop}; конфликтные файлы: $(printf '%s' "$paths" | tr '\n' ' ')"
+}
+
+# Локальные НЕотслеживаемые файлы, которые в целевой ревизии уже есть в git.
+# После перемотки такие пути заняты версией из ветки, и `git stash pop`
+# возвращает их ошибкой «already exists, no checkout» (а `--index` ещё и
+# оставляет записи в индексе). 18.11.2026 именно это и произошло: релиз #285
+# добавил .env.example в git, а на сервере лежал свой такой файл.
+colliding_untracked() { # $1 — ревизия, в которой файл станет отслеживаемым
+  comm -12 \
+    <(git ls-files --others --exclude-standard 2>/dev/null | sort -u) \
+    <(git ls-tree -r --name-only "$1" 2>/dev/null | sort -u) \
+    | sed '/^$/d' || true
+}
+
+# Вернуть локальные файлы, унесённые в сторону перед stash. Совпавшую копию
+# выбрасываем, отличающуюся оставляем рядом (в каталоге состояния, а не в
+# рабочем дереве — иначе она попала бы в контекст сборки Docker).
+restore_aside_files() {
+  local rel
+  [ -n "${ASIDE_DIR:-}" ] && [ -d "$ASIDE_DIR" ] || return 0
+  ( cd "$ASIDE_DIR" && find . -type f -print ) | sed 's|^\./||' | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if git cat-file -e "HEAD:$rel" 2>/dev/null; then
+      if cmp -s "$ASIDE_DIR/$rel" "$rel"; then
+        rm -f "$ASIDE_DIR/$rel"
+        say "локальный $rel совпал с версией из ветки — отдельная копия не нужна"
+      else
+        say "⚠ $rel: в ветке теперь своя версия файла; локальная сохранена в $ASIDE_DIR/$rel (сравнить: diff -u $ASIDE_DIR/$rel $rel)"
+      fi
+    else
+      mkdir -p "$(dirname "$rel")"
+      cp -f "$ASIDE_DIR/$rel" "$rel"
+      say "локальный $rel возвращён на место (в ветке этого файла нет)"
+    fi
+  done
+}
+
+# Запись, которую оставил НАШ прошлый прогон с неудачным `stash pop`.
+# Git не удаляет stash, если pop не завершился, поэтому правки админа целы —
+# но и не возвращены: без этого шага они так и лежат в stash, а следующая
+# кнопка «Обновить сейчас» их не поднимет (у неё уже нет своей грязи).
+# Чужие stash не трогаем: берём только запись с меткой обновления.
+ABANDONED_STASH=""
+find_abandoned_stash() {
+  local found
+  ABANDONED_STASH=""
+  found="$(git stash list --format='%gd %gs' 2>/dev/null | grep -E ': edrc-update-' | head -n1 || true)"
+  [ -n "$found" ] || return 0
+  ABANDONED_STASH="${found%% *}"
+}
+
+# Вернуть правки брошенного stash. Ошибка здесь — не повод продолжать сборку:
+# дерево с конфликтными маркерами в прод попасть не должно.
+#
+# `git stash pop` для этого не годится: файл, который теперь есть в ветке,
+# даёт «already exists, no checkout» и снова оставляет дерево грязным (именно
+# на этом и застрял прод). Поэтому раскладываем stash вручную и частями:
+# отслеживаемые правки — из содержимого stash, неотслеживаемые — на свободные
+# пути, а занятые веткой уносим в каталог состояния, как при обычном stash.
+recover_abandoned_stash() {
+  find_abandoned_stash
+  [ -n "$ABANDONED_STASH" ] || return 0
+  local ref="$ABANDONED_STASH" tracked path
+  say "в stash остались правки прошлого прогона ($ref) — возвращаю их"
+  heal_stale_index
+  # Только НАСТОЯЩИЕ правки отслеживаемых файлов: путь, которого не было в
+  # $ref^1, в stash попал как «новый» — его разбирает ветка ниже (там решается,
+  # свободен ли он в текущей ревизии).
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    git cat-file -e "$ref^1:$path" 2>/dev/null || continue
+    git cat-file -e "$ref:$path" 2>/dev/null || continue
+    git checkout -q "$ref" -- "$path" 2>/dev/null || true
+    # checkout метит файл в индексе подготовленным — возвращаем индекс к HEAD,
+    # содержимое на диске остаётся от stash.
+    git reset -q -- "$path" 2>/dev/null || true
+  done <<< "$(git diff --name-only "$ref^1" "$ref" 2>/dev/null || true)"
+  if git rev-parse -q --verify "$ref^3" >/dev/null 2>&1; then
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      if git cat-file -e "HEAD:$path" 2>/dev/null; then
+        # Путь занят версией из ветки: локальную копию сохраняем рядом.
+        [ -n "$ASIDE_DIR" ] || ASIDE_DIR="$STATE_DIR/local-changes/$(date -u +%Y%m%dT%H%M%SZ)"
+        mkdir -p "$ASIDE_DIR/$(dirname "$path")"
+        git show "$ref^3:$path" > "$ASIDE_DIR/$path" 2>/dev/null || true
+        say "⚠ $path: в ветке своя версия — локальная копия сохранена в $ASIDE_DIR/$path"
+      else
+        mkdir -p "$(dirname "$path")"
+        git show "$ref^3:$path" > "$path" 2>/dev/null || true
+      fi
+    done <<< "$(git ls-tree -r --name-only "$ref^3" 2>/dev/null || true)"
+  fi
+  git stash drop -q "$ref" 2>/dev/null || true
+  restore_aside_files
+  find_abandoned_stash
+  [ -n "$ABANDONED_STASH" ] || say "правки из stash возвращены"
+}
+
+# Локальные файлы, которые релиз забирает в git, убираем в сторону ПЕРЕД
+# перемоткой: иначе `git merge --ff-only` либо `stash pop` упрутся в занятый
+# путь (ровно прод-случай 18.11.2026 с .env.example).
+aside_colliding_files() {
+  local list f
+  list="$(colliding_untracked "$REMOTE_NAME/$BRANCH")"
+  [ -n "$list" ] || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -n "${ASIDE_DIR:-}" ] || ASIDE_DIR="$STATE_DIR/local-changes/$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$ASIDE_DIR/$(dirname "$f")"
+    cp -f "$f" "$ASIDE_DIR/$f"
+    rm -f "$f"
+    say "⚠ $f: в новой ревизии этот файл уже есть в git — локальная версия сохранена в $ASIDE_DIR/$f"
+  done <<< "$list"
+}
+
+stash_local_changes() { # $1 — метка stash; итог — LOCAL_SAVED/STASH_CREATED/ASIDE_DIR
+  local message="$1" list aside f log code=0 reason dirty
+  LOCAL_SAVED=1
+  STASH_CREATED=0
+  ASIDE_DIR=""
+  heal_stale_index
+  # Файлы, которые релиз забирает под git, в stash не годятся: pop вернёт их
+  # ошибкой и оставит индекс «needs merge».
+  aside_colliding_files
+  if [ -z "$(git status --porcelain 2>/dev/null || true)" ]; then
+    say "прочих локальных изменений нет — stash не нужен"
+    return 0
+  fi
   log="$(mktemp "${TMPDIR:-/tmp}/edrc-stash.XXXXXX" 2>/dev/null || echo "$STATE_DIR/last-stash-error.log")"
   # Не подавляем stderr: при ошибке рабочее дерево должно остаться нетронутым,
   # а оператору нужен реальный текст Git, чтобы исправить именно причину, а
   # не угадывать её по бесполезному «git stash не удался».
-  if git stash push --include-untracked -m "$message" >"$log" 2>&1; then
+  code=0
+  git stash push --include-untracked -m "$message" >"$log" 2>&1 || code=$?
+  if [ "$code" = "0" ]; then
+    STASH_CREATED=1
     rm -f "$log" 2>/dev/null || true
     return 0
-  else
-    code=$?
   fi
   reason="$(git_reason "$log")"
   dirty="$(git_dirty_summary)"
@@ -222,24 +409,49 @@ stash_local_changes() {
   die "git stash не удался (код $code): локальные изменения не тронуты; причина: $reason${dirty:+; статус: $dirty}. Разберите вручную: git status --short; git diff; повторите обновление"
 }
 
+# Неудачный `stash pop --index` оставляет в индексе записи незавершённого
+# слияния, и следующий запуск упирается в «needs merge» — кнопка перестаёт
+# работать навсегда, пока кто-то не сделает git reset руками. Снимаем записи и
+# приводим дерево к версии из ветки: сами правки не теряются, они остались в
+# stash (git не удаляет запись, пока pop не завершился успешно).
+heal_partial_pop() {
+  local paths p
+  paths="$(unmerged_paths)"
+  [ -n "$paths" ] || return 0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    git reset -q -- "$p" 2>/dev/null || true
+    if git cat-file -e "HEAD:$p" 2>/dev/null; then
+      git checkout -- "$p" 2>/dev/null || true
+    else
+      rm -f "$p"
+    fi
+  done <<< "$paths"
+  say "записи незавершённого слияния сняты, дерево оставлено как в ветке"
+}
+
 restore_local_changes() {
-  local log code reason dirty
-  log="$(mktemp "${TMPDIR:-/tmp}/edrc-stash-pop.XXXXXX" 2>/dev/null || echo "$STATE_DIR/last-stash-pop-error.log")"
-  if git stash pop --index >"$log" 2>&1; then
-    rm -f "$log" 2>/dev/null || true
-    return 0
-  else
-    code=$?
+  local log code=0 reason dirty
+  if [ "${STASH_CREATED:-0}" = "1" ]; then
+    log="$(mktemp "${TMPDIR:-/tmp}/edrc-stash-pop.XXXXXX" 2>/dev/null || echo "$STATE_DIR/last-stash-pop-error.log")"
+    code=0
+    git stash pop --index >"$log" 2>&1 || code=$?
+    if [ "$code" = "0" ]; then
+      rm -f "$log" 2>/dev/null || true
+    else
+      reason="$(git_reason "$log")"
+      dirty="$(git_dirty_summary)"
+      rm -f "$log" 2>/dev/null || true
+      [ -n "$reason" ] || reason="команда не сообщила причину"
+      # После конфликта pop нельзя продолжать миграции и сборку: иначе в прод
+      # может попасть рабочее дерево с конфликтными маркерами. Stash намеренно
+      # остаётся в списке для ручного разбора. Важная инструкция стоит ДО
+      # причины: поле error панели ограничено 200 символами.
+      heal_partial_pop
+      die "git stash pop не удался (код $code): изменения остались в stash — git stash list; сначала разберите конфликт вручную${ASIDE_DIR:+; локальные копии файлов из ветки: $ASIDE_DIR}; причина: $reason${dirty:+; дерево: $dirty}"
+    fi
   fi
-  reason="$(git_reason "$log")"
-  dirty="$(git_dirty_summary)"
-  rm -f "$log" 2>/dev/null || true
-  [ -n "$reason" ] || reason="команда не сообщила причину"
-  # После конфликта pop нельзя продолжать миграции и сборку: иначе в прод
-  # может попасть рабочее дерево с конфликтными маркерами. Stash намеренно
-  # остаётся в списке для ручного разбора. Важная инструкция стоит ДО причины:
-  # поле error панели ограничено 200 символами.
-  die "git stash pop не удался (код $code): изменения остались в stash — git stash list; сначала разберите конфликт вручную; причина: $reason${dirty:+; дерево: $dirty}"
+  restore_aside_files
 }
 
 # ── 0. блокировка: два параллельных обновления испортят продов ───────
@@ -478,23 +690,43 @@ fi
 
 # ── 4. обновление исходников ─────────────────────────────────────────
 report compare 35 "Обновляю исходники до $BRANCH"
+# Незавершённое слияние останавливает прогон всегда — и когда перематывать
+# нечего (тогда stash вообще не вызывается, и конфликтные записи индекса
+# дожили бы до миграций и сборки), и когда есть отставание.
+#
+# Маркер операции (MERGE_HEAD/CHERRY_PICK_HEAD/rebase-*) сам по себе ничего не
+# значит: 18.11.2026 на сервере он отсутствовал, а записи в индексе были (это
+# хвост неудачного `stash pop`). Поэтому поиск операции идёт ГОЛОВОЙ:
+# незавершённое слияние с построчными записями и без маркера — тоже остановка.
+CONFLICT_OP="$(pending_operation)"
+if [ -n "$(unmerged_paths)" ] && [ -n "$CONFLICT_OP" ]; then
+  pending_conflict_guard
+fi
+# Хвост прошлого сбоя (записи индекса без операции) снимаем ДО проверки грязи:
+# иначе следующий `git stash` снова упрётся в «needs merge». Правки при этом
+# целы — они лежат в stash прошлого прогона, и его мы поднимем после перемотки.
+heal_stale_index
+# Правки, брошенные прошлым прогоном, возвращаем сразу и ВСЕГДА, в том числе
+# при нулевом отставании: после сбоя перемотка уже сделана, и следующее
+# нажатие кнопки видит «обновлять нечего» — без этого шага правки админа так
+# и остались бы в stash навсегда.
+recover_abandoned_stash
 NEW_SHA="$CURRENT_SHA"
 if [ "$BEHIND" != "0" ]; then
   # Спрятать правки нужно ровно здесь, а не в начале: до проверок мы рабочим
   # деревом не распоряжаемся, и при сбое stash не должен оставаться занятым.
   # Используем --include-untracked вместо короткого -u: полный вызов проще
   # распознать в журнале ручной диагностики.
-  STASHED=0
+  LOCAL_SAVED=0
   if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
-    say "⚠ в рабочем дереве есть незакоммиченные изменения — прячу их в stash и верну после обновления"
+    say "⚠ в рабочем дереве есть незакоммиченные изменения — сохраняю их и верну после обновления"
     report compare 37 "Сохраняю локальные изменения (git stash)"
     stash_local_changes "edrc-update-$(date -u +%Y%m%dT%H%M%SZ)"
-    STASHED=1
   fi
   git merge --ff-only "$REMOTE_NAME/$BRANCH" >/dev/null 2>&1 \
-    || die "git merge --ff-only не удался — изменения спрятаны в stash, верните их: git stash pop"
+    || die "git merge --ff-only не удался — изменения сохранены в ${ASIDE_DIR:+$ASIDE_DIR, }stash; верните их: git stash pop"
   NEW_SHA="$(git rev-parse HEAD)"
-  if [ "$STASHED" = "1" ]; then
+  if [ "$LOCAL_SAVED" = "1" ]; then
     # Возвращаем сразу после перемотки: сборка и миграции должны видеть те же
     # файлы, что админ видел до обновления.
     restore_local_changes

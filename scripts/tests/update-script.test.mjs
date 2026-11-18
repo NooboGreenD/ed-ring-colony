@@ -261,8 +261,15 @@ function setup() {
     git(other, 'push', '-q', 'origin', 'main');
   };
 
+  // Ожидаемо падающая git-команда: нужна тестам, которые готовят на сервере
+  // «грязное» состояние (конфликт слияния, запись в индексе) и не должны на
+  // этом падать.
+  const gitTry = (cwd, ...args) => spawnSync('git', args, {
+    cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+  });
+
   return {
-    work, src, state, log, bin, env, run, release, git,
+    work, src, state, log, bin, env, run, release, git, gitTry,
     failOn: join(work, 'fail-on'),
     cleanup: () => rmSync(work, { recursive: true, force: true }),
   };
@@ -1075,6 +1082,220 @@ test('локальные коммиты сверх ветки — останов
     assert.notEqual(run.status, 0);
     assert.match(run.stdout, /собственных коммитов/);
     assert.ok(existsSync(join(ctx.src, 'mine.md')), 'локальный коммит обязан остаться на месте');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('локальный .env.example, который релиз забирает в git, не ломает обновление', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Точная копия прода 18.11.2026: на сервере лежал СВОЙ .env.example (не в
+    // git, файл под *.env.*), а релиз #285 добавил этот путь в репозиторий.
+    // `git stash pop --index` отвечал «.env.example already exists in index»,
+    // и обновление останавливалось с «git stash pop не удался».
+    writeFileSync(join(ctx.src, '.env.example'), 'MY_LOCAL_SECRET=1\n# правка админа\n');
+    ctx.release({ '.env.example': 'TEMPLATE=1\n# из репозитория\n', 'CHANGELOG.md': '# release\n' });
+
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    // Ветка перемотана: .env.example теперь приходит из git.
+    assert.equal(readFileSync(join(ctx.src, '.env.example'), 'utf8'), 'TEMPLATE=1\n# из репозитория\n');
+    // Локальная копия не потеряна и не попала в рабочее дерево (иначе она
+    // уехала бы в контекст сборки Docker), а лежит в каталоге состояния.
+    const asideRoot = join(ctx.state, 'local-changes');
+    assert.ok(existsSync(asideRoot), 'локальная копия сохранена в каталоге состояния');
+    const kept = readdirSync(asideRoot);
+    assert.equal(kept.length, 1, 'одна папка прогона: ' + kept.join(','));
+    const keptFile = join(asideRoot, kept[0], '.env.example');
+    assert.equal(readFileSync(keptFile, 'utf8'), 'MY_LOCAL_SECRET=1\n# правка админа\n');
+    assert.match(run.stdout, /локальная версия сохранена в /);
+    // stash не остался: возвращать было нечего.
+    assert.equal(ctx.git(ctx.src, 'stash', 'list'), '');
+    assert.equal(readFileSync(ctx.log, 'utf8').includes(' build '), true, 'обновление дошло до сборки');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('записи незавершённого слияния от прошлого сбоя не блокируют кнопку', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({
+      '.env.example': 'TEMPLATE=1\n',
+      'CHANGELOG.md': '# release\n',
+      'supabase/migrations/20260904000000_capi_journal_base.sql': '-- new\n',
+    });
+    writeFileSync(join(ctx.src, '.env.example'), 'LOCAL=1\n');
+    writeFileSync(join(ctx.src, 'local-admin-change.txt'), 'непушенная правка\n');
+    // Ровно то состояние, что видел оператор: `UD .env.example` — в индексе
+    // остались записи unmerged, файла в рабочем дереве нет, а MERGE_HEAD нет
+    // (слияние не идёт, это хвост прошлого `stash pop --index`). С таким
+    // индексом git отказывается делать stash: «needs merge».
+    // stage 1 — общая версия, stage 2 — «наша»: именно так выглядит запись,
+    // которую оставил неудачный `stash pop --index`.
+    const upstream = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'TEMPLATE=1\n', encoding: 'utf8' }).stdout.trim();
+    const ours = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'LOCAL=1\n', encoding: 'utf8' }).stdout.trim();
+    assert.match(upstream, /^[0-9a-f]{40}$/);
+    assert.match(ours, /^[0-9a-f]{40}$/);
+    const injected = spawnSync('git', ['update-index', '--index-info'], {
+      cwd: ctx.src,
+      input: '0 0000000000000000000000000000000000000000\t.env.example\n'
+        + '100644 ' + upstream + ' 1\t.env.example\n'
+        + '100644 ' + ours + ' 2\t.env.example\n',
+      encoding: 'utf8',
+    });
+    assert.equal(injected.status, 0, injected.stderr);
+    rmSync(join(ctx.src, '.env.example'));
+    assert.match(ctx.git(ctx.src, 'status', '--short'), /^UD \.env\.example$/m, 'подготовлено то же состояние индекса, что на проде');
+    assert.equal(spawnSync('git', ['stash', 'push', '--include-untracked', '-m', 'probe'], { cwd: ctx.src, encoding: 'utf8' }).status, 1,
+      'без правки скрипта такой индекс не даёт сделать stash');
+
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /записи незавершённого слияния/);
+    const list = events(run.stdout);
+    assert.equal(list[list.length - 1].stage, 'done');
+    // Правка админа пережила обновление, дерево чисто от конфликтных записей.
+    assert.equal(readFileSync(join(ctx.src, 'local-admin-change.txt'), 'utf8'), 'непушенная правка\n');
+    assert.equal(ctx.git(ctx.src, 'stash', 'list'), '');
+    assert.equal(ctx.git(ctx.src, 'ls-files', '-u'), '', 'записи незавершённого слияния сняты');
+    assert.equal(readFileSync(join(ctx.src, '.env.example'), 'utf8'), 'TEMPLATE=1\n',
+      'файл пришёл из ветки; статус: ' + ctx.git(ctx.src, 'status', '--short') + '; лог: ' + run.stdout.slice(-1500));
+
+    // Второй прогон (кнопку нажимают повторно) обязан пройти: раньше именно
+    // здесь кнопка вставала намертво.
+    const again = ctx.run();
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.equal(events(again.stdout).at(-1).stage, 'done', 'повторный запуск тоже доходит до конца');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('настоящее незавершённое слияние не разбирается за оператора', { skip }, () => {
+  const ctx = setup();
+  try {
+    // На сервере действительно идёт конфликтующий merge: в клоне есть ветка,
+    // которую сливали руками, и слияние осталось незавершённым (MERGE_HEAD на
+    // месте, в индексе боевые записи). HEAD при этом не двинулся, поэтому до
+    // проверки «локальные коммиты» дело не доходит — важен именно конфликт.
+    // Решение (какую версию оставить) принимает человек, поэтому обновление
+    // обязано остановиться ДО stash и назвать команду разбора, а не молча
+    // снимать записи индекса.
+    const base = ctx.git(ctx.src, 'rev-parse', 'HEAD');
+    ctx.release({ 'docker-compose.yml': 'services:\n  web:\n    image: busybox\n# версия из ветки\n' });
+    // Клон догоняет ветку (отставания 0 — именно так кнопку и нажимают
+    // повторно), затем оператор сливает СВОЮ ветку, сделанную от прошлого
+    // состояния, и правки того же файла конфликтуют построчно.
+    ctx.git(ctx.src, 'fetch', '-q', 'origin');
+    ctx.git(ctx.src, 'merge', '-q', '--ff-only', 'origin/main');
+    ctx.git(ctx.src, 'checkout', '-q', '-b', 'local-merge', base);
+    writeFileSync(join(ctx.src, 'docker-compose.yml'), 'services:\n  web:\n    image: busybox\n# моя правка\n');
+    ctx.git(ctx.src, 'commit', '-qam', 'моя правка compose');
+    ctx.git(ctx.src, 'checkout', '-q', 'main');
+    const merge = ctx.gitTry(ctx.src, 'merge', 'local-merge');
+    assert.equal(merge.status, 1, 'слияние конфликтует: ' + merge.stdout + merge.stderr);
+    assert.notEqual(ctx.git(ctx.src, 'ls-files', '-u'), '', 'есть записи незавершённого слияния');
+    assert.ok(existsSync(join(ctx.src, '.git', 'MERGE_HEAD')), 'слияние не завершено');
+
+    const run = ctx.run();
+    assert.notEqual(run.status, 0);
+    assert.match(run.stdout, /незавершённое слияние \(MERGE_HEAD\)/);
+    assert.match(run.stdout, /git merge --abort/);
+    // Записи индекса оператора не тронуты: их разбирает человек.
+    assert.notEqual(ctx.git(ctx.src, 'ls-files', '-u'), '', 'записи слияния сохранены для ручного разбора');
+    assert.equal(readFileSync(ctx.log, 'utf8').includes(' build '), false, 'сборка не начинается');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('правки, брошенные прошлым прогоном в stash, возвращаются сами', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Прод 18.11.2026 после первого сбоя: правки админа остались в stash
+    // (git сохраняет запись, если pop не завершился), в индексе — хвост
+    // конфликта, файла .env.example на диске нет. Раньше кнопка в этом
+    // состоянии не работала вообще.
+    ctx.release({ '.env.example': 'TEMPLATE=1\n', 'CHANGELOG.md': '# release\n' });
+    writeFileSync(join(ctx.src, '.env.example'), 'LOCAL=1\n');
+    ctx.git(ctx.src, 'stash', 'push', '-q', '-u', '-m', 'edrc-update-20261117T232933Z');
+    // В рабочем дереве остаётся ОТСЛЕЖИВАЕМАЯ правка — как
+    // `M supabase/migrations/...` в логе прода (её stash не касался).
+    writeFileSync(join(ctx.src, 'docker-compose.yml'), 'services:\n  web:\n    image: busybox\n# моя правка\n');
+    // Хвост «needs merge»: записи стадий в индексе, файла в дереве нет.
+    const upstream = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'TEMPLATE=1\n', encoding: 'utf8' }).stdout.trim();
+    const ours = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'LOCAL=1\n', encoding: 'utf8' }).stdout.trim();
+    spawnSync('git', ['update-index', '--index-info'], {
+      cwd: ctx.src,
+      input: '0 0000000000000000000000000000000000000000\t.env.example\n'
+        + '100644 ' + upstream + ' 1\t.env.example\n'
+        + '100644 ' + ours + ' 2\t.env.example\n',
+      encoding: 'utf8',
+    });
+    rmSync(join(ctx.src, '.env.example'), { force: true });
+
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /правки прошлого прогона/);
+    // Правки вернулись из брошенного stash: и правка в рабочем дереве
+    // (её stash не касался), и .env.example, лежавший в stash.
+    assert.equal(readFileSync(join(ctx.src, 'docker-compose.yml'), 'utf8'), 'services:\n  web:\n    image: busybox\n# моя правка\n');
+    // Файл из брошенного stash вернулся, но релиз принёс свою версию того же
+    // пути: в дереве лежит версия из ветки, а локальная копия не потеряна —
+    // она в каталоге состояния вместе с командой сравнения.
+    assert.equal(readFileSync(join(ctx.src, '.env.example'), 'utf8'), 'TEMPLATE=1\n');
+    const asideRoot = join(ctx.state, 'local-changes');
+    const kept = readdirSync(asideRoot);
+    assert.equal(readFileSync(join(asideRoot, kept[0], '.env.example'), 'utf8'), 'LOCAL=1\n',
+      'локальная копия из stash сохранена: ' + run.stdout.slice(-800));
+    // Правка отслеживаемого файла вернулась на место.
+    assert.match(readFileSync(join(ctx.src, 'docker-compose.yml'), 'utf8'), /# моя правка/);
+    assert.equal(ctx.git(ctx.src, 'stash', 'list'), '', 'брошенный stash возвращён и снят');
+    assert.equal(ctx.git(ctx.src, 'ls-files', '-u'), '', 'записи конфликта сняты');
+    assert.equal(events(run.stdout).at(-1).stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('перемотка уже сделана: правки из брошенного stash возвращаются и при нулевом отставании', { skip }, () => {
+  const ctx = setup();
+  try {
+    // Так выглядит прод ПОСЛЕ первого сбоя: ветка уже перемотана на релиз
+    // (кнопка на следующем нажатии видит «обновлять нечего»), правки лежат в
+    // stash, в индексе — хвост «needs merge». Раньше восстановление жило
+    // только внутри ветки перемотки, и правки оставались в stash навсегда.
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    ctx.git(ctx.src, 'fetch', '-q', 'origin');
+    ctx.git(ctx.src, 'merge', '-q', '--ff-only', 'origin/main');
+    assert.equal(ctx.git(ctx.src, 'rev-list', '--count', 'HEAD..origin/main'), '0', 'отставания нет');
+
+    writeFileSync(join(ctx.src, 'docker-compose.yml'), 'services:\n  web:\n    image: busybox\n# правка админа\n');
+    ctx.git(ctx.src, 'stash', 'push', '-q', '-m', 'edrc-update-20261117T225900Z');
+    writeFileSync(join(ctx.src, 'notes.txt'), 'локальная заметка\n');
+    const common = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'BASE=1\n', encoding: 'utf8' }).stdout.trim();
+    const ours = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: ctx.src, input: 'LOCAL=1\n', encoding: 'utf8' }).stdout.trim();
+    spawnSync('git', ['update-index', '--index-info'], {
+      cwd: ctx.src,
+      input: '0 0000000000000000000000000000000000000000\t.env.example\n'
+        + '100644 ' + common + ' 1\t.env.example\n'
+        + '100644 ' + ours + ' 2\t.env.example\n',
+      encoding: 'utf8',
+    });
+    assert.match(ctx.git(ctx.src, 'status', '--short'), /^UD \.env\.example$/m);
+
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /отставания от main нет/);
+    assert.match(run.stdout, /правки прошлого прогона/);
+    // Правка вернулась, stash и записи конфликта сняты.
+    assert.match(readFileSync(join(ctx.src, 'docker-compose.yml'), 'utf8'), /# правка админа/);
+    assert.equal(ctx.git(ctx.src, 'stash', 'list'), '');
+    assert.equal(ctx.git(ctx.src, 'ls-files', '-u'), '');
+    // Чужая локальная заметка не потеряна.
+    assert.equal(readFileSync(join(ctx.src, 'notes.txt'), 'utf8'), 'локальная заметка\n');
   } finally {
     ctx.cleanup();
   }
