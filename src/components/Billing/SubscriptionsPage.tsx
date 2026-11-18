@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { authFetch } from "@/lib/supabaseClient";
+import { supabase } from "@/lib/supabaseClient";
 import { invalidateCosmetics } from "@/components/Cosmetics/useCosmetics";
+import { donationFromContent, DEFAULT_DONATION } from "@/lib/siteDonation";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { IconCheck, IconCrown, IconCreditCard, IconHeart, IconX } from "@/components/Icons";
 import type { BillingPlan, PublicPaymentProvider, UserBalance, UserSubscription } from "@/types/billing";
@@ -26,6 +28,10 @@ export default function SubscriptionsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [donation, setDonation] = useState<{
+    widgetUrl: string;
+    buttonUrl: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -41,12 +47,25 @@ export default function SubscriptionsPage() {
       setPendingPayments((data.pendingPayments || []).filter((payment: PendingPayment) => payment.purpose === "subscription"));
       setAuthenticated(Boolean(data.authenticated || data.isPreview));
       setSelectedProvider((current) => current || data.providers?.[0]?.id || null);
+
+      // Настройки пожертвований хранятся в site_content (id = 1); анонимус может читать.
+      // Ошибка здесь не ломает саму страницу подписок — останутся дефолтные ссылки.
+      try {
+        const { data: site } = await supabase
+          .from("site_content")
+          .select("*")
+          .eq("id", 1)
+          .maybeSingle();
+        setDonation(donationFromContent(site as Record<string, unknown> | null, locale));
+      } catch {
+        setDonation(DEFAULT_DONATION);
+      }
     } catch (loadError: any) {
       setError(loadError.message || t("sp.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [locale, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -191,6 +210,41 @@ export default function SubscriptionsPage() {
         <div style={{ fontSize: 12, color: "var(--muted)" }}><IconCrown size={14} color="var(--orange)" /> {t("sp.footerNote")}</div>
         <Link href="/support" style={{ fontSize: 12, color: "var(--cyan)" }}>{t("sp.supportLink")}</Link>
       </div>
+
+      {donation && (
+        <div className="card" style={{ margin: 0, padding: "18px 16px 16px", display: "flex", flexDirection: "column", gap: 12, alignItems: "center", textAlign: "center" }}>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>{t("sp.donationTitle")}</div>
+          <iframe
+            src={donation.widgetUrl}
+            title={t("sp.donationTitle")}
+            aria-label={t("sp.donationTitle")}
+            width="100%"
+            height="250"
+            style={{ maxWidth: 430, width: "100%", borderRadius: 8, border: "none", background: "#1c1e20" }}
+            loading="lazy"
+          />
+          <a
+            href={donation.buttonUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              padding: "10px 18px",
+              fontSize: 13,
+              fontWeight: 700,
+              color: "#fff",
+              textDecoration: "none",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              background: "var(--orange)",
+              borderRadius: 6,
+              border: "1px solid var(--orange)",
+            }}
+          >
+            <IconHeart size={14} color="#fff" /> {t("sp.donationButton")}
+          </a>
+        </div>
+      )}
 
       {selectedPlan && (
         <div role="presentation" onClick={() => !busy && setSelectedPlan(null)} style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,.8)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>

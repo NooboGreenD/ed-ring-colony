@@ -167,6 +167,11 @@ export default function AdminPage() {
   const [footerEdsmLangs, setFooterEdsmLangs] = useState<Record<string, string>>(emptyLangRecord);
   const [footerInaraLangs, setFooterInaraLangs] = useState<Record<string, string>>(emptyLangRecord);
 
+  // Пожертвования (DonationAlerts): виджет + кнопка поддержки.
+  const [donationWidgetUrlLangs, setDonationWidgetUrlLangs] = useState<Record<string, string>>(emptyLangRecord);
+  const [donationButtonUrlLangs, setDonationButtonUrlLangs] = useState<Record<string, string>>(emptyLangRecord);
+  const [donationSaved, setDonationSaved] = useState('');
+
   const [saved, setSaved] = useState('');
   const [footerSaved, setFooterSaved] = useState('');
 
@@ -250,6 +255,8 @@ export default function AdminPage() {
         setFooterDiscordLangs(pick('footer_discord'));
         setFooterEdsmLangs(pick('footer_edsm'));
         setFooterInaraLangs(pick('footer_inara'));
+        setDonationWidgetUrlLangs(pick('donation_widget_url'));
+        setDonationButtonUrlLangs(pick('donation_button_url'));
       }
     } catch (error) {
       setRouteLoading(false);
@@ -461,6 +468,17 @@ export default function AdminPage() {
     setFooterSaved(message && !message.startsWith('saved-without-translations')
       ? t('account.error') + ' ' + message
       : t('admin.footerSavedAt') + ' ' + new Date().toLocaleTimeString('ru-RU') + (message ? ' · ' + message : ''));
+    await load();
+  };
+
+  const saveDonation = async () => {
+    const message = await saveSiteContent({
+      donation_widget_url: donationWidgetUrlLangs,
+      donation_button_url: donationButtonUrlLangs,
+    });
+    setDonationSaved(message && !message.startsWith('saved-without-translations')
+      ? t('account.error') + ' ' + message
+      : t('admin.donationSavedAt') + ' ' + new Date().toLocaleTimeString('ru-RU') + (message ? ' · ' + message : ''));
     await load();
   };
 
@@ -748,6 +766,15 @@ export default function AdminPage() {
               {t('admin.translateOverwrite')}
             </label>
             {footerSaved && <span style={{ color: footerSaved.startsWith(t('account.error')) ? '#e74c3c' : '#2ecc71' }}>{footerSaved}</span>}
+          </div>
+
+          <h2 style={{ marginTop: 32 }}>{t('admin.donationTitle')}</h2>
+          <p style={{ color: '#9ca3af', fontSize: 14 }}>{t('admin.emptyLinkHint')}</p>
+          <LangInputs label={t('admin.donationWidgetLabel')} values={donationWidgetUrlLangs} onChange={(l, v) => setDonationWidgetUrlLangs((p) => ({ ...p, [l]: v }))} placeholder={t('admin.donationWidgetHint')} />
+          <LangInputs label={t('admin.donationButtonLabel')} values={donationButtonUrlLangs} onChange={(l, v) => setDonationButtonUrlLangs((p) => ({ ...p, [l]: v }))} placeholder={t('admin.donationButtonHint')} />
+          <div className={adminStyles.legacyActions}>
+            <button className={adminStyles.primaryAction} onClick={saveDonation}>{t('admin.saveDonation')}</button>
+            {donationSaved && <span style={{ color: donationSaved.startsWith(t('account.error')) ? '#e74c3c' : '#2ecc71' }}>{donationSaved}</span>}
           </div>
         </div>
       )}

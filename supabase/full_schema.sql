@@ -20600,3 +20600,42 @@ GRANT SELECT ON public.public_profiles TO anon, authenticated, service_role;
 COMMENT ON VIEW public.public_profiles IS
   'Публичные колонки profiles (имена авторов, составы, поиск пилотов, эскадрилья в игре). '
   'email/role/privacy_settings/language остаются во внутренней таблице.';
+
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261117100000_site_content_donation.sql                │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ═══════════════════════════════════════════════════════════════════
+-- 20261117100000_site_content_donation.sql — поля пожертвований (DonationAlerts)
+-- ═══════════════════════════════════════════════════════════════════
+-- Страница подписок (/subscriptions) показывает виджет и кнопку DonationAlerts.
+-- Ссылки хранятся в public.site_content (id = 1) и редактируются в админке
+-- на вкладке «Контент» («Пожертвования»). Администратор может поменять виджет
+-- и кнопку без кода — дефолтные значения используются, пока поля пустые.
+-- Миграция идемпотентна.
+
+ALTER TABLE public.site_content
+  ADD COLUMN IF NOT EXISTS donation_widget_url text,
+  ADD COLUMN IF NOT EXISTS donation_button_url text;
+
+ALTER TABLE public.site_content
+  ADD COLUMN IF NOT EXISTS donation_widget_url_ru text,
+  ADD COLUMN IF NOT EXISTS donation_widget_url_en text,
+  ADD COLUMN IF NOT EXISTS donation_widget_url_de text,
+  ADD COLUMN IF NOT EXISTS donation_widget_url_it text,
+  ADD COLUMN IF NOT EXISTS donation_widget_url_ko text,
+  ADD COLUMN IF NOT EXISTS donation_widget_url_zh text,
+  ADD COLUMN IF NOT EXISTS donation_widget_url_ja text,
+  ADD COLUMN IF NOT EXISTS donation_button_url_ru text,
+  ADD COLUMN IF NOT EXISTS donation_button_url_en text,
+  ADD COLUMN IF NOT EXISTS donation_button_url_de text,
+  ADD COLUMN IF NOT EXISTS donation_button_url_it text,
+  ADD COLUMN IF NOT EXISTS donation_button_url_ko text,
+  ADD COLUMN IF NOT EXISTS donation_button_url_zh text,
+  ADD COLUMN IF NOT EXISTS donation_button_url_ja text;
+
+UPDATE public.site_content SET
+  donation_widget_url_ru = COALESCE(donation_widget_url_ru, donation_widget_url),
+  donation_button_url_ru = COALESCE(donation_button_url_ru, donation_button_url)
+WHERE id = 1;
