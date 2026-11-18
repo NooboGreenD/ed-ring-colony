@@ -428,6 +428,11 @@ SMTP_PASS=СЕКРЕТ_ВВОДИТСЯ_ТОЛЬКО_НА_СЕРВЕРЕ
 SMTP_SENDER_NAME=ED Ring Colony
 ```
 
+`SITE_URL` стека — адрес **сайта**, не API: из него GoTrue собирает ссылку в
+письме. С адресом API (`https://supabase.<домен>`) подтверждение уводит на
+`/auth/v1/verify` и отвечает 404; `deploy/apply-smtp.sh` теперь сам приводит
+`SITE_URL` к публичному адресу сайта (см. [EMAIL-LINK-404-FIX.md](EMAIL-LINK-404-FIX.md)).
+
 Merge `deploy/selfhost/supabase-auth.override.yml` передаёт SMTP, шаблоны
 `/auth/templates/signup` и `/auth/templates/recovery`, OTP expiry 1 час,
 минимальную длину и требование недавнего подтверждения при смене пароля в GoTrue.

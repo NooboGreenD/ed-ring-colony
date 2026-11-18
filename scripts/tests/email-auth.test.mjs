@@ -254,10 +254,43 @@ test('password update failure does not revoke tokens; partial cleanup is reporte
   assert.equal(result.cookies.get(RECOVERY_COOKIE).maxAge,0);
 });
 
+test('mail templates build the confirmation link on the site origin, never on the Supabase API', async () => {
+  // Прод-случай: письмо приходило со ссылкой
+  //   https://supabase.<домен>/auth/v1/verify?token=…&type=signup&redirect_to=…
+  // и новый пилот видел «страницы не существует» (404 от API Supabase).
+  // Наш шаблон обязан собирать ссылку от .SiteURL, а сам SiteURL стека должен
+  // быть адресом сайта — это проверяют тесты ниже и apply-smtp.sh.
+  reset();
+  for (const template of ['signup','recovery']) {
+    const html = await (await templates.GET(new Request('https://edringcolony.ru'),
+      { params: Promise.resolve({ template }) })).text();
+    assert.match(html, /\{\{ \.SiteURL \}\}\/auth\/email#token_hash=/, 'ссылка строится от SiteURL сайта');
+    assert.doesNotMatch(html, /supabase\./, 'адреса API Supabase в письме нет');
+  }
+  // SITE_URL стека Supabase и адрес, который видит сайт: расхождение — причина 404.
+  const upgrade = readFileSync('deploy/selfhost/upgrade.py','utf8');
+  assert.match(upgrade, /'GOTRUE_SITE_URL': SITE/,
+    'GoTrue получает адрес сайта, а не API: иначе ссылка уводит на /auth/v1/verify');
+});
+
 test('browser URL autologin is disabled; signup UI no longer signs in without confirmation', () => {
   assert.match(readFileSync('src/lib/supabaseClient.ts','utf8'),/detectSessionInUrl: false/);
   assert.doesNotMatch(readFileSync('src/app/register/page.tsx','utf8'),/signInWithPassword/);
   assert.match(readFileSync('src/app/auth/email/page.tsx','utf8'),/onClick=.*confirm/);
+});
+
+test('old-template confirmation links are recognised and explained, not left as a dead 404', () => {
+  // Старое письмо (встроенный шаблон GoTrue) приносит token=…&type=signup —
+  // его обрабатывает только API Supabase. Пилот, попавший на нашу страницу с
+  // таким адресом, должен увидеть причину и следующий шаг, а не «страницы не
+  // существует».
+  const page = readFileSync('src/app/auth/email/page.tsx','utf8');
+  assert.match(page, /params\.get\('token'\)/, 'старый параметр token распознаётся отдельно');
+  assert.match(page, /ae\.oldLink/, 'для него есть своё сообщение');
+  const dict = readFileSync('src/lib/i18n/translations.ts','utf8');
+  // Семь локалей — семь ключей: иначе часть пилотов снова увидит общее
+  // «ссылка неверного формата» и не поймёт, что запросить письмо заново.
+  assert.equal(dict.split("'ae.oldLink':").length - 1, 7, 'сообщение заведено во всех локалях');
 });
 
 test('signup errors do not reveal whether the address already exists', async () => {

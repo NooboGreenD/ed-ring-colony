@@ -209,6 +209,11 @@ def auth_environment(previous, smtp):
     result.update({k: v for k, v in smtp.items() if k.startswith('GOTRUE_SMTP_')})
     allow = [value.strip() for value in result.get('GOTRUE_URI_ALLOW_LIST', '').split(',') if value.strip()]
     allow = list(dict.fromkeys(allow + [SITE + '/api/auth/callback', SITE + '/auth/email']))
+    # GOTRUE_SITE_URL — адрес САЙТА, а не API. Именно он подставляется в письмо
+    # подтверждения (и встроенный шаблон GoTrue, и наш через {{ .SiteURL }}).
+    # Со значением API Supabase письмо уводило нового пилота на
+    # https://supabase.<домен>/auth/v1/verify?token=…&type=signup — чужой
+    # сервис отвечал 404, а адрес оставался неподтверждённым.
     result.update({
         'GOTRUE_SITE_URL': SITE, 'API_EXTERNAL_URL': SUPABASE, 'GOTRUE_URI_ALLOW_LIST': ','.join(allow),
         'GOTRUE_MAILER_AUTOCONFIRM': 'false', 'GOTRUE_DISABLE_SIGNUP': 'false' if smtp_ready(result) else 'true',

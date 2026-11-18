@@ -500,6 +500,10 @@ export function createUpdateManager(config) {
                     SUPABASE_ENV_FILE: config.supabaseEnvFile,
                     AUTH_HEALTH_URL: typeof authHealthUrl === 'string' ? authHealthUrl.trim() : '',
                     ENV_FILE: config.envFile,
+                    // Публичный адрес сайта: в него GoTrue подставляет ссылку
+                    // письма. Пусто — скрипт возьмёт NEXT_PUBLIC_SITE_URL из
+                    // ENV_FILE сайта сам.
+                    SITE_URL: (process.env.NEXT_PUBLIC_SITE_URL || '').trim(),
                     UPDATE_HEALTH_URL: config.healthUrl,
                     PROJECT_DEPLOY_MODE: config.deployMode,
                   }
@@ -800,6 +804,31 @@ export const SMTP_ENV_KEYS = [
 /** Единственный по-настоящему секретный ключ почты: только он маскируется. */
 const SMTP_SECRET_KEYS = new Set(['SMTP_PASS']);
 
+/**
+ * `SITE_URL` стека — адрес API Supabase, а не сайта?
+ *
+ * GoTrue подставляет SITE_URL в письмо подтверждения, поэтому адрес API
+ * превращает ссылку в `https://supabase.<домен>/auth/v1/verify?token=…`,
+ * которую обслуживает сам Supabase: новый пилот видит 404, адрес остаётся
+ * неподтверждённым. Сравниваем с тем, что сайт считает адресом Supabase
+ * (`NEXT_PUBLIC_SUPABASE_URL`), и с типовыми формами адреса API — так панель
+ * ловит и `https://supabase.<домен>`, и `https://<домен>/api/supabase`.
+ */
+export function isSupabaseApiUrl(siteUrl, config) {
+  const value = String(siteUrl || '').trim().replace(/\/+$/, '');
+  if (!value) return false;
+  let parsed;
+  try { parsed = new URL(value); } catch { return true; }  // не адрес сайта — уже повод предупредить
+  const path = parsed.pathname.replace(/\/+$/, '');
+  if (path === '/api/supabase' || path.endsWith('/auth/v1')) return true;
+  if (/^supabase[.-]/i.test(parsed.hostname)) return true;
+  let apiUrl = '';
+  try { apiUrl = String(parseEnvContent(readFileSync(config.envFile, 'utf8')).get('NEXT_PUBLIC_SUPABASE_URL') ?? '').trim().replace(/\/+$/, ''); } catch { apiUrl = ''; }
+  if (apiUrl && apiUrl === value) return true;
+  if (config.supabasePublicUrl && String(config.supabasePublicUrl).replace(/\/+$/, '') === value) return true;
+  return false;
+}
+
 /** Что панель видит о доступе к стеку Supabase (секрет — только маской). */
 export function readSupabaseSmtpState(config) {
   let envExists = false;
@@ -843,7 +872,39 @@ export function readSupabaseSmtpState(config) {
         }))
         .sort((a, b) => a.name.localeCompare(b.name))
     : [];
-  return { available: envExists && writable, envExists, writable, override, keys, legacySignupKey };
+  // SITE_URL стека — адрес, который GoTrue подставляет в письмо. Для
+  // подтверждения адреса он обязан быть адресом САЙТА: с адресом API Supabase
+  // (https://supabase.<домен>) письмо уводит нового пилота на
+  // /auth/v1/verify?token=…&type=signup и тот видит «страницы не существует»
+  // (404 от шлюза Supabase). Панель показывает оба адреса рядом и предупреждает
+  // о расхождении; чинит это «Применить и перезапустить» (apply-smtp.sh).
+  let siteUrl = '';
+  let siteUrlIsApi = false;
+  let authTemplates = null;
+  if (envExists) {
+    siteUrl = String(parseEnvContent(readFileSync(config.supabaseEnvFile, 'utf8')).get('SITE_URL') ?? '').trim();
+    siteUrlIsApi = isSupabaseApiUrl(siteUrl, config);
+    // Передаёт ли override адреса шаблонов: без них GoTrue шлёт встроенное
+    // письмо со ссылкой на /auth/v1/verify.
+    for (const candidate of ['docker-compose.smtp-override.yml', 'docker-compose.override.yml']) {
+      try {
+        const text = readFileSync(join(config.supabaseDir, candidate), 'utf8');
+        if (!/GOTRUE_MAILER_TEMPLATES_CONFIRMATION/.test(text)) continue;
+        authTemplates = {
+          file: candidate,
+          passesTemplates: /GOTRUE_MAILER_TEMPLATES_CONFIRMATION/.test(text)
+            && /GOTRUE_MAILER_TEMPLATES_RECOVERY/.test(text),
+        };
+        break;
+      } catch { /* нет файла — проверяем следующий */ }
+    }
+  }
+  return {
+    available: envExists && writable, envExists, writable, override, keys, legacySignupKey,
+    siteUrl: siteUrl || null,
+    siteUrlIsApi,
+    authTemplates,
+  };
 }
 
 function send(response, status, payload) {

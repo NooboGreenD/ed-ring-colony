@@ -22,9 +22,12 @@ type SmtpStatus = {
   available?: boolean;
   override?: { file: string; passesSmtp: boolean } | null;
   legacySignupKey?: boolean;
+  siteUrl?: string | null;
+  siteUrlIsApi?: boolean;
+  authTemplates?: { file: string; passesTemplates: boolean } | null;
   keys?: SmtpKey[];
 };
-type MailAction = 'enable-signup' | 'enable-site-forms' | 'configure-smtp';
+type MailAction = 'enable-signup' | 'enable-site-forms' | 'configure-smtp' | 'fix-site-url';
 type MailCheck = { id: string; ok: boolean; title: string; detail: string; fix?: string; action?: MailAction };
 type MailDiagnostics = { ok?: boolean; summary?: string; checks?: MailCheck[] };
 
@@ -198,6 +201,10 @@ export default function MailSettingsCard() {
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || t('mail.notSavedKey', { key: 'AUTH_EMAIL_ENABLED' }));
         setSiteEmail(true);
+      } else if (action === 'fix-site-url') {
+        // SITE_URL стека применяет тот же apply-smtp.sh: он пишет адрес сайта и
+        // пересоздаёт auth. Здесь достаточно нажать «Применить».
+        setMsg(t('mail.siteUrlFixing'));
       } else {
         // SMTP заполняется только вручную: подставить за админа сервер и пароль нельзя.
         setMsg(t('mail.fillSmtp'));
@@ -249,6 +256,18 @@ export default function MailSettingsCard() {
     {status?.legacySignupKey && (
       <div style={{ border: '1px solid #e67e22', background: 'rgba(230,126,34,0.08)', padding: '8px 10px', fontSize: 13, color: '#fdba74', borderRadius: 2, marginBottom: 10 }}>
         {t('mail.legacyHead')} <code>GOTRUE_DISABLE_SIGNUP</code> {t('mail.legacyMid')} <code>DISABLE_SIGNUP</code>{t('mail.legacyTail')}
+      </div>
+    )}
+
+    {status?.siteUrlIsApi && (
+      <div style={{ border: '1px solid #ef4444', background: 'rgba(239,68,68,0.08)', padding: '8px 10px', fontSize: 13, color: '#fca5a5', borderRadius: 2, marginBottom: 10 }}>
+        {t('mail.siteUrlApiHead')} <code>{status.siteUrl}</code>{t('mail.siteUrlApiTail')}
+      </div>
+    )}
+
+    {status?.authTemplates && !status.authTemplates.passesTemplates && (
+      <div style={{ border: '1px solid #e67e22', background: 'rgba(230,126,34,0.08)', padding: '8px 10px', fontSize: 13, color: '#fdba74', borderRadius: 2, marginBottom: 10 }}>
+        {t('mail.templatesHead', { file: status.authTemplates.file })}
       </div>
     )}
 

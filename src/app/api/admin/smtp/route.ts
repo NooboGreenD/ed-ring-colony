@@ -43,6 +43,12 @@ export async function GET(request: Request) {
       // В .env стека лежит GOTRUE_DISABLE_SIGNUP — имя переменной контейнера,
       // которое compose не подставляет: регистрация от него не откроется.
       legacySignupKey: result.payload?.legacySignupKey === true,
+      // Адрес, который GoTrue подставляет в письмо. Панель сверяет его с
+      // публичным адресом сайта: с адресом API ссылка из письма уводит нового
+      // пилота на /auth/v1/verify и отвечает 404.
+      siteUrl: typeof result.payload?.siteUrl === 'string' ? result.payload.siteUrl : null,
+      siteUrlIsApi: result.payload?.siteUrlIsApi === true,
+      authTemplates: result.payload?.authTemplates ?? null,
       keys: Array.isArray(result.payload?.keys) ? result.payload.keys : [],
     }, NO_STORE);
   } catch {
