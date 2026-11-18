@@ -39,6 +39,8 @@ PILOT_PAGE_CLASSES = ("PilotPage", "PilotSection", "EquipmentPage",
                       "EquipChip", "EquipRow", "EquipWeaponCard", "EquipLoadoutCard")
 UPLOAD_PAGE_CLASSES = ("UploadPage",)
 ROUTE_PAGE_CLASSES = ("RoutePage",)
+#: Новая вкладка «Путешествия» и её раздел: свои подписи, свои ключи.
+TRAVEL_PAGE_CLASSES = ("TravelPage", "TravelPageActions", "RouteSection")
 COLONY_PAGE_CLASSES = ("ColonyPage",)
 OVERLAY_PAGE_CLASSES = ("OverlayPage", "OverlayPageState")
 EXOBIO_PAGE_CLASSES = ("ExobioPage", "ExobioPageState")
@@ -46,6 +48,20 @@ LOG_PAGE_CLASSES = ("LogPage",)
 
 #: Уже переведённые обработчики страницы «Маршрут».
 ROUTE_HELPER_FUNCTIONS = ("_refresh_route_tree",)
+
+#: Обработчики вкладки «Путешествия». Строки журнала (`self.log`) сюда
+#: попадают только те, что обёрнуты в ``tr()``: диагностика не переводится,
+#: а «Скопировано: …» и «Маршрут очищен» — это сообщения для командира.
+TRAVEL_HELPER_FUNCTIONS = (
+    "_build_tab_route", "_travel_current_system", "_travel_state", "_refresh_travel",
+    "_travel_copy_next", "_on_travel_paste", "_on_travel_load_file", "_travel_accept",
+    "_on_travel_follow_changed", "_on_travel_copy_last", "_on_travel_copy_next",
+    "_on_travel_restart", "_on_travel_refresh_info", "_on_travel_clear",
+    "_travel_request_hint", "_travel_note_jump", "_travel_tick", "_tick_travel",
+)
+
+#: Модуль чистых правил путешествия: разбор маршрута и статистика пути.
+TRAVEL_MODULE = "route_travel.py"
 
 #: Уже переведённые обработчики «Экзобиологии» и «Информационного окна».
 EXOBIO_HELPER_FUNCTIONS = ("_build_tab_exobio", "_update_tab_exobio",
@@ -285,6 +301,39 @@ class CatalogTests(unittest.TestCase):
                                                     functions=ROUTE_HELPER_FUNCTIONS)
                    if text not in i18n_catalogs._STRINGS]
         self.assertEqual(missing, [], "обработчики «Маршрута»: " + "; ".join(missing))
+
+    def test_travel_page_strings_are_in_the_catalog(self):
+        """Подписи новой вкладки «Путешествия» — тоже ключи перевода."""
+        missing = [f"helper_pages.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "helper_pages.py",
+                                                    classes=TRAVEL_PAGE_CLASSES)
+                   if text not in i18n_catalogs._STRINGS
+                   and text not in helper_pages.KEEP_COLUMN_TITLES]
+        self.assertEqual(missing, [], "страница «Путешествия»: " + "; ".join(missing))
+
+    def test_travel_page_titles_are_in_the_catalog(self):
+        """Заголовки плиток и таблицы не обойти в обход: они тоже ключи."""
+        titles = [title for _key, title in helper_pages.TRAVEL_STAT_COLUMNS]
+        titles += [title for _key, title in helper_pages.TRAVEL_INFO_COLUMNS]
+        titles += [_title for _title, _width in helper_pages.TRAVEL_COLUMNS]
+        missing = [title for title in titles
+                   if title not in i18n_catalogs._STRINGS
+                   and title not in helper_pages.KEEP_COLUMN_TITLES]
+        self.assertEqual(missing, [], "заголовки «Путешествий»: " + "; ".join(missing))
+
+    def test_travel_handler_strings_are_in_the_catalog(self):
+        missing = [f"colonial_helper.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / "colonial_helper.py",
+                                                    functions=TRAVEL_HELPER_FUNCTIONS)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "обработчики «Путешествий»: " + "; ".join(missing))
+
+    def test_travel_module_strings_are_in_the_catalog(self):
+        """Строки статистики и подписи форматов живут в модуле, а не в окне."""
+        missing = [f"route_travel.py:{line}: {text!r}"
+                   for line, text in slice_literals(UPLOADER / TRAVEL_MODULE)
+                   if text not in i18n_catalogs._STRINGS]
+        self.assertEqual(missing, [], "модуль «Путешествий»: " + "; ".join(missing))
 
     def test_colony_page_strings_are_in_the_catalog(self):
         missing = [f"helper_pages.py:{line}: {text!r}"

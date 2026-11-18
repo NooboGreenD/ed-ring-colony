@@ -837,6 +837,349 @@ class RoutePage(QWidget):
         return self.counter.text()
 
 
+#: Показатели маршрута на вкладке «Путешествия»: ключ, подпись-ключ перевода.
+#: Порядок — как у `route_travel.STAT_KEYS`: сначала «где я», потом «сколько
+#: осталось», и только затем время. Статистику считает `route_travel`, страница
+#: её только раскладывает.
+TRAVEL_STAT_COLUMNS = (
+    ("visited", "Пройдено"),
+    ("jumps_left", "Осталось прыжков"),
+    ("distance_left", "Осталось лететь"),
+    ("elapsed", "В пути"),
+    ("tempo", "Среднее на прыжок"),
+    ("eta", "Прибытие примерно"),
+)
+
+#: Полезное о следующей системе — данные сайта и координат маршрута.
+TRAVEL_INFO_COLUMNS = (
+    ("star", "Звезда"),
+    ("jump", "Прыжок"),
+    ("construction", "Стройка"),
+    ("discoverer", "Первооткрыватель"),
+    ("bodies", "Тел в системе"),
+)
+
+#: Колонки списка впереди идущих систем.
+TRAVEL_COLUMNS = (("#", 46), ("Система", 300), ("Прыжок", 130))
+
+
+@dataclass
+class TravelPageActions:
+    """Что вкладка «Путешествия» просит у приложения; всё необязательно."""
+
+    #: Разобрать и принять вставленный текст маршрута.
+    paste_route: _Optional[Callable] = None
+    #: Открыть файл маршрута и принять его (JSON игры, JSON, CSV, список).
+    load_file: _Optional[Callable] = None
+    #: Включить/выключить слежение за маршрутом (``bool``).
+    follow_changed: _Optional[Callable] = None
+    #: Скопировать следующую систему в буфер обмена вручную.
+    copy_next: _Optional[Callable] = None
+    #: Спросить у сайта данные о следующей системе.
+    refresh_info: _Optional[Callable] = None
+    #: Начать путешествие заново (сбросить замеры времени и прыжков).
+    restart: _Optional[Callable] = None
+    #: Убрать маршрут целиком.
+    clear: _Optional[Callable] = None
+
+
+class TravelPage(QWidget):
+    """Вкладка «Путешествия»: маршрут, слежение, статистика и подсказки.
+
+    Разделение обязанностей: эта страница ничего не считает и никуда не
+    ходит. Готовый снимок состояния собирает `route_travel.travel_state`
+    (чистая функция, покрытая тестами), а сеть, буфер обмена и журнал живут в
+    приложении. Поэтому «в тестах зелено, а на экране прочерки» невозможно:
+    экран рисует ровно то, что вернула функция.
+    """
+
+    def __init__(self, actions: _Optional[TravelPageActions] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.actions = actions or TravelPageActions()
+        self.setObjectName("travelPage")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(8)
+
+        layout.addWidget(heading(tr("Путешествия"), size=14))
+        layout.addWidget(label(tr(
+            "Вставьте маршрут (NavRoute.json, CSV или список систем) либо "
+            "загрузите его файлом. Helper сам определит, где вы сейчас, и "
+            "скопирует следующую систему в буфер обмена, когда включено слежение."),
+            role="muted", size=9, wrap=True))
+
+        # -- приём маршрута -------------------------------------------------
+        self.route_input = QPlainTextEdit()
+        self.route_input.setObjectName("travelRouteInput")
+        self.route_input.setPlaceholderText(tr(
+            "Вставьте маршрут: системы по одной в строке, через стрелку, "
+            "содержимое NavRoute.json или текст CSV"))
+        self.route_input.setFixedHeight(84)
+        self.route_input.setStyleSheet(
+            f"QPlainTextEdit {{ background: {PANEL}; color: {TEXT};"
+            f" border: 1px solid #3b4044; border-radius: 6px; padding: 6px; }}")
+        layout.addWidget(self.route_input)
+
+        self.paste_btn = action_button(tr("Принять вставленное"),
+                                       self._paste_route, variant="primary", height=32)
+        self.load_btn = action_button(tr("Загрузить из файла"),
+                                      self._load_file, height=32)
+        self.copy_btn = action_button(tr("Скопировать следующую"),
+                                      self._copy_next, height=32)
+        self.info_btn = action_button(tr("Обновить сведения"),
+                                      self._refresh_info, height=32)
+        self.restart_btn = action_button(tr("Начать заново"),
+                                         self._restart, height=32)
+        self.clear_btn = action_button(tr("Очистить"), self._clear,
+                                       variant="danger", height=32)
+        layout.addWidget(row(self.paste_btn, self.load_btn, self.copy_btn,
+                             self.info_btn, self.restart_btn, self.clear_btn, None))
+
+        # -- слежение -------------------------------------------------------
+        follow_holder = QWidget()
+        follow_layout = QHBoxLayout(follow_holder)
+        follow_layout.setContentsMargins(0, 0, 0, 0)
+        follow_layout.setSpacing(8)
+        self.follow_check = QCheckBox(tr("Следить за маршрутом"))
+        self.follow_check.toggled.connect(self._follow_changed)
+        follow_layout.addWidget(self.follow_check)
+        self.follow_hint = label("", role="muted", size=9, wrap=True)
+        follow_layout.addWidget(self.follow_hint, 1)
+        layout.addWidget(follow_holder)
+
+        # -- статус и прогресс ----------------------------------------------
+        self.status_label = label("", size=11, bold=True, wrap=True)
+        layout.addWidget(self.status_label)
+        self.progress = QProgressBar()
+        self.progress.setObjectName("travelProgress")
+        self.progress.setRange(0, 1000)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.progress.setFixedHeight(18)
+        layout.addWidget(self.progress)
+
+        # -- плитки: сколько пройдено и сколько осталось ---------------------
+        self.values: Dict[str, QLabel] = {}
+        stats_holder = panel(QFrame(), "travelStats")
+        stats_layout = QGridLayout(stats_holder)
+        stats_layout.setContentsMargins(10, 8, 10, 8)
+        stats_layout.setHorizontalSpacing(14)
+        stats_layout.setVerticalSpacing(4)
+        for index, (key, title) in enumerate(TRAVEL_STAT_COLUMNS):
+            column = index % 3
+            line = index // 3
+            stats_layout.addWidget(label(tr(title), role="muted", size=9),
+                                   line * 2, column)
+            value = label("—", size=11, bold=True)
+            value.setObjectName(f"travelStat_{key}")
+            stats_layout.addWidget(value, line * 2 + 1, column)
+            self.values[key] = value
+        layout.addWidget(stats_holder)
+
+        # -- полезное о следующей системе ------------------------------------
+        layout.addWidget(heading(tr("Полезное о следующей системе"), size=11))
+        self.info_values: Dict[str, QLabel] = {}
+        info_holder = panel(QFrame(), "travelInfo")
+        info_layout = QGridLayout(info_holder)
+        info_layout.setContentsMargins(10, 8, 10, 8)
+        info_layout.setHorizontalSpacing(14)
+        info_layout.setVerticalSpacing(4)
+        for index, (key, title) in enumerate(TRAVEL_INFO_COLUMNS):
+            column = index % 3
+            line = index // 3
+            info_layout.addWidget(label(tr(title), role="muted", size=9),
+                                  line * 2, column)
+            value = label("—", size=10, wrap=True)
+            value.setObjectName(f"travelInfo_{key}")
+            info_layout.addWidget(value, line * 2 + 1, column)
+            self.info_values[key] = value
+        layout.addWidget(info_holder)
+
+        # -- системы впереди --------------------------------------------------
+        layout.addWidget(heading(tr("Системы впереди"), size=11))
+        self.table = QTableWidget(0, len(TRAVEL_COLUMNS))
+        self.table.setObjectName("travelTable")
+        for index, (title, _width) in enumerate(TRAVEL_COLUMNS):
+            header_item = QTableWidgetItem(column_title(title))
+            header_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter |
+                (Qt.AlignmentFlag.AlignLeft if index == 1
+                 else Qt.AlignmentFlag.AlignHCenter))
+            self.table.setHorizontalHeaderItem(index, header_item)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(False)
+        for index, (_title, width) in enumerate(TRAVEL_COLUMNS):
+            self.table.setColumnWidth(index, width)
+        self.table.setStyleSheet(
+            f"QTableWidget {{ background: {PANEL}; color: {TEXT};"
+            f" border: 1px solid #3b4044; border-radius: 6px; }}"
+            f"QTableWidget::item {{ padding: 4px 6px; }}"
+            f"QTableWidget::item:selected {{ background: #33414a; color: {TEXT}; }}"
+            f"QHeaderView::section {{ background: {PANEL_ALT}; color: {MUTED};"
+            f" border: none; border-bottom: 1px solid #3b4044; padding: 6px;"
+            f" font-weight: 600; }}")
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.table, 1)
+
+        self.note_label = label("", role="muted", size=9, wrap=True)
+        layout.addWidget(self.note_label)
+
+    # ------------------------------------------------------------------ pieces
+    def _call(self, name: str, *args) -> None:
+        callback = getattr(self.actions, name, None)
+        if callable(callback):
+            callback(*args)
+
+    def _paste_route(self) -> None:
+        self._call("paste_route")
+
+    def _load_file(self) -> None:
+        self._call("load_file")
+
+    def _copy_next(self) -> None:
+        self._call("copy_next")
+
+    def _refresh_info(self) -> None:
+        self._call("refresh_info")
+
+    def _restart(self) -> None:
+        self._call("restart")
+
+    def _clear(self) -> None:
+        self._call("clear")
+
+    def _follow_changed(self, checked: bool) -> None:
+        self._call("follow_changed", bool(checked))
+
+    # ------------------------------------------------------------------ public
+    def route_text(self) -> str:
+        """Что сейчас в поле вставки (приложение решает, как это разобрать)."""
+        return self.route_input.toPlainText()
+
+    def set_route_text(self, text: str) -> None:
+        self.route_input.setPlainText(str(text or ""))
+
+    def clear_route_text(self) -> None:
+        self.route_input.clear()
+
+    def is_following(self) -> bool:
+        return bool(self.follow_check.isChecked())
+
+    def set_following(self, following: bool) -> None:
+        """Показать состояние слежения без обратного вызова приложению."""
+        blocked = self.follow_check.blockSignals(True)
+        self.follow_check.setChecked(bool(following))
+        self.follow_check.blockSignals(blocked)
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Нарисовать готовый снимок `route_travel.travel_state`."""
+        state = dict(state or {})
+        self.status_label.setText(str(state.get("status") or ""))
+        follow = bool(state.get("follow"))
+        self.set_following(follow)
+        self.follow_hint.setText(
+            tr("Следующая система попадает в буфер обмена сразу после прыжка.")
+            if follow else
+            tr("Включите слежение — и следующая система всегда будет в буфере обмена."))
+        progress = state.get("progress")
+        try:
+            value = max(0.0, min(100.0, float(progress)))
+        except (TypeError, ValueError):
+            value = 0.0
+        self.progress.setValue(int(round(value * 10)))
+        self.progress.setFormat(f"{value:.0f}%")
+        stats = state.get("stats") or {}
+        for key, widget in self.values.items():
+            widget.setText(str(stats.get(key) or "—"))
+        info = state.get("info") or {}
+        for key, widget in self.info_values.items():
+            widget.setText(str(info.get(key) or "—"))
+        self.set_upcoming(state.get("upcoming") or ())
+        self.note_label.setText(str(state.get("note") or ""))
+        self.copy_btn.setEnabled(bool(state.get("next")))
+
+    def set_upcoming(self, rows: Sequence[Sequence]) -> None:
+        """Список впереди идущих систем: ``(номер, имя, прыжок)``."""
+        rows = list(rows or ())
+        self.table.setRowCount(len(rows))
+        for row_index, values in enumerate(rows):
+            values = list(values)[:len(TRAVEL_COLUMNS)]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignVCenter |
+                    (Qt.AlignmentFlag.AlignLeft if column == 1
+                     else Qt.AlignmentFlag.AlignHCenter))
+                if column == 0:
+                    item.setForeground(QBrush(QColor(MUTED)))
+                self.table.setItem(row_index, column, item)
+
+    def upcoming_count(self) -> int:
+        return self.table.rowCount()
+
+    def stat_text(self, key: str) -> str:
+        widget = self.values.get(key)
+        return widget.text() if widget is not None else ""
+
+    def info_text(self, key: str) -> str:
+        widget = self.info_values.get(key)
+        return widget.text() if widget is not None else ""
+
+    def progress_value(self) -> int:
+        return int(self.progress.value())
+
+
+class RouteSection(QWidget):
+    """Раздел «Маршрут»: прежнее отслеживание и новая вкладка «Путешествия».
+
+    Отслеживание осталось первой вкладкой со всеми прежними кнопками и
+    таблицей — к нему привыкли. «Путешествия» — вторая: там вставка готового
+    маршрута, слежение, буфер обмена, статистика и подсказки о следующей
+    системе. Приложение держит `section.route` (прежние имена `route_page`,
+    `route_tree`, `route_counter` продолжают работать) и `section.travel`.
+    """
+
+    def __init__(self, actions: _Optional[RoutePageActions] = None,
+                 travel_actions: _Optional[TravelPageActions] = None,
+                 parent: _Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("routeSection")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("routeTabs")
+        layout.addWidget(self.tabs)
+
+        self.route = RoutePage(actions)
+        self.tabs.addTab(self.route, tr("Отслеживание"))
+
+        self.travel = TravelPage(travel_actions)
+        self.tabs.addTab(self.travel, tr("Путешествия"))
+
+    # ------------------------------------------------------------------ pieces
+    def show_route(self) -> None:
+        self.tabs.setCurrentWidget(self.route)
+
+    def show_travel(self) -> None:
+        self.tabs.setCurrentWidget(self.travel)
+
+    def tab_index(self, key: str) -> int:
+        return {"route": self.tabs.indexOf(self.route),
+                "travel": self.tabs.indexOf(self.travel)}[str(key)]
+
+
 class RouteExportDialog(FramedDialog):
     """Мини-меню «Экспорт CSV»: какие данные о маршруте попадут в файл.
 
