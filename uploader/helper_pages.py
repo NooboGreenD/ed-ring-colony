@@ -881,6 +881,9 @@ class TravelPageActions:
     restart: _Optional[Callable] = None
     #: Убрать маршрут целиком.
     clear: _Optional[Callable] = None
+    #: Запретить/разрешить автоматическую перезагрузку маршрута из NavRoute.json
+    #: при ручной перестройке в игре (``bool``).
+    pin_route: _Optional[Callable] = None
 
 
 class TravelPage(QWidget):
@@ -920,6 +923,8 @@ class TravelPage(QWidget):
         self.route_input.setStyleSheet(
             f"QPlainTextEdit {{ background: {PANEL}; color: {TEXT};"
             f" border: 1px solid #3b4044; border-radius: 6px; padding: 6px; }}")
+        self.route_input.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.route_input)
 
         self.paste_btn = action_button(tr("Принять вставленное"),
@@ -934,10 +939,23 @@ class TravelPage(QWidget):
                                          self._restart, height=32)
         self.clear_btn = action_button(tr("Очистить"), self._clear,
                                        variant="danger", height=32)
+        self.pin_btn = action_button(tr("Закрепить маршрут"),
+                                     self._pin_route, variant="primary", height=32)
+        self.pin_btn.setCheckable(True)
+        self.pin_btn.setToolTip(tr(
+            "Когда закреплено — маршрут не пропадёт при перезаписи NavRoute.json "
+            "в игре; очистка только вручную."))
+        self.follow_btn = action_button(tr("Следить за маршрутом"),
+                                        self._follow_btn_clicked, height=32)
+        self.follow_btn.setCheckable(True)
+        self.follow_btn.setToolTip(tr(
+            "Когда включено — следующая система копируется в буфер обмена "
+            "сразу после прыжка."))
         layout.addWidget(row(self.paste_btn, self.load_btn, self.copy_btn,
-                             self.info_btn, self.restart_btn, self.clear_btn, None))
+                             self.info_btn, self.restart_btn, self.clear_btn,
+                             self.pin_btn, self.follow_btn, None))
 
-        # -- слежение -------------------------------------------------------
+        # -- слежение (повторная подпись у галочки для обратной совместимости) --
         follow_holder = QWidget()
         follow_layout = QHBoxLayout(follow_holder)
         follow_layout.setContentsMargins(0, 0, 0, 0)
@@ -951,6 +969,8 @@ class TravelPage(QWidget):
 
         # -- статус и прогресс ----------------------------------------------
         self.status_label = label("", size=11, bold=True, wrap=True)
+        self.status_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.status_label)
         self.progress = QProgressBar()
         self.progress.setObjectName("travelProgress")
@@ -1058,8 +1078,24 @@ class TravelPage(QWidget):
     def _clear(self) -> None:
         self._call("clear")
 
+    def _pin_route(self) -> None:
+        pinned = self.pin_btn.isChecked()
+        self._call("pin_route", pinned)
+
+    def _follow_btn_clicked(self) -> None:
+        checked = self.follow_btn.isChecked()
+        # Галочка и кнопка синхронизируются: любая из них меняет состояние.
+        self.follow_check.blockSignals(True)
+        self.follow_check.setChecked(checked)
+        self.follow_check.blockSignals(False)
+        self._call("follow_changed", bool(checked))
+
     def _follow_changed(self, checked: bool) -> None:
         self._call("follow_changed", bool(checked))
+        # Кнопка следует за галочкой и наоборот.
+        self.follow_btn.blockSignals(True)
+        self.follow_btn.setChecked(bool(checked))
+        self.follow_btn.blockSignals(False)
 
     # ------------------------------------------------------------------ public
     def route_text(self) -> str:
@@ -1080,6 +1116,15 @@ class TravelPage(QWidget):
         blocked = self.follow_check.blockSignals(True)
         self.follow_check.setChecked(bool(following))
         self.follow_check.blockSignals(blocked)
+        self.follow_btn.blockSignals(True)
+        self.follow_btn.setChecked(bool(following))
+        self.follow_btn.blockSignals(False)
+
+    def set_pin_state(self, pinned: bool) -> None:
+        """Показать состояние закрепления маршрута без обратного вызова."""
+        self.pin_btn.blockSignals(True)
+        self.pin_btn.setChecked(bool(pinned))
+        self.pin_btn.blockSignals(False)
 
     def set_state(self, state: Dict[str, Any]) -> None:
         """Нарисовать готовый снимок `route_travel.travel_state`."""
@@ -1091,6 +1136,8 @@ class TravelPage(QWidget):
             tr("Следующая система попадает в буфер обмена сразу после прыжка.")
             if follow else
             tr("Включите слежение — и следующая система всегда будет в буфере обмена."))
+        pinned = bool(state.get("pin"))
+        self.set_pin_state(pinned)
         progress = state.get("progress")
         try:
             value = max(0.0, min(100.0, float(progress)))
