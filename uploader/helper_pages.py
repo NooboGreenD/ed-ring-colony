@@ -942,12 +942,18 @@ class TravelPage(QWidget):
         self.pin_btn = action_button(tr("Закрепить маршрут"),
                                      self._pin_route, variant="primary", height=32)
         self.pin_btn.setCheckable(True)
+        self.pin_btn.setStyleSheet(
+            f"QPushButton:checked {{ background: {GREEN}; border: 1px solid {GREEN}; }}"
+        )
         self.pin_btn.setToolTip(tr(
             "Когда закреплено — маршрут не пропадёт при перезаписи NavRoute.json "
             "в игре; очистка только вручную."))
         self.follow_btn = action_button(tr("Следить за маршрутом"),
                                         self._follow_btn_clicked, height=32)
         self.follow_btn.setCheckable(True)
+        self.follow_btn.setStyleSheet(
+            f"QPushButton:checked {{ background: {GREEN}; border: 1px solid {GREEN}; }}"
+        )
         self.follow_btn.setToolTip(tr(
             "Когда включено — следующая система копируется в буфер обмена "
             "сразу после прыжка."))
