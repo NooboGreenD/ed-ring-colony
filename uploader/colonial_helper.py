@@ -5054,7 +5054,8 @@ class ColonialHelperApp:
         pairs = [
             # (старое место, новое место)
             (old_home / ".colonial_helper.json", self.config_path),
-            (old_home / ".colonial_helper_credentials.json", self.credentials_path),
+            (old_home / ".colonial_helper_credentials.json",
+             self.data_dir / ".colonial_helper_credentials.json"),
             (old_home / ".colonial_helper_route_hints.json",
              self.data_dir / ".colonial_helper_route_hints.json"),
             (old_home / ".colonial_helper_map_cache.json",
