@@ -951,8 +951,6 @@ class TravelPage(QWidget):
         self.route_input.setStyleSheet(
             f"QPlainTextEdit {{ background: {PANEL}; color: {TEXT};"
             f" border: 1px solid #3b4044; border-radius: 6px; padding: 6px; }}")
-        self.route_input.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.route_input)
 
         self.paste_btn = action_button(tr("Принять вставленное"),
@@ -984,8 +982,6 @@ class TravelPage(QWidget):
 
         # -- статус и прогресс ----------------------------------------------
         self.status_label = label("", size=11, bold=True, wrap=True)
-        self.status_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout.addWidget(self.status_label)
         self.progress = QProgressBar()
         self.progress.setObjectName("travelProgress")
