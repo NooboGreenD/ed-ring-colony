@@ -314,43 +314,62 @@ export async function loadSquadronSummaries(
 }
 
 export async function loadSquadronForUser(db: SupabaseClient, userId: string) {
-  const { data: membershipData, error: membershipError } = await db
-    .from("squadron_members")
-    .select("squadron_id")
-    .eq("user_id", userId)
-    .limit(1)
+  // 1. Актуальная эскадрилья из профиля: журнал игры пишет
+  //    game_squadron_site_id при каждом вступлении, поэтому это самый свежий
+  //    источник правды — он учитывает переходы между эскадрильями.
+  let squadronId: number | null = null;
+  const { data: profileRow, error: profileError } = await db
+    .from("profiles")
+    .select("game_squadron_site_id")
+    .eq("id", userId)
     .maybeSingle();
-  if (membershipError) {
-    // Older profiles stored the squadron name directly and may not yet have
-    // the membership relation or its refreshed PostgREST schema cache.
-    const { data: legacyProfile } = await db
-      .from("profiles")
-      .select("squadron")
-      .eq("id", userId)
-      .maybeSingle();
-    const legacyName = typeof legacyProfile?.squadron === "string"
-      ? legacyProfile.squadron.trim()
-      : "";
-    if (legacyName) {
-      const { data: legacySquadron } = await db
-        .from("squadrons")
-        .select("*")
-        .or(`name.eq.${legacyName},tag.eq.${legacyName}`)
-        .limit(1)
-        .maybeSingle();
-      if (legacySquadron) {
-        return {
-          squadron: legacySquadron,
-          members: [],
-          ranks: [],
-          projects: [],
-        };
-      }
-    }
-    throw new Error(asErrorMessage(membershipError, "Could not load squadron membership"));
+  if (!profileError && profileRow?.game_squadron_site_id != null) {
+    squadronId = Number(profileRow.game_squadron_site_id);
   }
 
-  let squadronId = (membershipData as { squadron_id?: number } | null)?.squadron_id ?? null;
+  // 2. Если в профиле не закреплена эскадрилья — берём самую свежую membreship
+  //    по дате вступления (пилот мог перейти между эскадрильями, и старая
+  //    запись не должна «приковывать» его к первой эскадрилье).
+  if (!squadronId) {
+    const { data: membershipData, error: membershipError } = await db
+      .from("squadron_members")
+      .select("squadron_id")
+      .eq("user_id", userId)
+      .order("joined_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (membershipError) {
+      // Older profiles stored the squadron name directly and may not yet have
+      // the membership relation or its refreshed PostgREST schema cache.
+      const { data: legacyProfile } = await db
+        .from("profiles")
+        .select("squadron")
+        .eq("id", userId)
+        .maybeSingle();
+      const legacyName = typeof legacyProfile?.squadron === "string"
+        ? legacyProfile.squadron.trim()
+        : "";
+      if (legacyName) {
+        const { data: legacySquadron } = await db
+          .from("squadrons")
+          .select("*")
+          .or(`name.eq.${legacyName},tag.eq.${legacyName}`)
+          .limit(1)
+          .maybeSingle();
+        if (legacySquadron) {
+          return {
+            squadron: legacySquadron,
+            members: [],
+            ranks: [],
+            projects: [],
+          };
+        }
+      }
+      throw new Error(asErrorMessage(membershipError, "Could not load squadron membership"));
+    }
+    squadronId = (membershipData as { squadron_id?: number } | null)?.squadron_id ?? null;
+  }
+
   let squadron: Record<string, any> | null = null;
   if (squadronId != null) {
     const { data, error } = await db.from("squadrons").select("*").eq("id", squadronId).maybeSingle();
