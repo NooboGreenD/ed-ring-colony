@@ -913,6 +913,34 @@ class TravelPage(QWidget):
             "скопирует следующую систему в буфер обмена, когда включено слежение."),
             role="muted", size=9, wrap=True))
 
+        # -- верхние кнопки: закрепление и слежение -------------------------
+        top_btn_holder = QWidget()
+        top_btn_layout = QHBoxLayout(top_btn_holder)
+        top_btn_layout.setContentsMargins(0, 0, 0, 0)
+        top_btn_layout.setSpacing(8)
+        self.pin_btn = action_button(tr("Закрепить маршрут"),
+                                     self._pin_route, variant="primary", height=32)
+        self.pin_btn.setCheckable(True)
+        self.pin_btn.setStyleSheet(
+            f"QPushButton:checked {{ background: {GREEN}; border: 1px solid {GREEN}; }}"
+        )
+        self.pin_btn.setToolTip(tr(
+            "Когда закреплено — маршрут не пропадёт при перезаписи NavRoute.json "
+            "в игре; очистка только вручную."))
+        self.follow_btn = action_button(tr("Следить за маршрутом"),
+                                        self._follow_btn_clicked, height=32)
+        self.follow_btn.setCheckable(True)
+        self.follow_btn.setStyleSheet(
+            f"QPushButton:checked {{ background: {GREEN}; border: 1px solid {GREEN}; }}"
+        )
+        self.follow_btn.setToolTip(tr(
+            "Когда включено — следующая система копируется в буфер обмена "
+            "сразу после прыжка."))
+        top_btn_layout.addWidget(self.pin_btn)
+        top_btn_layout.addWidget(self.follow_btn)
+        top_btn_layout.addStretch(1)
+        layout.addWidget(top_btn_holder)
+
         # -- приём маршрута -------------------------------------------------
         self.route_input = QPlainTextEdit()
         self.route_input.setObjectName("travelRouteInput")
@@ -939,27 +967,8 @@ class TravelPage(QWidget):
                                          self._restart, height=32)
         self.clear_btn = action_button(tr("Очистить"), self._clear,
                                        variant="danger", height=32)
-        self.pin_btn = action_button(tr("Закрепить маршрут"),
-                                     self._pin_route, variant="primary", height=32)
-        self.pin_btn.setCheckable(True)
-        self.pin_btn.setStyleSheet(
-            f"QPushButton:checked {{ background: {GREEN}; border: 1px solid {GREEN}; }}"
-        )
-        self.pin_btn.setToolTip(tr(
-            "Когда закреплено — маршрут не пропадёт при перезаписи NavRoute.json "
-            "в игре; очистка только вручную."))
-        self.follow_btn = action_button(tr("Следить за маршрутом"),
-                                        self._follow_btn_clicked, height=32)
-        self.follow_btn.setCheckable(True)
-        self.follow_btn.setStyleSheet(
-            f"QPushButton:checked {{ background: {GREEN}; border: 1px solid {GREEN}; }}"
-        )
-        self.follow_btn.setToolTip(tr(
-            "Когда включено — следующая система копируется в буфер обмена "
-            "сразу после прыжка."))
         layout.addWidget(row(self.paste_btn, self.load_btn, self.copy_btn,
-                             self.info_btn, self.restart_btn, self.clear_btn,
-                             self.pin_btn, self.follow_btn, None))
+                             self.info_btn, self.restart_btn, self.clear_btn, None))
 
         # -- слежение (повторная подпись у галочки для обратной совместимости) --
         follow_holder = QWidget()
