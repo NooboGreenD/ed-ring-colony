@@ -16,6 +16,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 import traceback
+import shutil
 from typing import Dict, Optional, List
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -270,18 +271,22 @@ class ColonialHelperApp:
             pass
 
         # Данные
-        # Путь к конфигу нужен уже здесь: рядом с ним лежат дисковые кэши
-        # (например, подсказки ROUTE), а не только настройки ниже по коду.
-        self.config_path = Path.home() / ".colonial_helper.json"
-        # Временные файлы приложения живут в AppData\Local\ColonialHelper\Temp,
-        # а не в корне профиля пользователя.
-        self.temp_dir = Path.home() / "AppData" / "Local" / "ColonialHelper" / "Temp"
+        # Все конфиги и кэши приложения живут в
+        # AppData\Local\ColonialHelper\ (а не в корне профиля пользователя).
+        self.data_dir = Path.home() / "AppData" / "Local" / "ColonialHelper"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.config_path = self.data_dir / ".colonial_helper.json"
+        # Временные файлы приложения живут в AppData\Local\ColonialHelper\Temp.
+        self.temp_dir = self.data_dir / "Temp"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+        # Миграция старых конфигов из корня профиля пользователя, если они там
+        # остались от предыдущих версий.
+        self._migrate_old_configs()
         self.api = ApiClient()
         # Кэш подсказок ROUTE лежит рядом с конфигом: после перезапуска
         # стройка и первооткрыватель известных систем видны сразу.
         self.route = RouteTracker(
-            self.config_path.with_name(".colonial_helper_route_hints.json"))
+            self.data_dir / ".colonial_helper_route_hints.json")
         # «Путешествия»: замеры текущей сессии (старт, прыжки, темп) и режим
         # слежения. Замеры живут только в памяти: после перезапуска неизвестно,
         # сколько пилот уже в пути, и выдумывать это время нельзя.
@@ -308,7 +313,7 @@ class ColonialHelperApp:
         # Снаряжение на ногах: наборы, оружие, модификации и рюкзак. Кэш рядом
         # с конфигом — снаряжение видно сразу после запуска, до чтения истории.
         self.equipment = PilotEquipment(
-            self.config_path.with_name(".colonial_helper_equipment.json"))
+            self.data_dir / ".colonial_helper_equipment.json")
         self._equipment_refresh_pending = False
         self._latest_loadout_event = None
         self._ship_state_last_synced = None
@@ -462,16 +467,16 @@ class ColonialHelperApp:
         self.config = {}
         # Отдельное хранилище credentials переживает обновление приложения и
         # не может быть затёрто настройками HUD/overlay.
-        self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
+        self.credentials_path = self.data_dir / ".colonial_helper_credentials.json"
         # Frontier CAPI is bound and fetched by the website. Colonial Helper
         # keeps no separate Frontier credentials; it uses only its revocable
         # project API token to request a server-side sync.
         # Кэш последнего ответа Raven: карта не ждёт сеть при старте приложения.
         self.map_cache = MapRavenCache(
-            self.config_path.with_name(".colonial_helper_map_cache.json"))
+            self.data_dir / ".colonial_helper_map_cache.json")
         # Дисковый кэш экзобиологии: сохраняет ранее отсканированные системы
         self.exobio_cache = ExobiologyCache(
-            self.config_path.with_name(".colonial_helper_exobio_cache.json"))
+            self.data_dir / ".colonial_helper_exobio_cache.json")
         self.exobiology.load_from_cache(self.exobio_cache)
         self._exobio_history_scanned_systems = set()
         self.load_config()
@@ -528,7 +533,7 @@ class ColonialHelperApp:
         # Позволяет не переразбирать и не переотправлять файлы, которые уже
         # были успешно импортированы — повторная первичная загрузка вместо
         # десятков минут занимает секунды.
-        self.imported_files_path = self.config_path.with_name(".colonial_helper_imported_files.json")
+        self.imported_files_path = self.data_dir / ".colonial_helper_imported_files.json"
         self.imported_files: dict = self._load_imported_files()
         self.skip_imported_files = bool(self.config.get("skip_imported_files", True))
         # Журнал того, что уже зачтено Raven Colonial (source_hash -> тонны).
@@ -5037,6 +5042,52 @@ class ColonialHelperApp:
         """
         return getattr(self, "api", None)
 
+    def _migrate_old_configs(self) -> None:
+        """Перенести конфиги из корня профиля пользователя в AppData.
+
+        При переходе на новую версию все конфиги и кэши переезжают из
+        ~/.colonial_helper.* в AppData\Local\ColonialHelper\. Если новые
+        файлы ещё не существуют, а старые есть — копируем их, чтобы пользователь
+        не потерял настройки, ключи API, кэши и историю импорта.
+        """
+        old_home = Path.home()
+        pairs = [
+            # (старое место, новое место)
+            (old_home / ".colonial_helper.json", self.config_path),
+            (old_home / ".colonial_helper_credentials.json", self.credentials_path),
+            (old_home / ".colonial_helper_route_hints.json",
+             self.data_dir / ".colonial_helper_route_hints.json"),
+            (old_home / ".colonial_helper_map_cache.json",
+             self.data_dir / ".colonial_helper_map_cache.json"),
+            (old_home / ".colonial_helper_exobio_cache.json",
+             self.data_dir / ".colonial_helper_exobio_cache.json"),
+            (old_home / ".colonial_helper_equipment.json",
+             self.data_dir / ".colonial_helper_equipment.json"),
+            (old_home / ".colonial_helper_imported_files.json",
+             self.data_dir / ".colonial_helper_imported_files.json"),
+            (old_home / ".colonial_helper_journal_offsets.json",
+             self.data_dir / ".colonial_helper_journal_offsets.json"),
+            (old_home / ".colonial_helper_raven_sent.json",
+             self.data_dir / ".colonial_helper_raven_sent.json"),
+            (old_home / ".station_commerce_outbox.json",
+             self.data_dir / ".station_commerce_outbox.json"),
+            (old_home / ".carrier_events_outbox.json",
+             self.data_dir / ".carrier_events_outbox.json"),
+            (old_home / ".bgs_snapshots_outbox.json",
+             self.data_dir / ".bgs_snapshots_outbox.json"),
+            (old_home / ".squadron_outbox.json",
+             self.data_dir / ".squadron_outbox.json"),
+        ]
+        for old_path, new_path in pairs:
+            try:
+                if not new_path.exists() and old_path.exists():
+                    new_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(old_path), str(new_path))
+                    print(f"[migration] Конфиг перенесён: {old_path.name} → {new_path}", file=sys.stderr)
+            except Exception:
+                # Не критично — настройки просто не перенесутся
+                pass
+
     def load_config(self):
         if self.config_path.exists():
             try:
@@ -6909,7 +6960,7 @@ class ColonialHelperApp:
         return f"{self.api.site_url}|{self.api.user_id or ''}"
 
     def _load_journal_offsets(self) -> dict:
-        path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
+        path = self.data_dir / ".colonial_helper_journal_offsets.json"
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -6920,7 +6971,7 @@ class ColonialHelperApp:
             return {}
 
     def _save_journal_offsets(self):
-        path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
+        path = self.data_dir / ".colonial_helper_journal_offsets.json"
         try:
             # Snapshot and serialize in one critical section so two watcher
             # threads in this process cannot overlap saves or mutate the dict
@@ -7748,7 +7799,7 @@ class ColonialHelperApp:
         «какие тонны уже зачтены проекту».
         """
         try:
-            path = self.config_path.with_name(".colonial_helper_raven_sent.json")
+            path = self.data_dir / ".colonial_helper_raven_sent.json"
             items = sorted(
                 self._raven_sent.items(), key=lambda item: item[1].get("at", 0.0)
             )[-5000:]
@@ -7763,7 +7814,7 @@ class ColonialHelperApp:
 
     def _load_raven_ledger(self) -> dict:
         try:
-            path = self.config_path.with_name(".colonial_helper_raven_sent.json")
+            path = self.data_dir / ".colonial_helper_raven_sent.json"
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             return data if isinstance(data, dict) else {}
@@ -7788,7 +7839,7 @@ class ColonialHelperApp:
         collector = getattr(self, "_station_commerce", None)
         if collector is None:
             from station_commerce import StationCommerceCollector
-            collector = StationCommerceCollector(self.config_path.with_name(".station_commerce_outbox.json"))
+            collector = StationCommerceCollector(self.data_dir / ".station_commerce_outbox.json")
             # Новый снимок рынка авианосца исправляет его груз в Raven Colonial.
             collector.on_inventory = self._on_station_inventory
             self._station_commerce = collector
@@ -7800,7 +7851,7 @@ class ColonialHelperApp:
         if collector is None:
             from carrier_sync import CarrierEventCollector
             collector = CarrierEventCollector(
-                self.config_path.with_name(".carrier_events_outbox.json"),
+                self.data_dir / ".carrier_events_outbox.json",
                 inventory_reader=self._read_ship_inventory,
             )
             self._carrier_sync = collector
@@ -7811,7 +7862,7 @@ class ColonialHelperApp:
         collector = getattr(self, "_bgs_sync", None)
         if collector is None:
             from bgs_sync import BgsSnapshotCollector
-            collector = BgsSnapshotCollector(self.config_path.with_name(".bgs_snapshots_outbox.json"))
+            collector = BgsSnapshotCollector(self.data_dir / ".bgs_snapshots_outbox.json")
             self._bgs_sync = collector
         return collector
 
@@ -7820,7 +7871,7 @@ class ColonialHelperApp:
         collector = getattr(self, "_squadron_sync", None)
         if collector is None:
             from squadron_sync import SquadronInfoCollector
-            collector = SquadronInfoCollector(self.config_path.with_name(".squadron_outbox.json"))
+            collector = SquadronInfoCollector(self.data_dir / ".squadron_outbox.json")
             self._squadron_sync = collector
         return collector
 
@@ -9818,7 +9869,7 @@ def main():
     except Exception as e:
         _journal(f"критическая ошибка запуска: {type(e).__name__}: {e}\n"
                  f"{traceback.format_exc()}")
-        error_file = Path.home() / "colonial_helper_error.log"
+        error_file = Path.home() / "AppData" / "Local" / "ColonialHelper" / "colonial_helper_error.log"
         with open(error_file, "w", encoding="utf-8") as f:
             f.write("=" * 60 + "\n")
             f.write("КРИТИЧЕСКАЯ ОШИБКА при запуске:\n")
