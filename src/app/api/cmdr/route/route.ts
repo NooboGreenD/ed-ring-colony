@@ -29,10 +29,15 @@ export async function POST(req: Request) {
     if (body?.action === 'poll') {
       const userId = await helperUserId(body.token);
       if (!userId) return NextResponse.json({ error: t('api.helperTokenInvalid') }, { status: 401 });
+      // Читаем маршрут без пометки consumed_at: маршрут должен оставаться
+      // доступным для повторного чтения Helper'ом (например, при возвращении
+      // на вкладку путешествия). Пометка consumed_at сбрасывается только при
+      // публикации нового маршрута сайтом (POST без action). Явное
+      // подтверждение получения Helper'ом (если понадобится) — отдельный вызов.
       const { data, error } = await supabaseAdmin.from('helper_route_inbox')
-        .update({ consumed_at: new Date().toISOString() })
-        .eq('user_id', userId).is('consumed_at', null)
-        .select('route,created_at').maybeSingle();
+        .select('route, created_at')
+        .eq('user_id', userId)
+        .maybeSingle();
       if (error) return NextResponse.json({ error: t('api.cmdrRouteFetchFailed') }, { status: 502 });
       return NextResponse.json({ ok: true, route: data?.route ?? null, created_at: data?.created_at ?? null });
     }
