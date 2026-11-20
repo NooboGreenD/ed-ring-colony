@@ -61,6 +61,7 @@ OVERLAY_META = {
     "session": ("05", "ACTIVITY"),
     "events": ("06", "EVENT LOG"),
     "exobio": ("07", "ANALYSIS"),
+    "bio": ("10", "BIOLOGY"),
     "carrier": ("08", "FLEET CARRIER"),
     "footmap": ("09", "SURFACE"),
 }
