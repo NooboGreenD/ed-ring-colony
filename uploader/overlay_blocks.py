@@ -2090,6 +2090,7 @@ class ExobiologyOverlay(HudWindow):
 
     Перерисовка: минимум текста, максимум иконок, цветных плашек и
     визуальных шкал. Стиль проекта — dark sci-fi military HUD.
+    Все иконки —_project_-стиль (HudIcon из hud_icons.py), без стандартных эмодзи.
     """
 
     MAX_PREDICTIONS = 5
@@ -2117,8 +2118,8 @@ class ExobiologyOverlay(HudWindow):
         samples_layout = QHBoxLayout(self.samples_row)
         samples_layout.setContentsMargins(0, 0, 0, 0)
         samples_layout.setSpacing(6)
-        self.samples_icon = QLabel("🧬", self.samples_row)
-        self.samples_icon.setFont(hud_font(self._font_family, self._font_size, bold=True))
+        self.samples_icon = HudIcon(
+            self.samples_row, name="dna", size=16, color=COLOR_TEXT)
         self.samples_icon.setFixedWidth(20)
         samples_layout.addWidget(self.samples_icon)
         self.samples_label = self.make_label(
@@ -2133,10 +2134,20 @@ class ExobiologyOverlay(HudWindow):
         self.body.addWidget(hud_separator(self.content))
 
         # -- секция родов: иконка + короткая подпись ------------------------
+        self.predict_header_row = QWidget(self.content)
+        ph_layout = QHBoxLayout(self.predict_header_row)
+        ph_layout.setContentsMargins(0, 0, 0, 0)
+        ph_layout.setSpacing(4)
+        self.predict_icon = HudIcon(
+            self.predict_header_row, name="chart", size=14, color=COLOR_TEXT_MUTED)
+        self.predict_icon.setFixedWidth(16)
+        ph_layout.addWidget(self.predict_icon)
         self.predict_header = self.make_label(
-            self.content, "📊  РОДЫ",
+            self.content, "РОДЫ",
             color=COLOR_TEXT_MUTED, dp=0, bold=True, wrap=0)
-        self.body.addWidget(self.predict_header)
+        ph_layout.addWidget(self.predict_header)
+        ph_layout.addStretch(1)
+        self.body.addWidget(self.predict_header_row)
         self.predict_label = self.make_label(
             self.content, "—", color=COLOR_GREEN_TEXT, dp=-1,
             wrap=self._wrap)
@@ -2217,7 +2228,7 @@ class ExobiologyOverlay(HudWindow):
         if not state:
             self.samples_label.setText("0/0")
             self.samples_value.setText("—")
-            self.predict_header.setText("📊  РОДЫ")
+            self.predict_header.setText("РОДЫ")
             self.predict_label.setText("—")
             self.next_action_label.setText(
                 tr("→ отсканируйте тело, чтобы получить прогноз"))
@@ -2237,13 +2248,13 @@ class ExobiologyOverlay(HudWindow):
         self.samples_label.setText(f"{collected}/{total_slots}")
         if total_value:
             self.samples_value.setText(
-                f"💰 {format_credits(total_value)}"
+                f"{format_credits(total_value)}"
                 + (" ×5" if no_footfall else ""))
         else:
             self.samples_value.setText("—")
 
         if not organics:
-            self.predict_header.setText("📊  РОДЫ")
+            self.predict_header.setText("РОДЫ")
             self.predict_label.setText("—")
             action = self._suggest_next_action(state, [])
             self.next_action_label.setText(action)
@@ -2259,9 +2270,9 @@ class ExobiologyOverlay(HudWindow):
             if row.get("seen_before"):
                 name = "↻ " + name
             else:
-                name = "✦ " + name
+                name = "N " + name
             if complete:
-                status = "✓"
+                status = "OK"
                 status_color = COLOR_GREEN_TEXT
             elif samples:
                 wait = int(row.get("wait_seconds") or 0)
@@ -2276,17 +2287,17 @@ class ExobiologyOverlay(HudWindow):
                 status = "○"
                 status_color = COLOR_TEXT_MUTED
             value = int(row.get("value_cr") or 0)
-            value_text = f"💰 {format_credits(value)}" if value else ""
+            value_text = f"{format_credits(value)}" if value else ""
             lines.append(f"{name}  {marks}  {status}  {value_text}")
 
-        self.predict_header.setText("📊  РОДЫ")
+        self.predict_header.setText("РОДЫ")
         self.predict_label.setText("\n".join(lines))
         paint(self.predict_label, color=COLOR_TEXT)
 
         # ---- Прогноз родов ------------------------------------------------
         if not state.get("landable", True):
             self.predict_label.setText(
-                "⛔  посадка невозможна")
+                "X  посадка невозможна")
             paint(self.predict_label, color=COLOR_RED_TEXT)
             return
 
@@ -2311,7 +2322,7 @@ class ExobiologyOverlay(HudWindow):
                      or estimate_value(genus, mapped=mapped,
                                        first_discovery=no_footfall))
             bar = self._format_prob_bar(percent) if percent is not None else "░░░░░"
-            value_text = f"💰 {format_credits(value)}" if value else ""
+            value_text = f"{format_credits(value)}" if value else ""
             confirmed = " DSS" if row.get("confirmed") else ""
             pred_lines.append(f"{genus}  {bar}  {value_text}{confirmed}")
 
@@ -2382,9 +2393,6 @@ class ExobiologyOverlay(HudWindow):
 
 
 
-# ============================================================
-#  BIOLOGY — информация о теле, биосигналах, телах системы
-# ============================================================
 class BiologyOverlay(HudWindow):
     """Биология планет: тело, биосигналы, телеметрия, тела системы.
 
@@ -2396,6 +2404,7 @@ class BiologyOverlay(HudWindow):
 
     Перерисовка: минимум текста, максимум иконок, цветных плашек и
     визуальных шкал. Стиль проекта — dark sci-fi military HUD.
+    Все иконки — проект-стиль (HudIcon из hud_icons.py), без стандартных эмодзи.
     """
 
     MAX_BODIES = 6
@@ -2441,12 +2450,12 @@ class BiologyOverlay(HudWindow):
         telemetry = QHBoxLayout(self.telemetry_frame)
         telemetry.setContentsMargins(0, 2, 0, 1)
         telemetry.setSpacing(4)
-        self.chip_bio = self._chip(telemetry, "", *self.CHIP_BIO_ON)
-        self.chip_land = self._chip(telemetry, "", *self.CHIP_LAND_ON)
-        self.chip_dss = self._chip(telemetry, "", *self.CHIP_DSS_ON)
-        self.chip_footfall = self._chip(telemetry, "", *self.CHIP_BONUS)
-        self.chip_grav = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
-        self.chip_temp = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
+        self.chip_bio = self._chip(telemetry, "bio", "", *self.CHIP_BIO_ON)
+        self.chip_land = self._chip(telemetry, "land", "", *self.CHIP_LAND_ON)
+        self.chip_dss = self._chip(telemetry, "search", "", *self.CHIP_DSS_ON)
+        self.chip_footfall = self._chip(telemetry, "footstep", "", *self.CHIP_BONUS)
+        self.chip_grav = self._chip(telemetry, "gravity", "", *self.CHIP_PLAIN, bold=False)
+        self.chip_temp = self._chip(telemetry, "thermometer", "", *self.CHIP_PLAIN, bold=False)
         telemetry.addStretch(1)
         self.body.addWidget(self.telemetry_frame)
 
@@ -2460,9 +2469,9 @@ class BiologyOverlay(HudWindow):
         self.body.addWidget(hud_separator(self.content))
 
         # -- тела системы ---------------------------------------------------
-        self.bodies_header = self.make_label(self.content, "\U0001F4A1  ТЕЛА",
-                                             color=COLOR_TEXT_MUTED, dp=0,
-                                             bold=True, wrap=0)
+        self.bodies_header = self._icon_label("star", "ТЕЛА",
+                                              color=COLOR_TEXT_MUTED, dp=0,
+                                              bold=True, wrap=0)
         self.body.addWidget(self.bodies_header)
         self.bodies_label = self.make_label(self.content, "—", color=COLOR_TEXT_MUTED,
                                             dp=-1, wrap=self._wrap)
@@ -2471,9 +2480,9 @@ class BiologyOverlay(HudWindow):
         # -- поиск планет ---------------------------------------------------
         self.planet_separator = hud_separator(self.content)
         self.body.addWidget(self.planet_separator)
-        self.planets_header = self.make_label(self.content, "\U0001F50D  ПОИСК",
-                                              color=COLOR_TEXT_MUTED, dp=0,
-                                              bold=True, wrap=0)
+        self.planets_header = self._icon_label("search", "ПОИСК",
+                                               color=COLOR_TEXT_MUTED, dp=0,
+                                               bold=True, wrap=0)
         self.body.addWidget(self.planets_header)
         self.planets_label = self.make_label(self.content, "—", color=COLOR_GREEN_TEXT,
                                              dp=-1, wrap=self._wrap)
@@ -2486,23 +2495,62 @@ class BiologyOverlay(HudWindow):
         self.body.addWidget(self.footer_label)
         self.body.addStretch(1)
 
-    def _chip(self, layout: QHBoxLayout, text: str, color: str, background: str,
-              *, bold: bool = True) -> QLabel:
-        label = QLabel(text, self.telemetry_frame)
+    # -- хелперы ------------------------------------------------------------
+
+    def _icon_label(self, icon_name: str, text: str, *, color: str = COLOR_TEXT,
+                    dp: int = -1, bold: bool = False, wrap: int = 0,
+                    icon_size: int = 14, icon_color: Optional[str] = None) -> QWidget:
+        """Контейнер QWidget с HudIcon + QLabel в строку."""
+        container = QWidget(self.content)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        ic = HudIcon(container, name=icon_name, size=icon_size,
+                     color=icon_color or color)
+        ic.setFixedWidth(icon_size + 4)
+        layout.addWidget(ic)
+        label = self.make_label(container, text, color=color, dp=dp,
+                                bold=bold, wrap=wrap)
+        layout.addWidget(label)
+        return container
+
+    def _chip(self, layout: QHBoxLayout, icon_name: str, text: str, color: str,
+              background: str, *, bold: bool = True) -> QWidget:
+        """Плашка телеметрии: HudIcon + текст в контейнере."""
+        container = QWidget(self.telemetry_frame)
+        cl = QHBoxLayout(container)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(2)
+        icon = HudIcon(container, name=icon_name, size=10, color=color)
+        cl.addWidget(icon)
+        label = QLabel(text, container)
         label.setFont(hud_font(self._font_family, max(7, self._font_size - 3), bold=bold))
         label.setAttribute(Qt.WA_StyledBackground, True)
         label.setStyleSheet(
             f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
             f"padding:0 4px;")
-        layout.addWidget(label)
-        return label
+        cl.addWidget(label)
+        layout.addWidget(container)
+        return container
 
     @staticmethod
-    def _paint_chip(label: QLabel, text: str, color: str, background: str) -> None:
-        label.setText(text)
-        label.setStyleSheet(
-            f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
-            f"padding:0 4px;")
+    def _paint_chip(container: QWidget, icon_name: str, text: str, color: str,
+                    background: str) -> None:
+        """Перерисовать плашку: иконку и текст."""
+        # container.layout() содержит [HudIcon, QLabel]
+        layout = container.layout()
+        if layout is None:
+            return
+        icon = layout.itemAt(0).widget()
+        label = layout.itemAt(1).widget()
+        if isinstance(icon, HudIcon):
+            icon.set_color(color)
+            icon.update()
+        if isinstance(label, QLabel):
+            label.setText(text)
+            label.setStyleSheet(
+                f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
+                f"padding:0 4px;")
 
     # -- обновление ---------------------------------------------------------
     def update_biology(self, state: Optional[dict]) -> None:
@@ -2540,7 +2588,7 @@ class BiologyOverlay(HudWindow):
                 self.params_label.setText(
                     f"нет данных о теле \u00b7 в системе {len(bio_bodies)} тел с биосигналами "
                     f"({total_bio_signals} сигн.)")
-                self.signals_label.setText(f"\U0001F52C  {total_bio_signals} сигнала в системе")
+                self.signals_label.setText("сигнала в системе")
             elif scanned_count > 0:
                 self.params_label.setText(
                     f"нет данных о теле \u00b7 отсканировано {scanned_count} тел")
@@ -2576,11 +2624,11 @@ class BiologyOverlay(HudWindow):
             temp=temp, atmo=atmo, no_first_footfall=no_first_footfall,
             first_footfall_by=first_footfall_by)
 
-        dss_text = "DSS \u2713" if mapped else "DSS \u2717"
-        volc_text = f"  \u00b7  \U0001F30B {volc}" if volc and volc.lower() != "\u043d\u0435\u0442" else ""
-        self.params_label.setText(f"\U0001F32B  {atmo}{volc_text}")
-        signals_prefix = "\U0001F52C  без сигналов" if not signals else f"\U0001F52C  {signals} сигналов"
-        self.signals_label.setText(f"{signals_prefix}  \u00b7  {dss_text}")
+        volc_text = f"  \u00b7  вулкан" if volc and volc.lower() != "нет" else ""
+        self.params_label.setText(f"атмосфера {atmo}{volc_text}")
+        dss_text = "DSS OK" if mapped else "DSS X"
+        signals_prefix = "без сигналов" if not signals else f"{signals} сигналов"
+        self.signals_label.setText(f"{signals_prefix} \u00b7 {dss_text}")
 
         self._render_bodies(state)
         self._render_planets(state)
@@ -2597,31 +2645,31 @@ class BiologyOverlay(HudWindow):
             self.signals_label.setVisible(True)
 
         if signals > 0:
-            self._paint_chip(self.chip_bio, f"\U0001F33F  {signals} BIO", *self.CHIP_BIO_ON)
+            self._paint_chip(self.chip_bio, "bio", f"{signals} BIO", *self.CHIP_BIO_ON)
         else:
-            self._paint_chip(self.chip_bio, "\U0001F33F  0 BIO", *self.CHIP_BIO_OFF)
+            self._paint_chip(self.chip_bio, "bio", "0 BIO", *self.CHIP_BIO_OFF)
 
         if landable:
-            self._paint_chip(self.chip_land, "\U0001F6EC  ПОСАДКА", *self.CHIP_LAND_ON)
+            self._paint_chip(self.chip_land, "land", "ПОСАДКА", *self.CHIP_LAND_ON)
         else:
-            self._paint_chip(self.chip_land, "\u26D4  НЕ СЕСТЬ", *self.CHIP_LAND_OFF)
+            self._paint_chip(self.chip_land, "prohibited", "НЕ СЕСТЬ", *self.CHIP_LAND_OFF)
 
         if mapped:
-            self._paint_chip(self.chip_dss, "\U0001F4E1  DSS  \u2713", *self.CHIP_DSS_ON)
+            self._paint_chip(self.chip_dss, "search", "DSS OK", *self.CHIP_DSS_ON)
         else:
-            self._paint_chip(self.chip_dss, "\U0001F4E1  DSS  \u2717", *self.CHIP_DSS_OFF)
+            self._paint_chip(self.chip_dss, "search", "DSS X", *self.CHIP_DSS_OFF)
 
         if no_first_footfall:
-            self._paint_chip(self.chip_footfall, "\U0001F463  БОНУС  \u00d75", *self.CHIP_BONUS)
+            self._paint_chip(self.chip_footfall, "footstep", "БОНУС \u00d75", *self.CHIP_BONUS)
             self.chip_footfall.setVisible(True)
         elif first_footfall_by and first_footfall_by not in ("\u0412\u044b", "You"):
-            self._paint_chip(self.chip_footfall, "\U0001F463  ЕСТЬ", *self.CHIP_BIO_OFF)
+            self._paint_chip(self.chip_footfall, "footstep", "ЕСТЬ", *self.CHIP_BIO_OFF)
             self.chip_footfall.setVisible(True)
         else:
             self.chip_footfall.setVisible(False)
 
-        self._paint_chip(self.chip_grav, f"\u2691  {gravity / 10.0:.2f}g", *self.CHIP_PLAIN)
-        self._paint_chip(self.chip_temp, f"\U0001F321  {temp:.0f}K", *self.CHIP_PLAIN)
+        self._paint_chip(self.chip_grav, "gravity", f"{gravity / 10.0:.2f}g", *self.CHIP_PLAIN)
+        self._paint_chip(self.chip_temp, "thermometer", f"{temp:.0f}K", *self.CHIP_PLAIN)
 
     def _hide_telemetry_chips(self) -> None:
         if self._telemetry_shown:
@@ -2644,19 +2692,25 @@ class BiologyOverlay(HudWindow):
 
     @staticmethod
     def _body_marks(row: dict) -> str:
-        """Иконки признаков тела: \U0001F9EC образцы \u00b7 \U0001F4E1 карта \u00b7 \U0001F6EC посадка \u00b7 \u26D4 нельзя сесть."""
+        """Иконки признаков тела в виде текста (для QLabel)."""
         marks = []
         if row.get("has_organics"):
-            marks.append("\U0001F9EC")
-        marks.append("\U0001F4E1" if row.get("mapped") else "\u274C")
-        marks.append("\U0001F6EC" if row.get("landable") else "\u26D4")
+            marks.append("DNA")
+        marks.append("MAP" if row.get("mapped") else "X")
+        marks.append("LAND" if row.get("landable") else "NO")
         return "  ".join(marks)
 
     def _render_bodies(self, state: dict) -> None:
         bodies = state.get("system_bodies") or []
         count = len(bodies)
-        self.bodies_header.setText(
-            f"\U0001F4A1  ТЕЛА  \u00b7  {count}" if count else "\U0001F4A1  ТЕЛА")
+        self.bodies_header = self._icon_label("star", f"ТЕЛА \u00b7 {count}" if count else "ТЕЛА",
+                                              color=COLOR_TEXT_MUTED, dp=0,
+                                              bold=True, wrap=0)
+        # replace old header widget
+        old = self.bodies_header
+        self.body.layout().replaceWidget(old, self.bodies_header)
+        old.deleteLater()
+
         if not bodies:
             self.bodies_label.setText("в системе нет тел с биосигналами")
             paint(self.bodies_label, color=COLOR_TEXT_MUTED)
@@ -2666,7 +2720,7 @@ class BiologyOverlay(HudWindow):
             name = self._short_body(state, row.get("body"))
             bio = int(row.get("bio_signals", 0))
             marks = self._body_marks(row)
-            lines.append(f"{name}  \U0001F52C{bio}  {marks}")
+            lines.append(f"{name}  \u00b7{bio}  {marks}")
         extra = count - self.MAX_BODIES
         if extra > 0:
             lines.append(f"\u2026  +{extra}")
@@ -2682,7 +2736,18 @@ class BiologyOverlay(HudWindow):
         self._set_planets_visible(True)
 
         if not criteria:
-            self.planets_header.setText("\U0001F50D  ПОИСК")
+            self.planets_header = self._icon_label("search", "ПОИСК",
+                                                   color=COLOR_TEXT_MUTED, dp=0,
+                                                   bold=True, wrap=0)
+            old = self.planets_header
+            # find and replace in layout
+            layout = self.body.layout()
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item and item.widget() == old:
+                    layout.replaceWidget(old, self.planets_header)
+                    old.deleteLater()
+                    break
             self.planets_label.setText(
                 "критерии не выбраны \u2014 вкладка \u00abЭкзобиология\u00bb")
             paint(self.planets_label, color=COLOR_TEXT_MUTED)
@@ -2690,8 +2755,18 @@ class BiologyOverlay(HudWindow):
 
         rows = state.get("planets") or []
         count = len(rows)
-        self.planets_header.setText(
-            f"\U0001F50D  ПОИСК  \u00b7  найдено {count}")
+        self.planets_header = self._icon_label("search", f"ПОИСК \u00b7 найдено {count}",
+                                               color=COLOR_TEXT_MUTED, dp=0,
+                                               bold=True, wrap=0)
+        old = self.planets_header
+        layout = self.body.layout()
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and item.widget() == old:
+                layout.replaceWidget(old, self.planets_header)
+                old.deleteLater()
+                break
+
         if not rows:
             known = int(state.get("system_known_bodies")
                         or state.get("system_scanned_bodies") or 0)
@@ -2713,10 +2788,10 @@ class BiologyOverlay(HudWindow):
             matched = [str(item) for item in (row.get("matched") or []) if item]
             match_dots = "\u25CF" * min(len(matched), 2) + "\u25CB" * max(0, 2 - min(len(matched), 2))
             bio = int(row.get("bio_signals", 0))
-            land = "\U0001F6EC" if row.get("landable") else "\u26D4"
+            land = "LAND" if row.get("landable") else "NO"
             dist = float(row.get("distance_ls") or 0.0)
             dist_text = f"  {dist:.0f} св.с" if dist > 0 else ""
-            lines.append(f"{name}  {match_dots}  \U0001F52C{bio}  {land}{dist_text}")
+            lines.append(f"{name}  {match_dots}  \u00b7{bio}  {land}{dist_text}")
         extra = count - limit
         if extra > 0:
             lines.append(f"\u2026  +{extra}")
@@ -2753,7 +2828,6 @@ class BiologyOverlay(HudWindow):
     def _set_flow_text(label: QLabel, text: str) -> None:
         label.setWordWrap(True)
         label.setText(text)
-
 
 class SessionOverlay(HudWindow):
     def __init__(self, master, settings: Dict[str, Any]):
