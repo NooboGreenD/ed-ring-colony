@@ -1272,17 +1272,20 @@ class ColonialHelperApp:
                         f"Не удалось загрузить флот из CAPI: "
                         f"{result.get('error') or tr('Ошибка')}", "error")
                     return
-                ships = result.get("ships") or []
-                current_id = result.get("currentShipId")
-                if current_id is None:
+                # CAPI профиль вложен под ключом "profile":
+                # {"profile": {"ships": [...], "current_ship": "...", "last_updated": "..."}, "binding": {...}}
+                profile = result.get("profile") or {}
+                ships = profile.get("ships") or []
+                current_name = profile.get("current_ship")
+                if current_name is None:
                     # Резерв: текущий корабль из состояния трекера.
-                    current_id = getattr(self, "_current_ship_id", None)
+                    current_name = getattr(self, "_current_ship_name", None)
                 section = getattr(self, "pilot_section", None)
                 if section is not None:
                     section.set_fleet({
                         "ships": ships,
-                        "current_ship_id": current_id,
-                        "updated_at": result.get("updatedAt", ""),
+                        "current_ship_id": current_name,
+                        "updated_at": profile.get("last_updated", ""),
                     })
 
             self.root.after(0, done)

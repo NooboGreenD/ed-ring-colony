@@ -4060,7 +4060,7 @@ class FleetPage(QWidget):
     def set_state(self, state: Dict[str, Any]) -> None:
         """Передать странице готовое состояние списка кораблей."""
         ships = list(state.get("ships") or [])
-        current_id = state.get("current_ship_id")
+        current_name = str(state.get("current_ship_id") or "")
         updated = str(state.get("updated_at") or "")
 
         self.empty_hint.setVisible(not ships)
@@ -4071,9 +4071,12 @@ class FleetPage(QWidget):
 
         self.table.setRowCount(len(ships))
         for row_index, ship in enumerate(ships):
-            ship_id = int(ship.get("shipId") or 0)
-            is_current = (current_id is not None
-                          and ship_id == current_id)
+            ship_name = str(ship.get("shipName") or "")
+            ship_type = str(ship.get("shipType") or "")
+            # current_ship из CAPI — это имя корабля (строка), а не числовой ID:
+            # совпадаем по имени или по типу.
+            is_current = bool(current_name) and (
+                ship_name == current_name or ship_type == current_name)
 
             # Имя корабля
             name = str(ship.get("shipName") or tr("Без имени"))
