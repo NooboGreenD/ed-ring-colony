@@ -3928,16 +3928,220 @@ class EquipmentPage(QWidget):
         return match.group(1) if match else "—"
 
 
+# ===========================================================================
+#  Страница «Флот» — все корабли пилота
+# ===========================================================================
+@dataclass
+class FleetPageState:
+    """Everything the Fleet page needs for its first paint."""
+
+    ships: Sequence[Dict[str, Any]] = ()
+    current_ship_id: Optional[int] = None
+    updated_at: str = ""
+
+
+@dataclass
+class FleetPageActions:
+    """Callbacks the Fleet page triggers; every one is optional."""
+
+    refresh: _Optional[Callable] = None
+
+
+class FleetPage(QWidget):
+    """Все корабли пилота из данных CAPI профиля.
+
+    Страница ничего не знает про журнал: приложение отдаёт ей готовое
+    состояние (`set_state`), поэтому её легко проверить без игры.
+    """
+
+    def __init__(self, *, on_refresh=None,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("fleetPage")
+        self._on_refresh = on_refresh
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        body = QWidget()
+        body.setObjectName("panelClear")
+        scroll.setWidget(body)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(self._build_header())
+
+        #: Подсказка вместо пустого списка, пока данные не пришли.
+        self.empty_hint = label(
+            tr("Информация о флоте появится после синхронизации CAPI на сайте. "
+               "Нажмите «Обновить» в разделе «Пилот» → «Флот»."),
+            role="muted", size=10, wrap=True)
+        self.empty_hint.setObjectName("fleetEmptyHint")
+        layout.addWidget(self.empty_hint)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setObjectName("fleetTable")
+        headers = (tr("Имя корабля"), tr("Тип"), tr("Идентификатор"),
+                   tr("Стоимость"), tr("Система"), tr("Статус"))
+        for index, title in enumerate(headers):
+            header_item = QTableWidgetItem(title)
+            header_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter |
+                (Qt.AlignmentFlag.AlignLeft if index == 0
+                 else Qt.AlignmentFlag.AlignHCenter))
+            self.table.setHorizontalHeaderItem(index, header_item)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        for index, width in enumerate((300, 200, 120, 140, 200, 100)):
+            self.table.setColumnWidth(index, width)
+        self.table.setStyleSheet(
+            f"QTableWidget {{ background: {PANEL}; color: {TEXT};"
+            f" border: 1px solid #3b4044; border-radius: 6px; }}"
+            f"QTableWidget::item {{ padding: 4px 6px; }}"
+            f"QTableWidget::item:selected {{ background: #33414a; color: {TEXT}; }}"
+            f"QHeaderView::section {{ background: {PANEL_ALT}; color: {MUTED};"
+            f" border: none; border-bottom: 1px solid #3b4044; padding: 6px;"
+            f" font-weight: 600; }}")
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                 QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.table, 1)
+
+        layout.addStretch(1)
+
+    # ------------------------------------------------------------------ сборка
+    def _build_header(self) -> QWidget:
+        holder = QWidget()
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(0, 0, 0, 0)
+        holder_layout.setSpacing(10)
+        top = QVBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(0)
+        top.addWidget(heading(tr("ФЛОТ ПИЛОТА"), size=13, color=ORANGE))
+        top.addWidget(label(
+            tr("Все корабли пилота из данных CAPI профиля на сайте. "
+               "Статус «текущий» показывает корабль, на котором пилот сейчас."),
+            role="muted", size=9, wrap=True))
+        holder_layout.addLayout(top, 1)
+        self.updated_label = label("", role="mono", size=9, color=MUTED)
+        self.updated_label.setObjectName("fleetUpdated")
+        holder_layout.addWidget(self.updated_label, 0,
+                                Qt.AlignmentFlag.AlignTop)
+        self.refresh_button = action_button(tr("Обновить"),
+                                            self._refresh_clicked, height=30)
+        holder_layout.addWidget(self.refresh_button, 0,
+                                Qt.AlignmentFlag.AlignTop)
+        return holder
+
+    def _refresh_clicked(self) -> None:
+        if callable(self._on_refresh):
+            self._on_refresh()
+
+    # ------------------------------------------------------------------ public
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Передать странице готовое состояние списка кораблей."""
+        ships = list(state.get("ships") or [])
+        current_id = state.get("current_ship_id")
+        updated = str(state.get("updated_at") or "")
+
+        self.empty_hint.setVisible(not ships)
+        self.table.setVisible(bool(ships))
+        self.updated_label.setText(
+            tr("обновлено {time}", time=self._time_text(updated))
+            if updated else "")
+
+        self.table.setRowCount(len(ships))
+        for row_index, ship in enumerate(ships):
+            ship_id = int(ship.get("shipId") or 0)
+            is_current = (current_id is not None
+                          and ship_id == current_id)
+
+            # Имя корабля
+            name = str(ship.get("shipName") or tr("Без имени"))
+            item_name = QTableWidgetItem(name)
+            item_name.setForeground(QBrush(QColor(TEXT)))
+            item_name.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            if is_current:
+                item_name.setForeground(QBrush(QColor(CYAN)))
+            self.table.setItem(row_index, 0, item_name)
+
+            # Тип корабля
+            ship_type = str(ship.get("shipType") or tr("Неизвестно"))
+            item_type = QTableWidgetItem(ship_type)
+            item_type.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            self.table.setItem(row_index, 1, item_type)
+
+            # Идентификатор
+            ident = str(ship.get("shipIdent") or "")
+            item_ident = QTableWidgetItem(ident)
+            item_ident.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
+            self.table.setItem(row_index, 2, item_ident)
+
+            # Стоимость
+            value = int(ship.get("value") or 0)
+            item_value = QTableWidgetItem(
+                f"≈ {value:,} кр" if value else "—")
+            item_value.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+            self.table.setItem(row_index, 3, item_value)
+
+            # Система
+            system = str(ship.get("systemName") or "—")
+            item_system = QTableWidgetItem(system)
+            item_system.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            self.table.setItem(row_index, 4, item_system)
+
+            # Статус
+            status = tr("текущий") if is_current else tr("в флоте")
+            item_status = QTableWidgetItem(status)
+            item_status.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
+            if is_current:
+                item_status.setForeground(QBrush(QColor(GREEN)))
+            self.table.setItem(row_index, 5, item_status)
+
+    @staticmethod
+    def _time_text(stamp: str) -> str:
+        """Время последнего события журнала в коротком виде ``ЧЧ:ММ:СС``."""
+        match = re.search(r"T(\d{2}:\d{2}:\d{2})", stamp)
+        return match.group(1) if match else "—"
+
+
 class PilotSection(QWidget):
-    """Раздел «Пилот»: снаряжение на ногах и прежняя инфографика.
+    """Раздел «Пилот»: снаряжение на ногах, флот и прежняя инфографика.
 
     Снаряжение — первая вкладка: это то, что командир ищет в разделе чаще
-    всего (какой костюм и какое оружие сейчас в игре). Инфографика остаётся
-    второй вкладкой целиком, со всеми прежними плитками и графиками.
+    всего (какой костюм и какое оружие сейчас в игре). Флот — вторая:
+    все корабли пилота из данных CAPI. Инфографика остаётся третьей
+    вкладкой целиком, со всеми прежними плитками и графиками.
     """
 
     def __init__(self, *, infographic_kwargs: Optional[Dict[str, Any]] = None,
                  on_equip_refresh=None, on_equip_select=None,
+                 on_fleet_refresh=None,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("pilotSection")
@@ -3953,6 +4157,9 @@ class PilotSection(QWidget):
                                        on_select=on_equip_select)
         self.tabs.addTab(self.equipment, tr("Снаряжение"))
 
+        self.fleet = FleetPage(on_refresh=on_fleet_refresh)
+        self.tabs.addTab(self.fleet, tr("Флот"))
+
         self.infographic = PilotPage(**(infographic_kwargs or {}))
         self.tabs.addTab(self.infographic, tr("Инфографика"))
 
@@ -3960,8 +4167,15 @@ class PilotSection(QWidget):
         """Передать странице снаряжения готовое состояние трекера."""
         self.equipment.set_state(state)
 
+    def set_fleet(self, state: Dict[str, Any]) -> None:
+        """Передать странице флота готовое состояние списка кораблей."""
+        self.fleet.set_state(state)
+
     def show_equipment(self) -> None:
         self.tabs.setCurrentWidget(self.equipment)
+
+    def show_fleet(self) -> None:
+        self.tabs.setCurrentWidget(self.fleet)
 
     def show_infographic(self) -> None:
         self.tabs.setCurrentWidget(self.infographic)
