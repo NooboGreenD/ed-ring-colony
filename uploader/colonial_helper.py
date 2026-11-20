@@ -902,10 +902,11 @@ class ColonialHelperApp:
         self._pilot_journal_cache = ("", 0.0)
 
     def _build_tab_pilot(self):
-        """Раздел «Пилот»: снаряжение на ногах и прежняя инфографика.
+        """Раздел «Пилот»: снаряжение на ногах, флот и прежняя инфографика.
 
-        Прежняя инфографика никуда не делась — она вторая вкладка. Снаряжение
-        первое: это то, что командир ищет здесь чаще всего.
+        Прежняя инфографика никуда не делась — она третья вкладка. Снаряжение
+        первое: это то, что командир ищет здесь чаще всего. Флот — вторая:
+        все корабли пилота из данных CAPI профиля на сайте.
         """
         from helper_pages import PilotSection
 
@@ -913,6 +914,7 @@ class ColonialHelperApp:
         self.pilot_page = None
         self.pilot_section = None
         self.equipment_page = None
+        self.fleet_page = None
         try:
             section = PilotSection(
                 infographic_kwargs=dict(
@@ -924,16 +926,20 @@ class ColonialHelperApp:
                 ),
                 on_equip_refresh=self._on_equipment_refresh,
                 on_equip_select=self._on_equipment_selected,
+                on_fleet_refresh=self._on_fleet_refresh,
             )
             self.tab_pilot._get_tk_layout("pack").addWidget(section)
             self._show_page(section)
             self.pilot_section = section
             self.pilot_page = section.infographic
             self.equipment_page = section.equipment
+            self.fleet_page = section.fleet
             # Рюкзак игра пишет отдельным файлом: читаем сразу, чтобы страница
             # не ждала, пока журнал запишет Backpack.
             self.equipment.read_backpack_file(self.journal_path)
             section.set_equipment(self.equipment.state())
+            # Загружаем корабли пилота из CAPI профиля (если есть привязка).
+            self._load_fleet()
         except Exception as exc:
             self.log(f"Не удалось открыть раздел «Пилот»: {exc}", "error")
         if self.pilot_page is None:
@@ -1240,6 +1246,48 @@ class ColonialHelperApp:
         """Командир выбрал другой набор — показываем его, игру не переключаем."""
         if self.equipment.select(loadout_id):
             self._refresh_pilot_equipment()
+
+    def _on_fleet_refresh(self):
+        """Кнопка «Обновить» на странице флота."""
+        self._load_fleet()
+
+    def _load_fleet(self):
+        """Загрузить список кораблей пилота из CAPI профиля на сайте."""
+        api = getattr(self, "api", None)
+        if not api or not api.is_connected:
+            self.log("CAPI не подключён: токен проекта не настроен", "error")
+            return
+        if not self.fleet_page:
+            return
+
+        def worker():
+            try:
+                result = api.get_capi_profile()
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+
+            def done():
+                if not result.get("ok"):
+                    self.log(
+                        f"Не удалось загрузить флот из CAPI: "
+                        f"{result.get('error') or tr('Ошибка')}", "error")
+                    return
+                ships = result.get("ships") or []
+                current_id = result.get("currentShipId")
+                if current_id is None:
+                    # Резерв: текущий корабль из состояния трекера.
+                    current_id = getattr(self, "_current_ship_id", None)
+                section = getattr(self, "pilot_section", None)
+                if section is not None:
+                    section.set_fleet({
+                        "ships": ships,
+                        "current_ship_id": current_id,
+                        "updated_at": result.get("updatedAt", ""),
+                    })
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True, name="FleetLoad").start()
 
     def _pilot_tick(self):
         """Обновлять плитки только на видимой странице и не чаще 0,4 Гц."""

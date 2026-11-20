@@ -829,3 +829,26 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def get_capi_profile(self) -> dict:
+        """Read the full CAPI profile including ships list.
+
+        Returns the raw profile object from /capi/profile: ships, commander,
+        ranks, credits, etc.
+        """
+        if not self.token:
+            return {"ok": False, "error": tr("Нет токена проекта")}
+        try:
+            resp = self._session.get(
+                f"{self.api_base}/capi/profile",
+                headers={"Authorization": f"Bearer {self.token}"},
+                allow_redirects=False,
+                timeout=20,
+            )
+            data = _safe_json(resp)
+            if resp.ok:
+                return {"ok": True, **data}
+            return {"ok": False, "status": resp.status_code,
+                    "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
+
