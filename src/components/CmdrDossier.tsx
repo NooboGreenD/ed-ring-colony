@@ -771,6 +771,18 @@ export default function CmdrDossier(props: Props) {
         >
           {t('sq.squadron')}
         </button>
+        <Link
+          href={`/cmdr/${encodeURIComponent(props.displayName)}/ships`}
+          passHref
+          legacyBehavior
+        >
+          <button
+            type="button"
+            className="tab"
+          >
+            {t('cmdr.ships.title')}
+          </button>
+        </Link>
       </div>
 
       {tab === 'overview' && (
