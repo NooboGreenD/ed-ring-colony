@@ -2081,227 +2081,59 @@ class FootMapOverlay(HudWindow):
 
 
 class ExobiologyOverlay(HudWindow):
-    """Экзобиология: тело, образцы с обратным отсчётом, роды и тела системы.
+    """Экзобиология: только образцы и следующее действие.
 
-    Данные — только из журнала игрока (Scan / SAAScanComplete / FSSBodySignals /
-    ScanOrganic). Предсказание уровня **род**, упрощённая собственная модель
-    (`exobiology.GENUS_RULES`).
-
-    Блок сам обновляется раз в секунду, пока идёт отсчёт до следующего
-    образца: общий цикл HUD перерисовывает окно только когда меняются данные
-    журнала, а таймер обязан тикать и без них.
+    Оставляет в блоке только информацию о собранных образцах:
+    виды, количество образцов, стоимость, статус готовности.
+    Всё остальное (тело, телеметрия, сигналы, тела системы, поиск планет)
+    перенесено в блок BIOLOGY.
     """
 
-    #: Сколько родов, тел системы и найденных планет показываем.
     MAX_PREDICTIONS = 5
-    MAX_BODIES = 6
-    MAX_PLANETS = 5
-    #: Цвета плашек телеметрии: (текст, фон) по состоянию.
-    CHIP_BIO_ON = (COLOR_GREEN_TEXT, "#123824")
-    CHIP_BIO_OFF = (COLOR_TEXT_MUTED, "#1c2128")
-    CHIP_LAND_ON = (COLOR_GREEN_TEXT, "#143823")
-    CHIP_LAND_OFF = (COLOR_RED_TEXT, "#381414")
-    CHIP_DSS_ON = (COLOR_CYAN, "#0e2a47")
-    CHIP_DSS_OFF = (COLOR_TEXT_MUTED, "#1c2128")
-    CHIP_BONUS = (COLOR_YELLOW, "#3d3008")
-    CHIP_PLAIN = (COLOR_TEXT, "#21262d")
 
     def __init__(self, master, settings: Dict[str, Any]):
         super().__init__(
             master, "EXOBIO",
             settings.get("exobio_x", 1060), settings.get("exobio_y", 50),
-            settings.get("exobio_width", 360), settings.get("exobio_height", 620),
+            settings.get("exobio_width", 360), settings.get("exobio_height", 340),
             settings, "exobio",
         )
         self._wrap = max(160, int(settings.get("exobio_width", 360)) - 30)
-        # Табличный режим (по умолчанию): разделы печатаются колонками.
-        self._table_mode = str(settings.get("exobio_layout", "table")).lower() != "list"
         self._state: Dict[str, Any] = {}
         self._tick: Optional[QTimer] = None
         self._tick_id: Optional[str] = None
-        # Применённая видимость разделов: сравниваем, чтобы не дёргать
-        # пересборку раскладки на каждом тике.
-        self._planets_shown = True
-        self._telemetry_shown = True
+        self._table_mode = str(settings.get("exobio_layout", "table")).lower() != "list"
         self._action_shown = True
-        self._signals_shown = True
 
-        # Заголовок тела
-        self.body.addWidget(hud_section(self.content, "Target body",
+        # -- заголовок ------------------------------------------------------
+        self.body.addWidget(hud_section(self.content, "EXOBIOLOGY SAMPLES",
                                         size=self._font_size - 2))
-        self.body_label = self.make_label(
-            self.content, tr("ТЕЛО / —"), color=COLOR_ACCENT,
-            background=COLOR_PANEL_ALT,
-            dp=0, bold=True, wrap=self._wrap)
-        self.body_label.setContentsMargins(6, 4, 6, 4)
-        self.body.addWidget(self.body_label)
+        self.samples_label = self.make_label(self.content, "—", dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.samples_label)
 
-        # Полоса значков телеметрии: био, посадка, DSS, бонус, гравитация, T.
-        self.telemetry_frame = QWidget(self.content)
-        telemetry = QHBoxLayout(self.telemetry_frame)
-        telemetry.setContentsMargins(0, 2, 0, 1)
-        telemetry.setSpacing(4)
-        self.chip_bio = self._chip(telemetry, "", *self.CHIP_BIO_ON)
-        self.chip_land = self._chip(telemetry, "", *self.CHIP_LAND_ON)
-        self.chip_dss = self._chip(telemetry, "", *self.CHIP_DSS_ON)
-        self.chip_footfall = self._chip(telemetry, "", *self.CHIP_BONUS)
-        self.chip_grav = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
-        self.chip_temp = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
-        telemetry.addStretch(1)
-        self.body.addWidget(self.telemetry_frame)
-
-        self.params_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED,
-                                            dp=-1, wrap=self._wrap)
-        self.body.addWidget(self.params_label)
-        self.signals_label = self.make_label(self.content, "", color=COLOR_YELLOW,
-                                             dp=-1, wrap=self._wrap)
-        self.body.addWidget(self.signals_label)
         self.body.addWidget(hud_separator(self.content))
 
-        self.samples_header = self.make_label(
-            self.content, _section_text("B", tr("ОБРАЗЦЫ")),
+        # -- прогноз родов --------------------------------------------------
+        self.predict_header = self.make_label(
+            self.content, _section_text("C", tr("Вероятные роды")),
             color=COLOR_TEXT_MUTED, dp=-1, bold=True)
-        self.body.addWidget(self.samples_header)
-        self.organics_label = self.make_label(self.content, "—", dp=-1, wrap=self._wrap)
-        self.body.addWidget(self.organics_label)
+        self.body.addWidget(self.predict_header)
+        self.predict_label = self.make_label(self.content, tr("нет данных"),
+                                             color=COLOR_GREEN_TEXT, dp=-1,
+                                             wrap=self._wrap)
+        self.body.addWidget(self.predict_label)
 
+        self.body.addWidget(hud_separator(self.content))
+
+        # -- следующее действие ---------------------------------------------
         self.next_action_label = self.make_label(
             self.content, "", color=COLOR_CYAN, background="#10253d", dp=-1,
             bold=True, wrap=self._wrap)
         self.next_action_label.setContentsMargins(6, 2, 6, 2)
         self.body.addWidget(self.next_action_label)
-        self.body.addWidget(hud_separator(self.content))
-
-        self.predict_header = self.make_label(
-            self.content, _section_text("C", tr("ВЕРОЯТНЫЕ РОДЫ")),
-                                              color=COLOR_TEXT_MUTED, dp=-1, bold=True)
-        self.body.addWidget(self.predict_header)
-        self.predict_label = self.make_label(self.content, tr("нет данных"),
-                                             color=COLOR_GREEN_TEXT, dp=-1, wrap=self._wrap)
-        self.body.addWidget(self.predict_label)
-
-        # Раздел «Поиск планет» стоит ВЫШЕ списка тел системы: окно не
-        # резиновое, и при переполнении обрезается низ.
-        self.planet_separator = hud_separator(self.content)
-        self.body.addWidget(self.planet_separator)
-        self.planets_header = self.make_label(self.content, tr("Поиск планет:"),
-                                              color=COLOR_TEXT_MUTED, dp=-1, bold=True)
-        self.body.addWidget(self.planets_header)
-        self.planets_label = self.make_label(self.content, "—", color=COLOR_GREEN_TEXT,
-                                             dp=-1, wrap=self._wrap)
-        self.body.addWidget(self.planets_label)
-
-        self.bodies_separator = hud_separator(self.content)
-        self.body.addWidget(self.bodies_separator)
-        self.bodies_header = self.make_label(self.content, tr("Тела системы:"),
-                                             color=COLOR_TEXT_MUTED, dp=-1, bold=True)
-        self.body.addWidget(self.bodies_header)
-        self.bodies_label = self.make_label(self.content, "—", color=COLOR_TEXT_MUTED,
-                                            dp=-1, wrap=self._wrap)
-        self.body.addWidget(self.bodies_label)
-
-        self.footer_label = self.make_label(
-            self.content, tr("ℹ Прогноз по родам · Оценка выплат ориентировочная"),
-            color=COLOR_TEXT_MUTED, dp=-3, wrap=self._wrap)
-        self.body.addWidget(self.footer_label)
         self.body.addStretch(1)
 
-    def _chip(self, layout: QHBoxLayout, text: str, color: str, background: str,
-              *, bold: bool = True) -> QLabel:
-        label = QLabel(text, self.telemetry_frame)
-        label.setFont(hud_font(self._font_family, max(7, self._font_size - 3), bold=bold))
-        label.setAttribute(Qt.WA_StyledBackground, True)
-        label.setStyleSheet(
-            f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
-            f"padding:0 4px;")
-        layout.addWidget(label)
-        return label
-
-    @staticmethod
-    def _paint_chip(label: QLabel, text: str, color: str, background: str) -> None:
-        label.setText(text)
-        label.setStyleSheet(
-            f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
-            f"padding:0 4px;")
-
-    # -- контекстное меню блока -------------------------------------------
-    def _add_custom_menu_entries(self, menu) -> None:
-        menu.addSeparator()
-        compact = bool(self.settings.get("exobio_compact", True))
-        menu.addAction(
-            ("[x] " if compact else "[ ] ") + tr("Компактный вид (значки и шкалы)"),
-            self._toggle_compact_mode)
-        menu.addAction(
-            tr("⊞ Таблица (компактно)") if not self._table_mode
-            else tr("≡ Лента (по-старому)"),
-            self._toggle_layout_mode)
-
-    def _toggle_layout_mode(self) -> None:
-        """Таблица ↔ лента. Режим живёт в настройке, чтобы пережить перезапуск."""
-        self._table_mode = not self._table_mode
-        self.settings["exobio_layout"] = "table" if self._table_mode else "list"
-        self._render()
-        self._flash_indicator(COLOR_CYAN)
-
-    def _toggle_compact_mode(self) -> None:
-        new_val = not bool(self.settings.get("exobio_compact", True))
-        self.settings["exobio_compact"] = new_val
-        self._render()
-        self._flash_indicator(COLOR_CYAN)
-
-    def _table_width(self) -> int:
-        """Сколько символов влезает в строку таблицы при текущем шрифте.
-
-        Ширину символа спрашиваем у самого шрифта: прежняя оценка «доля
-        кегля» зависела от того, в чём кегль — в пунктах или пикселях, — и
-        таблица вылезала за край окна.
-        """
-        char = float(self.organics_label.fontMetrics().averageCharWidth())
-        return max(32, int(self._wrap / max(4.0, char)))
-
-    @staticmethod
-    def _set_table_text(label: QLabel, text: str, color: Optional[str] = None) -> None:
-        """Текст-таблица без переноса: перенос внутри таблицы ломает колонки."""
-        label.setWordWrap(False)
-        label.setText(text)
-        if color:
-            paint(label, color=color)
-
-    def _table_or_flow(self, label: QLabel, headers: Sequence[str],
-                       rows: Sequence[Sequence[object]], flow: str, *,
-                       aligns: Optional[Sequence[str]] = None,
-                       color: Optional[str] = None) -> None:
-        """Таблица, если она влезает по ширине, иначе — обычный текст.
-
-        Таблица нужна, чтобы цифры стояли колонками, но в узком блоке она
-        обрезает последний столбец — а там самое важное (статус, причина).
-        Поэтому ширину проверяем заранее и при нехватке места печатаем
-        строки с переносом.
-        """
-        width = self._table_width()
-        table = format_table(headers, rows, aligns=aligns, max_width=None)
-        if max((len(line) for line in table.splitlines()), default=0) <= width:
-            self._set_table_text(label, table, color)
-            return
-        self._set_flow_text(label, flow)
-        if color:
-            paint(label, color=color)
-
-    @staticmethod
-    def _set_flow_text(label: QLabel, text: str) -> None:
-        """Обычный текст — с переносом по словам."""
-        label.setWordWrap(True)
-        label.setText(text)
-
-    def _short_body(self, state: dict, name: object) -> str:
-        """Имя тела без префикса системы — в блоке мало места."""
-        text = str(name or "?")
-        system = str(state.get("system") or "")
-        if system and text.startswith(system):
-            text = text[len(system):].strip() or text
-        return text
-
-    # -- обновление -------------------------------------------------------
+    # -- обновление ---------------------------------------------------------
     def update_exobiology(self, state: Optional[dict]) -> None:
         """Обновить содержимое. `state` — словарь от `ExobiologyTracker`."""
         self._state = dict(state or {})
@@ -2329,14 +2161,7 @@ class ExobiologyOverlay(HudWindow):
             self._render()
             self._schedule_tick()
         except Exception:
-            # Оверлей не имеет права ронять приложение.
             pass
-
-    def _has_pending_samples(self) -> bool:
-        for row in self._state.get("organics") or []:
-            if not row.get("complete") and int(row.get("samples") or 0) > 0:
-                return True
-        return False
 
     def destroy(self) -> None:
         if self._tick is not None:
@@ -2345,7 +2170,12 @@ class ExobiologyOverlay(HudWindow):
             self._tick_id = None
         super().destroy()
 
-    # -- отрисовка и визуальные элементы ----------------------------------
+    def _has_pending_samples(self) -> bool:
+        for row in self._state.get("organics") or []:
+            if not row.get("complete") and int(row.get("samples") or 0) > 0:
+                return True
+        return False
+
     @staticmethod
     def _format_prob_bar(percent: Optional[int], length: int = 8) -> str:
         """Визуальная шкала вероятности (LED pips meter)."""
@@ -2358,59 +2188,7 @@ class ExobiologyOverlay(HudWindow):
         filled = int(round((pct / 100.0) * length))
         return "■" * filled + "□" * max(0, length - filled)
 
-    def _set_action_visible(self, visible: bool) -> None:
-        if self._action_shown == visible:
-            return
-        self._action_shown = visible
-        self.next_action_label.setVisible(visible)
-
-    def _hide_telemetry_chips(self) -> None:
-        if self._telemetry_shown:
-            self._telemetry_shown = False
-            self.telemetry_frame.setVisible(False)
-        if not self._signals_shown:
-            self._signals_shown = True
-            self.signals_label.setVisible(True)
-
-    def _show_telemetry_chips(self, signals: int, landable: bool, mapped: bool,
-                              gravity: float, temp: float, atmo: str,
-                              no_first_footfall: Optional[bool] = None,
-                              first_footfall_by: str = "") -> None:
-        if not self._telemetry_shown:
-            self._telemetry_shown = True
-            self.telemetry_frame.setVisible(True)
-        if self._signals_shown:
-            self._signals_shown = False
-            self.signals_label.setVisible(False)
-
-        if signals > 0:
-            self._paint_chip(self.chip_bio, f"🌿 {signals} BIO", *self.CHIP_BIO_ON)
-        else:
-            self._paint_chip(self.chip_bio, "🌿 0 BIO", *self.CHIP_BIO_OFF)
-
-        if landable:
-            self._paint_chip(self.chip_land, tr("🛬 ПОСАДКА"), *self.CHIP_LAND_ON)
-        else:
-            self._paint_chip(self.chip_land, tr("⛔ НЕ СЕСТЬ"), *self.CHIP_LAND_OFF)
-
-        if mapped:
-            self._paint_chip(self.chip_dss, "📡 DSS ✓", *self.CHIP_DSS_ON)
-        else:
-            self._paint_chip(self.chip_dss, "📡 DSS ✗", *self.CHIP_DSS_OFF)
-
-        # Бонус первопроходца ×5: плашка есть только когда это про нас.
-        if no_first_footfall:
-            self._paint_chip(self.chip_footfall, tr("👣 БОНУС ×5"), *self.CHIP_BONUS)
-            self.chip_footfall.setVisible(True)
-        elif first_footfall_by and first_footfall_by not in ("Вы", "You"):
-            self._paint_chip(self.chip_footfall, tr("👣 ЕСТЬ"), *self.CHIP_BIO_OFF)
-            self.chip_footfall.setVisible(True)
-        else:
-            self.chip_footfall.setVisible(False)
-
-        self._paint_chip(self.chip_grav, f"⚖ {gravity / 10.0:.2f}g", *self.CHIP_PLAIN)
-        self._paint_chip(self.chip_temp, f"🌡 {temp:.0f}K", *self.CHIP_PLAIN)
-
+    # -- отрисовка ----------------------------------------------------------
     def _render(self) -> None:
         self._render_content()
         self.apply_data_options()
@@ -2418,122 +2196,14 @@ class ExobiologyOverlay(HudWindow):
     def _render_content(self) -> None:
         state = self._state
         if not state:
-            self.body_label.setText(tr("Тело: —"))
-            self.params_label.setText(tr("Отсканируйте тело (FSS или подход)"))
-            self.signals_label.setText("")
-            self.samples_header.setText(_section_text("B", tr("Образцы")))
-            self.organics_label.setText("—")
-            self.next_action_label.setText("")
-            self._set_action_visible(False)
+            self.samples_label.setText(tr("образцы не взяты"))
             self.predict_header.setText(_section_text("C", tr("Вероятные роды")))
             self.predict_label.setText(tr("нет данных"))
-            self.bodies_header.setText(_section_text("E", tr("Тела системы")))
-            self.bodies_label.setText("—")
-            self._hide_telemetry_chips()
-            self._render_planets({})
+            self.next_action_label.setText(
+                tr("→ отсканируйте тело, чтобы получить прогноз"))
             return
 
-        body_name = str(state.get("body") or "").strip()
-        if not body_name:
-            # Текущее тело неизвестно (игрок в космосе/на станции), но данные
-            # системы могут быть: показываем разделы честно.
-            system = str(state.get("system") or "").strip()
-            prefix = f"{system} · " if system else ""
-            self.body_label.setText(f"{prefix}{tr('Тело: —')}")
-
-            bio_bodies = state.get("system_bodies") or []
-            total_bio_signals = sum(int(body.get("bio_signals") or 0) for body in bio_bodies)
-            scanned_count = int(state.get("system_scanned_bodies")
-                                or state.get("system_known_bodies") or 0)
-
-            if bio_bodies:
-                self.params_label.setText(tr(
-                    "данных о текущем теле нет — в системе {bodies} тел с "
-                    "биосигналами ({signals} сигн.)\n"
-                    "подлетите к планете (FSS или подход) или выберите в списке",
-                    bodies=len(bio_bodies), signals=total_bio_signals))
-                self.signals_label.setText(tr("Биосигналов в системе: {count}",
-                                              count=total_bio_signals))
-                self.next_action_label.setText(
-                    tr("→ выберите планету для высадки и сбора образцов"))
-                self._set_action_visible(True)
-            elif scanned_count > 0:
-                self.params_label.setText(tr(
-                    "данных о текущем теле нет — отсканировано {bodies} тел "
-                    "(FSS или подход)\nсканируйте другие планеты системы (FSS/DSS)",
-                    bodies=scanned_count))
-                self.signals_label.setText("")
-                self.next_action_label.setText("")
-                self._set_action_visible(False)
-            else:
-                self.params_label.setText(
-                    tr("данных о текущем теле нет — отсканируйте тело (FSS или подход)"))
-                self.signals_label.setText("")
-                self.next_action_label.setText("")
-                self._set_action_visible(False)
-
-            self.samples_header.setText(_section_text("B", tr("Образцы")))
-            self.organics_label.setText("—")
-            self.predict_header.setText(_section_text("C", tr("Вероятные роды")))
-            self.predict_label.setText(tr("нет данных"))
-            self._hide_telemetry_chips()
-            self._render_bodies(state)
-            self._render_planets(state)
-            return
-
-        system = str(state.get("system") or "").strip()
-        body = str(state.get("body") or "—")
-        prefix = f"{system} · " if system and system not in body else ""
-        planet_class = str(state.get("planet_class") or "?")
-        self.body_label.setText(f"{prefix}{body}  ({planet_class})")
-
-        gravity = float(state.get("gravity") or 0.0)
-        mapped = bool(state.get("mapped"))
-        landable = bool(state.get("landable"))
-        signals = int(state.get("bio_signals") or 0)
-        temp = float(state.get("temperature") or 0)
-        atmo = str(state.get("atmosphere") or tr("нет атмосферы"))
-        volc = str(state.get("volcanism") or "")
-        no_first_footfall = bool(state.get("no_first_footfall"))
-        first_footfall_by = str(state.get("first_footfall_by") or "")
-
-        compact = bool(self.settings.get("exobio_compact", True))
-        if compact:
-            self._show_telemetry_chips(
-                signals=signals, landable=landable, mapped=mapped, gravity=gravity,
-                temp=temp, atmo=atmo, no_first_footfall=no_first_footfall,
-                first_footfall_by=first_footfall_by)
-            volc_text = f"  ·  🌋 {volc}" if volc and volc.lower() != "нет" else ""
-            self.params_label.setText(f"🌫 {atmo}{volc_text}")
-            self.signals_label.setText(
-                tr("Биосигналов: {count}  |  {map}", count=signals,
-                   map=tr("карта есть (DSS)") if mapped else tr("карты нет"))
-                if signals else
-                tr("Биосигналов нет  |  {map}",
-                   map=tr("карта есть (DSS)") if mapped else tr("карты нет")))
-        else:
-            self._hide_telemetry_chips()
-            self.params_label.setText(
-                f"{atmo}\n"
-                + f"T {temp:.0f} K   g {gravity / 10.0:.2f}"
-                + "\n"
-                + tr("Вулканизм: {volcanism}   {landing}",
-                     volcanism=volc or tr("нет"),
-                     landing=(tr("посадка возможна") if landable
-                              else tr("посадка невозможна"))))
-            self.signals_label.setText(
-                tr("Биосигналов: {count}  |  {map}", count=signals,
-                   map=tr("карта есть (DSS)") if mapped else tr("карты нет"))
-                if signals else
-                tr("Биосигналов нет  |  {map}",
-                   map=tr("карта есть (DSS)") if mapped else tr("карты нет")))
-
-        self._render_samples(state, mapped)
-        self._render_predictions(state, mapped)
-        self._render_bodies(state)
-        self._render_planets(state)
-
-    def _render_samples(self, state: dict, mapped: bool) -> None:
+        # ---- Образцы ------------------------------------------------------
         organics = state.get("organics") or []
         total_value = int(state.get("value_cr") or 0)
         if not total_value:
@@ -2543,56 +2213,134 @@ class ExobiologyOverlay(HudWindow):
         header = (tr("Образцы{bonus}:", bonus=bonus_tag)
                   + (tr("  ≈ {value} кр", value=format_credits(total_value))
                      if total_value else ""))
-        self.samples_header.setText(_section_text("B", header))
+        self.samples_label.setText(header)
 
         if not organics:
-            self.organics_label.setText(tr("образцы не взяты"))
             action = self._suggest_next_action(state, [])
             self.next_action_label.setText(action)
-            self._set_action_visible(bool(action))
+        else:
+            lines = []
+            for row in organics:
+                samples = int(row.get("samples") or 0)
+                complete = bool(row.get("complete"))
+                marks = "●" * min(samples, 3) + "○" * max(0, 3 - min(samples, 3))
+                value = int(row.get("value_cr") or 0)
+                name = str(row.get("species") or "?")
+                if row.get("seen_before"):
+                    name += tr(" (уже встречалось)")
+                status = ""
+                if complete:
+                    status = tr("комплект готов ✓")
+                elif samples:
+                    wait = int(row.get("wait_seconds") or 0)
+                    stage = str(row.get("stage") or "")
+                    status = (tr("ждите {seconds} с", seconds=wait)
+                              if wait > 0
+                              else tr("готов к образцу ({stage}) — смените точку",
+                                      stage=stage or "Sample"))
+                lines.append((name, f"{marks} {samples}/3",
+                              format_credits(value) if value else "—",
+                              status, complete))
+
+            flat = []
+            for name, marks_value, price_value, status, ready in lines:
+                price = "" if price_value in ("", "—") else f"  ≈ {price_value}"
+                flat.append(f"{name}  {marks_value}{price}")
+                if status:
+                    flat.append(f"   {'✔ ' if ready else ''}{status}")
+
+            if self._table_mode and lines:
+                col_price = tr("≈кр (×5)") if no_footfall else tr("≈кр")
+                self._table_or_flow(
+                    self.samples_label,
+                    (tr("вид"), tr("образцы"), col_price, tr("статус")),
+                    [line[:4] for line in lines],
+                    "\n".join(flat),
+                    aligns=("left", "left", "right", "left"),
+                )
+            else:
+                self._set_flow_text(self.samples_label, "\n".join(flat))
+
+            action = self._suggest_next_action(state, organics)
+            self.next_action_label.setText(action)
+
+        # ---- Прогноз родов ------------------------------------------------
+        if not state.get("landable", True):
+            self.predict_header.setText(_section_text("C", tr("Вероятные роды")))
+            self.predict_label.setText(
+                tr("посадка невозможна — био-прогноз отключен"))
             return
 
+        predictions = state.get("predictions") or []
+        allowed = state.get("genera_filter") or []
+        if allowed:
+            predictions = [row for row in predictions
+                           if str(row.get("genus") or "") in {str(g) for g in allowed}]
+
+        self.predict_header.setText(_section_text(
+            "C", tr("Вероятные роды") +
+            (tr(" (бонус ×5)") if no_footfall else "")))
+
+        if not predictions:
+            self.predict_label.setText(
+                tr("роды отфильтрованы (вкладка «Экзобиология»") if allowed
+                else tr("нет подходящих родов"))
+            return
+
+        entries = []
+        mapped = bool(state.get("mapped"))
+        for row in predictions[:self.MAX_PREDICTIONS]:
+            genus = str(row.get("genus") or "?")
+            percent = row.get("percent")
+            value = (int(row.get("value_cr") or 0)
+                     or estimate_value(genus, mapped=mapped,
+                                       first_discovery=no_footfall))
+            species = [str(item) for item in (row.get("species") or []) if item]
+            short_species = ", ".join(_species_tail(name) for name in species[:2]) or ""
+            if len(species) > 2:
+                short_species += f" +{len(species) - 2}"
+            if row.get("confirmed"):
+                short_species = ("DSS ✓ " + short_species).strip()
+            entries.append({
+                "genus": genus,
+                "percent": f"{percent}%" if percent is not None else "—",
+                "bar": self._format_prob_bar(percent) if percent is not None else "",
+                "value": format_credits(value) if value else "",
+                "species": short_species,
+                "notes": ", ".join(str(item) for item in (row.get("notes") or [])[:2]),
+            })
+
         lines = []
-        for row in organics:
-            samples = int(row.get("samples") or 0)
-            complete = bool(row.get("complete"))
-            marks = "●" * min(samples, 3) + "○" * max(0, 3 - min(samples, 3))
-            value = int(row.get("value_cr") or 0)
-            name = str(row.get("species") or "?")
-            if row.get("seen_before"):
-                name += tr(" (уже встречалось)")
-            status = ""
-            if complete:
-                status = tr("комплект готов ✓")
-            elif samples:
-                wait = int(row.get("wait_seconds") or 0)
-                stage = str(row.get("stage") or "")
-                status = (tr("ждите {seconds} с", seconds=wait)
-                          if wait > 0
-                          else tr("готов к образцу ({stage}) — смените точку",
-                                  stage=stage or "Sample"))
-            lines.append((name, f"{marks} {samples}/3",
-                          format_credits(value) if value else "—", status, complete))
-        flat = []
-        for name, marks_value, price_value, status, ready in lines:
-            price = "" if price_value in ("", "—") else f"  ≈ {price_value}"
-            flat.append(f"{name}  {marks_value}{price}")
-            if status:
-                flat.append(f"   {'✔ ' if ready else ''}{status}")
-        if self._table_mode and lines:
-            col_price = tr("≈кр (×5)") if no_footfall else tr("≈кр")
+        for item in entries:
+            head = (f"{item['genus']}  {item['percent']}"
+                    + (f"  {item['bar']}" if item["bar"] else ""))
+            if item["value"]:
+                bonus_tag = tr(" (бонус ×5)") if no_footfall else ""
+                head += f"  ≈ {item['value']}{bonus_tag}"
+            details = " · ".join(part for part in (
+                (tr("виды: {list}", list=item["species"]) if item["species"] else ""),
+                item["notes"]) if part)
+            lines.append(head + (f"\n   {details}" if details else ""))
+
+        extra = len(predictions) - self.MAX_PREDICTIONS
+        if extra > 0:
+            lines.append(tr("… и ещё {count}", count=extra))
+
+        if self._table_mode and entries:
+            col_val = tr("≈кр (×5)") if no_footfall else tr("≈кр")
+            rows = [(item["genus"], item["percent"], item["bar"] or "·",
+                     item["value"] or "—",
+                     " · ".join(part for part in (item["species"], item["notes"])
+                              if part) or "—")
+                    for item in entries]
             self._table_or_flow(
-                self.organics_label,
-                (tr("вид"), tr("образцы"), col_price, tr("статус")),
-                [line[:4] for line in lines],
-                "\n".join(flat),
-                aligns=("left", "left", "right", "left"),
-            )
+                self.predict_label,
+                (tr("род"), "%", tr("вероятность"), col_val,
+                 tr("виды и причина")),
+                rows, "\n".join(lines),
+                aligns=("left", "right", "left", "right", "left"))
         else:
-            self._set_flow_text(self.organics_label, "\n".join(flat))
-        action = self._suggest_next_action(state, organics)
-        self.next_action_label.setText(action)
-        self._set_action_visible(bool(action))
+            self._set_flow_text(self.predict_label, "\n".join(lines))
 
     @staticmethod
     def _suggest_next_action(state: dict, organics: list) -> str:
@@ -2615,161 +2363,306 @@ class ExobiologyOverlay(HudWindow):
             return tr("→ возьмите образец с новой точки")
         return tr("→ все комплекты собраны — можно лететь дальше")
 
-    def _render_predictions(self, state: dict, mapped: bool) -> None:
-        if not state.get("landable", True):
-            self.predict_header.setText(_section_text("C", tr("Вероятные роды")))
-            self.predict_label.setText(
-                tr("посадка невозможна — био-прогноз отключен"))
+    # -- таблица/текст ------------------------------------------------------
+    def _table_width(self) -> int:
+        """Сколько символов влезает в строку таблицы при текущем шрифте."""
+        char = float(self.samples_label.fontMetrics().averageCharWidth())
+        return max(32, int(self._wrap / max(4.0, char)))
+
+    def _table_or_flow(self, label: QLabel, headers: Sequence[str],
+                       rows: Sequence[Sequence[object]], flow: str, *,
+                       aligns: Optional[Sequence[str]] = None,
+                       color: Optional[str] = None) -> None:
+        """Таблица, если она влезает по ширине, иначе — обычный текст."""
+        width = self._table_width()
+        table = format_table(headers, rows, aligns=aligns, max_width=None)
+        if max((len(line) for line in table.splitlines()), default=0) <= width:
+            self._set_table_text(label, table, color)
+            return
+        self._set_flow_text(label, flow)
+        if color:
+            paint(label, color=color)
+
+    @staticmethod
+    def _set_table_text(label: QLabel, text: str,
+                        color: Optional[str] = None) -> None:
+        """Текст-таблица без переноса: перенос внутри таблицы ломает колонки."""
+        label.setWordWrap(False)
+        label.setText(text)
+        if color:
+            paint(label, color=color)
+
+    @staticmethod
+    def _set_flow_text(label: QLabel, text: str) -> None:
+        """Обычный текст — с переносом по словам."""
+        label.setWordWrap(True)
+        label.setText(text)
+
+
+
+# ============================================================
+#  BIOLOGY — информация о теле, биосигналах, телах системы
+# ============================================================
+class BiologyOverlay(HudWindow):
+    """Биология планет: тело, биосигналы, телеметрия, тела системы.
+
+    Показывает информацию о текущем теле и системе: атмосфера, вулканизм,
+    гравитация, температура, биосигналы, DSS, посадка, бонус первопроходца,
+    список тел системы с биосигналами и поиск подходящих планет.
+
+    Образцы экзобиологии перенесены в блок EXOBIO.
+    """
+
+    MAX_BODIES = 6
+    MAX_PLANETS = 5
+
+    #: Цвета плашек телеметрии: (текст, фон) по состоянию.
+    CHIP_BIO_ON = (COLOR_GREEN_TEXT, "#123824")
+    CHIP_BIO_OFF = (COLOR_TEXT_MUTED, "#1c2128")
+    CHIP_LAND_ON = (COLOR_GREEN_TEXT, "#143823")
+    CHIP_LAND_OFF = (COLOR_RED_TEXT, "#381414")
+    CHIP_DSS_ON = (COLOR_CYAN, "#0e2a47")
+    CHIP_DSS_OFF = (COLOR_TEXT_MUTED, "#1c2128")
+    CHIP_BONUS = (COLOR_YELLOW, "#3d3008")
+    CHIP_PLAIN = (COLOR_TEXT, "#21262d")
+
+    def __init__(self, master, settings: Dict[str, Any]):
+        super().__init__(
+            master, "BIOLOGY",
+            settings.get("bio_x", 1060), settings.get("bio_y", 50),
+            settings.get("bio_width", 360), settings.get("bio_height", 520),
+            settings, "bio",
+        )
+        self._wrap = max(160, int(settings.get("bio_width", 360)) - 30)
+        self._state: Dict[str, Any] = {}
+        self._table_mode = str(settings.get("bio_layout", "table")).lower() != "list"
+        self._planets_shown = True
+        self._telemetry_shown = True
+        self._signals_shown = True
+
+        # -- заголовок ------------------------------------------------------
+        self.body.addWidget(hud_section(self.content, "BIOLOGY SCAN",
+                                        size=self._font_size - 2))
+        self.body_label = self.make_label(
+            self.content, tr("ТЕЛО / —"), color=COLOR_ACCENT,
+            background=COLOR_PANEL_ALT, dp=0, bold=True, wrap=self._wrap)
+        self.body_label.setContentsMargins(6, 4, 6, 4)
+        self.body.addWidget(self.body_label)
+
+        # -- полоса значков телеметрии --------------------------------------
+        self.telemetry_frame = QWidget(self.content)
+        telemetry = QHBoxLayout(self.telemetry_frame)
+        telemetry.setContentsMargins(0, 2, 0, 1)
+        telemetry.setSpacing(4)
+        self.chip_bio = self._chip(telemetry, "", *self.CHIP_BIO_ON)
+        self.chip_land = self._chip(telemetry, "", *self.CHIP_LAND_ON)
+        self.chip_dss = self._chip(telemetry, "", *self.CHIP_DSS_ON)
+        self.chip_footfall = self._chip(telemetry, "", *self.CHIP_BONUS)
+        self.chip_grav = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
+        self.chip_temp = self._chip(telemetry, "", *self.CHIP_PLAIN, bold=False)
+        telemetry.addStretch(1)
+        self.body.addWidget(self.telemetry_frame)
+
+        # -- параметры тела -------------------------------------------------
+        self.params_label = self.make_label(self.content, "", color=COLOR_TEXT_MUTED,
+                                            dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.params_label)
+        self.signals_label = self.make_label(self.content, "", color=COLOR_YELLOW,
+                                             dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.signals_label)
+        self.body.addWidget(hud_separator(self.content))
+
+        # -- тела системы ---------------------------------------------------
+        self.bodies_header = self.make_label(self.content, tr("Тела системы:"),
+                                             color=COLOR_TEXT_MUTED, dp=-1,
+                                             bold=True)
+        self.body.addWidget(self.bodies_header)
+        self.bodies_label = self.make_label(self.content, "—", color=COLOR_TEXT_MUTED,
+                                            dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.bodies_label)
+
+        # -- поиск планет ---------------------------------------------------
+        self.planet_separator = hud_separator(self.content)
+        self.body.addWidget(self.planet_separator)
+        self.planets_header = self.make_label(self.content, tr("Поиск планет:"),
+                                              color=COLOR_TEXT_MUTED, dp=-1,
+                                              bold=True)
+        self.body.addWidget(self.planets_header)
+        self.planets_label = self.make_label(self.content, "—", color=COLOR_GREEN_TEXT,
+                                             dp=-1, wrap=self._wrap)
+        self.body.addWidget(self.planets_label)
+
+        self.footer_label = self.make_label(
+            self.content,
+            tr("ℹ Биосигналы тела · Поиск планет по критериям (вкладка «Экзобиология»)"),
+            color=COLOR_TEXT_MUTED, dp=-3, wrap=self._wrap)
+        self.body.addWidget(self.footer_label)
+        self.body.addStretch(1)
+
+    def _chip(self, layout: QHBoxLayout, text: str, color: str, background: str,
+              *, bold: bool = True) -> QLabel:
+        label = QLabel(text, self.telemetry_frame)
+        label.setFont(hud_font(self._font_family, max(7, self._font_size - 3), bold=bold))
+        label.setAttribute(Qt.WA_StyledBackground, True)
+        label.setStyleSheet(
+            f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
+            f"padding:0 4px;")
+        layout.addWidget(label)
+        return label
+
+    @staticmethod
+    def _paint_chip(label: QLabel, text: str, color: str, background: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(
+            f"color:{color};background:{background};border:1px solid {COLOR_BORDER};"
+            f"padding:0 4px;")
+
+    # -- обновление ---------------------------------------------------------
+    def update_biology(self, state: Optional[dict]) -> None:
+        """Обновить содержимое. `state` — словарь от `ExobiologyTracker`."""
+        self._state = dict(state or {})
+        self._render()
+        self.apply_data_options()
+
+    def _render(self) -> None:
+        self._render_content()
+
+    def _render_content(self) -> None:
+        state = self._state
+        if not state:
+            self.body_label.setText(tr("Тело: —"))
+            self.params_label.setText(tr("Отсканируйте тело (FSS или подход)"))
+            self.signals_label.setText("")
+            self._hide_telemetry_chips()
+            self._render_bodies({})
+            self._render_planets({})
             return
 
-        predictions = state.get("predictions") or []
-        # Фильтр по родам задаётся на вкладке «Экзобиология».
-        allowed = state.get("genera_filter") or []
-        if allowed:
-            predictions = [row for row in predictions
-                           if str(row.get("genus") or "") in {str(g) for g in allowed}]
+        body_name = str(state.get("body") or "").strip()
+        if not body_name:
+            system = str(state.get("system") or "").strip()
+            prefix = f"{system} · " if system else ""
+            self.body_label.setText(f"{prefix}{tr('Тело: —')}")
 
-        no_footfall = bool(state.get("no_first_footfall"))
-        self.predict_header.setText(_section_text(
-            "C", tr("Вероятные роды") + (tr(" (бонус ×5)") if no_footfall else "")))
+            bio_bodies = state.get("system_bodies") or []
+            total_bio_signals = sum(int(body.get("bio_signals") or 0) for body in bio_bodies)
+            scanned_count = int(state.get("system_scanned_bodies")
+                                or state.get("system_known_bodies") or 0)
 
-        if not predictions:
-            self.predict_label.setText(
-                tr("роды отфильтрованы (вкладка «Экзобиология»)") if allowed
-                else tr("нет подходящих родов"))
+            if bio_bodies:
+                self.params_label.setText(tr(
+                    "данных о текущем теле нет — в системе {bodies} тел с "
+                    "биосигналами ({signals} сигн.)\n"
+                    "подлетите к планете (FSS или подход) или выберите в списке",
+                    bodies=len(bio_bodies), signals=total_bio_signals))
+                self.signals_label.setText(tr("Биосигналов в системе: {count}",
+                                              count=total_bio_signals))
+            elif scanned_count > 0:
+                self.params_label.setText(tr(
+                    "данных о текущем теле нет — отсканировано {bodies} тел "
+                    "(FSS или подход)\n"
+                    "сканируйте другие планеты системы (FSS/DSS)",
+                    bodies=scanned_count))
+                self.signals_label.setText("")
+            else:
+                self.params_label.setText(
+                    tr("данных о текущем теле нет — отсканируйте тело (FSS или подход)"))
+                self.signals_label.setText("")
+
+            self._hide_telemetry_chips()
+            self._render_bodies(state)
+            self._render_planets(state)
             return
-        entries = []
-        for row in predictions[:self.MAX_PREDICTIONS]:
-            genus = str(row.get("genus") or "?")
-            percent = row.get("percent")
-            value = (int(row.get("value_cr") or 0)
-                     or estimate_value(genus, mapped=mapped, first_discovery=no_footfall))
-            species = [str(item) for item in (row.get("species") or []) if item]
-            short_species = ", ".join(_species_tail(name) for name in species[:2]) or ""
-            if len(species) > 2:
-                short_species += f" +{len(species) - 2}"
-            if row.get("confirmed"):
-                short_species = ("DSS ✓ " + short_species).strip()
-            entries.append({
-                "genus": genus,
-                "percent": f"{percent}%" if percent is not None else "—",
-                "bar": self._format_prob_bar(percent) if percent is not None else "",
-                "value": format_credits(value) if value else "",
-                "species": short_species,
-                "notes": ", ".join(str(item) for item in (row.get("notes") or [])[:2]),
-            })
-        extra = len(predictions) - self.MAX_PREDICTIONS
 
-        lines = []
-        for item in entries:
-            head = (f"{item['genus']}  {item['percent']}"
-                    + (f"  {item['bar']}" if item["bar"] else ""))
-            if item["value"]:
-                bonus_tag = tr(" (бонус ×5)") if no_footfall else ""
-                head += f"  ≈ {item['value']}{bonus_tag}"
-            details = " · ".join(part for part in (
-                (tr("виды: {list}", list=item["species"]) if item["species"] else ""),
-                item["notes"]) if part)
-            lines.append(head + (f"\n   {details}" if details else ""))
-        if extra > 0:
-            lines.append(tr("… и ещё {count}", count=extra))
-        if self._table_mode:
-            col_val = tr("≈кр (×5)") if no_footfall else tr("≈кр")
-            rows = [(item["genus"], item["percent"], item["bar"] or "·",
-                     item["value"] or "—",
-                     " · ".join(part for part in (item["species"], item["notes"]) if part)
-                     or "—")
-                    for item in entries]
-            self._table_or_flow(
-                self.predict_label,
-                (tr("род"), "%", tr("вероятность"), col_val,
-                 tr("виды и причина")),
-                rows, "\n".join(lines),
-                aligns=("left", "right", "left", "right", "left"))
-            return
-        self._set_flow_text(self.predict_label, "\n".join(lines))
+        system = str(state.get("system") or "").strip()
+        body = str(state.get("body") or "—")
+        prefix = f"{system} · " if system and system not in body else ""
+        planet_class = str(state.get("planet_class") or "?")
+        self.body_label.setText(f"{prefix}{body}  ({planet_class})")
+
+        gravity = float(state.get("gravity") or 0.0)
+        mapped = bool(state.get("mapped"))
+        landable = bool(state.get("landable"))
+        signals = int(state.get("bio_signals") or 0)
+        temp = float(state.get("temperature") or 0)
+        atmo = str(state.get("atmosphere") or tr("нет атмосферы"))
+        volc = str(state.get("volcanism") or "")
+        no_first_footfall = bool(state.get("no_first_footfall"))
+        first_footfall_by = str(state.get("first_footfall_by") or "")
+
+        self._show_telemetry_chips(
+            signals=signals, landable=landable, mapped=mapped, gravity=gravity,
+            temp=temp, atmo=atmo, no_first_footfall=no_first_footfall,
+            first_footfall_by=first_footfall_by)
+
+        volc_text = f"  ·  🌋 {volc}" if volc and volc.lower() != "нет" else ""
+        self.params_label.setText(f"🌫 {atmo}{volc_text}")
+        self.signals_label.setText(
+            tr("Биосигналов: {count}  |  {map}", count=signals,
+               map=tr("карта есть (DSS)") if mapped else tr("карты нет"))
+            if signals else
+            tr("Биосигналов нет  |  {map}",
+               map=tr("карта есть (DSS)") if mapped else tr("карты нет")))
+
+        self._render_bodies(state)
+        self._render_planets(state)
+
+    def _show_telemetry_chips(self, signals: int, landable: bool, mapped: bool,
+                              gravity: float, temp: float, atmo: str,
+                              no_first_footfall: Optional[bool] = None,
+                              first_footfall_by: str = "") -> None:
+        if not self._telemetry_shown:
+            self._telemetry_shown = True
+            self.telemetry_frame.setVisible(True)
+        if not self._signals_shown:
+            self._signals_shown = True
+            self.signals_label.setVisible(True)
+
+        if signals > 0:
+            self._paint_chip(self.chip_bio, f"🌿 {signals} BIO", *self.CHIP_BIO_ON)
+        else:
+            self._paint_chip(self.chip_bio, "🌿 0 BIO", *self.CHIP_BIO_OFF)
+
+        if landable:
+            self._paint_chip(self.chip_land, tr("🛬 ПОСАДКА"), *self.CHIP_LAND_ON)
+        else:
+            self._paint_chip(self.chip_land, tr("⛔ НЕ СЕСТЬ"), *self.CHIP_LAND_OFF)
+
+        if mapped:
+            self._paint_chip(self.chip_dss, "📡 DSS ✓", *self.CHIP_DSS_ON)
+        else:
+            self._paint_chip(self.chip_dss, "📡 DSS ✗", *self.CHIP_DSS_OFF)
+
+        if no_first_footfall:
+            self._paint_chip(self.chip_footfall, tr("👣 БОНУС ×5"), *self.CHIP_BONUS)
+            self.chip_footfall.setVisible(True)
+        elif first_footfall_by and first_footfall_by not in ("Вы", "You"):
+            self._paint_chip(self.chip_footfall, tr("👣 ЕСТЬ"), *self.CHIP_BIO_OFF)
+            self.chip_footfall.setVisible(True)
+        else:
+            self.chip_footfall.setVisible(False)
+
+        self._paint_chip(self.chip_grav, f"⚖ {gravity / 10.0:.2f}g", *self.CHIP_PLAIN)
+        self._paint_chip(self.chip_temp, f"🌡 {temp:.0f}K", *self.CHIP_PLAIN)
+
+    def _hide_telemetry_chips(self) -> None:
+        if self._telemetry_shown:
+            self._telemetry_shown = False
+            self.telemetry_frame.setVisible(False)
 
     def _set_planets_visible(self, visible: bool) -> None:
-        """Показать/скрыть раздел, но только если видимость изменилась.
-
-        Раскладка Qt сама ставит раздел на прежнее место, поэтому прежний
-        `pack(before=…)` не нужен: достаточно скрыть или показать виджеты.
-        """
         if self._planets_shown == visible:
             return
         self._planets_shown = visible
         for widget in (self.planet_separator, self.planets_header, self.planets_label):
             widget.setVisible(visible)
 
-    def _render_planets(self, state: dict) -> None:
-        """Раздел «Поиск планет»: что в этой системе подходит под фильтры."""
-        criteria = state.get("planet_criteria") or []
-        if not bool(self.settings.get("exobio_show_planet_search", True)):
-            self._set_planets_visible(False)
-            return
-        self._set_planets_visible(True)
-
-        if not criteria:
-            self.planets_header.setText(_section_text("D", tr("Поиск планет")))
-            self.planets_label.setText(
-                tr("критерии не выбраны — вкладка «Экзобиология»"))
-            paint(self.planets_label, color=COLOR_TEXT_MUTED)
-            return
-
-        rows = state.get("planets") or []
-        self.planets_header.setText(
-            _section_text("D", tr("Поиск планет · найдено {count}", count=len(rows))))
-        if not rows:
-            known = int(state.get("system_known_bodies")
-                        or state.get("system_scanned_bodies") or 0)
-            if known:
-                text = tr("в этой системе подходящих планет нет\n"
-                          "(журнал знает {count} тел системы)", count=known)
-            else:
-                text = tr("журнал ещё не знает сканов тел этой системы\n"
-                          "(сканируйте планеты FSS/DSS при работающем Watcher)")
-            self.planets_label.setText(text)
-            paint(self.planets_label, color=COLOR_TEXT_MUTED)
-            return
-
-        limit = max(1, int(self.settings.get("exobio_planet_limit", self.MAX_PLANETS)
-                           or self.MAX_PLANETS))
-        table_rows = []
-        matched_lines = []
-        for row in rows[:limit]:
-            name = self._short_body(state, row.get("body"))
-            traits = []
-            category = str(row.get("atmosphere_category") or "")
-            if category in ("thin", "thick"):
-                traits.append(tr("атмосфера"))
-            elif category == "none":
-                traits.append(tr("без атмосферы"))
-            traits.append(tr("посадка") if row.get("landable") else tr("не сесть"))
-            if int(row.get("bio_signals") or 0):
-                traits.append(tr("сигналов {count}", count=row["bio_signals"]))
-            distance = float(row.get("distance_ls") or 0.0)
-            if distance > 0:
-                traits.append(tr("{distance} св.с", distance=f"{distance:.0f}"))
-            table_rows.append((name, str(row.get("planet_class") or "?"), ", ".join(traits)))
-            # Почему планета попала в список — иначе фильтры непрозрачны.
-            matched = [str(item) for item in (row.get("matched") or []) if item]
-            if matched:
-                matched_lines.append((name, ", ".join(matched[:2])))
-        extra = len(rows) - limit
-        lines = [f"{name}  ·  {planet_class}  ·  {traits}"
-                 for name, planet_class, traits in table_rows]
-        for name, why in matched_lines:
-            lines.append(f"   ↳ {why}")
-        if extra > 0:
-            lines.append(tr("… и ещё {count}", count=extra))
-        if self._table_mode and table_rows:
-            self._table_or_flow(
-                self.planets_label, (tr("тело"), tr("класс"), tr("признаки")),
-                table_rows,
-                "\n".join(lines), color=COLOR_GREEN_TEXT)
-            return
-        self._set_flow_text(self.planets_label, "\n".join(lines))
-        paint(self.planets_label, color=COLOR_GREEN_TEXT)
+    def _short_body(self, state: dict, name: object) -> str:
+        text = str(name or "?")
+        system = str(state.get("system") or "")
+        if system and text.startswith(system):
+            text = text[len(system):].strip() or text
+        return text
 
     def _render_bodies(self, state: dict) -> None:
         bodies = state.get("system_bodies") or []
@@ -2801,13 +2694,108 @@ class ExobiologyOverlay(HudWindow):
                 self.bodies_label,
                 (tr("тело"), tr("класс"), tr("био"), tr("признаки")), rows,
                 "\n".join(lines), aligns=("left", "left", "right", "left"))
+        else:
+            self._set_flow_text(self.bodies_label, "\n".join(lines))
+
+    def _render_planets(self, state: dict) -> None:
+        """Раздел «Поиск планет»: что в этой системе подходит под фильтры."""
+        criteria = state.get("planet_criteria") or []
+        if not bool(self.settings.get("bio_show_planet_search", True)):
+            self._set_planets_visible(False)
             return
-        self._set_flow_text(self.bodies_label, "\n".join(lines))
+        self._set_planets_visible(True)
 
+        if not criteria:
+            self.planets_header.setText(_section_text("D", tr("Поиск планет")))
+            self.planets_label.setText(
+                tr("критерии не выбраны — вкладка «Экзобиология»"))
+            paint(self.planets_label, color=COLOR_TEXT_MUTED)
+            return
 
-# ============================================================
-#  SESSION — статистика сессии с графиком
-# ============================================================
+        rows = state.get("planets") or []
+        self.planets_header.setText(
+            _section_text("D", tr("Поиск планет · найдено {count}", count=len(rows))))
+        if not rows:
+            known = int(state.get("system_known_bodies")
+                        or state.get("system_scanned_bodies") or 0)
+            if known:
+                text = tr("в этой системе подходящих планет нет\n"
+                          "(журнал знает {count} тел системы)", count=known)
+            else:
+                text = tr("журнал ещё не знает сканов тел этой системы\n"
+                          "(сканируйте планеты FSS/DSS при работающем Watcher)")
+            self.planets_label.setText(text)
+            paint(self.planets_label, color=COLOR_TEXT_MUTED)
+            return
+
+        limit = max(1, int(self.settings.get("bio_planet_limit", self.MAX_PLANETS)
+                           or self.MAX_PLANETS))
+        table_rows = []
+        matched_lines = []
+        for row in rows[:limit]:
+            name = self._short_body(state, row.get("body"))
+            traits = []
+            category = str(row.get("atmosphere_category") or "")
+            if category in ("thin", "thick"):
+                traits.append(tr("атмосфера"))
+            elif category == "none":
+                traits.append(tr("без атмосферы"))
+            traits.append(tr("посадка") if row.get("landable") else tr("не сесть"))
+            if int(row.get("bio_signals") or 0):
+                traits.append(tr("сигналов {count}", count=row["bio_signals"]))
+            distance = float(row.get("distance_ls") or 0.0)
+            if distance > 0:
+                traits.append(tr("{distance} св.с", distance=f"{distance:.0f}"))
+            table_rows.append((name, str(row.get("planet_class") or "?"), ", ".join(traits)))
+            matched = [str(item) for item in (row.get("matched") or []) if item]
+            if matched:
+                matched_lines.append((name, ", ".join(matched[:2])))
+        extra = len(rows) - limit
+        lines = [f"{name}  ·  {planet_class}  ·  {traits}"
+                 for name, planet_class, traits in table_rows]
+        for name, why in matched_lines:
+            lines.append(f"   ↳ {why}")
+        if extra > 0:
+            lines.append(tr("… и ещё {count}", count=extra))
+        if self._table_mode and table_rows:
+            self._table_or_flow(
+                self.planets_label, (tr("тело"), tr("класс"), tr("признаки")),
+                table_rows, "\n".join(lines), color=COLOR_GREEN_TEXT)
+        else:
+            self._set_flow_text(self.planets_label, "\n".join(lines))
+            paint(self.planets_label, color=COLOR_GREEN_TEXT)
+
+    # -- таблица/текст ------------------------------------------------------
+    def _table_width(self) -> int:
+        char = float(self.bodies_label.fontMetrics().averageCharWidth())
+        return max(32, int(self._wrap / max(4.0, char)))
+
+    def _table_or_flow(self, label: QLabel, headers: Sequence[str],
+                       rows: Sequence[Sequence[object]], flow: str, *,
+                       aligns: Optional[Sequence[str]] = None,
+                       color: Optional[str] = None) -> None:
+        width = self._table_width()
+        table = format_table(headers, rows, aligns=aligns, max_width=None)
+        if max((len(line) for line in table.splitlines()), default=0) <= width:
+            self._set_table_text(label, table, color)
+            return
+        self._set_flow_text(label, flow)
+        if color:
+            paint(label, color=color)
+
+    @staticmethod
+    def _set_table_text(label: QLabel, text: str,
+                        color: Optional[str] = None) -> None:
+        label.setWordWrap(False)
+        label.setText(text)
+        if color:
+            paint(label, color=color)
+
+    @staticmethod
+    def _set_flow_text(label: QLabel, text: str) -> None:
+        label.setWordWrap(True)
+        label.setText(text)
+
 class SessionOverlay(HudWindow):
     def __init__(self, master, settings: Dict[str, Any]):
         # Шесть счётчиков, график и строка маршрута в 300 px не помещаются:

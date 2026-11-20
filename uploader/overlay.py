@@ -59,6 +59,7 @@ from hud_win32 import (
     _window_pid,
 )
 from overlay_blocks import (  # noqa: F401 — имена живут здесь для совместимости
+    BiologyOverlay,
     CargoOverlay,
     CarrierOverlay,
     ExobiologyOverlay,
@@ -120,7 +121,8 @@ from ship_tracker import decode_status_flags
 __all__ = [
     # окна
     "OverlayWindow", "RouteOverlay", "StatusOverlay", "ShipOverlay",
-    "CargoOverlay", "CarrierOverlay", "ExobiologyOverlay", "FootMapOverlay",
+    "CargoOverlay", "CarrierOverlay", "ExobiologyOverlay", "BiologyOverlay",
+    "FootMapOverlay",
     "SessionOverlay",
     "SessionEventsOverlay", "OverlayManager",
     # раскладка и настройки блоков
@@ -156,7 +158,7 @@ __all__ = [
 class OverlayManager:
     #: Блоки HUD: ключ -> (настройка видимости, класс окна)
     BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio",
-              "carrier", "footmap")
+              "bio", "carrier", "footmap")
 
     #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
     DEFAULT_POSITIONS = DEFAULT_BLOCK_POSITIONS
@@ -177,6 +179,7 @@ class OverlayManager:
         self.session_overlay: Optional[SessionOverlay] = None
         self.events_overlay: Optional[SessionEventsOverlay] = None
         self.exobio_overlay: Optional[ExobiologyOverlay] = None
+        self.biology_overlay: Optional[BiologyOverlay] = None
         self.carrier_overlay: Optional[CarrierOverlay] = None
         self.footmap_overlay: Optional[FootMapOverlay] = None
         self.enabled = False
@@ -233,6 +236,7 @@ class OverlayManager:
         self.session_overlay = SessionOverlay(self.master, self.settings)
         self.events_overlay = SessionEventsOverlay(self.master, self.settings)
         self.exobio_overlay = ExobiologyOverlay(self.master, self.settings)
+        self.biology_overlay = BiologyOverlay(self.master, self.settings)
         self.carrier_overlay = CarrierOverlay(self.master, self.settings)
         self.footmap_overlay = FootMapOverlay(self.master, self.settings)
 
@@ -289,6 +293,7 @@ class OverlayManager:
             "session": self.session_overlay,
             "events": self.events_overlay,
             "exobio": self.exobio_overlay,
+            "bio": self.biology_overlay,
             "carrier": self.carrier_overlay,
             "footmap": self.footmap_overlay,
         }
@@ -969,6 +974,9 @@ class OverlayManager:
 
         if self.exobio_overlay:
             self.exobio_overlay.update_exobiology(data.get("exobiology"))
+
+        if self.biology_overlay:
+            self.biology_overlay.update_biology(data.get("exobiology"))
 
         if self.carrier_overlay:
             # Обновляем всегда, даже когда данных нет: при `if carrier_data`
@@ -1686,6 +1694,7 @@ DEFAULT_SETTINGS = {
     "show_session": True,
     "show_events": True,
     "show_exobio": True,
+    "show_bio": True,
     "show_carrier": True,
     "show_footmap": True,
     "show_flags": True,
@@ -1734,6 +1743,12 @@ DEFAULT_SETTINGS = {
     "exobio_layout": "table",
     # Сколько найденных планет показывать.
     "exobio_planet_limit": 6,
+    # Настройки блока BIOLOGY (биология планет: тело, биосигналы, тела системы).
+    "bio_locked": False,
+    "bio_anchor": "custom",
+    "bio_show_planet_search": True,
+    "bio_layout": "table",
+    "bio_planet_limit": 6,
     "carrier_locked": False,
     "carrier_anchor": "custom",
     "footmap_locked": False,
@@ -1819,7 +1834,7 @@ def save_overlay_settings(config_path: Path, settings: dict):
         overlay_keys = set(DEFAULT_SETTINGS)
         overlay_keys.update(key for key in settings if key.startswith((
             "route_", "status_", "ship_", "cargo_", "session_", "events_", "exobio_",
-            "carrier_", "footmap_",
+            "bio_", "carrier_", "footmap_",
         )))
         existing.update({key: settings[key] for key in overlay_keys if key in settings})
         # Удаление ключа — тоже изменение. Общий конфиг пишут два владельца:
