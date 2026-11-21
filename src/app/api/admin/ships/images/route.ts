@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
 import { requireAdmin } from '@/lib/billing/auth';
+import { readFileSync } from 'fs';
+import path from 'path';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -26,20 +28,17 @@ export async function GET() {
 
   const svc = createServiceClient();
 
-  // Загружаем каталог кораблей из outfitting.json (чеuros public/data)
-  // Но лучше из нашего же API или файла — возьмём из public/data/outfitting.json
-  // Читаем файл напрямую (серверная сторона)
+  // Загружаем каталог кораблей из локального файла public/data/outfitting.json
   let ships: Array<{ id: string; name: string; manufacturer: string }> = [];
   try {
-    const res = await fetch(`${getPublicSupabaseUrl() || ''}/data/outfitting.json`, { cache: 'no-store' });
-    if (res.ok) {
-      const data = await res.json();
-      ships = Object.entries(data.ships || {}).map(([id, s]: [string, any]) => ({
-        id,
-        name: s.properties?.name || id,
-        manufacturer: s.properties?.manufacturer || '',
-      }));
-    }
+    const filePath = path.join(process.cwd(), 'public', 'data', 'outfitting.json');
+    const raw = readFileSync(filePath, 'utf-8');
+    const data = JSON.parse(raw);
+    ships = Object.entries(data.ships || {}).map(([id, s]: [string, any]) => ({
+      id,
+      name: s.properties?.name || id,
+      manufacturer: s.properties?.manufacturer || '',
+    }));
   } catch {
     // ignore
   }
