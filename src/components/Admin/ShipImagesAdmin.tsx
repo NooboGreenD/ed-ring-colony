@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { Tr } from '@/components/Translate';
-import { authFetch } from '@/lib/supabaseClient';
+import { authFetch, getAccessToken } from '@/lib/supabaseClient';
 import { IconImage, IconUpload, IconTrash, IconSearch, IconRocket } from '@/components/Icons';
 
 interface ShipRow {
@@ -54,12 +54,15 @@ export default function ShipImagesAdmin() {
 
   const uploadImage = async (shipId: string, file: File) => {
     setSaving(shipId);
+    setError('');
     try {
+      const token = await getAccessToken();
       const formData = new FormData();
       formData.append('file', file);
       formData.append('ship_id', shipId);
-      const res = await authFetch('/api/admin/ships/images', {
+      const res = await fetch('/api/admin/ships/images', {
         method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
       });
       if (!res.ok) {
@@ -98,8 +101,9 @@ export default function ShipImagesAdmin() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, shipId: string) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    void uploadImage(shipId, file);
-    e.target.value = '';
+    void uploadImage(shipId, file).then(() => {
+      e.target.value = '';
+    });
   };
 
   return (
