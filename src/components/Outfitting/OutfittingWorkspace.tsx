@@ -34,6 +34,7 @@ import {
   strippedBuild,
 } from '@/lib/outfitting/build';
 import { useOutfittingData } from '@/lib/outfitting/useOutfittingData';
+import { shipImageUrlFromStorage } from '@/lib/outfitting/shipImages';
 import { bulkheadName } from '@/lib/outfitting/i18n';
 import { mercEntryFor } from '@/lib/outfitting/merccoin';
 import { moduleSpecValues, specName, type SpecSection } from '@/lib/outfitting/specs';
@@ -536,7 +537,30 @@ export default function OutfittingWorkspace({
       <div style={{ flex: '1 1 620px', minWidth: 320 }}>
         {/* ── Корпус и управление сборкой ─────────────────────────────────── */}
         <div style={PANEL}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+            {ship && (
+              <div style={{
+                position: 'relative',
+                width: 110,
+                height: 68,
+                borderRadius: 6,
+                overflow: 'hidden',
+                background: '#1a1c1e',
+                border: '1px solid var(--line)',
+                flexShrink: 0,
+              }}>
+                <img
+                  src={shipImageUrlFromStorage(build.ship)}
+                  alt={ship.properties.name}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                />
+                {!shipImageUrlFromStorage(build.ship) && (
+                  <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: 9, fontFamily: MONO }}>
+                    Нет картинки
+                  </div>
+                )}
+              </div>
+            )}
             <select
               value={build.ship}
               onChange={(event) => setBuild(defaultBuild(data, event.target.value))}

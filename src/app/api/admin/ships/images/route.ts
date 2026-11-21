@@ -1,0 +1,131 @@
+import { NextResponse } from 'next/server';
+import { createServiceClient } from '@/lib/supabaseServer';
+import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
+import { requireAdmin } from '@/lib/billing/auth';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const ALLOWED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+function response(body: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers);
+  headers.set('Cache-Control', 'no-store, max-age=0');
+  return NextResponse.json(body, { ...init, headers });
+}
+
+/** GET — список всех кораблей с indication, есть ли у них картинка */
+export async function GET() {
+  try {
+    const auth = await requireAdmin(new Request('http://localhost/api/admin/ships/images'));
+    if ('response' in auth) return auth.response;
+  } catch {
+    return response({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const svc = createServiceClient();
+
+  // Загружаем каталог кораблей из outfitting.json (чеuros public/data)
+  // Но лучше из нашего же API или файла — возьмём из public/data/outfitting.json
+  // Читаем файл напрямую (серверная сторона)
+  let ships: Array<{ id: string; name: string; manufacturer: string }> = [];
+  try {
+    const res = await fetch(`${getPublicSupabaseUrl() || ''}/data/outfitting.json`, { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      ships = Object.entries(data.ships || {}).map(([id, s]: [string, any]) => ({
+        id,
+        name: s.properties?.name || id,
+        manufacturer: s.properties?.manufacturer || '',
+      }));
+    }
+  } catch {
+    // ignore
+  }
+
+  // Проверяем, какие картинки уже загружены в bucket ship-images
+  const { data: objects } = await svc.storage.from('ship-images').list('', { limit: 1000 });
+  const uploadedIds = new Set(
+    (objects || []).map((o) => o.name.replace(/\.(png|jpg|jpeg|webp|gif)$/i, ''))
+  );
+
+  const result = ships.map((s) => ({
+    ...s,
+    hasImage: uploadedIds.has(s.id),
+    imageUrl: uploadedIds.has(s.id)
+      ? `${getPublicSupabaseUrl()}/storage/v1/object/public/ship-images/${s.id}.png`
+      : null,
+  }));
+
+  return response({ ships: result });
+}
+
+/** POST — загрузить картинку корабля */
+export async function POST(req: Request) {
+  try {
+    const auth = await requireAdmin(req);
+    if ('response' in auth) return auth.response;
+  } catch {
+    return response({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const svc = createServiceClient();
+  const formData = await req.formData();
+  const file = formData.get('file') as File | null;
+  const shipId = String(formData.get('ship_id') ?? '').trim();
+
+  if (!(file instanceof File) || !shipId) {
+    return response({ error: 'file and ship_id required' }, { status: 400 });
+  }
+  if (!ALLOWED_TYPES.has(file.type)) {
+    return response({ error: 'File type not allowed. Allowed: png, jpg, jpeg, webp, gif' }, { status: 400 });
+  }
+  if (file.size <= 0 || file.size > MAX_FILE_SIZE) {
+    return response({ error: 'File too large (max 10 MB)' }, { status: 400 });
+  }
+
+  const extension = file.name.split('.').pop()?.toLowerCase() || 'png';
+  const path = `ship-images/${shipId}.${extension}`;
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  const { error: uploadError } = await svc.storage.from('ship-images').upload(path, buffer, {
+    contentType: file.type,
+    upsert: true,
+  });
+  if (uploadError) {
+    console.error('[admin/ships/images POST] Storage upload failed:', uploadError.message);
+    return response({ error: 'Could not upload image' }, { status: 500 });
+  }
+
+  const publicUrl = `${getPublicSupabaseUrl()}/storage/v1/object/public/${path}`;
+  return response({ success: true, shipId, imageUrl: publicUrl, path }, { status: 201 });
+}
+
+/** DELETE — удалить картинку корабля */
+export async function DELETE(req: Request) {
+  try {
+    const auth = await requireAdmin(req);
+    if ('response' in auth) return auth.response;
+  } catch {
+    return response({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const svc = createServiceClient();
+  const { searchParams } = new URL(req.url);
+  const shipId = searchParams.get('ship_id');
+  const extension = searchParams.get('ext') || 'png';
+
+  if (!shipId) {
+    return response({ error: 'ship_id required' }, { status: 400 });
+  }
+
+  const path = `ship-images/${shipId}.${extension}`;
+  const { error } = await svc.storage.from('ship-images').remove([path]);
+  if (error) {
+    console.error('[admin/ships/images DELETE] Storage delete failed:', error.message);
+    return response({ error: 'Could not delete image' }, { status: 500 });
+  }
+
+  return response({ success: true, shipId });
+}

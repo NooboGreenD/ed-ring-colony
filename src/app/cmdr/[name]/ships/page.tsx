@@ -10,6 +10,7 @@ import {
   capiShipTypeToOutfittingId,
   shipImageUrlFromStorage,
 } from '@/lib/outfitting/shipImages';
+import UserShipPhotoUploader from '@/components/UserShipPhotoUploader';
 
 export const dynamic = 'force-dynamic';
 
@@ -136,6 +137,23 @@ export default async function CmdrShipsPage({
     currentUserIdNum && ownerId && currentUserIdNum === ownerId,
   );
 
+  // 7. Пользовательские фото кораблей (только для владельца профиля)
+  let userShipPhotos: Record<string, any[]> = {};
+  if (isOwnProfile && currentUserId) {
+    const { data: photos } = await supabase
+      .from('user_ship_photos')
+      .select('*')
+      .eq('user_id', currentUserId)
+      .order('is_primary', { ascending: false })
+      .order('uploaded_at', { ascending: false });
+    if (photos) {
+      for (const photo of photos) {
+        if (!userShipPhotos[photo.ship_id]) userShipPhotos[photo.ship_id] = [];
+        userShipPhotos[photo.ship_id].push(photo);
+      }
+    }
+  }
+
   return (
     <div className="card" style={{ width: '100%', minHeight: '100vh' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
@@ -219,6 +237,35 @@ export default async function CmdrShipsPage({
                     )}
                   </div>
 
+                  {isOwnProfile && userShipPhotos[outfittingId ?? ''] && userShipPhotos[outfittingId ?? ''].length > 0 && (
+                    <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {userShipPhotos[outfittingId ?? ''].map((photo) => (
+                        <div
+                          key={photo.id}
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: 4,
+                            overflow: 'hidden',
+                            border: `2px solid ${photo.is_primary ? '#e67e22' : 'transparent'}`,
+                            position: 'relative',
+                          }}
+                        >
+                          <img
+                            src={photo.image_url}
+                            alt={ship.shipName ?? 'user photo'}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                          {photo.is_primary && (
+                            <div style={{ position: 'absolute', bottom: 1, right: 1, background: 'rgba(230,126,34,0.9)', color: '#1e2022', fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 2, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>
+                              Основное
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div style={{ fontSize: 12, color: '#61a9d8', fontFamily: 'ui-monospace, monospace' }}>
                     {shipTypeLabel(ship.shipType)}
                   </div>
@@ -272,6 +319,17 @@ export default async function CmdrShipsPage({
           <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>{<Tr k="cmdr.ships.noShipsTitle" />}</h3>
           <p style={{ margin: 0, fontSize: 13 }}>{<Tr k="cmdr.ships.noShipsDesc" />}</p>
         </div>
+      )}
+
+      {isOwnProfile && currentUserId && (
+        <UserShipPhotoUploader
+          ships={ships.map((s) => ({
+            id: capiShipTypeToOutfittingId(s.shipType) ?? s.shipType ?? '',
+            name: s.shipName ?? s.shipType ?? '—',
+            shipType: s.shipType,
+          }))}
+          currentUserId={currentUserId}
+        />
       )}
     </div>
   );

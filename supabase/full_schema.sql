@@ -9861,7 +9861,56 @@ CREATE TABLE IF NOT EXISTS public.user_cosmetics_equipped (
   updated_at      TIMESTAMPTZ DEFAULT now()
 );
 
--- 6. Финансовые и внутриигровые транзакции
+-- 6. Пользовательские фото кораблей (премиум перк «Фото Галерея кораблей»)
+CREATE TABLE IF NOT EXISTS public.user_ship_photos (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  ship_id         TEXT NOT NULL,
+  image_url       TEXT NOT NULL,
+  is_primary      BOOLEAN NOT NULL DEFAULT false,
+  uploaded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_ship_photos_user_id ON public.user_ship_photos(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_ship_photos_ship_id ON public.user_ship_photos(ship_id);
+CREATE INDEX IF NOT EXISTS idx_user_ship_photos_user_ship ON public.user_ship_photos(user_id, ship_id);
+
+ALTER TABLE public.user_ship_photos ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "User ship photos are publicly readable" ON public.user_ship_photos
+  FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+CREATE POLICY "Users can insert their own ship photos" ON public.user_ship_photos
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    auth.uid() = user_id
+    AND (
+      SELECT count(*) FROM public.user_ship_photos
+      WHERE user_id = auth.uid() AND ship_id = new.ship_id
+    ) < 5
+  );
+
+CREATE POLICY "Users can update their own ship photos" ON public.user_ship_photos
+  FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own ship photos" ON public.user_ship_photos
+  FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Service role can manage all user ship photos" ON public.user_ship_photos
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- 7. Финансовые и внутриигровые транзакции
 CREATE TABLE IF NOT EXISTS public.billing_transactions (
   id              TEXT PRIMARY KEY,
   user_id         UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
@@ -9896,6 +9945,7 @@ ALTER TABLE public.user_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.shop_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_inventory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_cosmetics_equipped ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_ship_photos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_balances ENABLE ROW LEVEL SECURITY;
 

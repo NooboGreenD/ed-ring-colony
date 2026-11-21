@@ -2,13 +2,13 @@
 import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   IconAnchor, IconCoins, IconDatabase, IconGear, IconGlobe, IconHeadphones, IconHomeSystem,
-  IconJournal, IconLock, IconMessage, IconPackage, IconPower, IconRoute, IconSatellite, IconShieldHalf, IconUsers,
+  IconImage, IconJournal, IconLock, IconMessage, IconPackage, IconPower, IconRoute, IconSatellite, IconShieldHalf, IconUsers,
 } from '@/components/Icons';
 import styles from './AdminShell.module.css';
 
-export const ADMIN_TABS = ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'powerplay', 'factions', 'community-goals', 'backup', 'helper', 'outfitting'] as const;
+export const ADMIN_TABS = ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'powerplay', 'factions', 'community-goals', 'backup', 'helper', 'outfitting', 'ship-images'] as const;
 export type AdminTab = typeof ADMIN_TABS[number];
-export const ADMIN_ONLY_TABS: AdminTab[] = ['outfitting', 'monitor', 'auth', 'galaxy', 'powerplay', 'factions', 'community-goals', 'backup', 'helper'];
+export const ADMIN_ONLY_TABS: AdminTab[] = ['outfitting', 'ship-images', 'monitor', 'auth', 'galaxy', 'powerplay', 'factions', 'community-goals', 'backup', 'helper'];
 export function isAdminTab(tab: string | null): tab is AdminTab {
   return !!tab && (ADMIN_TABS as readonly string[]).includes(tab);
 }
@@ -29,6 +29,7 @@ export default function AdminNavigation({ tab, role, onSelect }: { tab: AdminTab
     ] },
     { id: 'game', label: t('anav.gameData'), icon: IconAnchor, items: [
       { id: 'outfitting', label: t('anav.outfitting'), icon: IconAnchor },
+      { id: 'ship-images', label: t('anav.shipImages'), icon: IconImage },
       { id: 'hubs', label: t('admin.hubs'), icon: IconHomeSystem },
       { id: 'route', label: t('admin.route'), icon: IconRoute },
       { id: 'sync', label: 'RavenColonial', icon: IconSatellite },
