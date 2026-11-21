@@ -53,9 +53,23 @@ export default async function CmdrShipsPage({
   const { locale } = await getServerI18n();
   const resolvedParams = await params;
   const name = decodeURIComponent(resolvedParams.name);
-  const supabase = await createClient();
-  const svc = createServiceClient();
 
+  let svc: ReturnType<typeof createServiceClient>;
+  try {
+    svc = createServiceClient();
+  } catch {
+    // Service client недоступен (нет SUPABASE_SERVICE_ROLE_KEY) —
+    // показываем страницу без данных, а не падаем с 500.
+    return (
+      <div className="card" style={{ width: '100%', minHeight: '100vh', padding: 40, textAlign: 'center', color: '#9ca3af' }}>
+        <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#1a1c1e', border: '2px solid #323538', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px', fontSize: 32 }}>⚠️</div>
+        <h3 style={{ color: '#eeeeee', margin: '0 0 12px', fontSize: 16 }}>Сервис временно недоступен</h3>
+        <p style={{ margin: 0, fontSize: 13 }}>Попробуйте обновить страницу позже.</p>
+      </div>
+    );
+  }
+
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   const currentUserId = user?.id ?? null;
 
@@ -66,25 +80,30 @@ export default async function CmdrShipsPage({
     .eq('cmdr_name', name)
     .maybeSingle();
 
-  if (!profile?.data) {
+  if (profile.error || !profile?.data) {
     notFound();
   }
 
   const profileId = profile.data.id;
 
   // 2. Читаем CAPI профиль (содержит ships JSONB)
-  const { data: capiProfile } = await svc
+  const { data: capiProfile, error: capiError } = await svc
     .from('capi_profiles')
     .select('*')
     .eq('user_id', profileId)
     .maybeSingle();
+
+  if (capiError) {
+    // CAPI таблица может не существовать на устаревшей базе — не падаем,
+    // просто показываем пустое состояние.
+  }
 
   // 3. Конфиденциальность: владелец видит всё, остальные — по настройкам location
   const privacyRaw = profile.data.privacy_settings ?? {};
   const currentUserIdNum = currentUserId;
   const ownerId = profileId;
   let privacyLocation = true;
-  if (typeof privacyRaw === 'object' && privacyRaw !== null) {
+  if (typeof privacyRaw === 'object' && privacyRaw !== null && !Array.isArray(privacyRaw)) {
     const loc = (privacyRaw as Record<string, unknown>)['location'];
     privacyLocation = typeof loc === 'boolean' ? loc : true;
   }
@@ -97,7 +116,7 @@ export default async function CmdrShipsPage({
     profile.data.cmdr_name,
     capiProfile?.cmdr_name ?? null,
   );
-  const capiView = capiBinding.status === 'linked' || capiBinding.status === 'already_linked'
+  const capiView = (capiBinding.status === 'linked' || capiBinding.status === 'already_linked')
     ? capiProfile
     : null;
 
