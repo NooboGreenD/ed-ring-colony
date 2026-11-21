@@ -67,6 +67,7 @@ import BillingDashboard from "@/components/Admin/BillingDashboard";
 import ServerMonitorTab from "@/components/Admin/ServerMonitorTab";
 import HelperUpdatesTab from "@/components/Admin/HelperUpdatesTab";
 const OutfittingAdmin = dynamic(() => import("@/components/Admin/OutfittingAdmin"), { loading: () => <p role="status"><Tr k="admin.outfittingLoading" /></p> });
+const ShipImagesAdmin = dynamic(() => import("@/components/Admin/ShipImagesAdmin"), { loading: () => <p role="status"><Tr k="admin.commonLoading" /></p> });
 
 const LANGS = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
 const LOCALE_FLAGS: Record<string, string> = { ru: '🇷🇺', en: '🇬🇧', de: '🇩🇪', it: '🇮🇹', ko: '🇰🇷', zh: '🇨🇳', ja: '🇯🇵' };
@@ -1041,6 +1042,7 @@ export default function AdminPage() {
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}
       {tab === 'helper' && role === 'admin' && <HelperUpdatesTab />}
       {tab === 'outfitting' && role === 'admin' && <OutfittingAdmin />}
+      {tab === 'ship-images' && role === 'admin' && <ShipImagesAdmin />}
       </div>
     </section>
   );

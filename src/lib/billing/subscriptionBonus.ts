@@ -92,6 +92,21 @@ export async function getSquadronMemberLimit(userId: string | null | undefined):
 }
 
 /**
+ * Проверить, есть ли у пользователя перк «Фото Галерея кораблей»
+ * (активная подписка с соответствующим perk в описании тарифа).
+ */
+export function hasShipPhotoGalleryPerk(bonus: SubscriptionBonus): boolean {
+  return bonus.planId !== 'free';
+}
+
+/** Проверить перк для конкретного пользователя. */
+export async function userHasShipPhotoGallery(userId: string | null | undefined): Promise<boolean> {
+  if (!userId) return false;
+  const bonus = await getUserSubscriptionBonus(userId);
+  return hasShipPhotoGalleryPerk(bonus);
+}
+
+/**
  * Начислить бонусные кредиты к сумме пополнения.
  * Возвращает { bonusCredits, totalCredits }.
  */
