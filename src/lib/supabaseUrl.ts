@@ -1,4 +1,4 @@
-import { DEFAULT_SUPABASE_URL } from './siteUrl';
+import { DEFAULT_SUPABASE_URL, publicOrigin } from './siteUrl';
 
 /**
  * Name of the browser session cookie. It deliberately does not depend on the
@@ -21,21 +21,14 @@ export function getPublicSupabaseUrl(): string {
  *
  * Прямой хост `supabase.edringcolony.ru` обслуживается Next.js, а не Supabase
  * (прямой запрос к /storage/v1/ возвращает 404 от Next.js). Браузеру нужен
- * same-origin gateway через Next.js: `/api/supabase/storage/v1/...`.
+ * same-origin gateway через Next.js: `https://edringcolony.ru/api/supabase/storage/v1/...`.
  *
- * Если NEXT_PUBLIC_SUPACHE_URL задан с путём /api/supabase — используется он.
- * Иначе — относительный путь /api/supabase, браузер подставит текущий origin.
+ * Всегда возвращает полный URL с origin сайта + префикс /api/supabase,
+ * как это работает для аватарок:
+ * https://edringcolony.ru/api/supabase/storage/v1/object/public/avatars/...
  */
 export function getPublicStorageBaseUrl(): string {
-  const raw = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
-  if (!raw) return '/api/supabase';
-  try {
-    const url = new URL(raw);
-    const pathname = url.pathname.replace(/\/+$/, '');
-    return `${url.origin}${pathname === '/' ? '' : pathname}`;
-  } catch {
-    return '/api/supabase';
-  }
+  return `${publicOrigin()}/api/supabase`;
 }
 
 /**
