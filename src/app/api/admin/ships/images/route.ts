@@ -43,19 +43,34 @@ export async function GET() {
     // ignore
   }
 
-  // Проверяем, какие картинки уже загружены в bucket ship-images
+  // Проверяем, какие картинки уже загружены в bucket ship-images.
+  // o.name приходит с префиксом bucket: "ship-images/cobra_mk_iii.png"
+  // Извлекаем shipId (без префикса и расширения) и сохраняем расширение для URL.
   const { data: objects } = await svc.storage.from('ship-images').list('', { limit: 1000 });
-  const uploadedIds = new Set(
-    (objects || []).map((o) => o.name.replace(/\.(png|jpg|jpeg|webp|gif)$/i, ''))
-  );
+  const uploadedIds = new Set<string>();
+  const imageExts = new Map<string, string>();
+  for (const o of (objects || [])) {
+    const name = o.name;
+    // Убираем префикс bucket и расширение
+    const withoutPrefix = name.replace(/^ship-images\//, '');
+    const shipId = withoutPrefix.replace(/\.(png|jpg|jpeg|webp|gif)$/i, '');
+    const ext = name.match(/\.(png|jpg|jpeg|webp|gif)$/i)?.[1] || 'png';
+    uploadedIds.add(shipId);
+    imageExts.set(shipId, ext);
+  }
 
-  const result = ships.map((s) => ({
-    ...s,
-    hasImage: uploadedIds.has(s.id),
-    imageUrl: uploadedIds.has(s.id)
-      ? `${getPublicSupabaseUrl()}/storage/v1/object/public/ship-images/${s.id}.png`
-      : null,
-  }));
+  const result = ships.map((s) => {
+    const has = uploadedIds.has(s.id);
+    const ext = imageExts.get(s.id) || 'png';
+    return {
+      ...s,
+      hasImage: has,
+      imageExt: ext,
+      imageUrl: has
+        ? `${getPublicSupabaseUrl()}/storage/v1/object/public/ship-images/${s.id}.${ext}`
+        : null,
+    };
+  });
 
   return response({ ships: result });
 }
@@ -84,7 +99,9 @@ export async function POST(req: Request) {
     return response({ error: 'File too large (max 10 MB)' }, { status: 400 });
   }
 
-  const extension = file.name.split('.').pop()?.toLowerCase() || 'png';
+  // Всегда сохраняем как .png, чтобы shipImageUrlFromStorage() (используемую
+  // на stronie корабля и в верфи) с хардкодом .png работала корректно.
+  const extension = 'png';
   const path = `ship-images/${shipId}.${extension}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 

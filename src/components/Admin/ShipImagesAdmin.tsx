@@ -17,6 +17,7 @@ interface ShipRow {
   manufacturer: string;
   hasImage: boolean;
   imageUrl: string | null;
+  imageExt: string;
 }
 
 export default function ShipImagesAdmin() {
@@ -150,7 +151,7 @@ export default function ShipImagesAdmin() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 20 }}>
           {filtered.map((ship) => {
-            const ext = 'png';
+            const ext = ship.imageExt || 'png';
             return (
               <div key={ship.id} style={{
                 background: '#25282b',
