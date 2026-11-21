@@ -28,17 +28,12 @@ CREATE POLICY "User ship photos are publicly readable" ON public.user_ship_photo
   TO anon, authenticated
   USING (true);
 
--- Вставка: только авторизованный пользователь, свои фото, не более 5 на корабль
+-- Вставка: только авторизованный пользователь, свои фото.
+-- Лимит 5 фото на корабль контролируется на уровне API (route.ts).
 CREATE POLICY "Users can insert their own ship photos" ON public.user_ship_photos
   FOR INSERT
   TO authenticated
-  WITH CHECK (
-    auth.uid() = user_id
-    AND (
-      SELECT count(*) FROM public.user_ship_photos
-      WHERE user_id = auth.uid() AND ship_id = new.ship_id
-    ) < 5
-  );
+  WITH CHECK (auth.uid() = user_id);
 
 -- Обновление: только владелец фото
 CREATE POLICY "Users can update their own ship photos" ON public.user_ship_photos
