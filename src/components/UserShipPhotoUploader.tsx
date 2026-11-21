@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { Tr } from '@/components/Translate';
-import { authFetch } from '@/lib/supabaseClient';
+import { authFetch, getAccessToken } from '@/lib/supabaseClient';
 import { IconUpload, IconTrash, IconImage, IconLock } from '@/components/Icons';
 
 interface UserShipPhoto {
@@ -86,8 +86,10 @@ export default function UserShipPhotoUploader({ ships, currentUserId }: Props) {
 
     setUploading({ shipId, progress: 0 });
     try {
-      const res = await authFetch('/api/user/ships/photos', {
+      const token = await getAccessToken();
+      const res = await fetch('/api/user/ships/photos', {
         method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
       });
       if (!res.ok) {
