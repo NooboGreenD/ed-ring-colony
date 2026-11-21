@@ -1,4 +1,4 @@
-import { getPublicSupabaseUrl } from './supabaseUrl';
+import { getPublicStorageUrl } from './supabaseUrl';
 
 export function errorText(error: unknown): string {
   if (!error) return 'неизвестная ошибка';
@@ -65,7 +65,7 @@ export async function uploadImageToStorage(
     // The service client may use an unencrypted Docker URL (`http://kong:8000`).
     // Never persist that private host: browsers must receive the public
     // same-origin gateway URL instead.
-    const url = `${getPublicSupabaseUrl()}/storage/v1/object/public/${bucket}/${path}`;
+    const url = getPublicStorageUrl(bucket, path);
     return { url, error: null, unavailable: false };
   } catch (err) {
     // Сеть до Storage вообще не установилась — это точно «недоступно».
