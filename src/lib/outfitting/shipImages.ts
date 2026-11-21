@@ -8,6 +8,8 @@
  * `explorer_nx`), поэтому сопоставление задано вручную.
  */
 
+import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
+
 export type CapiShipType = string;
 
 /** CAPI shipType → outfitting ship id. */
@@ -85,7 +87,7 @@ export function capiShipTypeToOutfittingId(shipType: string | null): string | nu
  */
 export function shipImageUrlFromStorage(shipId: string | null): string {
   if (!shipId) return '';
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseUrl = getPublicSupabaseUrl();
   if (!supabaseUrl) return '';
   // Публичный объект Storage: /storage/v1/object/public/{bucket}/{object}
   return `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/ship-images/${shipId}.png`;
