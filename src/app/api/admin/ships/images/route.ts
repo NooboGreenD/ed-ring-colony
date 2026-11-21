@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
-import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
+import { getPublicStorageUrl } from '@/lib/supabaseUrl';
 import { requireAdmin } from '@/lib/billing/auth';
 import { readFileSync } from 'fs';
 import path from 'path';
@@ -67,7 +67,7 @@ export async function GET() {
       hasImage: has,
       imageExt: ext,
       imageUrl: has
-        ? `${getPublicSupabaseUrl()}/storage/v1/object/public/ship-images/${s.id}.${ext}`
+        ? getPublicStorageUrl('ship-images', `${s.id}.${ext}`)
         : null,
     };
   });
@@ -96,11 +96,11 @@ export async function POST(req: Request) {
     return response({ error: 'File type not allowed. Allowed: png, jpg, jpeg, webp, gif' }, { status: 400 });
   }
   if (file.size <= 0 || file.size > MAX_FILE_SIZE) {
-    return response({ error: 'File too large (max 10 MB)' }, { status: 400 });
+    return response({ error: 'File too large (max 10 MB)' }, { status: 500 });
   }
 
   // Всегда сохраняем как .png, чтобы shipImageUrlFromStorage() (используемую
-  // на stronie корабля и в верфи) с хардкодом .png работала корректно.
+  // на stronie корабля и в верши) с хардкодом .png работала корректно.
   const extension = 'png';
   const path = `ship-images/${shipId}.${extension}`;
   const buffer = Buffer.from(await file.arrayBuffer());
@@ -114,7 +114,7 @@ export async function POST(req: Request) {
     return response({ error: 'Could not upload image' }, { status: 500 });
   }
 
-  const publicUrl = `${getPublicSupabaseUrl()}/storage/v1/object/public/${path}`;
+  const publicUrl = getPublicStorageUrl('ship-images', path);
   return response({ success: true, shipId, imageUrl: publicUrl, path }, { status: 201 });
 }
 

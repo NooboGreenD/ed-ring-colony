@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
-import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
+import { getPublicStorageUrl } from '@/lib/supabaseUrl';
 import { userHasShipPhotoGallery } from '@/lib/billing/subscriptionBonus';
 import { billingRepo } from '@/lib/billingData';
 import { errorResponse } from '@/lib/billing/auth';
@@ -103,7 +103,7 @@ export async function POST(req: Request) {
       return response({ error: 'Could not upload image' }, { status: 500 });
     }
 
-    const publicUrl = `${getPublicSupabaseUrl()}/storage/v1/object/public/${path}`;
+    const publicUrl = getPublicStorageUrl('ship-images', path);
 
     // Если помечаем как основное — снимаем флаг с остальных
     if (isPrimary) {

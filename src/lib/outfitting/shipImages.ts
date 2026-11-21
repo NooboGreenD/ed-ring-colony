@@ -1,14 +1,14 @@
 /**
  * Соответствие между типами кораблей из Frontier CAPI (shipType, например
  * `CobraMkIII`, `SideWinder`) и идентификаторами кораблей в справочнике
- * верфи (`public/data/outfitting.json`, например `cobra_mk_iii`, `sidewinder`).
+ * верши (`public/data/outfitting.json`, например `cobra_mk_iii`, `sidewinder`).
  *
  * CAPI приносит символы FDev в CamelCase. В outfitting.json id — snake_case.
  * Некоторые совпадения не тривиальные (Cobra Mk V → `cobramkv`, Caspian Explorer →
  * `explorer_nx`), поэтому сопоставление задано вручную.
  */
 
-import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
+import { getPublicStorageUrl } from '@/lib/supabaseUrl';
 
 export type CapiShipType = string;
 
@@ -68,7 +68,7 @@ export const CAPI_SHIP_TYPE_TO_OUTFITTING_ID: Record<CapiShipType, string> = {
 };
 
 /** Превратить CAPI shipType в outfitting ship id. Если не найдено — вернуть как есть
- * (попытка поиска по имени в верфи всё равно может сработать). */
+ * (попытка поиска по имени в верши всё равно может сработать). */
 export function capiShipTypeToOutfittingId(shipType: string | null): string | null {
   if (!shipType) return null;
   const direct = CAPI_SHIP_TYPE_TO_OUTFITTING_ID[shipType];
@@ -87,8 +87,7 @@ export function capiShipTypeToOutfittingId(shipType: string | null): string | nu
  */
 export function shipImageUrlFromStorage(shipId: string | null): string {
   if (!shipId) return '';
-  const supabaseUrl = getPublicSupabaseUrl();
-  if (!supabaseUrl) return '';
   // Публичный объект Storage: /storage/v1/object/public/{bucket}/{object}
-  return `${supabaseUrl.replace(/\/$/, '')}/storage/v1/object/public/ship-images/${shipId}.png`;
+  // URL через same-origin gateway, доступный из браузера.
+  return getPublicStorageUrl('ship-images', `${shipId}.png`);
 }
