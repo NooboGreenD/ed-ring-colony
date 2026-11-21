@@ -101,8 +101,10 @@ export async function POST(req: Request) {
 
   // Всегда сохраняем как .png, чтобы shipImageUrlFromStorage() (используемую
   // на stronie корабля и в верши) с хардкодом .png работала корректно.
+  // Путь внутри бакета НЕ включает имя бакета — getPublicStorageUrl добавит
+  // его автоматически при формировании URL.
   const extension = 'png';
-  const path = `ship-images/${shipId}.${extension}`;
+  const path = `${shipId}.${extension}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 
   const { error: uploadError } = await svc.storage.from('ship-images').upload(path, buffer, {
@@ -136,7 +138,7 @@ export async function DELETE(req: Request) {
     return response({ error: 'ship_id required' }, { status: 400 });
   }
 
-  const path = `ship-images/${shipId}.${extension}`;
+  const path = `${shipId}.${extension}`;
   const { error } = await svc.storage.from('ship-images').remove([path]);
   if (error) {
     console.error('[admin/ships/images DELETE] Storage delete failed:', error.message);
