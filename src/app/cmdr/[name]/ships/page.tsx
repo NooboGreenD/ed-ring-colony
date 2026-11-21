@@ -184,16 +184,8 @@ export default async function CmdrShipsPage({
                   overflow: 'hidden',
                   display: 'flex',
                   flexDirection: 'column',
-                  transition: 'border-color 0.2s, box-shadow 0.2s',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.4)';
-                  e.currentTarget.style.borderColor = isCurrent ? '#f0953f' : '#61a9d8';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.boxShadow = 'none';
-                  e.currentTarget.style.borderColor = isCurrent ? '#e67e22' : '#323538';
-                }}
+                transition: 'border-color 0.2s, box-shadow 0.2s',
+              }}
               >
                 <div style={{ position: 'relative', height: 140, background: shipPlaceholderColor(ship.shipType), overflow: 'hidden' }}>
                   {imageUrl && (
