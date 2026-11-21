@@ -18,9 +18,9 @@ function response(body: unknown, init?: ResponseInit) {
 }
 
 /** GET — список всех кораблей с indication, есть ли у них картинка */
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const auth = await requireAdmin(new Request('http://localhost/api/admin/ships/images'));
+    const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
   } catch {
     return response({ error: 'Unauthorized' }, { status: 401 });
