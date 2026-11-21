@@ -22,14 +22,14 @@ interface ShipCard {
 
 /** URL изображения корабля на EDSY (управляется сообществом). */
 function shipImageUrl(shipType: string | null): string {
-  if (!shipType) return '';
+  if (typeof shipType !== 'string' || !shipType) return '';
   // EDSY использует символы FDev (например, CobraMkIII) в URL картинок.
   return `https://edsy.org/s/${shipType.toLowerCase()}/img`;
 }
 
 /** Краткое название типа для отображения. */
 function shipTypeLabel(type: string | null): string {
-  if (!type) return '—';
+  if (typeof type !== 'string' || !type) return '—';
   // Убираем префиксы и форматируем: CobraMkIII → Cobra Mk III
   return type
     .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -38,7 +38,7 @@ function shipTypeLabel(type: string | null): string {
 
 /** Цветной оттенок для плейсхолдера изображения (по типу корабля). */
 function shipPlaceholderColor(type: string | null): string {
-  if (!type) return '#3a3d40';
+  if (typeof type !== 'string' || !type) return '#3a3d40';
   const hash = type.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
   const hues = [
     '#e67e22', '#3498db', '#2ecc71', '#e74c3c', '#9b59b6',
@@ -110,7 +110,8 @@ export default async function CmdrShipsPage({
     location: privacyLocation,
   } as any);
 
-  const ships: ShipCard[] = (publicCapiProfile?.ships as ShipCard[] | null) ?? [];
+  const rawShips = publicCapiProfile?.ships ?? null;
+  const ships: ShipCard[] = Array.isArray(rawShips) ? rawShips : [];
   const currentShip = publicCapiProfile?.current_ship ?? null;
   const currentShipIdent = publicCapiProfile?.current_ship_ident ?? null;
 
