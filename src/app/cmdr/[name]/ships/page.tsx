@@ -6,6 +6,10 @@ import { getServerI18n } from '@/lib/i18n/server';
 import { Tr } from '@/components/Translate';
 import Link from 'next/link';
 import { CmdrProfileHeader, CmdrProfileName } from '@/components/Cosmetics/CmdrProfileCosmetics';
+import {
+  capiShipTypeToOutfittingId,
+  shipImageUrlFromStorage,
+} from '@/lib/outfitting/shipImages';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,13 +22,6 @@ interface ShipCard {
   value: number | null;
   systemName: string | null;
   stationName: string | null;
-}
-
-/** URL изображения корабля на EDSY (управляется сообществом). */
-function shipImageUrl(shipType: string | null): string {
-  if (typeof shipType !== 'string' || !shipType) return '';
-  // EDSY использует символы FDev (например, CobraMkIII) в URL картинок.
-  return `https://edsy.org/s/${shipType.toLowerCase()}/img`;
 }
 
 /** Краткое название типа для отображения. */
@@ -173,7 +170,8 @@ export default async function CmdrShipsPage({
             const isCurrent = currentShipIdent
               ? ship.shipIdent === currentShipIdent
               : ship.shipName === currentShip;
-            const imageUrl = shipImageUrl(ship.shipType);
+            const outfittingId = capiShipTypeToOutfittingId(ship.shipType);
+            const imageUrl = shipImageUrlFromStorage(outfittingId);
             return (
               <div
                 key={ship.shipId ?? ship.shipIdent ?? ship.shipName}
@@ -247,7 +245,7 @@ export default async function CmdrShipsPage({
 
                   <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
                     <Link
-                      href={`/outfitting?ship=${encodeURIComponent(ship.shipType ?? '')}`}
+                      href={`/outfitting?ship=${encodeURIComponent(outfittingId ?? '')}`}
                       className="btn btn-cyan"
                       style={{ flex: 1, padding: '6px 10px', fontSize: 11, textAlign: 'center' }}
                     >

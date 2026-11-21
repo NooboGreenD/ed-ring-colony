@@ -2518,7 +2518,18 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
--- 8. Grant usage
+-- 8. Create storage bucket for ship images
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'ship-images',
+  'ship-images',
+  true,
+  10485760,
+  ARRAY['image/png','image/jpeg','image/webp','image/gif']
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- 9. Grant usage
 GRANT ALL ON public.support_tickets TO service_role;
 GRANT ALL ON public.support_messages TO service_role;
 GRANT ALL ON public.support_attachments TO service_role;

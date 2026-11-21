@@ -14,11 +14,16 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default function OutfittingPage() {
+export default async function OutfittingPage({
+  searchParams,
+}: { searchParams: Promise<{ [key: string]: string | string[] | undefined }> }) {
+  const resolved = await searchParams;
+  const shipId = typeof resolved.ship === 'string' ? resolved.ship : undefined;
+
   return (
     <main style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 16px 48px' }}>
       <OutfittingHeader />
-      <OutfittingWorkspace />
+      <OutfittingWorkspace initialShip={shipId} />
     </main>
   );
 }
