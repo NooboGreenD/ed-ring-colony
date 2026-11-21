@@ -7,6 +7,29 @@
 -- и управляются через админ-панель.
 -- ============================================================================
 
+-- Создать публичный bucket для картинок кораблей (если ещё не создан)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM storage.buckets WHERE id = 'ship-images') THEN
+    INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    VALUES ('ship-images', 'ship-images', true, 10485760, ARRAY['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  END IF;
+END $$;
+
+-- Политики доступа к бакету ship-images (public read, service_role write)
+DROP POLICY IF EXISTS ship_images_public_read ON storage.objects;
+CREATE POLICY ship_images_public_read ON storage.objects
+  FOR SELECT
+  TO public
+  USING (bucket_id = 'ship-images');
+
+DROP POLICY IF EXISTS ship_images_service_write ON storage.objects;
+CREATE POLICY ship_images_service_write ON storage.objects
+  FOR ALL
+  TO service_role
+  USING (bucket_id = 'ship-images')
+  WITH CHECK (bucket_id = 'ship-images');
+
 CREATE TABLE IF NOT EXISTS public.user_ship_photos (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
