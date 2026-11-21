@@ -223,7 +223,11 @@ function SectionTitle({
   );
 }
 
-export default function OutfittingWorkspace() {
+export default function OutfittingWorkspace({
+  initialShip,
+}: {
+  initialShip?: string;
+}) {
   const { t, locale } = useI18n();
   const { num, credits, date } = formatters(locale);
   const { data, error } = useOutfittingData();
@@ -258,7 +262,7 @@ export default function OutfittingWorkspace() {
 
   useEffect(() => setSaved(readSaved()), []);
 
-  // Первая загрузка: сборка из ссылки, иначе заводская Sidewinder
+  // Первая загрузка: сборка из ссылки, ships из URL, иначе заводская Sidewinder
   useEffect(() => {
     if (!data || build) return;
     const code = new URLSearchParams(window.location.search).get('b');
@@ -267,10 +271,15 @@ export default function OutfittingWorkspace() {
       setBuild(decoded);
       return;
     }
+    // ships=? из карточки пилота — открываем фит этого корабля.
+    if (initialShip && data.ships[initialShip] && !data.ships[initialShip].archived) {
+      setBuild(defaultBuild(data, initialShip));
+      return;
+    }
     const first = data.ships.sidewinder && !data.ships.sidewinder.archived
       ? 'sidewinder' : Object.values(data.ships).find((ship) => !ship.archived)?.id ?? Object.keys(data.ships)[0];
     setBuild(defaultBuild(data, first));
-  }, [data, build]);
+  }, [data, build, initialShip]);
 
   // Ссылка всегда описывает то, что на экране
   useEffect(() => {
