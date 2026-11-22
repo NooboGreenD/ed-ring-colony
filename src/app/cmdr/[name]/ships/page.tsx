@@ -3,6 +3,7 @@ import { assessProfileBinding } from '@/lib/capi/profileBinding';
 import { maskCapiProfile } from '@/lib/privacy';
 import Link from 'next/link';
 import { capiShipTypeToOutfittingId } from '@/lib/outfitting/shipImages';
+import { ShipImage } from '@/components/ShipImage';
 
 export const dynamic = 'force-dynamic';
 
@@ -166,16 +167,13 @@ export default async function CmdrShipsPage({
                     transition: 'border-color 0.2s, box-shadow 0.2s',
                   }}
                 >
-                  <div style={{
-                    position: 'relative',
-                    height: 140,
-                    background: shipPlaceholderColor(ship.shipType),
-                    backgroundImage: imageUrl ? `url("${imageUrl}")` : 'none',
-                    backgroundSize: 'contain',
-                    backgroundRepeat: 'no-repeat',
-                    backgroundPosition: 'center',
-                    overflow: 'hidden',
-                  }}>
+                  <div style={{ position: 'relative', height: 140, overflow: 'hidden' }}>
+                    <ShipImage
+                      src={imageUrl}
+                      alt={ship.shipName ?? ship.shipType ?? ''}
+                      color={shipPlaceholderColor(ship.shipType)}
+                      label={shipTypeLabel(ship.shipType)}
+                    />
                     {isCurrent && (
                       <div style={{ position: 'absolute', top: 8, right: 8, background: '#e67e22', color: '#1e2022', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>
                         Текущий
