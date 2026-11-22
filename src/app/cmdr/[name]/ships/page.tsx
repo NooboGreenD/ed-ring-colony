@@ -28,7 +28,6 @@ interface ShipCard {
 /** Краткое название типа для отображения. */
 function shipTypeLabel(type: string | null): string {
   if (typeof type !== 'string' || !type) return '—';
-  // Убираем префиксы и форматируем: CobraMkIII → Cobra Mk III
   return type
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -56,8 +55,6 @@ export default async function CmdrShipsPage({
   try {
     svc = createServiceClient();
   } catch {
-    // Service client недоступен (нет SUPABASE_SERVICE_ROLE_KEY) —
-    // показываем страницу без данных, а не падаем с 500.
     return (
       <div className="card" style={{ width: '100%', minHeight: '100vh', padding: 40, textAlign: 'center', color: '#9ca3af' }}>
         <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#1a1c1e', border: '2px solid #323538', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px', fontSize: 32 }}>⚠️</div>
@@ -71,7 +68,6 @@ export default async function CmdrShipsPage({
   const { data: { user } } = await supabase.auth.getUser();
   const currentUserId = user?.id ?? null;
 
-  // 1. Находим профиль по cmdr_name
   const profile = await svc
     .from('profiles')
     .select('id, cmdr_name, avatar_url, privacy_settings')
@@ -84,7 +80,6 @@ export default async function CmdrShipsPage({
 
   const profileId = profile.data.id;
 
-  // 2. Читаем CAPI профиль (содержит ships JSONB)
   const { data: capiProfile, error: capiError } = await svc
     .from('capi_profiles')
     .select('*')
@@ -92,11 +87,8 @@ export default async function CmdrShipsPage({
     .maybeSingle();
 
   if (capiError) {
-    // CAPI таблица может не существовать на устаревшей базе — не падаем,
-    // просто показываем пустое состояние.
   }
 
-  // 3. Конфиденциальность: владелец видит всё, остальные — по настройкам location
   const privacyRaw = profile.data.privacy_settings ?? {};
   const currentUserIdNum = currentUserId;
   const ownerId = profileId;
@@ -109,7 +101,6 @@ export default async function CmdrShipsPage({
     privacyLocation = true;
   }
 
-  // 4. Привязка CAPI: показываем корабли только если привязка живая
   const capiBinding = assessProfileBinding(
     profile.data.cmdr_name,
     capiProfile?.cmdr_name ?? null,
@@ -118,7 +109,6 @@ export default async function CmdrShipsPage({
     ? capiProfile
     : null;
 
-  // 5. Маскируем чувствительные данные (включая ships при скрытом location)
   const publicCapiProfile = maskCapiProfile(capiView ?? null, {
     balance: true,
     ranks: true,
@@ -132,12 +122,10 @@ export default async function CmdrShipsPage({
   const currentShip = publicCapiProfile?.current_ship ?? null;
   const currentShipIdent = publicCapiProfile?.current_ship_ident ?? null;
 
-  // 6. Флаг: своя ли страница
   const isOwnProfile = Boolean(
     currentUserIdNum && ownerId && currentUserIdNum === ownerId,
   );
 
-  // 7. Пользовательские фото кораблей (только для владельца профиля)
   let userShipPhotos: Record<string, any[]> = {};
   if (isOwnProfile && currentUserId) {
     const { data: photos } = await supabase
@@ -189,11 +177,6 @@ export default async function CmdrShipsPage({
               ? ship.shipIdent === currentShipIdent
               : ship.shipName === currentShip;
             const outfittingId = capiShipTypeToOutfittingId(ship.shipType);
-            // Пробуем несколько вариантов ID для поиска картинки в bucket ship-images:
-            // 1. outfittingId (snake_case из capiShipTypeToOutfittingId)
-            // 2. ship.shipType (CamelCase из CAPI)
-            // 3. ship.shipType в нижнем регистре
-            // 4. ship.shipType → ручной snake_case
             const shipTypeLower = ship.shipType?.toLowerCase() ?? '';
             const shipTypeSnake = ship.shipType
               ?.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
@@ -214,31 +197,10 @@ export default async function CmdrShipsPage({
                   overflow: 'hidden',
                   display: 'flex',
                   flexDirection: 'column',
-                transition: 'border-color 0.2s, box-shadow 0.2s',
-              }}
+                  transition: 'border-color 0.2s, box-shadow 0.2s',
+                }}
               >
                 <div style={{ position: 'relative', height: 140, background: shipPlaceholderColor(ship.shipType), overflow: 'hidden' }}>
-                  {imageUrl && (
-                    <img
-                      src={imageUrl}
-                      alt={altText}
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'contain',
-                        background: 'transparent',
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        zIndex: 2,
-                      }}
-                      loading="lazy"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement;
-                        target.style.display = 'none';
-                      }}
-                    />
-                  )}
                   <div
                     style={{
                       width: '100%',
@@ -249,15 +211,24 @@ export default async function CmdrShipsPage({
                       justifyContent: 'center',
                       color: '#eeeeee',
                       fontFamily: 'ui-monospace, monospace',
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
                       zIndex: 1,
                     }}
                   >
                     <div style={{ fontSize: 48, marginBottom: 8 }}>🚀</div>
                     <div style={{ fontSize: 11, opacity: 0.8 }}>{shipTypeLabel(ship.shipType)}</div>
                   </div>
+                  {imageUrl && (
+                    <img
+                      src={imageUrl}
+                      alt={altText}
+                      style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'transparent', position: 'absolute', top: 0, left: 0, zIndex: 2 }}
+                      loading="lazy"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = 'none';
+                      }}
+                    />
+                  )}
                   {isCurrent && (
                     <div style={{ position: 'absolute', top: 8, right: 8, background: '#e67e22', color: '#1e2022', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>
                       <Tr k="cmdr.ships.current" />
@@ -312,7 +283,7 @@ export default async function CmdrShipsPage({
 
                   {ship.value != null && ship.value > 0 && (
                     <div style={{ fontSize: 12, color: '#f1c40f', fontFamily: 'ui-monospace, monospace' }}>
-                      ≈ {ship.value.toLocaleString()} {<Tr k="cmdr.ships.cr" />}
+                      ≈ {ship.value.toLocaleString()} <Tr k="cmdr.ships.cr" />
                     </div>
                   )}
 
@@ -341,7 +312,7 @@ export default async function CmdrShipsPage({
                     <button
                       className="btn"
                       style={{ padding: '6px 10px', fontSize: 16, lineHeight: 1, color: '#e67e22' }}
-                      aria-label={isCurrent ? "Current ship" : "Add to squadron"}
+                      aria-label={isCurrent ? 'Current ship' : 'Add to squadron'}
                     >
                       +
                     </button>
