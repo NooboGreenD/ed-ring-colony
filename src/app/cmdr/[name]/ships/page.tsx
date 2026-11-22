@@ -204,11 +204,9 @@ export default async function CmdrShipsPage({
               shipImageUrlFromStorage(shipTypeLower) ||
               shipImageUrlFromStorage(shipTypeSnake);
             const altText = ship.shipName ?? ship.shipType ?? '';
-            const debugTitle = `DEBUG: shipType=${ship.shipType ?? 'null'} outfittingId=${outfittingId ?? 'null'} url=${imageUrl ?? 'empty'}`;
             return (
               <div
                 key={ship.shipId ?? ship.shipIdent ?? ship.shipName}
-                title={debugTitle}
                 style={{
                   background: '#25282b',
                   border: `1px solid ${isCurrent ? '#e67e22' : '#323538'}`,
@@ -232,9 +230,6 @@ export default async function CmdrShipsPage({
                     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#eeeeee', fontFamily: 'ui-monospace, monospace' }}>
                       <div style={{ fontSize: 48, marginBottom: 8 }}>🚀</div>
                       <div style={{ fontSize: 11, opacity: 0.8 }}>{shipTypeLabel(ship.shipType)}</div>
-                      <div style={{ fontSize: 9, opacity: 0.5, marginTop: 4 }}>
-                        {`${ship.shipType ?? '?'} → ${outfittingId ?? '?'}`}
-                      </div>
                     </div>
                   )}
                   {isCurrent && (
