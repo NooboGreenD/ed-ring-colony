@@ -15,7 +15,7 @@
  *  - 3-панельное окно выбора и детальной инженерии модулей с живым сравнением дельты.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { authFetch } from '@/lib/supabaseClient';
@@ -261,11 +261,16 @@ export default function OutfittingWorkspace({
     fuel: Number.POSITIVE_INFINITY,
   });
 
+  // Флаг: build установлен пользователем вручную (через селект или ссылку),
+  // тогда initialShip из URL не должен перебивать его выбор.
+  const buildSetByUser = useRef(false);
+
   useEffect(() => setSaved(readSaved()), []);
 
   // Первая загрузка: сборка из ссылки, ships из URL, иначе заводская Sidewinder
   useEffect(() => {
-    if (!data || build) return;
+    if (!data) return;
+    if (buildSetByUser.current) return;
     const code = new URLSearchParams(window.location.search).get('b');
     const decoded = code ? decodeBuild(code) : null;
     if (decoded && data.ships[decoded.ship]) {
@@ -280,7 +285,7 @@ export default function OutfittingWorkspace({
     const first = data.ships.sidewinder && !data.ships.sidewinder.archived
       ? 'sidewinder' : Object.values(data.ships).find((ship) => !ship.archived)?.id ?? Object.keys(data.ships)[0];
     setBuild(defaultBuild(data, first));
-  }, [data, build, initialShip]);
+  }, [data, initialShip]);
 
   // Ссылка всегда описывает то, что на экране
   useEffect(() => {
@@ -563,7 +568,10 @@ export default function OutfittingWorkspace({
             )}
             <select
               value={build.ship}
-              onChange={(event) => setBuild(defaultBuild(data, event.target.value))}
+              onChange={(event) => {
+                buildSetByUser.current = true;
+                setBuild(defaultBuild(data, event.target.value));
+              }}
               style={{ fontSize: 13, fontFamily: MONO, minWidth: 220, margin: 0, fontWeight: 700 }}
             >
               {!shipList.some((entry) => entry.id === build.ship) && <option value={build.ship} disabled={!!ship.archived}>
