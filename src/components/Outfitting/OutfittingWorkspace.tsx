@@ -234,6 +234,7 @@ export default function OutfittingWorkspace({
   const { data, error } = useOutfittingData();
 
   const [build, setBuild] = useState<ShipBuild | null>(null);
+  const [shipImageError, setShipImageError] = useState(false);
   const [pips, setPips] = useState<PipState>(DEFAULT_PIPS);
   const [picker, setPicker] = useState<string | null>(null);
   const [saved, setSaved] = useState<SavedBuild[]>([]);
@@ -279,6 +280,7 @@ export default function OutfittingWorkspace({
     }
     // ships=? из карточки пилота — открываем фит этого корабля.
     if (initialShip && data.ships[initialShip] && !data.ships[initialShip].archived) {
+      setShipImageError(false);
       setBuild(defaultBuild(data, initialShip));
       return;
     }
@@ -286,6 +288,11 @@ export default function OutfittingWorkspace({
       ? 'sidewinder' : Object.values(data.ships).find((ship) => !ship.archived)?.id ?? Object.keys(data.ships)[0];
     setBuild(defaultBuild(data, first));
   }, [data, initialShip]);
+
+  // Сбрасываем ошибку загрузки картинки при смене корабля
+  useEffect(() => {
+    setShipImageError(false);
+  }, [build]);
 
   // Ссылка всегда описывает то, что на экране
   useEffect(() => {
@@ -554,12 +561,17 @@ export default function OutfittingWorkspace({
                 border: '1px solid var(--line)',
                 flexShrink: 0,
               }}>
-                <img
-                  src={shipImageUrlFromStorage(build.ship)}
-                  alt={ship.properties.name}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                />
-                {!shipImageUrlFromStorage(build.ship) && (
+                {shipImageUrlFromStorage(build.ship) && (
+                  <img
+                    src={shipImageUrlFromStorage(build.ship)}
+                    alt={ship.properties.name}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    onError={(e) => {
+                      setShipImageError(true);
+                    }}
+                  />
+                )}
+                {(shipImageError || !shipImageUrlFromStorage(build.ship)) && (
                   <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: 9, fontFamily: MONO }}>
                     Нет картинки
                   </div>
@@ -570,6 +582,7 @@ export default function OutfittingWorkspace({
               value={build.ship}
               onChange={(event) => {
                 buildSetByUser.current = true;
+                setShipImageError(false);
                 setBuild(defaultBuild(data, event.target.value));
               }}
               style={{ fontSize: 13, fontFamily: MONO, minWidth: 220, margin: 0, fontWeight: 700 }}

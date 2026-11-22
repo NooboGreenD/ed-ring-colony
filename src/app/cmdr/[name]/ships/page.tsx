@@ -222,16 +222,42 @@ export default async function CmdrShipsPage({
                     <img
                       src={imageUrl}
                       alt={altText}
-                      style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'transparent' }}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'contain',
+                        background: 'transparent',
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        zIndex: 2,
+                      }}
                       loading="lazy"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = 'none';
+                      }}
                     />
                   )}
-                  {!imageUrl && (
-                    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#eeeeee', fontFamily: 'ui-monospace, monospace' }}>
-                      <div style={{ fontSize: 48, marginBottom: 8 }}>🚀</div>
-                      <div style={{ fontSize: 11, opacity: 0.8 }}>{shipTypeLabel(ship.shipType)}</div>
-                    </div>
-                  )}
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#eeeeee',
+                      fontFamily: 'ui-monospace, monospace',
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      zIndex: 1,
+                    }}
+                  >
+                    <div style={{ fontSize: 48, marginBottom: 8 }}>🚀</div>
+                    <div style={{ fontSize: 11, opacity: 0.8 }}>{shipTypeLabel(ship.shipType)}</div>
+                  </div>
                   {isCurrent && (
                     <div style={{ position: 'absolute', top: 8, right: 8, background: '#e67e22', color: '#1e2022', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>
                       <Tr k="cmdr.ships.current" />
