@@ -33,6 +33,7 @@ import {
 } from '@/components/Icons';
 import { useFriends } from '@/hooks/useFriends';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import UserShipPhotoUploader from '@/components/UserShipPhotoUploader';
 import {
   achievementRankDesc,
   achievementRankName,
@@ -569,7 +570,7 @@ function AchievementTrackCard({
 
 export default function CmdrDossier(props: Props) {
   const { t, locale } = useI18n();
-  const [tab, setTab] = useState<'overview' | 'transport' | 'architect' | 'achievements' | 'squadron'>('overview');
+  const [tab, setTab] = useState<'overview' | 'transport' | 'architect' | 'achievements' | 'squadron' | 'gallery'>('overview');
   const [sending, setSending] = useState(false);
   const [optimisticSent, setOptimisticSent] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
@@ -783,6 +784,15 @@ export default function CmdrDossier(props: Props) {
             {t('cmdr.ships.title')}
           </button>
         </Link>
+        {own && (
+          <button
+            type="button"
+            className={tab === 'gallery' ? 'tab tab-active' : 'tab'}
+            onClick={() => setTab('gallery')}
+          >
+            {t('dossier.tabGallery') || 'Галерея фото'}
+          </button>
+        )}
       </div>
 
       {tab === 'overview' && (
@@ -1987,6 +1997,25 @@ export default function CmdrDossier(props: Props) {
               </Link>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'gallery' && own && props.capiProfile?.ships && (
+        <div>
+          <h3 style={{ margin: '0 0 16px', color: '#eeeeee', fontSize: 18, fontFamily: 'ui-monospace, monospace' }}>
+            {t('dossier.tabGallery') || 'Галерея фото кораблей'}
+          </h3>
+          <p style={{ margin: '0 0 20px', color: '#9ca3af', fontSize: 13, maxWidth: 600 }}>
+            {t('dossier.galleryDesc') || 'Загружайте личные фото своих кораблей. Доступно по премиум-перку «Фото Галерея кораблей» (до 5 фото на корабль).'}
+          </p>
+          <UserShipPhotoUploader
+            ships={props.capiProfile.ships.map((s) => ({
+              id: s.shipIdent ?? s.shipType ?? 'unknown',
+              name: s.shipName ?? s.shipType ?? 'Корабль',
+              shipType: s.shipType ?? null,
+            }))}
+            currentUserId={props.currentUserId || ''}
+          />
         </div>
       )}
 
