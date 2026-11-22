@@ -189,7 +189,9 @@ export default async function CmdrShipsPage({
               ? ship.shipIdent === currentShipIdent
               : ship.shipName === currentShip;
             const outfittingId = capiShipTypeToOutfittingId(ship.shipType);
-            const imageUrl = shipImageUrlFromStorage(outfittingId);
+            // Пробуем получить картинку по outfittingId, а если не вышло — по CAPI shipType напрямую
+            const imageUrl = shipImageUrlFromStorage(outfittingId) || shipImageUrlFromStorage(ship.shipType);
+            const altText = ship.shipName ?? ship.shipType ?? '';
             return (
               <div
                 key={ship.shipId ?? ship.shipIdent ?? ship.shipName}
@@ -207,9 +209,16 @@ export default async function CmdrShipsPage({
                   {imageUrl && (
                     <img
                       src={imageUrl}
-                      alt={ship.shipName ?? ship.shipType ?? ''}
+                      alt={altText}
                       style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'transparent' }}
                       loading="lazy"
+                      onError={(e) => {
+                        // Если картинка по outfittingId не загрузилась, пробуем shipType напрямую
+                        const target = e.target as HTMLImageElement;
+                        if (!target.src.includes(ship.shipType ?? '') && ship.shipType) {
+                          target.src = shipImageUrlFromStorage(ship.shipType) || '';
+                        }
+                      }}
                     />
                   )}
                   {!imageUrl && (
