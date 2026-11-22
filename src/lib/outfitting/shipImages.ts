@@ -84,10 +84,11 @@ export function capiShipTypeToOutfittingId(shipType: string | null): string | nu
 /** URL картинки корабля из Supabase Storage bucket `ship-images`.
  * Если bucket ещё не развёрнут, возвращается пустая строка — компонент
  * покажет плейсхолдер с цветом по типу корабля.
+ *
+ * Относительный URL (без origin) — 브라узер сам подставит текущий origin,
+ * поэтому это всегда работает, независимо от настроек сервера.
  */
 export function shipImageUrlFromStorage(shipId: string | null): string {
   if (!shipId) return '';
-  // Публичный объект Storage: /storage/v1/object/public/{bucket}/{object}
-  // URL через same-origin gateway, доступный из браузера.
-  return getPublicStorageUrl('ship-images', `${shipId}.png`);
+  return `/api/supabase/storage/v1/object/public/ship-images/${shipId}.png`;
 }
