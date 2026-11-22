@@ -47,6 +47,7 @@ export function ShipImage({
             width: '100%',
             height: '100%',
             objectFit: 'contain',
+            objectPosition: 'center',
             display: 'block',
           }}
           onError={() => setError(true)}
