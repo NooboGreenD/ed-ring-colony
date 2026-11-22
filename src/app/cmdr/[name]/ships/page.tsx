@@ -1,4 +1,3 @@
-import { notFound } from 'next/navigation';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { assessProfileBinding } from '@/lib/capi/profileBinding';
 import { maskCapiProfile } from '@/lib/privacy';
@@ -37,6 +36,24 @@ function shipPlaceholderColor(type: string | null): string {
   return hues[hash % hues.length];
 }
 
+function renderNotFound() {
+  return (
+    <div className="card" style={{ width: '100%', minHeight: '100vh', padding: 40, textAlign: 'center', color: '#9ca3af' }}>
+      <h3 style={{ color: '#eeeeee', margin: '0 0 12px', fontSize: 16 }}>Пилот не найден</h3>
+      <p style={{ margin: 0, fontSize: 13 }}>Профиль с таким именем не существует.</p>
+    </div>
+  );
+}
+
+function renderError() {
+  return (
+    <div className="card" style={{ width: '100%', minHeight: '100vh', padding: 40, textAlign: 'center', color: '#9ca3af' }}>
+      <h3 style={{ color: '#eeeeee', margin: '0 0 12px', fontSize: 16 }}>Ошибка загрузки досье</h3>
+      <p style={{ margin: 0, fontSize: 13 }}>Попробуйте обновить страницу позже.</p>
+    </div>
+  );
+}
+
 export default async function CmdrShipsPage({
   params,
 }: { params: Promise<{ name: string }> }) {
@@ -44,40 +61,66 @@ export default async function CmdrShipsPage({
     const resolvedParams = await params;
     const name = decodeURIComponent(resolvedParams.name);
 
-    const svc = createServiceClient();
-
-    // 1. Находим профиль по cmdr_name
-    const profile = await svc
-      .from('profiles')
-      .select('id, cmdr_name, avatar_url, privacy_settings')
-      .eq('cmdr_name', name)
-      .maybeSingle();
-
-    if (profile.error || !profile?.data) {
-      notFound();
+    let svc;
+    try {
+      svc = createServiceClient();
+    } catch {
+      return renderError();
     }
 
-    const profileId = profile.data.id;
+    // 1. Находим профиль по cmdr_name
+    let profileData: { id: string } | null = null;
+    try {
+      const profile = await svc
+        .from('profiles')
+        .select('id')
+        .eq('cmdr_name', name)
+        .maybeSingle();
+      if (profile.error || !profile?.data) {
+        return renderNotFound();
+      }
+      profileData = profile.data;
+    } catch {
+      return renderError();
+    }
+
+    const profileId = profileData.id;
 
     // 2. Читаем CAPI профиль
-    const { data: capiProfile } = await svc
-      .from('capi_profiles')
-      .select('*')
-      .eq('user_id', profileId)
-      .maybeSingle();
+    let capiProfile: Record<string, any> | null = null;
+    try {
+      const { data } = await svc
+        .from('capi_profiles')
+        .select('*')
+        .eq('user_id', profileId)
+        .maybeSingle();
+      capiProfile = data ?? null;
+    } catch {
+      capiProfile = null;
+    }
 
     // 3. Привязка CAPI
-    const capiBinding = assessProfileBinding(
-      profile.data.cmdr_name,
-      capiProfile?.cmdr_name ?? null,
-    );
-    const capiView = (capiBinding.status === 'linked' || capiBinding.status === 'already_linked')
-      ? capiProfile
-      : null;
+    let capiView: Record<string, any> | null = null;
+    try {
+      const capiBinding = assessProfileBinding(
+        name,
+        capiProfile?.cmdr_name ?? null,
+      );
+      if (capiBinding.status === 'linked' || capiBinding.status === 'already_linked') {
+        capiView = capiProfile;
+      }
+    } catch {
+      capiView = null;
+    }
 
     // 4. Конфиденциальность — владелец видит всё
     const privacy = { balance: true, ranks: true, cargo: true, deliveries: true, location: true } as const;
-    const publicCapiProfile = maskCapiProfile(capiView ?? null, privacy);
+    let publicCapiProfile: Record<string, any> | null = null;
+    try {
+      publicCapiProfile = maskCapiProfile(capiView ?? null, privacy);
+    } catch {
+      publicCapiProfile = null;
+    }
 
     const rawShips = publicCapiProfile?.ships ?? null;
     const ships: ShipCard[] = Array.isArray(rawShips) ? rawShips : [];
@@ -109,6 +152,7 @@ export default async function CmdrShipsPage({
                 : ship.shipName === currentShip;
               const outfittingId = capiShipTypeToOutfittingId(ship.shipType);
               const imageUrl = `/api/supabase/storage/v1/object/public/ship-images/${outfittingId ?? ship.shipType ?? 'unknown'}.png`;
+
               return (
                 <div
                   key={ship.shipId ?? ship.shipIdent ?? ship.shipName}
@@ -122,25 +166,16 @@ export default async function CmdrShipsPage({
                     transition: 'border-color 0.2s, box-shadow 0.2s',
                   }}
                 >
-                  <div style={{ position: 'relative', height: 140, background: shipPlaceholderColor(ship.shipType), overflow: 'hidden' }}>
-                    {imageUrl && (
-                      <img
-                        src={imageUrl}
-                        alt={ship.shipName ?? ship.shipType ?? ''}
-                        style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'transparent' }}
-                        loading="lazy"
-                        onError={(e) => {
-                          const target = e.target as HTMLImageElement;
-                          target.style.display = 'none';
-                        }}
-                      />
-                    )}
-                    {!imageUrl && (
-                      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#eeeeee', fontFamily: 'ui-monospace, monospace' }}>
-                        <div style={{ fontSize: 48, marginBottom: 8 }}>🚀</div>
-                        <div style={{ fontSize: 11, opacity: 0.8 }}>{shipTypeLabel(ship.shipType)}</div>
-                      </div>
-                    )}
+                  <div style={{
+                    position: 'relative',
+                    height: 140,
+                    background: shipPlaceholderColor(ship.shipType),
+                    backgroundImage: imageUrl ? `url("${imageUrl}")` : 'none',
+                    backgroundSize: 'contain',
+                    backgroundRepeat: 'no-repeat',
+                    backgroundPosition: 'center',
+                    overflow: 'hidden',
+                  }}>
                     {isCurrent && (
                       <div style={{ position: 'absolute', top: 8, right: 8, background: '#e67e22', color: '#1e2022', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>
                         Текущий
@@ -216,13 +251,7 @@ export default async function CmdrShipsPage({
         )}
       </div>
     );
-  } catch (error) {
-    console.error('[cmdr/ships page error]', error);
-    return (
-      <div className="card" style={{ width: '100%', minHeight: '100vh', padding: 40, textAlign: 'center', color: '#9ca3af' }}>
-        <h3 style={{ color: '#eeeeee', margin: '0 0 12px', fontSize: 16 }}>Ошибка загрузки досье</h3>
-        <p style={{ margin: 0, fontSize: 13 }}>Попробуйте обновить страницу позже.</p>
-      </div>
-    );
+  } catch {
+    return renderError();
   }
 }
