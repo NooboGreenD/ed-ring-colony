@@ -3,14 +3,11 @@ import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { assessProfileBinding } from '@/lib/capi/profileBinding';
 import { maskCapiProfile } from '@/lib/privacy';
 import { getServerI18n } from '@/lib/i18n/server';
-import { Tr } from '@/components/Translate';
 import Link from 'next/link';
-import { CmdrProfileHeader, CmdrProfileName } from '@/components/Cosmetics/CmdrProfileCosmetics';
 import {
   capiShipTypeToOutfittingId,
   shipImageUrlFromStorage,
 } from '@/lib/outfitting/shipImages';
-import UserShipPhotoUploader from '@/components/UserShipPhotoUploader';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,7 +44,6 @@ function shipPlaceholderColor(type: string | null): string {
 export default async function CmdrShipsPage({
   params,
 }: { params: Promise<{ name: string }> }) {
-  const { locale } = await getServerI18n();
   const resolvedParams = await params;
   const name = decodeURIComponent(resolvedParams.name);
 
@@ -63,10 +59,6 @@ export default async function CmdrShipsPage({
       </div>
     );
   }
-
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  const currentUserId = user?.id ?? null;
 
   const profile = await svc
     .from('profiles')
@@ -86,19 +78,12 @@ export default async function CmdrShipsPage({
     .eq('user_id', profileId)
     .maybeSingle();
 
-  if (capiError) {
-  }
-
   const privacyRaw = profile.data.privacy_settings ?? {};
-  const currentUserIdNum = currentUserId;
   const ownerId = profileId;
   let privacyLocation = true;
   if (typeof privacyRaw === 'object' && privacyRaw !== null && !Array.isArray(privacyRaw)) {
     const loc = (privacyRaw as Record<string, unknown>)['location'];
     privacyLocation = typeof loc === 'boolean' ? loc : true;
-  }
-  if (currentUserIdNum && ownerId && currentUserIdNum === ownerId) {
-    privacyLocation = true;
   }
 
   const capiBinding = assessProfileBinding(
@@ -122,51 +107,24 @@ export default async function CmdrShipsPage({
   const currentShip = publicCapiProfile?.current_ship ?? null;
   const currentShipIdent = publicCapiProfile?.current_ship_ident ?? null;
 
-  const isOwnProfile = Boolean(
-    currentUserIdNum && ownerId && currentUserIdNum === ownerId,
-  );
-
-  let userShipPhotos: Record<string, any[]> = {};
-  if (isOwnProfile && currentUserId) {
-    const { data: photos } = await supabase
-      .from('user_ship_photos')
-      .select('*')
-      .eq('user_id', currentUserId)
-      .order('is_primary', { ascending: false })
-      .order('uploaded_at', { ascending: false });
-    if (photos) {
-      for (const photo of photos) {
-        if (!userShipPhotos[photo.ship_id]) userShipPhotos[photo.ship_id] = [];
-        userShipPhotos[photo.ship_id].push(photo);
-      }
-    }
-  }
-
   return (
     <div className="card" style={{ width: '100%', minHeight: '100vh' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-        <CmdrProfileHeader userId={profileId ?? null} name={name} avatarUrl={profile.data.avatar_url ?? null} />
         <div>
           <h1 style={{ margin: 0, color: '#eeeeee', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <CmdrProfileName userId={profileId ?? null} name={name} />
+            {name}
           </h1>
           <p style={{ margin: '4px 0 0', color: '#9ca3af', fontSize: 14 }}>
-            <Tr k="cmdr.ships.title" />
+            Корабли пилота
           </p>
         </div>
       </div>
 
-      {isOwnProfile && (
-        <div style={{ marginBottom: 16, fontSize: 12, color: '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
-          <Tr k="cmdr.ships.sourceHint" />
-        </div>
-      )}
-
       {!capiView && (
         <div style={{ padding: '48px 20px', textAlign: 'center', color: '#9ca3af' }}>
           <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#1a1c1e', border: '2px solid #323538', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', fontSize: 28 }}>🚀</div>
-          <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>{isOwnProfile ? <Tr k="cmdr.ships.noCapiTitle" /> : <Tr k="cmdr.ships.noCapiTitleOther" />}</h3>
-          <p style={{ margin: 0, fontSize: 13 }}>{isOwnProfile ? <Tr k="cmdr.ships.noCapiDesc" /> : <Tr k="cmdr.ships.noCapiDescOther" />}</p>
+          <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>CAPI профиль не подключён</h3>
+          <p style={{ margin: 0, fontSize: 13 }}>Подключите CAPI профиль для просмотра кораблей.</p>
         </div>
       )}
 
@@ -186,7 +144,6 @@ export default async function CmdrShipsPage({
               shipImageUrlFromStorage(ship.shipType) ||
               shipImageUrlFromStorage(shipTypeLower) ||
               shipImageUrlFromStorage(shipTypeSnake);
-            const altText = ship.shipName ?? ship.shipType ?? '';
             return (
               <div
                 key={ship.shipId ?? ship.shipIdent ?? ship.shipName}
@@ -220,7 +177,7 @@ export default async function CmdrShipsPage({
                   {imageUrl && (
                     <img
                       src={imageUrl}
-                      alt={altText}
+                      alt={ship.shipName ?? ship.shipType ?? ''}
                       style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'transparent', position: 'absolute', top: 0, left: 0, zIndex: 2 }}
                       loading="lazy"
                       onError={(e) => {
@@ -231,7 +188,7 @@ export default async function CmdrShipsPage({
                   )}
                   {isCurrent && (
                     <div style={{ position: 'absolute', top: 8, right: 8, background: '#e67e22', color: '#1e2022', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>
-                      <Tr k="cmdr.ships.current" />
+                      Текущий
                     </div>
                   )}
                 </div>
@@ -248,55 +205,26 @@ export default async function CmdrShipsPage({
                     )}
                   </div>
 
-                  {isOwnProfile && userShipPhotos[outfittingId ?? ''] && userShipPhotos[outfittingId ?? ''].length > 0 && (
-                    <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {userShipPhotos[outfittingId ?? ''].map((photo) => (
-                        <div
-                          key={photo.id}
-                          style={{
-                            width: 44,
-                            height: 44,
-                            borderRadius: 4,
-                            overflow: 'hidden',
-                            border: `2px solid ${photo.is_primary ? '#e67e22' : 'transparent'}`,
-                            position: 'relative',
-                          }}
-                        >
-                          <img
-                            src={photo.image_url}
-                            alt={ship.shipName ?? 'user photo'}
-                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          />
-                          {photo.is_primary && (
-                            <div style={{ position: 'absolute', bottom: 1, right: 1, background: 'rgba(230,126,34,0.9)', color: '#1e2022', fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 2, fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase' }}>
-                              Основное
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
                   <div style={{ fontSize: 12, color: '#61a9d8', fontFamily: 'ui-monospace, monospace' }}>
                     {shipTypeLabel(ship.shipType)}
                   </div>
 
                   {ship.value != null && ship.value > 0 && (
                     <div style={{ fontSize: 12, color: '#f1c40f', fontFamily: 'ui-monospace, monospace' }}>
-                      ≈ {ship.value.toLocaleString()} <Tr k="cmdr.ships.cr" />
+                      ≈ {ship.value.toLocaleString()} CR
                     </div>
                   )}
 
                   <div style={{ display: 'flex', gap: 10, fontSize: 11, color: '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
                     <span>
-                      <Tr k="cmdr.systems" />: {ship.systemName || '—'}
+                      Система: {ship.systemName || '—'}
                     </span>
                     {ship.stationName && (
                       <span>·</span>
                     )}
                     {ship.stationName && (
                       <span>
-                        <Tr k="cmdr.docked" />: {ship.stationName}
+                        Док: {ship.stationName}
                       </span>
                     )}
                   </div>
@@ -307,7 +235,7 @@ export default async function CmdrShipsPage({
                       className="btn btn-cyan"
                       style={{ flex: 1, padding: '6px 10px', fontSize: 11, textAlign: 'center' }}
                     >
-                      <Tr k="cmdr.ships.outfitting" />
+                      Верфь
                     </Link>
                     <button
                       className="btn"
@@ -327,20 +255,9 @@ export default async function CmdrShipsPage({
       {capiView && ships.length === 0 && (
         <div style={{ padding: '48px 20px', textAlign: 'center', color: '#9ca3af' }}>
           <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#1a1c1e', border: '2px solid #323538', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', fontSize: 28 }}>🚫</div>
-          <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>{<Tr k="cmdr.ships.noShipsTitle" />}</h3>
-          <p style={{ margin: 0, fontSize: 13 }}>{<Tr k="cmdr.ships.noShipsDesc" />}</p>
+          <h3 style={{ color: '#eeeeee', margin: '0 0 8px', fontSize: 16 }}>Кораблей нет</h3>
+          <p style={{ margin: 0, fontSize: 13 }}>В CAPI профиле не найдено кораблей.</p>
         </div>
-      )}
-
-      {isOwnProfile && currentUserId && (
-        <UserShipPhotoUploader
-          ships={ships.map((s) => ({
-            id: capiShipTypeToOutfittingId(s.shipType) ?? s.shipType ?? '',
-            name: s.shipName ?? s.shipType ?? '—',
-            shipType: s.shipType,
-          }))}
-          currentUserId={currentUserId}
-        />
       )}
     </div>
   );
