@@ -212,13 +212,6 @@ export default async function CmdrShipsPage({
                       alt={altText}
                       style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'transparent' }}
                       loading="lazy"
-                      onError={(e) => {
-                        // Если картинка по outfittingId не загрузилась, пробуем shipType напрямую
-                        const target = e.target as HTMLImageElement;
-                        if (!target.src.includes(ship.shipType ?? '') && ship.shipType) {
-                          target.src = shipImageUrlFromStorage(ship.shipType) || '';
-                        }
-                      }}
                     />
                   )}
                   {!imageUrl && (
