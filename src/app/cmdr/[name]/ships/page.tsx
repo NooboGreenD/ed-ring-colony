@@ -189,12 +189,26 @@ export default async function CmdrShipsPage({
               ? ship.shipIdent === currentShipIdent
               : ship.shipName === currentShip;
             const outfittingId = capiShipTypeToOutfittingId(ship.shipType);
-            // Пробуем получить картинку по outfittingId, а если не вышло — по CAPI shipType напрямую
-            const imageUrl = shipImageUrlFromStorage(outfittingId) || shipImageUrlFromStorage(ship.shipType);
+            // Пробуем несколько вариантов ID для поиска картинки в bucket ship-images:
+            // 1. outfittingId (snake_case из capiShipTypeToOutfittingId)
+            // 2. ship.shipType (CamelCase из CAPI)
+            // 3. ship.shipType в нижнем регистре
+            // 4. ship.shipType → ручной snake_case
+            const shipTypeLower = ship.shipType?.toLowerCase() ?? '';
+            const shipTypeSnake = ship.shipType
+              ?.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+              .toLowerCase() ?? '';
+            const imageUrl =
+              shipImageUrlFromStorage(outfittingId) ||
+              shipImageUrlFromStorage(ship.shipType) ||
+              shipImageUrlFromStorage(shipTypeLower) ||
+              shipImageUrlFromStorage(shipTypeSnake);
             const altText = ship.shipName ?? ship.shipType ?? '';
+            const debugTitle = `DEBUG: shipType=${ship.shipType ?? 'null'} outfittingId=${outfittingId ?? 'null'} url=${imageUrl ?? 'empty'}`;
             return (
               <div
                 key={ship.shipId ?? ship.shipIdent ?? ship.shipName}
+                title={debugTitle}
                 style={{
                   background: '#25282b',
                   border: `1px solid ${isCurrent ? '#e67e22' : '#323538'}`,
@@ -218,6 +232,9 @@ export default async function CmdrShipsPage({
                     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#eeeeee', fontFamily: 'ui-monospace, monospace' }}>
                       <div style={{ fontSize: 48, marginBottom: 8 }}>🚀</div>
                       <div style={{ fontSize: 11, opacity: 0.8 }}>{shipTypeLabel(ship.shipType)}</div>
+                      <div style={{ fontSize: 9, opacity: 0.5, marginTop: 4 }}>
+                        {`${ship.shipType ?? '?'} → ${outfittingId ?? '?'}`}
+                      </div>
                     </div>
                   )}
                   {isCurrent && (
