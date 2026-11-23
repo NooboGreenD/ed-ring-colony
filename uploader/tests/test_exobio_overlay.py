@@ -547,6 +547,58 @@ class CarrierRowReuseTests(unittest.TestCase):
             "delivered": delivered, "need": 4000, "remaining": max(0, 4000 - steel),
         }]}
 
+    def test_station_market_highlights_and_clears_the_same_pooled_row(self):
+        from hud_window import COLOR_GREEN_TEXT, COLOR_TEXT, COLOR_RED_TEXT
+
+        overlay = self._overlay()
+        data = self._rows()
+        data["station_market"] = {"docked": True, "known": True, "station_name": "Galileo"}
+        data["commodities"][0].update(station_sells=True, station_stock=80)
+        overlay.update_carrier(data)
+        frame = overlay._row_pool[0]["frame"]
+        cells = overlay._row_pool[0]["cells"]
+        self.assertEqual(cells["name"].text(), "● Steel")
+        self.assertIn(COLOR_GREEN_TEXT, cells["name"].styleSheet())
+        self.assertIn(COLOR_RED_TEXT, cells["tail"].styleSheet())
+        self.assertIn("80", frame.toolTip())
+        self.assertIn("Galileo", overlay.market_label.text())
+        self.assertFalse(overlay.market_label.isHidden())
+
+        overlay.update_carrier(self._rows())  # undocked/no current market
+        self.assertIs(overlay._row_pool[0]["frame"], frame)
+        self.assertEqual(cells["name"].text(), "Steel")
+        self.assertIn(COLOR_TEXT, cells["name"].styleSheet())
+        self.assertIn("transparent", frame.styleSheet())
+        self.assertEqual(frame.toolTip(), "")
+        self.assertTrue(overlay.market_label.isHidden())
+
+    def test_station_market_option_hides_legend_and_highlights_without_losing_rows(self):
+        overlay = self._overlay()
+        data = self._rows()
+        data["station_market"] = {"docked": True, "known": True, "station_name": "Galileo"}
+        data["commodities"][0].update(station_sells=True, station_stock=80)
+        overlay.update_carrier(data)
+        cells = overlay._row_pool[0]["cells"]
+        overlay.settings["overlay_carrier_station_market"] = False
+        overlay.update_carrier(overlay._last_carrier_data)
+        self.assertTrue(overlay.market_label.isHidden())
+        self.assertEqual(cells["name"].text(), "Steel")
+        self.assertEqual(overlay._row_pool[0]["frame"].toolTip(), "")
+        self.assertEqual(cells["board"].text(), "250 (120)")
+        overlay.settings["overlay_carrier_station_market"] = True
+        overlay.update_carrier(overlay._last_carrier_data)
+        self.assertFalse(overlay.market_label.isHidden())
+        self.assertEqual(cells["name"].text(), "● Steel")
+
+    def test_unknown_market_prompts_to_open_trade_without_highlighting(self):
+        overlay = self._overlay()
+        data = self._rows()
+        data["station_market"] = {"docked": True, "known": False, "station_name": "Galileo"}
+        overlay.update_carrier(data)
+        self.assertIn("Galileo", overlay.market_label.text())
+        self.assertIn("откройте торговлю", overlay.market_label.text())
+        self.assertEqual(overlay._row_pool[0]["cells"]["name"].text(), "Steel")
+
     def test_filters_change_rows_but_not_totals_and_can_be_cleared(self):
         overlay = self._overlay()
         data = {"commodities": [

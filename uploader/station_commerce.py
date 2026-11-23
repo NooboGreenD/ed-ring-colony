@@ -10,6 +10,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from station_market import StationMarketAvailability
+
 KINDS = {"Market": "market", "Outfitting": "outfitting", "Shipyard": "shipyard"}
 MAX_PENDING = 5000
 
@@ -64,6 +66,7 @@ class StationCommerceCollector:
         self.pending = {}
         self.context = {}
         self.files_seen = {}
+        self.market_availability = StationMarketAvailability()
         self.lock = threading.RLock()
         # on_inventory(kind, event, report) — новый полный снимок рынка/
         # снаряжения/верфи текущей стоянки (например, исправить груз FC в Raven).
@@ -97,6 +100,7 @@ class StationCommerceCollector:
             self._save()
 
     def feed(self, event, live=False):
+        self.market_availability.handle(event, live=live)
         name = event.get("event")
         if name in ("Location", "FSDJump", "Docked", "CarrierJump"):
             system = event.get("StarSystem")
@@ -187,6 +191,9 @@ class StationCommerceCollector:
                     event.get("StationName") != self.context["station_name"] or
                     event.get("event") != event_name):
                     continue
+                # Sidecars are read only for the verified current dock, not
+                # during historical replay. HUD availability stays local.
+                self.market_availability.handle(event, live=True)
                 if self.inventory(event):
                     self.files_seen[str(path)] = signature
             except (OSError, ValueError, AttributeError):

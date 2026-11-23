@@ -1026,6 +1026,10 @@ class OverlayManager:
                 overlay._render()
             elif block == 'events':
                 overlay.render_events()
+            elif block == 'carrier' and section == 'station_market':
+                # Repaint cached rows immediately: market/cargo may be unchanged
+                # and the normal data hash would otherwise skip this update.
+                overlay.update_carrier(getattr(overlay, '_last_carrier_data', {}))
             overlay.apply_data_options()
 
     def set_carrier_filter(self, mode=None, query=None):

@@ -1117,6 +1117,10 @@ class CarrierOverlay(HudWindow):
         list_layout = QVBoxLayout(self.list_frame)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(2)
+        self.market_label = self.make_label(self.list_frame, "", color=COLOR_GREEN_TEXT,
+                                            dp=-1, wrap=True)
+        self.market_label.hide()
+        list_layout.addWidget(self.market_label)
 
         self.columns = QWidget(self.list_frame)
         columns_layout = QHBoxLayout(self.columns)
@@ -1231,6 +1235,19 @@ class CarrierOverlay(HudWindow):
             detail_text = ((f"{detail_text}\n" if detail_text else "")
                            + tr("службы: {list}", list=shown))
         self.detail_label.setText(detail_text)
+
+        market = data.get("station_market") or {}
+        station = str(market.get("station_name") or "")
+        if market.get("docked") and self.settings.get(option_key("carrier", "station_market"), True):
+            self.market_label.setText(
+                tr("● Зелёным — в продаже на {station}", station=station)
+                if market.get("known") else
+                tr("Рынок {station}: откройте торговлю в игре", station=station))
+            paint(self.market_label, color=COLOR_GREEN_TEXT if market.get("known") else COLOR_TEXT_MUTED)
+            self.market_label.show()
+        else:
+            self.market_label.setText("")
+            self.market_label.hide()
 
         rows = list(data.get("commodities") or [])
         mode = self.settings.get("carrier_filter", "all")
@@ -1403,7 +1420,19 @@ class CarrierOverlay(HudWindow):
             self._row_order = order
 
         for index, row in enumerate(rows):
-            cells = self._row_pool[index]["cells"]
+            entry = self._row_pool[index]
+            cells = entry["cells"]
+            available = bool(self.settings.get(option_key("carrier", "station_market"), True)
+                             and row.get("station_sells"))
+            background = "#142b23" if available else "transparent"
+            # Pool entries are reused for different commodities/stations.
+            # Always repaint AND clear the tooltip, even when order is equal.
+            entry["frame"].setStyleSheet(f"background:{background};")
+            market = self._last_carrier_data.get("station_market") or {}
+            entry["frame"].setToolTip(tr(
+                "{station}: в продаже {tons} t",
+                station=str(market.get("station_name") or ""),
+                tons=int(row.get("station_stock") or 0)) if available else "")
             amount = int(row.get("amount") or 0)
             delivered = int(row.get("delivered") or 0)
             need = int(row.get("need") or 0)
@@ -1418,17 +1447,17 @@ class CarrierOverlay(HudWindow):
             else:
                 tail, tail_color, board_color = "", COLOR_TEXT_MUTED, COLOR_TEXT
 
-            label = str(row.get("name") or row.get("key") or "")
+            label = ("● " if available else "") + str(row.get("name") or row.get("key") or "")
             if len(label) > self._name_chars:
                 label = label[: self._name_chars - 1] + "…"
             cells["name"].setText(label)
-            paint(cells["name"], color=COLOR_TEXT)
+            paint(cells["name"], color=COLOR_GREEN_TEXT if available else COLOR_TEXT, background=background)
             cells["board"].setText(on_board)
-            paint(cells["board"], color=board_color)
+            paint(cells["board"], color=board_color, background=background)
             cells["need"].setText(str(need) if need else "—")
-            paint(cells["need"], color=COLOR_TEXT_MUTED)
+            paint(cells["need"], color=COLOR_TEXT_MUTED, background=background)
             cells["tail"].setText(tail)
-            paint(cells["tail"], color=tail_color)
+            paint(cells["tail"], color=tail_color, background=background)
 
 
 # ============================================================
