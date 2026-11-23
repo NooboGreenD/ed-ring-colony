@@ -647,6 +647,8 @@ export interface CarrierView {
   cargo: {
     items: CarrierCargoView[];
     trackedTotal: number;
+    /** Actual ledger observation times, including depleted rows (not ingestion time). */
+    observations?: Record<string, string>;
     baselineAt: string | null;
     baselineSource: string | null;
     updatedAt: string | null;
@@ -788,6 +790,10 @@ export function buildCarrierView(
     finance: options.showFinance && isRecord(row.finance) ? row.finance as Record<string, number> : null,
     cargo: showCargo ? {
       items: cargoItems,
+      observations: Object.fromEntries((options.cargoRows ?? []).flatMap((item) => {
+        const at = asIso(item.observed_at);
+        return at ? [[String(item.commodity), at]] : [];
+      })),
       trackedTotal: cargoItems.reduce((sum, item) => sum + item.quantity, 0),
       baselineAt: asIso(row.cargo_baseline_at),
       baselineSource: row.cargo_baseline_source ?? null,

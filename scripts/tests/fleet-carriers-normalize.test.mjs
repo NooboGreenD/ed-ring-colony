@@ -291,3 +291,15 @@ test('collector: web upload and Helper-style full events produce identical delta
   assert.deepEqual(web.map((op) => op.hash), helper.map((op) => op.hash));
   assert.deepEqual(web.map((op) => [op.commodity, op.delta]), [['steel', 700], ['titanium', 20]]);
 });
+
+test('private cargo exposes observation times for both positive and depleted rows; public does not', () => {
+  const row = { carrier_id: 3709000001, carrier_type: 'SquadronCarrier' };
+  const cargoRows = [
+    { commodity: 'steel', quantity: 900, observed_at: '2026-03-01T10:02:00Z', updated_at: '2026-03-02T00:00:00Z' },
+    { commodity: 'water', quantity: 0, observed_at: '2026-03-01T10:03:00Z' },
+  ];
+  const view = buildCarrierView(row, { relation: 'squadron', showFinance: false, cargoRows });
+  assert.deepEqual(view.cargo.items.map(i => i.commodity), ['steel']);
+  assert.deepEqual(view.cargo.observations, { steel: '2026-03-01T10:02:00.000Z', water: '2026-03-01T10:03:00.000Z' });
+  assert.equal(buildCarrierView(row, { relation: 'public', showFinance: false, cargoRows }).cargo, null);
+});

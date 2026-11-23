@@ -1298,6 +1298,7 @@ class CarrierOverlay(HudWindow):
                 "journal" if (tracked_total or delivered_total) else "")
         source = {
             "server": tr("груз: сайт проекта"),
+            "market": tr("груз: по рынку носителя (частичный снимок)"),
             "remote": "груз: Raven Colonial",
             "journal": tr("груз: по журналу (только ваши перевозки)"),
             "estimate": tr("груз: оценка, сведена с CarrierStats"),

@@ -41,6 +41,7 @@ CREATE TABLE market_prices(station_name text,system_name text,commodity_name tex
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261014000000_station_commerce.sql', import.meta.url), 'utf8'));
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261017000000_fleet_carriers.sql', import.meta.url), 'utf8'));
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261018000000_fleet_carrier_squadron_claims.sql', import.meta.url), 'utf8'));
+await db.exec(readFileSync(new URL('../../supabase/migrations/20261123120000_carrier_cargo_observation_time.sql', import.meta.url), 'utf8'));
 
 let hashCounter = 0;
 const hash = () => (++hashCounter).toString(16).padStart(64, '0');
@@ -253,4 +254,36 @@ test('only service_role may execute the batch function', async () => {
            has_function_privilege('service_role', 'public.apply_fleet_carrier_batch(uuid,text,jsonb)', 'EXECUTE') AS service_exec,
            has_table_privilege('anon', 'public.fleet_carriers', 'SELECT') AS anon_select`);
   assert.deepEqual(rows[0], { anon_exec: false, auth_exec: false, anon_tag: false, service_exec: true, anon_select: false });
+});
+
+test('squadron partial market stock, bank deltas, depletion and observation time survive retries/late history', async () => {
+  const id = '3709000901';
+  const baseline = (at, items) => ({ op: 'baseline', carrier_id: id, at, full: false, source_event: 'Market', items });
+  await apply([baseline('2026-03-01T10:00:00Z', [{ commodity: 'steel', qty: 100 }, { commodity: 'water', qty: 50 }])]);
+  const bank = { ...delta('2026-03-01T10:01:00Z', 'steel', 500, hash(), id), event: 'SquadronBankTransfer' };
+  await apply([bank]);
+  await apply([bank]); // lost response and retry: never duplicate the bank transfer
+  assert.deepEqual(await cargo(id), { steel: 600, water: 50 });
+  await apply([baseline('2026-03-01T10:02:00Z', [{ commodity: 'steel', qty: 900 }])]);
+  assert.deepEqual(await cargo(id), { steel: 900, water: 50 });
+  await apply([delta('2026-03-01T09:00:00Z', 'steel', 9999, hash(), id)]); // recent write != recent observation
+  assert.deepEqual(await cargo(id), { steel: 900, water: 50 });
+  let row = (await db.query("SELECT observed_at FROM fleet_carrier_cargo WHERE carrier_id=$1 AND commodity='steel'", [id])).rows[0];
+  assert.equal(new Date(row.observed_at).toISOString(), '2026-03-01T10:02:00.000Z');
+  await apply([baseline('2026-03-01T10:03:00Z', [{ commodity: 'steel', qty: 0 }])]);
+  assert.deepEqual(await cargo(id), { water: 50 });
+  row = (await db.query("SELECT quantity, observed_at FROM fleet_carrier_cargo WHERE carrier_id=$1 AND commodity='steel'", [id])).rows[0];
+  assert.equal(Number(row.quantity), 0);
+  assert.equal(new Date(row.observed_at).toISOString(), '2026-03-01T10:03:00.000Z');
+});
+
+test('cargo observation migration backfills existing rows, is repeatable and does not grant public execution', async () => {
+  const id = '3709000901';
+  await db.query('UPDATE fleet_carrier_cargo SET observed_at = NULL WHERE carrier_id=$1', [id]);
+  await db.exec(readFileSync(new URL('../../supabase/migrations/20261123120000_carrier_cargo_observation_time.sql', import.meta.url), 'utf8'));
+  const row = (await db.query("SELECT observed_at FROM fleet_carrier_cargo WHERE carrier_id=$1 AND commodity='steel'", [id])).rows[0];
+  assert.equal(new Date(row.observed_at).toISOString(), '2026-03-01T10:03:00.000Z');
+  assert.deepEqual(await cargo(id), { water: 50 });
+  const acl = (await db.query("SELECT has_function_privilege('anon', 'public.fleet_carrier_cargo_observation_time()', 'EXECUTE') AS allowed")).rows[0];
+  assert.equal(acl.allowed, false);
 });
