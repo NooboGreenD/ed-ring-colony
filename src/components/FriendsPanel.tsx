@@ -70,9 +70,12 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
   };
 
   const selectFriend = (friend: any) => {
-    setChatPeer(friend.friend_id || null);
+    const fid = friend.friend_id || null;
+    setChatPeer(fid);
     setChatPeerName(friend.friend_name || "Unknown");
     setChatPeerAvatar(friend.friend_avatar || null);
+    // Сбрасываем badge непрочитанных для выбранного друга
+    setUnreadCounts((prev) => ({ ...prev, [fid]: 0 }));
   };
 
   return (
@@ -252,6 +255,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
             peerAvatar={chatPeerAvatar}
             myName={myName}
             myAvatar={myAvatar}
+            onUnreadReset={(pid) => setUnreadCounts((prev) => ({ ...prev, [pid]: 0 }))}
           />
         )}
       </div>
@@ -267,6 +271,7 @@ function DirectChat({
   peerAvatar,
   myName,
   myAvatar,
+  onUnreadReset,
 }: {
   userId: string;
   peerId: string;
@@ -274,42 +279,53 @@ function DirectChat({
   peerAvatar: string | null;
   myName: string;
   myAvatar: string | null;
+  onUnreadReset: (peerId: string) => void;
 }) {
   const { t, locale } = useI18n();
   const [messages, setMessages] = useState<any[]>([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
 
   const loadMessages = async () => {
-    if (!peerId) { setMessages([]); return; }
+    if (!peerId) { setMessages([]); setLoading(false); setMessagesError(null); return; }
     setLoading(true);
-    const filter =
-      "and(sender_id.eq." +
-      userId +
-      ",recipient_id.eq." +
-      peerId +
-      ")," +
-      "and(sender_id.eq." +
-      peerId +
-      ",recipient_id.eq." +
-      userId +
-      ")";
-    const { data } = await supabase
-      .from("messages")
-      .select("*")
-      .or(filter)
-      .order("created_at", { ascending: true })
-      .limit(300);
-    setMessages(data ?? []);
-    // Помечаем входящие прочитанными
-    await supabase
-      .from("messages")
-      .update({ read_at: new Date().toISOString() })
-      .eq("recipient_id", userId)
-      .eq("sender_id", peerId)
-      .is("read_at", null);
-    setLoading(false);
+    setMessagesError(null);
+    try {
+      const filter =
+        "and(sender_id.eq." +
+        userId +
+        ",recipient_id.eq." +
+        peerId +
+        ")," +
+        "and(sender_id.eq." +
+        peerId +
+        ",recipient_id.eq." +
+        userId +
+        ")";
+      const { data, error } = await supabase
+        .from("messages")
+        .select("*")
+        .or(filter)
+        .order("created_at", { ascending: true })
+        .limit(300);
+      if (error) throw error;
+      setMessages(data ?? []);
+      // Помечаем входящие прочитанными
+      await supabase
+        .from("messages")
+        .update({ read_at: new Date().toISOString() })
+        .eq("recipient_id", userId)
+        .eq("sender_id", peerId)
+        .is("read_at", null);
+      // Сбрасываем badge непрочитанных для этого друга
+      onUnreadReset(peerId);
+    } catch (err: any) {
+      setMessagesError(err.message || 'Не удалось загрузить сообщения');
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -318,6 +334,7 @@ function DirectChat({
 
   // Realtime
   useEffect(() => {
+    if (!peerId) return;
     const channel = supabase
       .channel(`dm_friend_${peerId}`)
       .on(
@@ -341,7 +358,13 @@ function DirectChat({
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setMessagesError(null);
+        } else if (status === 'CHANNEL_ERROR') {
+          setMessagesError('Ошибка подписки на обновления чата');
+        }
+      });
     return () => { supabase.removeChannel(channel); };
   }, [peerId, userId]);
 
@@ -397,7 +420,15 @@ function DirectChat({
             {t('frnd.loading')}
           </div>
         )}
-        {messages.length === 0 && !loading && (
+        {messagesError && messages.length === 0 && !loading && (
+          <div style={{ textAlign: "center", color: "#fca5a5", padding: 40, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+            <div style={{ marginBottom: 10 }}>{messagesError}</div>
+            <button onClick={() => void loadMessages()} className="btn btn-cyan" style={{ padding: "6px 12px", fontSize: 11 }}>
+              {t('common.retry') || 'Повторить'}
+            </button>
+          </div>
+        )}
+        {messages.length === 0 && !loading && !messagesError && (
           <div style={{ textAlign: "center", color: "#9ca3af", padding: 40, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
             {t('frnd.emptyChat')}
           </div>
