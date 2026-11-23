@@ -32,6 +32,28 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
   const [chatPeerName, setChatPeerName] = useState<string>("");
   const [chatPeerAvatar, setChatPeerAvatar] = useState<string | null>(null);
   const [tab, setTab] = useState<"friends" | "requests">("friends");
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+
+  // Считаем непрочитанные сообщения от каждого друга
+  useEffect(() => {
+    const loadUnread = async () => {
+      if (!friends.length) return;
+      const counts: Record<string, number> = {};
+      for (const f of friends) {
+        const fid = f.friend_id;
+        if (!fid) continue;
+        const { count: c } = await supabase
+          .from("messages")
+          .select("*", { count: "exact", head: true })
+          .eq("sender_id", fid)
+          .eq("recipient_id", userId)
+          .is("read_at", null);
+        counts[fid] = c || 0;
+      }
+      setUnreadCounts(counts);
+    };
+    void loadUnread();
+  }, [friends, userId]);
 
   const doSearch = async () => {
     if (!search.trim()) return;
@@ -54,9 +76,9 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
   };
 
   return (
-    <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", minHeight: "100vh" }}>
       {/* Левая панель: список друзей */}
-      <div style={{ flex: "0 0 280px", minWidth: 240 }}>
+      <div style={{ flex: "0 0 280px", minWidth: 240, minHeight: "100vh" }}>
         <div className="tabs" style={{ marginBottom: 12 }}>
           <button className={tab === "friends" ? "tab tab-active" : "tab"} onClick={() => setTab("friends")}>
             {t('frnd.tabFriends', { count: friends.length })}
@@ -119,23 +141,49 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
                 <Link href="/cmdrs" style={{ color: "#e67e22" }}>{t('frnd.commanders')}</Link>.
               </p>
             )}
-            {friends.map((f) => (
-              <button
-                key={f.id}
-                className={chatPeer === f.friend_id ? "peer peer-active" : "peer"}
-                onClick={() => selectFriend(f)}
-                style={{ position: "relative" }}
-              >
-                <PilotIdentity userId={f.friend_id} cmdrName={f.friend_name || "Unknown"} avatarUrl={f.friend_avatar} size={28} fontSize={13} link={false} showTier={false} style={{ flex: 1, textAlign: "left" }} />
+            {friends.map((f) => {
+              const fid = f.friend_id;
+              if (!fid) return null;
+              const unread = unreadCounts[fid] || 0;
+              return (
                 <button
-                  onClick={(e) => { e.stopPropagation(); removeFriend(f.id); }}
-                  style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.4, padding: 2 }}
-                  title={t('frnd.removeFriend')}
+                  key={f.id}
+                  className={chatPeer === f.friend_id ? "peer peer-active" : "peer"}
+                  onClick={() => selectFriend(f)}
+                  style={{ position: "relative" }}
                 >
-                  <IconTrash size={12} color="#e74c3c" />
+                  <PilotIdentity userId={f.friend_id} cmdrName={f.friend_name || "Unknown"} avatarUrl={f.friend_avatar} size={28} fontSize={13} link={false} showTier={false} style={{ flex: 1, textAlign: "left" }} />
+                  {unread > 0 && (
+                    <div style={{
+                      position: "absolute",
+                      top: 2,
+                      right: 24,
+                      background: "#e74c3c",
+                      color: "#fff",
+                      borderRadius: "50%",
+                      width: 20,
+                      height: 20,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      fontFamily: "ui-monospace, monospace",
+                      border: "2px solid #1a1c1e",
+                    }}>
+                      {unread > 9 ? "9+" : unread}
+                    </div>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); removeFriend(f.id); }}
+                    style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.4, padding: 2 }}
+                    title={t('frnd.removeFriend')}
+                  >
+                    <IconTrash size={12} color="#e74c3c" />
+                  </button>
                 </button>
-              </button>
-            ))}
+              );
+            })}
           </>
         )}
 
@@ -189,9 +237,9 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
       </div>
 
       {/* Правая панель: чат */}
-      <div style={{ flex: 1, minWidth: 280 }}>
+      <div style={{ flex: 1, minWidth: 280, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {!chatPeer && (
-          <div style={{ textAlign: "center", padding: "60px 20px", color: "#9ca3af" }}>
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", color: "#9ca3af" }}>
             <div style={{ fontSize: 48, marginBottom: 16, display: "flex", justifyContent: "center" }}><IconMessage size={48} color="#9ca3af" /></div>
             <p>{t('frnd.pickFriend')}</p>
           </div>
@@ -325,7 +373,7 @@ function DirectChat({
   };
 
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Заголовок диалога */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#1a1c1e", borderRadius: "6px 6px 0 0", borderBottom: "1px solid #2d3033" }}>
         <Avatar url={peerAvatar} name={peerName} size={32} />
@@ -339,7 +387,7 @@ function DirectChat({
       <div
         ref={boxRef}
         style={{
-          height: 360, overflowY: "auto",
+          flex: 1, overflowY: "auto",
           background: "#1a1c1e", border: "1px solid #2d3033", borderTop: "none", borderRadius: "0 0 6px 6px",
           padding: "12px 16px", display: "flex", flexDirection: "column", gap: 10,
         }}
