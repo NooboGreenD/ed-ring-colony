@@ -1,8 +1,13 @@
 import { NextResponse } from 'next/server'
 import { authFromRequest } from '@/lib/supabaseServer'
+import { getSquadronMembership } from '@/lib/squadronData'
 import { apiTranslate } from '@/lib/i18n/apiT';
 
 export const dynamic = 'force-dynamic';
+
+function hasOfficerAccess(member: { can_manage_members: boolean; can_manage_projects: boolean; can_manage_ranks: boolean; can_edit_squadron: boolean }) {
+  return member.can_manage_members || member.can_manage_projects || member.can_manage_ranks || member.can_edit_squadron
+}
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const t = await apiTranslate();
@@ -11,22 +16,24 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const squadronId = parseInt(resolvedParams.id)
     const { searchParams } = new URL(req.url)
     const chatType = searchParams.get('type') || 'general'
-    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100)
+    if (!Number.isSafeInteger(squadronId) || squadronId <= 0 || !['general', 'officer'].includes(chatType)) {
+      return NextResponse.json({ error: 'Invalid squadron or chat type' }, { status: 400 })
+    }
+    const requestedLimit = Number(searchParams.get('limit') || '50')
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 50
     const before = searchParams.get('before')
 
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    // Проверка: пользователь в эскадрилье?
-    const { data: membership } = await supabase
-      .from('squadron_members')
-      .select('id')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .maybeSingle()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership) {
       return NextResponse.json({ error: 'Not a member' }, { status: 403 })
+    }
+
+    if (chatType === 'officer' && !hasOfficerAccess(membership)) {
+      return NextResponse.json({ error: 'Officer access required' }, { status: 403 })
     }
 
     // Загружаем сообщения без join (избегаем проблемы schema cache)
@@ -76,8 +83,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const squadronId = parseInt(resolvedParams.id)
     const body = await req.json()
     const { content, chat_type = 'general' } = body
+    if (!Number.isSafeInteger(squadronId) || squadronId <= 0 || !['general', 'officer'].includes(chat_type)) {
+      return NextResponse.json({ error: 'Invalid squadron or chat type' }, { status: 400 })
+    }
 
-    if (!content?.trim()) {
+    if (typeof content !== 'string' || !content.trim()) {
       return NextResponse.json({ error: 'Content required' }, { status: 400 })
     }
     if (content.length > 2000) {
@@ -87,34 +97,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    // Проверка: пользователь в эскадрилье?
-    const { data: membership } = await supabase
-      .from('squadron_members')
-      .select('id, rank_id')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership) {
       return NextResponse.json({ error: 'Not a member' }, { status: 403 })
     }
 
-    // Для officer-chat проверяем права
-    if (chat_type === 'officer') {
-      const { data: rank } = await supabase
-        .from('squadron_ranks')
-        .select('can_manage_members, can_manage_projects, can_manage_ranks, can_edit_squadron')
-        .eq('id', membership.rank_id)
-        .single()
-
-      const hasOfficerAccess = rank && (
-        rank.can_manage_members || rank.can_manage_projects ||
-        rank.can_manage_ranks || rank.can_edit_squadron
-      )
-
-      if (!hasOfficerAccess) {
-        return NextResponse.json({ error: 'Officer access required' }, { status: 403 })
-      }
+    if (chat_type === 'officer' && !hasOfficerAccess(membership)) {
+      return NextResponse.json({ error: 'Officer access required' }, { status: 403 })
     }
 
     const { data: insertedRows, error } = await supabase

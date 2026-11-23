@@ -21047,3 +21047,687 @@ GRANT EXECUTE ON FUNCTION public.apply_pilot_squadron(UUID, BIGINT, TEXT, TEXT, 
 
 COMMENT ON FUNCTION public.apply_pilot_squadron(UUID, BIGINT, TEXT, TEXT, INTEGER, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN) IS
   'Эскадрилья из журнала → профиль, связь с эскадрильей сайта и автовступление в состав. При переходе в новую эскадрилью старое членство освобождается (transferred).';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261120000000_ship_images_bucket.sql
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ============================================================================
+-- 20261120000000_ship_images_bucket.sql
+-- Bucket Supabase Storage для картинок кораблей на странице /cmdr/[name]/ships.
+--
+-- Публичный bucket `ship-images` хранит PNG картинки кораблей по имени
+-- из outfitting.json (например, `cobra_mk_iii.png`, `sidewinder.png`).
+-- Картинки заливаются админом вручную (или скриптом) через Supabase CLI/API.
+-- ============================================================================
+
+-- Создать публичный bucket для картинок кораблей
+DO $$ BEGIN
+  IF to_regclass('storage.buckets') IS NOT NULL THEN
+    INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    VALUES (
+      'ship-images',
+      'ship-images',
+      true,
+      10485760, -- 10 МБ
+      ARRAY['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+    )
+    ON CONFLICT (id) DO NOTHING;
+
+    -- Политики доступа: если пользователь не владелец storage.objects,
+    -- миграция не падает — просто выводит NOTICE (как в 000_base_schema.sql).
+    BEGIN
+      DROP POLICY IF EXISTS "Ship images are publicly readable" ON storage.objects;
+      CREATE POLICY "Ship images are publicly readable" ON storage.objects
+        FOR SELECT TO anon, authenticated
+        USING (bucket_id = 'ship-images');
+
+      DROP POLICY IF EXISTS "Ship images are writable by service role" ON storage.objects;
+      CREATE POLICY "Ship images are writable by service role" ON storage.objects
+        FOR INSERT TO service_role
+        WITH CHECK (bucket_id = 'ship-images');
+
+      DROP POLICY IF EXISTS "Ship images are updatable by service role" ON storage.objects;
+      CREATE POLICY "Ship images are updatable by service role" ON storage.objects
+        FOR UPDATE TO service_role
+        USING (bucket_id = 'ship-images');
+
+      DROP POLICY IF EXISTS "Ship images are deletable by service role" ON storage.objects;
+      CREATE POLICY "Ship images are deletable by service role" ON storage.objects
+        FOR DELETE TO service_role
+        USING (bucket_id = 'ship-images');
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE NOTICE 'storage.objects принадлежит supabase_admin — создайте политики бакета ship-images через Supabase Dashboard';
+    END;
+  END IF;
+END $$;
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261120010000_user_ship_photos.sql
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ============================================================================
+-- 20261120010000_user_ship_photos.sql
+-- Пользовательские фото кораблей (премиум перк "Фото Галерея кораблей").
+--
+-- Позволяет владельцам премиум-подписки с перком загружать до 5 фото
+-- своих кораблей. Официальные картинки кораблей хранятся в bucket `ship-images`
+-- и управляются через админ-панель.
+-- ============================================================================
+
+-- Создать публичный bucket для картинок кораблей (если ещё не создан)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM storage.buckets WHERE id = 'ship-images') THEN
+    INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+    VALUES ('ship-images', 'ship-images', true, 10485760, ARRAY['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  END IF;
+END $$;
+
+-- Политики доступа к бакету ship-images (public read, service_role write)
+DROP POLICY IF EXISTS ship_images_public_read ON storage.objects;
+CREATE POLICY ship_images_public_read ON storage.objects
+  FOR SELECT
+  TO public
+  USING (bucket_id = 'ship-images');
+
+DROP POLICY IF EXISTS ship_images_service_write ON storage.objects;
+CREATE POLICY ship_images_service_write ON storage.objects
+  FOR ALL
+  TO service_role
+  USING (bucket_id = 'ship-images')
+  WITH CHECK (bucket_id = 'ship-images');
+
+CREATE TABLE IF NOT EXISTS public.user_ship_photos (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  ship_id         TEXT NOT NULL,                 -- ID корабля из outfitting.json (cobra_mk_iii, sidewinder, …)
+  image_url       TEXT NOT NULL,                 -- Публичный URL картинки в Supabase Storage
+  is_primary      BOOLEAN NOT NULL DEFAULT false,
+  uploaded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_user_ship_photos_user_id ON public.user_ship_photos(user_id);
+CREATE INDEX idx_user_ship_photos_ship_id ON public.user_ship_photos(ship_id);
+CREATE INDEX idx_user_ship_photos_user_ship ON public.user_ship_photos(user_id, ship_id);
+
+ALTER TABLE public.user_ship_photos ENABLE ROW LEVEL SECURITY;
+
+-- Чтение: могут видеть все (включая неавторизованных)
+CREATE POLICY "User ship photos are publicly readable" ON public.user_ship_photos
+  FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+-- Вставка: только авторизованный пользователь, свои фото.
+-- Лимит 5 фото на корабль контролируется на уровне API (route.ts).
+CREATE POLICY "Users can insert their own ship photos" ON public.user_ship_photos
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Обновление: только владелец фото
+CREATE POLICY "Users can update their own ship photos" ON public.user_ship_photos
+  FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+-- Удаление: только владелец фото
+CREATE POLICY "Users can delete their own ship photos" ON public.user_ship_photos
+  FOR DELETE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Service role может всё
+CREATE POLICY "Service role can manage all user ship photos" ON public.user_ship_photos
+  FOR ALL
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261123090000_squadron_access_hardening.sql
+-- └────────────────────────────────────────────────────────────────┘
+
+-- S02/S11: enforce the same squadron boundary for API and direct PostgREST.
+-- Forward-only: do not edit already applied migrations. No data is rewritten.
+-- Applied atomically by deploy/update-project.sh (--single-transaction).
+
+-- These helpers deliberately accept no user id: identity always comes from
+-- the verified JWT. Definer avoids recursive squadron_members RLS checks.
+CREATE OR REPLACE FUNCTION public.squadron_request_can(p_squadron bigint, p_permission text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp AS $$
+  SELECT auth.uid() IS NOT NULL AND (
+    EXISTS (SELECT 1 FROM public.squadrons sq
+      WHERE sq.id = p_squadron AND sq.created_by = auth.uid())
+    OR EXISTS (
+      SELECT 1 FROM public.squadron_members sm
+      LEFT JOIN public.squadron_ranks r ON r.id = sm.rank_id AND r.squadron_id = sm.squadron_id
+      WHERE sm.squadron_id = p_squadron AND sm.user_id = auth.uid()
+      AND CASE p_permission
+        WHEN 'member' THEN true
+        WHEN 'officer' THEN coalesce(r.can_manage_members OR r.can_manage_projects OR r.can_manage_ranks OR r.can_edit_squadron, false)
+        WHEN 'members' THEN coalesce(r.can_manage_members, false)
+        WHEN 'ranks' THEN coalesce(r.can_manage_ranks, false)
+        WHEN 'projects' THEN coalesce(r.can_manage_projects, false)
+        WHEN 'edit' THEN coalesce(r.can_edit_squadron, false)
+        ELSE false END
+    )
+  ) AND p_permission IN ('member', 'officer', 'members', 'ranks', 'projects', 'edit');
+$$;
+
+CREATE OR REPLACE FUNCTION public.squadron_request_can_delegate(
+  p_squadron bigint, p_members boolean, p_ranks boolean, p_projects boolean, p_edit boolean
+) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp AS $$
+  SELECT (NOT coalesce(p_members, false) OR public.squadron_request_can(p_squadron, 'members'))
+     AND (NOT coalesce(p_ranks, false) OR public.squadron_request_can(p_squadron, 'ranks'))
+     AND (NOT coalesce(p_projects, false) OR public.squadron_request_can(p_squadron, 'projects'))
+     AND (NOT coalesce(p_edit, false) OR public.squadron_request_can(p_squadron, 'edit'));
+$$;
+
+CREATE OR REPLACE FUNCTION public.squadron_request_can_assign(p_squadron bigint, p_rank bigint)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp AS $$
+  SELECT p_rank IS NULL OR EXISTS (
+    SELECT 1 FROM public.squadron_ranks r WHERE r.id = p_rank AND r.squadron_id = p_squadron
+      AND public.squadron_request_can_delegate(p_squadron, r.can_manage_members,
+        r.can_manage_ranks, r.can_manage_projects, r.can_edit_squadron)
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.squadron_request_can_manage_target(p_squadron bigint, p_user uuid)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp AS $$
+  SELECT public.squadron_request_can(p_squadron, 'members') AND EXISTS (
+    SELECT 1 FROM public.squadrons sq WHERE sq.id = p_squadron
+      AND (sq.created_by IS DISTINCT FROM p_user OR sq.created_by = auth.uid())
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.squadron_request_can_use_room(p_room bigint)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp AS $$
+  SELECT EXISTS (SELECT 1 FROM public.squadron_voice_rooms vr WHERE vr.id = p_room
+    AND public.squadron_request_can(vr.squadron_id, 'member')
+    AND (NOT vr.is_officer_only OR public.squadron_request_can(vr.squadron_id, 'officer')));
+$$;
+
+REVOKE ALL ON FUNCTION public.squadron_request_can(bigint,text),
+  public.squadron_request_can_delegate(bigint,boolean,boolean,boolean,boolean),
+  public.squadron_request_can_assign(bigint,bigint),
+  public.squadron_request_can_manage_target(bigint,uuid),
+  public.squadron_request_can_use_room(bigint) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.squadron_request_can(bigint,text),
+  public.squadron_request_can_delegate(bigint,boolean,boolean,boolean,boolean),
+  public.squadron_request_can_assign(bigint,bigint),
+  public.squadron_request_can_manage_target(bigint,uuid),
+  public.squadron_request_can_use_room(bigint) TO authenticated, service_role;
+
+-- Policies are permissive/ORed by default. Replace the complete policy set on
+-- these six relations, including installations with legacy policy names.
+DO $$ DECLARE p record;
+BEGIN
+  FOR p IN SELECT tablename, policyname FROM pg_policies WHERE schemaname = 'public'
+    AND tablename IN ('squadron_members', 'squadron_ranks', 'squadron_chat_messages',
+      'squadron_voice_rooms', 'squadron_voice_signals', 'squadron_voice_participants')
+  LOOP
+    EXECUTE format('DROP POLICY %I ON public.%I', p.policyname, p.tablename);
+  END LOOP;
+END $$;
+
+ALTER TABLE public.squadron_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.squadron_ranks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.squadron_chat_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.squadron_voice_rooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.squadron_voice_signals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.squadron_voice_participants ENABLE ROW LEVEL SECURITY;
+
+-- Public roster/rank read models remain public. Server-owned identity, legacy
+-- role and journal columns cannot be changed with a browser JWT.
+REVOKE INSERT, UPDATE ON public.squadron_members FROM PUBLIC, anon, authenticated;
+GRANT INSERT (squadron_id,user_id,rank_id,callsign), UPDATE (rank_id,callsign)
+  ON public.squadron_members TO authenticated;
+GRANT SELECT ON public.squadron_members TO anon, authenticated;
+GRANT DELETE ON public.squadron_members TO authenticated;
+CREATE POLICY squadron_members_select ON public.squadron_members FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY squadron_members_insert ON public.squadron_members FOR INSERT TO authenticated
+  WITH CHECK (public.squadron_request_can_manage_target(squadron_id,user_id)
+    AND public.squadron_request_can_assign(squadron_id,rank_id));
+CREATE POLICY squadron_members_update ON public.squadron_members FOR UPDATE TO authenticated
+  USING (public.squadron_request_can_manage_target(squadron_id,user_id))
+  WITH CHECK (public.squadron_request_can_manage_target(squadron_id,user_id)
+    AND public.squadron_request_can_assign(squadron_id,rank_id));
+CREATE POLICY squadron_members_delete ON public.squadron_members FOR DELETE TO authenticated
+  USING (user_id = auth.uid() OR public.squadron_request_can_manage_target(squadron_id,user_id));
+
+REVOKE INSERT, UPDATE ON public.squadron_ranks FROM PUBLIC, anon, authenticated;
+GRANT INSERT (squadron_id,name,sort_order,is_default,can_manage_members,can_manage_ranks,can_manage_projects,can_edit_squadron),
+  UPDATE (name,sort_order,can_manage_members,can_manage_ranks,can_manage_projects,can_edit_squadron)
+  ON public.squadron_ranks TO authenticated;
+GRANT SELECT ON public.squadron_ranks TO anon, authenticated;
+GRANT DELETE ON public.squadron_ranks TO authenticated;
+CREATE POLICY squadron_ranks_select ON public.squadron_ranks FOR SELECT TO anon, authenticated USING (true);
+CREATE POLICY squadron_ranks_insert ON public.squadron_ranks FOR INSERT TO authenticated
+  WITH CHECK (NOT is_default AND public.squadron_request_can(squadron_id,'ranks')
+    AND public.squadron_request_can_delegate(squadron_id,can_manage_members,can_manage_ranks,can_manage_projects,can_edit_squadron));
+CREATE POLICY squadron_ranks_update ON public.squadron_ranks FOR UPDATE TO authenticated
+  USING (public.squadron_request_can(squadron_id,'ranks'))
+  WITH CHECK (public.squadron_request_can(squadron_id,'ranks'));
+CREATE POLICY squadron_ranks_delete ON public.squadron_ranks FOR DELETE TO authenticated
+  USING (NOT is_default AND public.squadron_request_can(squadron_id,'ranks')
+    AND NOT EXISTS (SELECT 1 FROM public.squadron_members sm WHERE sm.rank_id = squadron_ranks.id));
+
+-- Default rank editing is limited to sort_order, just as in the API.
+CREATE OR REPLACE FUNCTION public.squadron_protect_default_rank()
+RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  IF current_user = 'authenticated' AND OLD.is_default AND
+    (to_jsonb(NEW) - 'sort_order') IS DISTINCT FROM (to_jsonb(OLD) - 'sort_order') THEN
+    RAISE EXCEPTION 'Default rank permissions are server-managed' USING ERRCODE = '42501';
+  END IF;
+  IF current_user = 'authenticated' AND
+    ROW(NEW.can_manage_members,NEW.can_manage_ranks,NEW.can_manage_projects,NEW.can_edit_squadron)
+      IS DISTINCT FROM ROW(OLD.can_manage_members,OLD.can_manage_ranks,OLD.can_manage_projects,OLD.can_edit_squadron)
+    AND NOT public.squadron_request_can_delegate(NEW.squadron_id,NEW.can_manage_members,
+      NEW.can_manage_ranks,NEW.can_manage_projects,NEW.can_edit_squadron) THEN
+    RAISE EXCEPTION 'Cannot delegate permissions you do not have' USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS squadron_protect_default_rank ON public.squadron_ranks;
+CREATE TRIGGER squadron_protect_default_rank BEFORE UPDATE ON public.squadron_ranks
+  FOR EACH ROW EXECUTE FUNCTION public.squadron_protect_default_rank();
+
+CREATE POLICY squadron_chat_messages_select ON public.squadron_chat_messages FOR SELECT TO authenticated
+  USING (public.squadron_request_can(squadron_id,'member') AND
+    (chat_type = 'general' OR (chat_type = 'officer' AND public.squadron_request_can(squadron_id,'officer'))));
+CREATE POLICY squadron_chat_messages_insert ON public.squadron_chat_messages FOR INSERT TO authenticated
+  WITH CHECK (user_id = auth.uid() AND public.squadron_request_can(squadron_id,'member') AND
+    (chat_type = 'general' OR (chat_type = 'officer' AND public.squadron_request_can(squadron_id,'officer'))));
+
+CREATE POLICY squadron_voice_rooms_select ON public.squadron_voice_rooms FOR SELECT TO authenticated
+  USING (public.squadron_request_can_use_room(id));
+CREATE POLICY squadron_voice_rooms_insert ON public.squadron_voice_rooms FOR INSERT TO authenticated
+  WITH CHECK (public.squadron_request_can(squadron_id,'officer'));
+CREATE POLICY squadron_voice_rooms_delete ON public.squadron_voice_rooms FOR DELETE TO authenticated
+  USING (public.squadron_request_can(squadron_id,'officer'));
+
+CREATE POLICY squadron_voice_signals_select ON public.squadron_voice_signals FOR SELECT TO authenticated
+  USING (public.squadron_request_can_use_room(room_id)
+    AND (target_id IS NULL OR target_id = auth.uid() OR sender_id = auth.uid())
+    AND EXISTS (SELECT 1 FROM public.squadron_voice_rooms vr
+      WHERE vr.id = squadron_voice_signals.room_id AND vr.squadron_id = squadron_voice_signals.squadron_id));
+CREATE POLICY squadron_voice_signals_insert ON public.squadron_voice_signals FOR INSERT TO authenticated
+  WITH CHECK (sender_id = auth.uid() AND public.squadron_request_can_use_room(room_id)
+    AND EXISTS (SELECT 1 FROM public.squadron_voice_rooms vr
+      WHERE vr.id = squadron_voice_signals.room_id AND vr.squadron_id = squadron_voice_signals.squadron_id));
+CREATE POLICY squadron_voice_participants_select ON public.squadron_voice_participants FOR SELECT TO authenticated
+  USING (public.squadron_request_can_use_room(room_id));
+CREATE POLICY squadron_voice_participants_insert ON public.squadron_voice_participants FOR INSERT TO authenticated
+  WITH CHECK (user_id = auth.uid() AND public.squadron_request_can_use_room(room_id));
+CREATE POLICY squadron_voice_participants_update ON public.squadron_voice_participants FOR UPDATE TO authenticated
+  USING (user_id = auth.uid() AND public.squadron_request_can_use_room(room_id))
+  WITH CHECK (user_id = auth.uid() AND public.squadron_request_can_use_room(room_id));
+CREATE POLICY squadron_voice_participants_delete ON public.squadron_voice_participants FOR DELETE TO authenticated
+  USING (user_id = auth.uid());
+REVOKE UPDATE ON public.squadron_voice_participants FROM PUBLIC, anon, authenticated;
+GRANT UPDATE (is_muted,is_deafened) ON public.squadron_voice_participants TO authenticated;
+GRANT SELECT, INSERT ON public.squadron_chat_messages, public.squadron_voice_signals TO authenticated;
+GRANT SELECT, INSERT, DELETE ON public.squadron_voice_rooms, public.squadron_voice_participants TO authenticated;
+GRANT ALL ON public.squadron_members, public.squadron_ranks, public.squadron_chat_messages,
+  public.squadron_voice_rooms, public.squadron_voice_signals, public.squadron_voice_participants TO service_role;
+
+-- An owner-executed view would silently bypass the room policies above.
+DO $$ BEGIN
+  IF to_regclass('public.squadron_voice_room_summary') IS NOT NULL THEN
+    ALTER VIEW public.squadron_voice_room_summary SET (security_invoker = true);
+  END IF;
+END $$;
+NOTIFY pgrst, 'reload schema';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261123100000_squadron_transfer_atomic.sql
+-- └────────────────────────────────────────────────────────────────┘
+
+-- S10: transfer must either keep the old membership or insert the new one.
+-- Replace the function in a new migration; preserve service-only execution.
+CREATE OR REPLACE FUNCTION public.apply_pilot_squadron(
+  p_user            UUID,
+  p_game_id         BIGINT,
+  p_name            TEXT,
+  p_tag             TEXT DEFAULT NULL,
+  p_rank            INTEGER DEFAULT NULL,
+  p_rank_name       TEXT DEFAULT NULL,
+  p_at              TIMESTAMPTZ DEFAULT now(),
+  p_source          TEXT DEFAULT 'helper',
+  p_join            BOOLEAN DEFAULT true
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_name        TEXT := btrim(coalesce(p_name, ''));
+  v_tag         TEXT := upper(regexp_replace(coalesce(p_tag, ''), '[^A-Za-z0-9]', '', 'g'));
+  v_source      TEXT := CASE WHEN p_source IN ('helper', 'web', 'manual') THEN p_source ELSE 'helper' END;
+  v_at          TIMESTAMPTZ := coalesce(p_at, now());
+  v_prev_at     TIMESTAMPTZ;
+  v_squadron_id BIGINT;
+  v_squadron_name TEXT;
+  v_found_by    TEXT;
+  v_rank_id     BIGINT;
+  v_rank_name   TEXT;
+  v_is_member   BOOLEAN := false;
+  v_joined      BOOLEAN := false;
+  v_reason      TEXT;
+  v_size        INTEGER;
+  v_limit       INTEGER;
+  v_game_rank   INTEGER := CASE WHEN p_rank IS NULL OR p_rank < 0 THEN NULL ELSE LEAST(p_rank, 99) END;
+  v_target_rank BIGINT;
+  v_rank_count  INTEGER;
+  v_created     BOOLEAN := false;
+  v_owner       UUID;
+  v_new_tag     TEXT;
+  v_suffix      INTEGER := 1;
+BEGIN
+  IF p_user IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'reason', 'user_required');
+  END IF;
+
+  -- Профиль есть у каждого аккаунта; если строки нет (старая база), создать её
+  -- здесь нельзя: id ссылается на auth.users, а функция — service_role.
+  SELECT game_squadron_at INTO v_prev_at
+    FROM public.profiles
+   WHERE id = p_user
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'reason', 'profile_missing');
+  END IF;
+
+  -- Пере-импорт истории: старый SquadronStartup не должен возвращать пилота в
+  -- прежнюю эскадрилью после того, как он вступил в новую.
+  IF v_prev_at IS NOT NULL AND v_at < v_prev_at THEN
+    RETURN jsonb_build_object('ok', true, 'skipped', 'stale', 'at', v_prev_at);
+  END IF;
+
+  IF v_game_rank IS NOT NULL AND (p_rank_name IS NULL OR btrim(p_rank_name) = '') AND v_game_rank > 8 THEN
+    v_game_rank := NULL;
+  END IF;
+
+  -- ── Поиск эскадрильи сайта ───────────────────────────────────────────────
+  IF p_game_id IS NOT NULL AND p_game_id > 0 THEN
+    SELECT sq.id, sq.name INTO v_squadron_id, v_squadron_name
+      FROM public.squadrons AS sq
+     WHERE sq.game_squadron_id = p_game_id
+     LIMIT 1;
+    IF FOUND THEN
+      v_found_by := 'game_id';
+    END IF;
+  END IF;
+
+  IF v_squadron_id IS NULL AND v_name <> '' THEN
+    SELECT sq.id, sq.name INTO v_squadron_id, v_squadron_name
+      FROM public.squadrons AS sq
+     WHERE lower(btrim(sq.name)) = lower(v_name)
+     LIMIT 1;
+    IF FOUND THEN
+      v_found_by := 'name';
+    END IF;
+  END IF;
+
+  -- Тег: журнал иногда приносит `SquadronTag`, а название на сайте могло быть
+  -- переведено или дополнено. Совпадение по тегу не даёт создавать дубль.
+  IF v_squadron_id IS NULL AND v_tag <> '' THEN
+    SELECT sq.id, sq.name INTO v_squadron_id, v_squadron_name
+      FROM public.squadrons AS sq
+     WHERE upper(btrim(coalesce(sq.tag, ''))) = v_tag
+     LIMIT 1;
+    IF FOUND THEN
+      v_found_by := 'tag';
+    END IF;
+  END IF;
+
+  -- ── Создание эскадрильи, которой на сайте ещё нет ────────────────────────
+  IF v_squadron_id IS NULL AND v_name <> ''
+     AND coalesce(p_join, true)
+     AND NOT EXISTS (SELECT 1 FROM public.squadron_members AS sm WHERE sm.user_id = p_user) THEN
+    BEGIN
+      SELECT id INTO v_owner FROM public.profiles WHERE id = p_user;
+      IF v_owner IS NOT NULL THEN
+        v_new_tag := CASE
+          WHEN v_tag <> '' THEN left(v_tag, 10)
+          ELSE left(upper(regexp_replace(v_name, '[^A-Za-z0-9]', '', 'g')), 10)
+        END;
+        IF v_new_tag = '' THEN
+          v_new_tag := 'SQDN';
+        END IF;
+
+        LOOP
+          BEGIN
+            INSERT INTO public.squadrons (name, tag, created_by, member_limit,
+                                          status, is_open_recruitment,
+                                          game_squadron_id, game_squadron_at,
+                                          game_squadron_source)
+            VALUES (left(v_name, 100), v_new_tag, v_owner, 600,
+                    'active', true,
+                    p_game_id, v_at, 'journal')
+            RETURNING id INTO v_squadron_id;
+            v_created := true;
+            v_found_by := 'created';
+            v_squadron_name := left(v_name, 100);
+            EXIT;
+          EXCEPTION
+            WHEN unique_violation THEN
+              SELECT sq.id, sq.name INTO v_squadron_id, v_squadron_name
+                FROM public.squadrons AS sq
+               WHERE sq.game_squadron_id = p_game_id
+               LIMIT 1;
+              IF v_squadron_id IS NOT NULL THEN
+                v_found_by := 'game_id';
+                EXIT;
+              END IF;
+              v_suffix := v_suffix + 1;
+              IF v_suffix > 5 THEN
+                v_squadron_id := NULL;
+                EXIT;
+              END IF;
+              v_new_tag := left(regexp_replace(v_new_tag, '[0-9]+$', ''), 8) || v_suffix::text;
+            WHEN undefined_column THEN
+              BEGIN
+                INSERT INTO public.squadrons (name, tag, created_by, game_squadron_id,
+                                              game_squadron_at, game_squadron_source)
+                VALUES (left(v_name, 100), v_new_tag, v_owner, p_game_id,
+                        v_at, 'journal')
+                RETURNING id INTO v_squadron_id;
+                v_created := true;
+                v_found_by := 'created';
+                v_squadron_name := left(v_name, 100);
+              EXCEPTION WHEN OTHERS THEN
+                v_squadron_id := NULL;
+              END;
+              EXIT;
+            WHEN OTHERS THEN
+              v_squadron_id := NULL;
+              EXIT;
+          END;
+        END LOOP;
+      END IF;
+    END;
+  END IF;
+
+  -- Связь выучивается один раз.
+  IF v_squadron_id IS NOT NULL AND p_game_id IS NOT NULL AND p_game_id > 0 THEN
+    UPDATE public.squadrons AS sq
+       SET game_squadron_id = p_game_id,
+           game_squadron_at = greatest(coalesce(sq.game_squadron_at, v_at), v_at),
+           game_squadron_source = coalesce(sq.game_squadron_source,
+               CASE WHEN v_found_by = 'game_id' THEN 'game_id' ELSE 'name' END)
+     WHERE sq.id = v_squadron_id
+       AND (sq.game_squadron_id IS NULL OR sq.game_squadron_id = p_game_id);
+  END IF;
+
+  -- ── Профиль ──────────────────────────────────────────────────────────────
+  UPDATE public.profiles AS p
+     SET game_squadron_id = coalesce(p_game_id, p.game_squadron_id),
+         game_squadron_name = CASE WHEN v_name <> '' THEN left(v_name, 120) ELSE p.game_squadron_name END,
+         game_squadron_tag = CASE WHEN v_tag <> '' THEN left(v_tag, 8) ELSE p.game_squadron_tag END,
+         game_squadron_rank = coalesce(v_game_rank, p.game_squadron_rank),
+         game_squadron_rank_name = CASE
+             WHEN p_rank_name IS NOT NULL AND btrim(p_rank_name) <> '' THEN left(btrim(p_rank_name), 80)
+             ELSE p.game_squadron_rank_name END,
+         game_squadron_at = greatest(coalesce(p.game_squadron_at, v_at), v_at),
+         game_squadron_source = v_source,
+         game_squadron_site_id = coalesce(v_squadron_id, p.game_squadron_site_id),
+         updated_at = now()
+   WHERE p.id = p_user;
+
+  -- ── Автовступление в состав ──────────────────────────────────────────────
+  IF v_squadron_id IS NOT NULL THEN
+    SELECT true, sm.rank_id INTO v_is_member, v_target_rank
+      FROM public.squadron_members AS sm
+     WHERE sm.squadron_id = v_squadron_id AND sm.user_id = p_user
+     LIMIT 1;
+    v_is_member := coalesce(v_is_member, false);
+
+    IF NOT v_is_member AND coalesce(p_join, true) THEN
+      -- Serialize auto-joins to the same destination, including capacity check.
+      PERFORM 1 FROM public.squadrons WHERE id = v_squadron_id FOR UPDATE;
+      SELECT coalesce(sq.member_limit, 500), (
+          SELECT count(*)::integer FROM public.squadron_members AS sm
+           WHERE sm.squadron_id = v_squadron_id)
+        INTO v_limit, v_size
+        FROM public.squadrons AS sq
+       WHERE sq.id = v_squadron_id;
+
+      -- Check capacity BEFORE removing the old membership. DELETE + INSERT
+      -- run in this function's transaction: an insert failure rolls both back.
+      IF v_size >= v_limit THEN
+        v_reason := 'full';
+      ELSE
+        IF EXISTS (SELECT 1 FROM public.squadron_members AS sm WHERE sm.user_id = p_user) THEN
+          DELETE FROM public.squadron_members WHERE user_id = p_user;
+          v_reason := 'transferred';
+        END IF;
+        IF p_rank_name IS NOT NULL AND btrim(p_rank_name) <> '' THEN
+          SELECT r.id, r.name INTO v_rank_id, v_rank_name
+            FROM public.squadron_ranks AS r
+           WHERE r.squadron_id = v_squadron_id
+             AND NOT (r.can_edit_squadron OR r.can_manage_members
+                      OR r.can_manage_ranks OR r.can_manage_projects)
+             AND lower(btrim(r.name)) = lower(btrim(p_rank_name))
+           ORDER BY r.sort_order DESC, r.id
+           LIMIT 1;
+        END IF;
+
+        IF v_rank_id IS NULL THEN
+          SELECT count(*)::integer INTO v_rank_count
+            FROM public.squadron_ranks AS r
+           WHERE r.squadron_id = v_squadron_id
+             AND NOT (r.can_edit_squadron OR r.can_manage_members
+                      OR r.can_manage_ranks OR r.can_manage_projects);
+
+          IF v_rank_count > 0 THEN
+            SELECT r.id, r.name INTO v_rank_id, v_rank_name
+              FROM public.squadron_ranks AS r
+             WHERE r.squadron_id = v_squadron_id
+               AND NOT (r.can_edit_squadron OR r.can_manage_members
+                        OR r.can_manage_ranks OR r.can_manage_projects)
+             ORDER BY r.sort_order DESC, r.id
+             OFFSET LEAST(GREATEST(coalesce(v_game_rank, 0), 0), v_rank_count - 1)
+             LIMIT 1;
+          END IF;
+        END IF;
+
+        INSERT INTO public.squadron_members
+          (squadron_id, user_id, rank_id, game_rank, game_rank_name,
+           game_synced_at, joined_at, joined_via, created_at)
+        VALUES
+          (v_squadron_id, p_user, v_rank_id, v_game_rank, left(coalesce(p_rank_name, ''), 80),
+           v_at, v_at, 'game', now())
+        ON CONFLICT (squadron_id, user_id) DO NOTHING;
+        v_joined := FOUND;
+      END IF;
+    ELSIF v_is_member THEN
+      IF v_created THEN
+        v_joined := true;
+      END IF;
+      UPDATE public.squadron_members AS sm
+         SET game_rank = coalesce(v_game_rank, sm.game_rank),
+             game_rank_name = CASE
+                 WHEN p_rank_name IS NOT NULL AND btrim(p_rank_name) <> ''
+                   THEN left(btrim(p_rank_name), 80)
+                 ELSE sm.game_rank_name END,
+             game_synced_at = greatest(coalesce(sm.game_synced_at, v_at), v_at)
+       WHERE sm.squadron_id = v_squadron_id AND sm.user_id = p_user;
+    ELSE
+      v_reason := 'join_disabled';
+    END IF;
+  ELSE
+    v_reason := coalesce(v_reason, 'squadron_not_found');
+  END IF;
+
+  RETURN jsonb_build_object(
+    'ok', true,
+    'gameSquadronId', p_game_id,
+    'gameSquadronName', nullif(v_name, ''),
+    'gameRank', v_game_rank,
+    'squadronId', v_squadron_id,
+    'squadronName', v_squadron_name,
+    'foundBy', v_found_by,
+    'member', v_is_member,
+    'joined', v_joined,
+    'created', v_created,
+    'rankId', v_rank_id,
+    'rankName', v_rank_name,
+    'reason', v_reason,
+    'at', v_at
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.apply_pilot_squadron(UUID, BIGINT, TEXT, TEXT, INTEGER, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.apply_pilot_squadron(UUID, BIGINT, TEXT, TEXT, INTEGER, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN)
+  TO service_role;
+
+COMMENT ON FUNCTION public.apply_pilot_squadron(UUID, BIGINT, TEXT, TEXT, INTEGER, TEXT, TIMESTAMPTZ, TEXT, BOOLEAN) IS
+  'Эскадрилья из журнала → профиль, связь с эскадрильей сайта и автовступление в состав. При переходе в новую эскадрилью старое членство освобождается (transferred).';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261123110000_ship_photo_server_writes.sql
+-- └────────────────────────────────────────────────────────────────┘
+
+-- S09: authenticated API checks the perk; only the service writes metadata
+-- and Storage objects. Do not grant users write access to the official bucket.
+-- Applied atomically by deploy/update-project.sh (--single-transaction).
+REVOKE INSERT, UPDATE, DELETE ON public.user_ship_photos FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.user_ship_photos TO anon, authenticated;
+GRANT ALL ON public.user_ship_photos TO service_role;
+DROP POLICY IF EXISTS "Users can insert their own ship photos" ON public.user_ship_photos;
+DROP POLICY IF EXISTS "Users can update their own ship photos" ON public.user_ship_photos;
+DROP POLICY IF EXISTS "Users can delete their own ship photos" ON public.user_ship_photos;
+
+-- The lock covers both quota and primary flag changes. No cleanup/backfill of
+-- existing rows: an over-quota legacy gallery remains readable/deletable.
+CREATE OR REPLACE FUNCTION public.enforce_user_ship_photo_quota()
+RETURNS trigger LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(NEW.user_id::text || '/' || NEW.ship_id, 0));
+  IF (SELECT count(*) FROM public.user_ship_photos p
+      WHERE p.user_id = NEW.user_id AND p.ship_id = NEW.ship_id) >= 5 THEN
+    RAISE EXCEPTION 'Ship photo quota exceeded' USING ERRCODE = '23514';
+  END IF;
+  IF NEW.is_primary THEN
+    UPDATE public.user_ship_photos SET is_primary = false
+      WHERE user_id = NEW.user_id AND ship_id = NEW.ship_id AND is_primary;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS enforce_user_ship_photo_quota ON public.user_ship_photos;
+CREATE TRIGGER enforce_user_ship_photo_quota BEFORE INSERT ON public.user_ship_photos
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_user_ship_photo_quota();
+NOTIFY pgrst, 'reload schema';

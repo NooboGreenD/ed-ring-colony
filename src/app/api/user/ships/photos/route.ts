@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabaseServer';
+import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { getPublicStorageUrl } from '@/lib/supabaseUrl';
 import { userHasShipPhotoGallery } from '@/lib/billing/subscriptionBonus';
-import { billingRepo } from '@/lib/billingData';
+import { randomUUID } from 'node:crypto';
+import { userShipPhotoObjectKey } from '@/lib/userShipPhotoStorage';
 import { errorResponse } from '@/lib/billing/auth';
 
 export const dynamic = 'force-dynamic';
@@ -69,7 +70,7 @@ export async function POST(req: Request) {
     const shipId = String(formData.get('ship_id') ?? '').trim();
     const isPrimary = formData.get('is_primary') === 'true';
 
-    if (!(file instanceof File) || !shipId) {
+    if (!(file instanceof File) || !/^[a-zA-Z0-9_-]{1,80}$/.test(shipId)) {
       return response({ error: 'file and ship_id required' }, { status: 400 });
     }
     if (!ALLOWED_TYPES.has(file.type)) {
@@ -79,22 +80,26 @@ export async function POST(req: Request) {
       return response({ error: 'File too large (max 10 MB)' }, { status: 400 });
     }
 
-    // Проверяем лимит фото на корабль
-    const { count } = await supabase
+    // Authentication/perk checks above use the caller, never the service role.
+    // Writes go through the server; direct metadata DML is revoked by migration.
+    const service = createServiceClient();
+    // Friendly fast-path; the database trigger also enforces this atomically.
+    const { count, error: countError } = await service
       .from('user_ship_photos')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', user.id)
       .eq('ship_id', shipId);
 
+    if (countError) return response({ error: 'Could not check photo quota' }, { status: 503 });
     if (count && count >= MAX_PHOTOS_PER_SHIP) {
       return response({ error: `Максимум ${MAX_PHOTOS_PER_SHIP} фото на один корабль` }, { status: 400 });
     }
 
-    const extension = file.name.split('.').pop()?.toLowerCase() || 'png';
-    const path = `user-photos/${user.id}/${shipId}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${extension}`;
+    const extension = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' } as Record<string, string>)[file.type];
+    const path = `user-photos/${user.id}/${shipId}/${randomUUID()}.${extension}`;
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    const { error: uploadError } = await supabase.storage.from('ship-images').upload(path, buffer, {
+    const { error: uploadError } = await service.storage.from('ship-images').upload(path, buffer, {
       contentType: file.type,
       upsert: false,
     });
@@ -105,16 +110,8 @@ export async function POST(req: Request) {
 
     const publicUrl = getPublicStorageUrl('ship-images', path);
 
-    // Если помечаем как основное — снимаем флаг с остальных
-    if (isPrimary) {
-      await supabase
-        .from('user_ship_photos')
-        .update({ is_primary: false })
-        .eq('user_id', user.id)
-        .eq('ship_id', shipId);
-    }
-
-    const { data: photo, error } = await supabase
+    // The insert trigger serializes quota and primary-photo changes together.
+    const { data: photo, error } = await service
       .from('user_ship_photos')
       .insert({
         user_id: user.id,
@@ -127,7 +124,10 @@ export async function POST(req: Request) {
 
     if (error || !photo) {
       // Удаляем загруженный файл, если запись не создалась
-      await supabase.storage.from('ship-images').remove([path]);
+      await service.storage.from('ship-images').remove([path]);
+      if (error?.code === '23514') {
+        return response({ error: `Максимум ${MAX_PHOTOS_PER_SHIP} фото на один корабль` }, { status: 400 });
+      }
       return response({ error: 'Could not save photo record' }, { status: 500 });
     }
 
@@ -164,13 +164,16 @@ export async function DELETE(req: Request) {
       return response({ error: 'Photo not found' }, { status: 404 });
     }
 
-    // Удаляем файл из Storage
-    const path = photo.image_url.split('/storage/v1/object/public/').pop() || '';
-    if (path) {
-      await supabase.storage.from('ship-images').remove([path]);
+    // Never pass an arbitrary URL/key from metadata to a privileged client.
+    const path = userShipPhotoObjectKey(photo.image_url, user.id);
+    if (!path) return response({ error: 'Invalid photo storage path' }, { status: 409 });
+    const service = createServiceClient();
+    const { error: removeError } = await service.storage.from('ship-images').remove([path]);
+    if (removeError) {
+      return response({ error: 'Could not delete image; please retry' }, { status: 502 });
     }
 
-    const { error } = await supabase.from('user_ship_photos').delete().eq('id', photoId);
+    const { error } = await service.from('user_ship_photos').delete().eq('id', photoId).eq('user_id', user.id);
     if (error) return errorResponse(error, 500);
 
     return response({ success: true });
