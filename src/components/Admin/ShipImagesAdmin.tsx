@@ -20,6 +20,8 @@ interface ShipRow {
   imageExt: string;
 }
 
+type UploadStatus = 'idle' | 'uploading' | 'done' | 'error';
+
 export default function ShipImagesAdmin() {
   const { t, locale } = useI18n();
   const [ships, setShips] = useState<ShipRow[]>([]);
@@ -28,6 +30,9 @@ export default function ShipImagesAdmin() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const [uploadResult, setUploadResult] = useState<{ success: number; skipped: number; failed: number; total: number; errors: Array<{ file: string; error: string }> } | null>(null);
 
   const fetchShips = useCallback(async () => {
     setLoading(true);
@@ -47,6 +52,44 @@ export default function ShipImagesAdmin() {
   useEffect(() => {
     void fetchShips();
   }, [fetchShips]);
+
+  const uploadFolder = async (folder: string) => {
+    setUploadStatus('uploading');
+    setUploadProgress({ done: 0, total: 0 });
+    setUploadResult(null);
+    setError('');
+    try {
+      const token = await getAccessToken();
+      const res = await fetch('/api/admin/ships/images/upload-folder', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ folder }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Upload failed');
+      }
+      const data = await res.json();
+      setUploadResult({
+        success: data.success,
+        skipped: data.skipped,
+        failed: data.failed,
+        total: data.total,
+        errors: data.errors || [],
+      });
+      setUploadStatus(data.failed > 0 ? 'error' : 'done');
+      setNotice(`Загрузка из ${folder} завершена: ${data.success} загружено, ${data.skipped} пропущено, ${data.failed} ошибок`);
+      void fetchShips();
+    } catch (e: any) {
+      setError(e.message || 'Ошибка массовой загрузки');
+      setUploadStatus('error');
+    } finally {
+      setUploadProgress(null);
+    }
+  };
 
   const filtered = ships.filter((s) => {
     const q = query.trim().toLowerCase();
@@ -119,7 +162,32 @@ export default function ShipImagesAdmin() {
         </div>
       </div>
 
-      {error && (
+      {uploadStatus !== 'idle' && (
+        <div role="status" style={{ background: 'rgba(46,204,113,0.1)', border: '1px solid rgba(46,204,113,0.3)', color: '#86c87c', padding: 10, borderRadius: 4, fontSize: 13, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span>{uploadStatus === 'uploading' ? t('admin.uploadingAll') || 'Массовая загрузка…' : uploadStatus === 'done' ? t('admin.uploadDone') || 'Загрузка завершена' : t('admin.uploadError') || 'Ошибка загрузки'}</span>
+            {uploadProgress && (
+              <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{uploadProgress.done} из {uploadProgress.total}</span>
+            )}
+          </div>
+          {uploadResult && (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#9ca3af' }}>
+              ✅ {uploadResult.success} загружено · ⏭️ {uploadResult.skipped} пропущено · ❌ {uploadResult.failed} ошибок из {uploadResult.total}
+            </div>
+          )}
+          {uploadResult && uploadResult.errors.length > 0 && (
+            <details style={{ marginTop: 8, fontSize: 11, color: '#fca5a5' }}>
+              <summary>Ошибки</summary>
+              <ul style={{ marginTop: 4, paddingLeft: 16, maxHeight: 200, overflowY: 'auto' }}>
+                {uploadResult.errors.map((e, i) => (
+                  <li key={i} style={{ marginBottom: 2 }}>{e.file}: {e.error}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+      {notice && (
         <div role="alert" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', padding: 10, borderRadius: 4, fontSize: 13, marginBottom: 16 }}>
           {error}
         </div>
@@ -130,7 +198,7 @@ export default function ShipImagesAdmin() {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 20, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           type="search"
           placeholder={t('admin.searchShips') || 'Поиск корабля…'}
@@ -139,6 +207,40 @@ export default function ShipImagesAdmin() {
           style={{ width: 320, padding: '8px 12px', background: '#1e2124', border: '1px solid #323538', borderRadius: 4, color: '#eeeeee', fontFamily: 'ui-monospace, monospace', fontSize: 13 }}
         />
         <span style={{ fontSize: 12, color: '#9ca3af' }}>{filtered.length} из {ships.length}</span>
+        <button
+          type="button"
+          disabled={uploadStatus === 'uploading'}
+          onClick={() => void uploadFolder('ship-images')}
+          style={{
+            padding: '8px 12px',
+            background: uploadStatus === 'uploading' ? '#666' : '#2ecc71',
+            border: 'none',
+            borderRadius: 4,
+            color: '#fff',
+            fontSize: 12,
+            fontFamily: 'ui-monospace, monospace',
+            cursor: uploadStatus === 'uploading' ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {t('admin.uploadAllVector') || 'Загрузить все векторные'}
+        </button>
+        <button
+          type="button"
+          disabled={uploadStatus === 'uploading'}
+          onClick={() => void uploadFolder('ship-images-realistic')}
+          style={{
+            padding: '8px 12px',
+            background: uploadStatus === 'uploading' ? '#666' : '#3498db',
+            border: 'none',
+            borderRadius: 4,
+            color: '#fff',
+            fontSize: 12,
+            fontFamily: 'ui-monospace, monospace',
+            cursor: uploadStatus === 'uploading' ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {t('admin.uploadAllRealistic') || 'Загрузить все реалистичные'}
+        </button>
       </div>
 
       {loading ? (
