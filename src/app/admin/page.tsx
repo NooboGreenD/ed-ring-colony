@@ -64,6 +64,7 @@ import {
 import AdminComments from "./components/AdminComments";
 import SupportAdmin from "@/components/Support/SupportAdmin";
 import BillingDashboard from "@/components/Admin/BillingDashboard";
+import SquadronsAdmin from "@/components/Admin/SquadronsAdmin";
 import ServerMonitorTab from "@/components/Admin/ServerMonitorTab";
 import HelperUpdatesTab from "@/components/Admin/HelperUpdatesTab";
 const OutfittingAdmin = dynamic(() => import("@/components/Admin/OutfittingAdmin"), { loading: () => <p role="status"><Tr k="admin.outfittingLoading" /></p> });
@@ -1037,6 +1038,7 @@ export default function AdminPage() {
       {tab === 'galaxy' && role === 'admin' && <GalaxyCatalogTab />}
       {tab === 'powerplay' && role === 'admin' && <PowerplayAdminTab />}
       {tab === 'factions' && role === 'admin' && <FactionsAdminTab />}
+      {tab === 'communities' && role === 'admin' && <SquadronsAdmin />}
       {tab === 'community-goals' && role === 'admin' && <CommunityGoalsAdminTab />}
       {tab === 'backup' && role === 'admin' && <BackupTab />}
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}

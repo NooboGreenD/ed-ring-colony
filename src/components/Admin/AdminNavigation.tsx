@@ -1,12 +1,12 @@
 'use client';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import {
-  IconAnchor, IconCoins, IconDatabase, IconGear, IconGlobe, IconHeadphones, IconHomeSystem,
+  IconAnchor, IconCoins, IconCrown, IconDatabase, IconGear, IconGlobe, IconHeadphones, IconHomeSystem,
   IconImage, IconJournal, IconLock, IconMessage, IconPackage, IconPower, IconRoute, IconSatellite, IconShieldHalf, IconUsers,
 } from '@/components/Icons';
 import styles from './AdminShell.module.css';
 
-export const ADMIN_TABS = ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'powerplay', 'factions', 'community-goals', 'backup', 'helper', 'outfitting', 'ship-images'] as const;
+export const ADMIN_TABS = ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'powerplay', 'factions', 'community-goals', 'backup', 'helper', 'outfitting', 'ship-images', 'communities'] as const;
 export type AdminTab = typeof ADMIN_TABS[number];
 export const ADMIN_ONLY_TABS: AdminTab[] = ['outfitting', 'ship-images', 'monitor', 'auth', 'galaxy', 'powerplay', 'factions', 'community-goals', 'backup', 'helper'];
 export function isAdminTab(tab: string | null): tab is AdminTab {
@@ -23,6 +23,7 @@ export default function AdminNavigation({ tab, role, onSelect }: { tab: AdminTab
     ] },
     { id: 'community', label: t('anav.community'), icon: IconUsers, items: [
       { id: 'manage', label: t('admin.manage'), icon: IconUsers },
+      { id: 'communities', label: t('admin.communities'), icon: IconCrown },
       { id: 'forum', label: t('admin.forum'), icon: IconMessage },
       { id: 'comments', label: t('admin.comments'), icon: IconMessage },
       { id: 'support', label: t('admin.support'), icon: IconHeadphones },
