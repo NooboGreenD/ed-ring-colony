@@ -2953,3 +2953,63 @@ class SessionOverlay(HudWindow):
 
     def on_font_changed(self) -> None:
         self.chart_canvas.set_font_spec(self._font_family, self._font_size - 2)
+
+
+class PowerplayOverlay(HudWindow):
+    """The same PowerPlay cards as BGS, within the standard configurable HUD.
+
+    No reader, network client or polling timer lives here. It renders the shared
+    tracker state supplied by OverlayManager's normal update loop.
+    """
+
+    def __init__(self, master, settings):
+        super().__init__(master, "POWERPLAY", settings.get("powerplay_x", 1480),
+                         settings.get("powerplay_y", 50), settings.get("powerplay_width", 380),
+                         settings.get("powerplay_height", 620), settings, "powerplay")
+        from qt_powerplay import PowerplayPanel
+        self.panel = PowerplayPanel(compact=True)
+        # Unlike a page under HelperWindow, a HUD has no WINDOW_STYLE ancestor.
+        self.panel.setStyleSheet(
+            f'QLabel {{color:{COLOR_TEXT};background:transparent;}}'
+            f'QLabel[role="muted"] {{color:{COLOR_TEXT_MUTED};}}'
+            'QScrollArea {background:transparent;border:0;}'
+            'QScrollArea > QWidget > QWidget {background:transparent;}')
+        self._last_powerplay_data = {}
+        self.body.addWidget(self.panel)
+        self._apply_panel_font()
+
+    def update_powerplay(self, data):
+        self._last_powerplay_data = dict(data or {})
+        if self.panel.state() != self._last_powerplay_data:
+            self.panel.set_state(self._last_powerplay_data)
+            self._apply_panel_font()
+        self.apply_data_options()
+
+    def apply_data_options(self):
+        super().apply_data_options()
+        if not hasattr(self, "panel"):
+            return
+        state = self._last_powerplay_data
+        known = bool(state.get("known"))
+        def enabled(section):
+            return bool(self.settings.get(option_key("powerplay", section), True))
+        self.panel.commander_header.setVisible(known and enabled("commander"))
+        self.panel.commander_card.setVisible(known and enabled("commander"))
+        system_visible = known and bool(state.get("system")) and enabled("system")
+        self.panel.system_header.setVisible(system_visible)
+        self.panel.system_card.setVisible(system_visible)
+        actions_visible = known and bool(state.get("actions")) and enabled("actions")
+        self.panel.actions_header.setVisible(actions_visible)
+        self.panel.actions_widget.setVisible(actions_visible)
+        self.panel.source_label.setVisible(system_visible and enabled("source"))
+        self.panel.note_label.setVisible(enabled("source"))
+
+    def _apply_panel_font(self):
+        for widget in self.panel.findChildren(QLabel):
+            # Apply to dynamically-created action rows too; retain bold headings.
+            font = hud_font(self._font_family, self._font_size, bold=widget.font().bold())
+            widget.setFont(font)
+
+    def on_font_changed(self):
+        if hasattr(self, "panel"):
+            self._apply_panel_font()

@@ -287,6 +287,7 @@ class CarrierMarketWiringTests(unittest.TestCase):
             ship=SimpleNamespace(state=SimpleNamespace(current_system='Sol'),get_state_dict=lambda:{}),
             _session_cargo_tons=0,_session_systems_visited=set(),_session_deliveries=0,
             _session_route_deliveries=0,_session_route_cargo_tons=0,_session_construction_cargo_tons=0,
+            _powerplay_state=lambda:{},
             _carrier_need_info=lambda:({},'', ''),carrier=SimpleNamespace(get_state_dict=lambda *_,**__:copy.deepcopy(CARGO)),
             _station_commerce=SimpleNamespace(market_availability=market),_last_delivery_system='',
             foot_map=SimpleNamespace(poll=lambda _:None,state=lambda:{}),journal_path=Path('.'))

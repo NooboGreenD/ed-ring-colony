@@ -96,7 +96,7 @@ SYSTEM_STATES: Dict[str, Dict[str, Any]] = {
 COMMANDER_EVENTS = frozenset({
     "Powerplay", "PowerplayJoin", "PowerplayLeave", "PowerplayDefect",
     "PowerplayVote", "PowerplaySalary", "PowerplayCollect", "PowerplayDeliver",
-    "PowerplayFastTrack", "PowerplayVoucher",
+    "PowerplayFastTrack", "PowerplayVoucher", "PowerplayMerits", "PowerplayRank",
 })
 #: События с состоянием системы в PowerPlay.
 SYSTEM_EVENTS = frozenset({"FSDJump", "Location", "CarrierJump"})
@@ -388,6 +388,11 @@ def action_record(event: Mapping[str, Any]) -> Optional[dict]:
     elif kind == "PowerplayDefect":
         record["from_power"] = normalize_power(event.get("FromPower") or event.get("Power"))
         record["to_power"] = normalize_power(event.get("ToPower"))
+    elif kind == "PowerplayMerits":
+        record["count"] = _int(event.get("MeritsGained"), 0)
+        record["total"] = _int(event.get("TotalMerits"), 0)
+    elif kind == "PowerplayRank":
+        record["count"] = _int(event.get("Rank"), 0)
     elif kind == "PowerplayVote":
         record["votes"] = _int(event.get("Votes"), 0)
     elif kind == "PowerplaySalary":
@@ -422,6 +427,7 @@ class PowerplayTracker:
         self._time_pledged: Optional[int] = None
         self._pledged_at = ""
         self._commander_at = ""
+        self._field_at = {}
         self._salary: Optional[dict] = None
         self._actions: Deque[dict] = deque(maxlen=ACTION_LIMIT)
         self._system: Optional[dict] = None
@@ -443,9 +449,9 @@ class PowerplayTracker:
     def _take_commander(self, event: Mapping[str, Any]) -> bool:
         """``Powerplay``: держава, ранг, заслуги, голоса и срок присяги.
 
-        Игра пишет это событие при входе в игру и после изменений, поэтому оно
-        же — единственный честный источник «сколько у меня заслуг» без
-        догадок: чего в событии нет, того и в окне не будет.
+        Полный снимок при входе; отдельные PowerplayMerits/PowerplayRank
+        обновляют свои поля независимо. Старый снимок может заполнить ещё
+        неизвестный ранг, но не откатывает уже полученные живые заслуги.
         """
         timestamp = _text(event.get("timestamp"))
         if not is_powerplay2(timestamp):
@@ -458,15 +464,17 @@ class PowerplayTracker:
             return False
         changed = False
         with self._lock:
-            if power and power != self._power:
+            if power and timestamp >= self._field_at.get("_power", "") and power != self._power:
                 self._power = power
+                self._field_at["_power"] = timestamp
                 changed = True
             for attribute, value in (("_rank", _int(event.get("Rank"), 0)),
                                      ("_merits", _int(event.get("Merits"), 0)),
                                      ("_votes", _int(event.get("Votes"), 0)),
                                      ("_time_pledged", _int(event.get("TimePledged"), 0))):
-                if value is None:
+                if value is None or timestamp < self._field_at.get(attribute, ""):
                     continue
+                self._field_at[attribute] = timestamp
                 if getattr(self, attribute) != value:
                     setattr(self, attribute, value)
                     changed = True
@@ -490,7 +498,22 @@ class PowerplayTracker:
         kind = str(record.get("kind") or "")
         changed = False
         with self._lock:
-            if kind == "PowerplayJoin" and record.get("power"):
+            if kind in ("PowerplayMerits", "PowerplayRank"):
+                field = "_merits" if kind == "PowerplayMerits" else "_rank"
+                if not is_powerplay2(timestamp) or timestamp < max(self._commander_at, self._field_at.get(field, "")):
+                    return False
+                value = record.get("total") if kind == "PowerplayMerits" else record.get("count")
+                if value is None:
+                    return False
+                setattr(self, field, value)  # TotalMerits is authoritative; never add the delta twice
+                self._field_at[field] = timestamp
+                if event.get("Power") and timestamp >= self._field_at.get("_power", ""):
+                    self._power = normalize_power(event["Power"])
+                    self._field_at["_power"] = timestamp
+                changed = True
+            elif kind in ("PowerplayJoin", "PowerplayLeave", "PowerplayDefect") and timestamp and timestamp < self._commander_at:
+                return False
+            elif kind == "PowerplayJoin" and record.get("power"):
                 self._power = record["power"]
                 self._rank = self._rank if self._rank is not None else 0
                 self._merits = 0
@@ -522,6 +545,10 @@ class PowerplayTracker:
             elif kind in ("PowerplayCollect", "PowerplayDeliver",
                           "PowerplayFastTrack", "PowerplayVoucher"):
                 changed = True
+            if changed and kind in ("PowerplayJoin", "PowerplayLeave", "PowerplayDefect"):
+                self._commander_at = max(self._commander_at, timestamp)
+                for field in ("_power", "_rank", "_merits", "_votes", "_time_pledged"):
+                    self._field_at[field] = timestamp
         self._remember(record)
         return changed
 
@@ -569,7 +596,7 @@ class PowerplayTracker:
                 "votes": self._votes,
                 "time_pledged": self._time_pledged,
                 "pledged_at": self._pledged_at,
-                "observed_at": self._commander_at,
+                "observed_at": max([self._commander_at, *self._field_at.values()]),
                 "salary": dict(self._salary) if self._salary else None,
                 "actions": actions,
             }
@@ -596,6 +623,7 @@ class PowerplayTracker:
             self._time_pledged = None
             self._pledged_at = ""
             self._commander_at = ""
+            self._field_at.clear()
             self._salary = None
             self._actions.clear()
             self._system = None
@@ -611,12 +639,13 @@ def _matches(event: Mapping[str, Any], system: str, address: str) -> bool:
     own_name = _text(event.get("StarSystem"))
     if system and own_name:
         return own_name.casefold() == system.casefold()
-    return False
+    return not system and not address
 
 
 def scan_journal_for_powerplay(journal_dir: Any, system: str = "", address: Any = "",
                                files: int = JOURNAL_SCAN_FILES,
-                               max_bytes: int = JOURNAL_SCAN_BYTES) -> dict:
+                               max_bytes: int = JOURNAL_SCAN_BYTES,
+                               include_session: bool = False) -> dict:
     """Последние события PowerPlay в свежих журналах игры.
 
     Возвращает ``{"commander": событие|None, "system": событие|None}`` — их
@@ -643,12 +672,15 @@ def scan_journal_for_powerplay(journal_dir: Any, system: str = "", address: Any 
                 if size > max_bytes:
                     handle.seek(size - max_bytes)
                     handle.readline()             # неполная строка после сдвига
-                raw = handle.read()
+                raw = handle.read(max_bytes)
         except OSError:
             continue
         for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
             line = line.strip()
             if not line.startswith("{"):
+                continue
+            if not any(token in line for token in ("Powerplay", "FSDJump", "Location",
+                                                    "CarrierJump", "LoadGame", "NewCommander")):
                 continue
             try:
                 event = json.loads(line)
@@ -657,15 +689,28 @@ def scan_journal_for_powerplay(journal_dir: Any, system: str = "", address: Any 
             if not isinstance(event, dict):
                 continue
             name = str(event.get("event") or "")
+            if name in ("LoadGame", "NewCommander"):
+                if include_session:
+                    result["session"] = event
+                return result  # never recover another pilot/session's pledge
+            if (include_session and name in COMMANDER_EVENTS
+                    and name not in ("Powerplay", "PowerplayMerits", "PowerplayRank")):
+                actions = sum(key.startswith("action-") for key in result)
+                if actions < ACTION_LIMIT:
+                    result[f"action-{actions}"] = event
+            if include_session and name in ("PowerplayMerits", "PowerplayRank"):
+                field = "merits" if name == "PowerplayMerits" else "rank"
+                if field not in result:
+                    result[field] = event
             if result["commander"] is None and name == "Powerplay":
                 if is_powerplay2(event.get("timestamp")):
                     result["commander"] = event
             elif result["system"] is None and name in SYSTEM_EVENTS:
-                if system_event(event) and _matches(event, wanted_name, wanted_address):
+                if _matches(event, wanted_name, wanted_address):
                     snapshot = system_state(event, source="journal-archive")
-                    if snapshot is not None:
+                    if snapshot is not None or (not wanted_name and not wanted_address):
                         result["system"] = event
-            if result["commander"] is not None and result["system"] is not None:
+            if not include_session and result["commander"] is not None and result["system"] is not None:
                 return result
     return result
 
@@ -674,4 +719,75 @@ def actions_text_keys() -> Iterable[str]:
     """Ключи подписей действий — для проверок каталога переводов."""
     return ("PowerplayCollect", "PowerplayDeliver", "PowerplayVote", "PowerplaySalary",
             "PowerplayJoin", "PowerplayLeave", "PowerplayDefect", "PowerplayFastTrack",
-            "PowerplayVoucher", "Powerplay")
+            "PowerplayVoucher", "Powerplay", "PowerplayMerits", "PowerplayRank")
+
+
+class PowerplayJournalReader:
+    """Bounded bootstrap followed by byte-offset reads, only while the view polls.
+
+    Independent of the uploader watcher (which may be stopped/offline). Never
+    rereads the full journal directory on each UI tick. A partial final line is
+    left for the next poll, including after log rotation or truncation.
+    """
+
+    CHUNK_BYTES = 512 * 1024
+
+    def __init__(self):
+        self._directory = None
+        self._offsets = {}
+
+    def poll(self, journal_dir, system="", address=""):
+        directory = Path(journal_dir) if journal_dir else None
+        if directory is None:
+            return []
+        try:
+            paths = sorted(directory.glob("Journal.*.log"), reverse=True)[:3]
+            sizes = {str(path): path.stat().st_size for path in paths}
+        except OSError:
+            return []
+        if directory != self._directory:
+            # Capture offsets BEFORE the bootstrap so appends during the scan
+            # are not lost. Tracker timestamp/dedup guards handle any overlap.
+            self._directory = directory
+            self._offsets = sizes
+            state = scan_journal_for_powerplay(directory, include_session=True)
+            return sorted((event for event in state.values() if isinstance(event, dict)),
+                          key=lambda event: (str(event.get("timestamp") or ""),
+                                             0 if event.get("event") in ("LoadGame", "NewCommander") else 1))
+        events = []
+        relevant = COMMANDER_EVENTS | SYSTEM_EVENTS | {"Powerplay", "LoadGame", "NewCommander"}
+        # Oldest -> newest, including the end of a file just rotated away.
+        for path in reversed(paths):
+            key = str(path)
+            size = sizes[key]
+            start = self._offsets.get(key, 0)
+            if size < start:
+                start = 0
+            if size == start:
+                continue
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(start)
+                    raw = handle.read(min(size - start, self.CHUNK_BYTES))
+            except OSError:
+                continue
+            end = raw.rfind(b"\n") + 1
+            if not end:
+                # Bound pathological oversized rows without stalling forever.
+                if len(raw) == self.CHUNK_BYTES:
+                    self._offsets[key] = start + len(raw)
+                continue
+            self._offsets[key] = start + end
+            for line in raw[:end].splitlines():
+                # Cheap filter before JSON: scans/market cargo often dominate.
+                if not any(token in line for token in (b'Powerplay', b'FSDJump', b'Location',
+                                                       b'CarrierJump', b'LoadGame', b'NewCommander')):
+                    continue
+                try:
+                    event = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue
+                if isinstance(event, dict) and event.get("event") in relevant:
+                    events.append(event)
+        self._offsets = {key: value for key, value in self._offsets.items() if key in sizes}
+        return events
