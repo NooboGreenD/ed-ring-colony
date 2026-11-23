@@ -40,6 +40,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     )
 
     if (roomId) {
+      // Validate the room with caller RLS before using the service read model.
+      // A membership in squadron A must not unlock participants of room B.
+      const { data: room } = await supabase.from('squadron_voice_rooms')
+        .select('id, is_officer_only')
+        .eq('id', Number(roomId))
+        .eq('squadron_id', squadronId)
+        .maybeSingle()
+      if (!room) return NextResponse.json({ error: 'Room not found' }, { status: 404 })
+      if (room.is_officer_only && !isOfficer) {
+        return NextResponse.json({ error: 'Officer access required' }, { status: 403 })
+      }
       const { data: signals } = await supabase
         .from('squadron_voice_signals')
         .select('*')
