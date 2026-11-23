@@ -64,6 +64,7 @@ OVERLAY_META = {
     "bio": ("10", "BIOLOGY"),
     "carrier": ("08", "FLEET CARRIER"),
     "footmap": ("09", "SURFACE"),
+    "powerplay": ("11", "POWERPLAY"),
 }
 
 #: Шрифт по умолчанию: моноширинный, чтобы колонки цифр не «плыли».

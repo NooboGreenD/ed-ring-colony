@@ -104,6 +104,9 @@ class PowerplaySyncTests(unittest.TestCase):
             time.sleep(0.01)
         self.helper._powerplay_inflight = False
         self.widget = self.helper.powerplay_panel
+        # The controller is exercised directly; its real visibility lifecycle
+        # is covered separately without making a full test window visible.
+        self.helper._powerplay_visible = mock.Mock(return_value=True)
 
     # -------------------------------------------------------------- helpers
     def write_journal(self, events, name="Journal.2026-11-01T100000.01.log"):
@@ -116,7 +119,8 @@ class PowerplaySyncTests(unittest.TestCase):
     def apply(self, events=None, site=None, site_error="", system="Sol",
               address=10477373803):
         self.helper._apply_powerplay_refresh({
-            "system": system, "address": address, "events": events or {},
+            "system": system, "address": address, "events": list((events or {}).values()),
+            "epoch": self.helper._powerplay_view_epoch,
             "site": site, "site_error": site_error,
         })
 
@@ -136,6 +140,7 @@ class PowerplaySyncTests(unittest.TestCase):
     def test_live_events_fill_the_tab(self):
         self.helper._update_powerplay(COMMANDER)
         self.helper._update_powerplay(SOL_JUMP)
+        self.helper._render_powerplay()
         self.assertIn("Jerome Archer", self.widget.power_label_widget.text())
         self.assertIn("заслуги 4 320", self.widget.rank_label.text())
         self.assertIn("Sol", self.widget.system_label.text())
@@ -144,7 +149,8 @@ class PowerplaySyncTests(unittest.TestCase):
 
     def test_live_system_state_is_shown_for_the_current_system(self):
         self.helper._update_powerplay(SOL_JUMP)
-        self.helper.ship.state.current_system = "Alioth"
+        self.helper._update_powerplay({"event": "FSDJump", "StarSystem": "Alioth",
+                                      "timestamp": "2026-11-01T10:06:00Z"})
         self.helper._render_powerplay()
         self.assertIn("Данных PowerPlay", self.widget.empty.text(),
                       "состояние Sol выдано за текущую систему")
@@ -153,6 +159,7 @@ class PowerplaySyncTests(unittest.TestCase):
         self.helper._update_powerplay(COMMANDER)
         self.helper._update_powerplay({"event": "LoadGame",
                                        "timestamp": "2026-11-02T09:00:00Z"})
+        self.helper._render_powerplay()
         self.assertFalse(self.widget.state().get("known"))
         self.assertEqual(self.widget.state().get("merits"), None)
 
@@ -168,7 +175,7 @@ class PowerplaySyncTests(unittest.TestCase):
             self.helper._powerplay_refresh_worker(force=True)
         self.assertIn("заслуги 4 320", self.widget.rank_label.text())
         self.assertIn("Оплот", self.widget.state_label.text())
-        self.assertIn("архив", self.widget.source_label.text())
+        self.assertIn("журнал игры", self.widget.source_label.text())
 
     def test_site_card_fills_the_system_when_the_journal_is_silent(self):
         self.helper.ship.state.current_system = "Sol"
@@ -215,18 +222,21 @@ class PowerplaySyncTests(unittest.TestCase):
             self.helper._refresh_powerplay()
         thread.assert_not_called()
 
-    def test_refresh_is_rate_limited_by_system(self):
+    def test_local_poll_continues_while_network_is_rate_limited(self):
+        self.helper.ship.state.current_system = "Sol"
+        self.helper.ship.state.system_address = 10477373803
         self.helper._powerplay_request_key = "10477373803"
         self.helper._powerplay_request_at = time.monotonic()
-        with mock.patch("threading.Thread") as thread:
-            self.helper._refresh_powerplay()
-        thread.assert_not_called()
-        with mock.patch("threading.Thread") as thread:
-            self.helper._refresh_powerplay(force=True)
-        self.assertTrue(thread.called, "кнопка «Обновить» обходит TTL")
+        with mock.patch.object(self.helper._powerplay_reader, "poll", return_value=[]) as poll, \
+                mock.patch.object(self.helper.api, "get_system_powerplay", return_value={"ok": False}) as site:
+            self.helper._powerplay_refresh_worker()
+            poll.assert_called_once()
+            site.assert_not_called()
+            self.helper._powerplay_refresh_worker(force=True)
+            site.assert_called_once()
 
     def test_failed_journal_scan_still_asks_the_site(self):
-        with mock.patch.object(self.app_module, "scan_journal_for_powerplay",
+        with mock.patch.object(self.helper._powerplay_reader, "poll",
                                side_effect=OSError("no such folder")), \
                 mock.patch.object(self.helper.api, "get_system_powerplay",
                                   return_value=SITE_PAYLOAD) as asked:

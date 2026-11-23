@@ -19,6 +19,47 @@ from typing import Dict
 
 #: Строка → {код языка: перевод}.
 _STRINGS: Dict[str, Dict[str, str]] = {
+    'Показать Colonial Helper': {
+        'en': 'Show Colonial Helper',
+        'de': 'Colonial Helper anzeigen',
+        'it': 'Mostra Colonial Helper',
+        'ko': 'Colonial Helper 표시',
+        'zh': '显示 Colonial Helper',
+        'ja': 'Colonial Helper を表示',
+    },
+    'Свернуть в трей': {
+        'en': 'Minimize to tray',
+        'de': 'In den Infobereich minimieren',
+        'it': 'Riduci nell’area di notifica',
+        'ko': '트레이로 최소화',
+        'zh': '最小化到系统托盘',
+        'ja': 'トレイに最小化',
+    },
+    'POWERPLAY — держава и система': {
+        'en': 'POWERPLAY — power and system',
+        'de': 'POWERPLAY — Macht und System',
+        'it': 'POWERPLAY — potenza e sistema',
+        'ko': 'POWERPLAY — 세력 및 성계',
+        'zh': 'POWERPLAY — 势力与星系',
+        'ja': 'POWERPLAY — 勢力と星系',
+    },
+    'Получено заслуг: {count}': {
+        'en': 'Merits gained: {count}',
+        'de': 'Verdienste erhalten: {count}',
+        'it': 'Meriti ottenuti: {count}',
+        'ko': '획득한 공적: {count}',
+        'zh': '获得功绩：{count}',
+        'ja': '獲得功績: {count}',
+    },
+    'Выход': {
+        'en': 'Exit',
+        'de': 'Beenden',
+        'it': 'Esci',
+        'ko': '종료',
+        'zh': '退出',
+        'ja': '終了',
+    },
+
     # ------------------------------------------------------------- лаунчер
     "УПРАВЛЕНИЕ": {
         "en": "CONTROL",

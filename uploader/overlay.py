@@ -64,6 +64,7 @@ from overlay_blocks import (  # noqa: F401 — имена живут здесь 
     CarrierOverlay,
     ExobiologyOverlay,
     FootMapOverlay,
+    PowerplayOverlay,
     RouteOverlay,
     SessionEventsOverlay,
     SessionOverlay,
@@ -122,7 +123,7 @@ __all__ = [
     # окна
     "OverlayWindow", "RouteOverlay", "StatusOverlay", "ShipOverlay",
     "CargoOverlay", "CarrierOverlay", "ExobiologyOverlay", "BiologyOverlay",
-    "FootMapOverlay",
+    "FootMapOverlay", "PowerplayOverlay",
     "SessionOverlay",
     "SessionEventsOverlay", "OverlayManager",
     # раскладка и настройки блоков
@@ -158,7 +159,7 @@ __all__ = [
 class OverlayManager:
     #: Блоки HUD: ключ -> (настройка видимости, класс окна)
     BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio",
-              "bio", "carrier", "footmap")
+              "bio", "carrier", "footmap", "powerplay")
 
     #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
     DEFAULT_POSITIONS = DEFAULT_BLOCK_POSITIONS
@@ -181,6 +182,7 @@ class OverlayManager:
         self.exobio_overlay: Optional[ExobiologyOverlay] = None
         self.biology_overlay: Optional[BiologyOverlay] = None
         self.carrier_overlay: Optional[CarrierOverlay] = None
+        self.powerplay_overlay: Optional[PowerplayOverlay] = None
         self.footmap_overlay: Optional[FootMapOverlay] = None
         self.enabled = False
         self._update_callback: Optional[Callable] = None
@@ -239,6 +241,7 @@ class OverlayManager:
         self.biology_overlay = BiologyOverlay(self.master, self.settings)
         self.carrier_overlay = CarrierOverlay(self.master, self.settings)
         self.footmap_overlay = FootMapOverlay(self.master, self.settings)
+        self.powerplay_overlay = PowerplayOverlay(self.master, self.settings)
 
         for key, ov in self._blocks():
             self._wire_block(key, ov)
@@ -296,6 +299,7 @@ class OverlayManager:
             "bio": self.biology_overlay,
             "carrier": self.carrier_overlay,
             "footmap": self.footmap_overlay,
+            "powerplay": getattr(self, "powerplay_overlay", None),
         }
         return [(key, mapping.get(key)) for key in self.BLOCKS if mapping.get(key) is not None]
 
@@ -886,6 +890,7 @@ class OverlayManager:
         parts.append(self._exobiology_fingerprint(data.get("exobiology")))
         # Груз авианосца: тоннаж, товары и остаток до потребности площадки.
         parts.append(str(data.get("carrier", {})))
+        parts.append(str(data.get("powerplay", {})))
         # Миникарта: каждое движение и поворот меняют кадр, а журнал при этом
         # молчит — без этих полей блок замирал на месте стоянки.
         parts.append(self._footmap_fingerprint(data.get("footmap")))
@@ -984,6 +989,9 @@ class OverlayManager:
             # (смена командира, разгруженный носитель) в нём продолжали
             # висеть старые строки груза.
             self.carrier_overlay.update_carrier(data.get("carrier") or {})
+
+        if getattr(self, "powerplay_overlay", None):
+            self.powerplay_overlay.update_powerplay(data.get("powerplay") or {})
 
         if self.footmap_overlay:
             # Позиция на поверхности приходит из Status.json, поэтому блок
@@ -1701,6 +1709,7 @@ DEFAULT_SETTINGS = {
     "show_bio": True,
     "show_carrier": True,
     "show_footmap": True,
+    "show_powerplay": False,
     "show_flags": True,
     "show_pips": True,
     "show_hull": True,
@@ -1757,6 +1766,9 @@ DEFAULT_SETTINGS = {
     "carrier_anchor": "custom",
     "footmap_locked": False,
     "footmap_anchor": "custom",
+    "powerplay_locked": False,
+    "powerplay_anchor": "custom",
+    "powerplay_auto_rule": "always",
     # Миникарта нужна только на поверхности: правило «пешком (OnFoot)»
     # срабатывает, как только включены автоправила на вкладке «Оверлей».
     "footmap_auto_rule": "on_foot",
@@ -1838,7 +1850,7 @@ def save_overlay_settings(config_path: Path, settings: dict):
         overlay_keys = set(DEFAULT_SETTINGS)
         overlay_keys.update(key for key in settings if key.startswith((
             "route_", "status_", "ship_", "cargo_", "session_", "events_", "exobio_",
-            "bio_", "carrier_", "footmap_",
+            "bio_", "carrier_", "footmap_", "powerplay_",
         )))
         existing.update({key: settings[key] for key in overlay_keys if key in settings})
         # Удаление ключа — тоже изменение. Общий конфиг пишут два владельца:

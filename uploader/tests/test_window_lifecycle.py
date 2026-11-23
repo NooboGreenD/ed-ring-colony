@@ -71,6 +71,21 @@ class WindowLifecycleTests(unittest.TestCase):
         self.app.setQuitOnLastWindowClosed(True)
         self.temp.cleanup()
 
+    def test_completed_single_shot_timers_do_not_accumulate_as_children(self):
+        from PySide6.QtCore import QCoreApplication, QEvent
+        before = len(self.window.findChildren(QTimer))
+        for _ in range(200):
+            self.window.after(0, lambda: None)
+        self.app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertEqual(self.window._timers, {})
+        self.assertLessEqual(len(self.window.findChildren(QTimer)), before)
+
+    def test_creating_another_widget_does_not_reenable_quit_on_last_window(self):
+        self.app.setQuitOnLastWindowClosed(False)
+        self.assertIs(ui_qt.ensure_app(), self.app)
+        self.assertFalse(self.app.quitOnLastWindowClosed())
+
     # ---------------------------------------------------------------- выход
     def test_window_close_is_bound_to_the_main_window_not_to_the_last_one(self):
         """Пока Helper работает, выход не зависит от «последнего» окна."""

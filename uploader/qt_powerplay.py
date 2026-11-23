@@ -85,6 +85,8 @@ ACTION_KEYS = {
     "PowerplayFastTrack": "ускоренная доставка: {amount} кр",
     "PowerplayVoucher": "ваучеры: {count} систем",
     "Powerplay": "состояние обновлено",
+    "PowerplayMerits": "Получено заслуг: {count}",
+    "PowerplayRank": "Ранг {rank}",
 }
 
 
@@ -129,6 +131,7 @@ def action_text(record: Dict[str, Any]) -> str:
         return ""
     values = {
         "count": _thousands(record.get("count")),
+        "rank": _thousands(record.get("count")),
         "votes": _thousands(record.get("votes")),
         "amount": _thousands(record.get("amount")),
         "power": str(record.get("power") or ""),
@@ -255,7 +258,7 @@ class PowerplayPanel(QWidget):
     """Состояние PowerPlay: командир, его действия и текущая система."""
 
     def __init__(self, parent=None, locale: str = "ru", site_url=None,
-                 on_refresh=None) -> None:
+                 on_refresh=None, compact=False, on_visibility_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("PowerplayPanel")
         self.locale = normalize_locale(locale)
@@ -263,6 +266,7 @@ class PowerplayPanel(QWidget):
             f"{str(site_url or DEFAULT_SITE_URL).rstrip('/')}/atlas?tab=powerplay",
             self.locale)
         self.on_refresh = on_refresh
+        self.on_visibility_changed = on_visibility_changed
         self._state: Dict[str, Any] = {}
 
         outer = QVBoxLayout(self)
@@ -384,6 +388,23 @@ class PowerplayPanel(QWidget):
         self.empty: Optional[QWidget] = None
         self.layout_.addStretch(1)
         self.set_state({})
+        if compact:
+            self.layout_.setContentsMargins(4, 4, 4, 4)
+            # Branding, title/buttons occupy the first two layout items.
+            for index in (0, 1, 2):
+                item = self.layout_.itemAt(index)
+                if item and item.widget():
+                    item.widget().hide()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if callable(self.on_visibility_changed):
+            self.on_visibility_changed()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        if callable(self.on_visibility_changed):
+            self.on_visibility_changed()
 
     # ------------------------------------------------------------------ public
     @staticmethod

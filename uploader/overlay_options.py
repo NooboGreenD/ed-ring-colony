@@ -62,6 +62,12 @@ CONTENT_OPTIONS = {
         'samples': ('Образцы и их радиус', ('sample_label',)),
         'vitals': ('Кислород, здоровье и гравитация', ('vitals_label',)),
     },
+    'powerplay': {
+        'commander': ('СТАТУС КОМАНДИРА', ()),
+        'system': ('СИСТЕМА', ()),
+        'actions': ('Последние действия', ()),
+        'source': ('Общие итоги и источник данных', ()),
+    },
     'events': {key: (label, ()) for key, label in (
         ('timestamps', 'Время события'), ('info', 'Информация'),
         ('success', 'Успешные события'), ('warn', 'Предупреждения'), ('error', 'Ошибки'))},

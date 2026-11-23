@@ -311,9 +311,11 @@ def ensure_app() -> QApplication:
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv[:1])
+        app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("Colonial Helper")
     app.setApplicationDisplayName("ED Ring Colony — Colonial Helper")
-    app.setQuitOnLastWindowClosed(True)
+    # Do not overwrite HelperWindow.run's tray-safe lifetime policy when
+    # another HUD/dialog asks for the existing QApplication.
     install_wheel_guard(app)
     return app
 

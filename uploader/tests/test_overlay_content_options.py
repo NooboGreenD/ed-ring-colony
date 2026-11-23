@@ -16,6 +16,7 @@ from overlay import (
     CarrierOverlay,
     ExobiologyOverlay,
     FootMapOverlay,
+    PowerplayOverlay,
     OverlayManager,
     RouteOverlay,
     SessionEventsOverlay,
@@ -155,7 +156,7 @@ class ContentSettingsTests(unittest.TestCase):
         blocks = {"route": RouteOverlay, "status": StatusOverlay, "ship": ShipOverlay,
                   "cargo": CargoOverlay, "carrier": CarrierOverlay,
                   "session": SessionOverlay, "exobio": ExobiologyOverlay,
-                  "footmap": FootMapOverlay}
+                  "footmap": FootMapOverlay, "powerplay": PowerplayOverlay}
         self.assertEqual(set(blocks), set(CONTENT_OPTIONS) - {"events"})
         for block, overlay_class in blocks.items():
             with self.subTest(block=block):

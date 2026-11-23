@@ -12,9 +12,11 @@ from typing import Callable, Dict, Optional
 
 import threading
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
+
+from i18n import tr
 
 from ui_qt import FramelessWindow, ensure_app
 
@@ -90,6 +92,7 @@ class HelperWindow(FramelessWindow):
     #: that is in a different thread»), колбэк не выполнялся никогда — так
     #: «зависали» проверка токена и проверка ключа Raven Colonial.
     _scheduled = Signal(object)
+    visibility_changed = Signal()
 
     def __init__(self, title: str = "Colonial Helper") -> None:
         ensure_app()
@@ -106,7 +109,71 @@ class HelperWindow(FramelessWindow):
         self._quit_by_us = False          # выход попросили мы сами
         self._quit_noted = False
         self._started_at = time.monotonic()
+        self._tray = None
+        self._in_tray = False
+        self._tray_was_maximized = False
         self.apply_screen_limits()
+        self._setup_tray()
+
+    def _setup_tray(self) -> None:
+        # Without a desktop tray, retain normal minimization: never strand a
+        # hidden window on Linux desktops / remote sessions without a tray.
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        icon = self.windowIcon()
+        if icon.isNull():
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        self._tray = QSystemTrayIcon(icon, self)
+        self.titlebar.minimize.setToolTip(tr("Свернуть в трей"))
+        self._tray.setToolTip("Colonial Helper")
+        menu = QMenu(self)
+        menu.addAction(tr("Показать Colonial Helper"), self.restore_from_tray)
+        menu.addAction(tr("Свернуть в трей"), self.minimize_to_tray)
+        menu.addSeparator()
+        menu.addAction(tr("Выход"), self.close)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._tray_activated)
+        self._tray.show()
+
+    def _tray_activated(self, reason) -> None:
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.restore_from_tray()
+
+    def minimize_to_tray(self) -> None:
+        if self._tray is None or not QSystemTrayIcon.isSystemTrayAvailable():
+            super().showMinimized()
+            return
+        if not self._in_tray:
+            self._tray_was_maximized = self.isMaximized()
+        self._in_tray = True
+        self.hide()  # not a minimized taskbar window: Alt+Tab cannot select it
+
+    def showMinimized(self) -> None:  # noqa: N802
+        self.minimize_to_tray()
+
+    def restore_from_tray(self) -> None:
+        self._in_tray = False
+        if self._tray_was_maximized:
+            self.showMaximized()
+        else:
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.isMinimized() and not self._in_tray:
+                self._tray_was_maximized = bool(event.oldState() & Qt.WindowState.WindowMaximized)
+                if self._tray is not None and QSystemTrayIcon.isSystemTrayAvailable():
+                    self._in_tray = True
+                    self.hide()
+            self.visibility_changed.emit()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self.visibility_changed.emit()
 
     # ------------------------------------------------------------------ window
     def apply_screen_limits(self) -> None:
@@ -149,6 +216,7 @@ class HelperWindow(FramelessWindow):
     def showEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().showEvent(event)
         self.fit_to_screen()
+        self.visibility_changed.emit()
 
     def run(self) -> int:
         """Show the window and enter the Qt event loop.
@@ -176,6 +244,8 @@ class HelperWindow(FramelessWindow):
                     f"{traceback.format_exc()}")
             raise
         finally:
+            if self._tray is not None:
+                self._tray.hide()
             app.setQuitOnLastWindowClosed(previous_policy)
         elapsed = time.monotonic() - getattr(self, "_started_at", time.monotonic())
         if not self._close_seen:
@@ -228,6 +298,8 @@ class HelperWindow(FramelessWindow):
             icon = QIcon(str(path))
             if not icon.isNull():
                 self.setWindowIcon(icon)
+                if self._tray is not None:
+                    self._tray.setIcon(icon)
         except Exception:
             pass
 
@@ -271,6 +343,7 @@ class HelperWindow(FramelessWindow):
 
         def fire() -> None:
             self._timers.pop(token, None)
+            timer.deleteLater()  # single-shot timers otherwise remain QObject children forever
             if not self._closing:
                 call_safely(callback)
 
@@ -315,6 +388,8 @@ class HelperWindow(FramelessWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._close_seen = True
+        if self._tray is not None:
+            self._tray.hide()
         # Кто попросил закрыть окно: без стека «закрылось само» неотличимо от
         # нашего же `_on_close` через таймер или из другого потока.
         journal("закрытие окна Helper\n" + "".join(traceback.format_stack()[-6:]))

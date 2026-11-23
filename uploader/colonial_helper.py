@@ -10,6 +10,7 @@ import errno
 import os
 import sys
 import json
+import hashlib
 import tempfile
 import time
 import threading
@@ -93,7 +94,7 @@ from pilot_equipment import PilotEquipment
 from factions_data import (SOURCE_JOURNAL, prefer_snapshot, scan_journal_for_factions,
                            snapshot_from_event, snapshot_from_site, snapshot_system,
                            snapshot_timestamp, system_key)
-from powerplay_data import (PowerplayTracker, scan_journal_for_powerplay,
+from powerplay_data import (PowerplayTracker, PowerplayJournalReader,
                             site_state as powerplay_site_state)
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
@@ -364,6 +365,18 @@ class ColonialHelperApp:
         # PowerPlay 2.0: держава, ранг и заслуги командира плюс состояние
         # текущей системы (вкладка «PowerPlay» раздела BGS).
         self.powerplay = PowerplayTracker()
+        self._powerplay_reader = PowerplayJournalReader()
+        self._powerplay_current_system = ""
+        self._powerplay_current_address = 0
+        self._powerplay_system_at = ""
+        self._powerplay_latest_at = ""
+        self._powerplay_session_at = ""
+        self._powerplay_seen = {}
+        self._powerplay_lock = threading.RLock()
+        self._powerplay_poll_job = None
+        self._powerplay_view_active = False
+        self._powerplay_view_epoch = 0
+
         self._powerplay_request_key = ""      # система, для которой уже спросили
         self._powerplay_request_at = 0.0      # когда спросили (time.monotonic)
         self._powerplay_inflight = False      # фоновый сбор уже идёт
@@ -2605,11 +2618,13 @@ class ColonialHelperApp:
         self._show_page(self.bgs_section)
         self._render_factions_infographic()
         self._render_powerplay()
+        self.powerplay_panel.on_visibility_changed = self._powerplay_visibility_changed
+        if hasattr(self.root, "visibility_changed"):
+            self.root.visibility_changed.connect(self._powerplay_visibility_changed)
         # Свежий прыжок мог остаться в прошлой сессии и не попасть в живые
         # события: система и фракции подтянутся из журналов и базы проекта,
         # не дожидаясь нового FSDJump; PowerPlay — из хвостов журналов.
         self._refresh_factions_data()
-        self._refresh_powerplay()
 
     def _update_faction_infographic(self, event: dict):
         """Живое событие журнала: оно свежее любого ответа сайта."""
@@ -2808,128 +2823,170 @@ class ColonialHelperApp:
     # ============================================================
     #: Сколько секунд ответ сайта о PowerPlay считаем свежим: состояние системы
     #: меняется не мгновенно, а вкладку открывают часто.
-    POWERPLAY_SITE_TTL = 120
+    POWERPLAY_SITE_TTL = 30
+    POWERPLAY_POLL_MS = 2000
+
+    def _powerplay_visible(self) -> bool:
+        panel = getattr(self, "powerplay_panel", None)
+        return bool(panel is not None and panel.isVisible()
+                    and self.root.isVisible() and not self.root.isMinimized()
+                    and not getattr(self, "_close_started", False))
+
+    def _powerplay_visibility_changed(self) -> None:
+        active = self._powerplay_visible()
+        if active == self._powerplay_view_active:
+            return
+        self._powerplay_view_active = active
+        self._powerplay_view_epoch += 1
+        if self._powerplay_poll_job is not None:
+            self.root.after_cancel(self._powerplay_poll_job)
+            self._powerplay_poll_job = None
+        if active:
+            self._powerplay_poll()
+        else:
+            # A pending read may finish after hide; next open bootstraps again
+            # instead of silently losing the offsets of a discarded response.
+            self._powerplay_reader = PowerplayJournalReader()
+
+    def _powerplay_poll(self) -> None:
+        self._powerplay_poll_job = None
+        if not self._powerplay_visible():
+            return
+        self._render_powerplay()
+        self._refresh_powerplay()
+        self._powerplay_poll_job = self.root.after(self.POWERPLAY_POLL_MS, self._powerplay_poll)
 
     def _update_powerplay(self, event: dict) -> None:
-        """Живое событие журнала: держава и заслуги командира, состояние системы.
+        """Cheap shared tracker update; never enqueue a render per history row."""
+        with self._powerplay_lock:
+            if not isinstance(event, dict):
+                return
+            name = str(event.get("event") or "")
+            if name not in ("LoadGame", "NewCommander", "Location", "FSDJump", "CarrierJump") and not name.startswith("Powerplay"):
+                return
+            stamp = str(event.get("timestamp") or "")
+            if stamp and stamp < self._powerplay_session_at:
+                return
+            # System events can contain hundreds of faction/body records that
+            # PowerPlay does not use; do not serialize/hash those on import.
+            relevant = event if name.startswith("Powerplay") else {
+                key: value for key, value in event.items()
+                if key.startswith("Power") or key in ("event", "timestamp", "StarSystem",
+                                                        "SystemAddress", "ControllingPower")}
+            signature = hashlib.sha256(json.dumps(relevant, sort_keys=True).encode("utf-8")).digest()
+            if signature in self._powerplay_seen:
+                return
+            self._powerplay_seen[signature] = None
+            if len(self._powerplay_seen) > 512:
+                self._powerplay_seen.pop(next(iter(self._powerplay_seen)))
+            if name in ("LoadGame", "NewCommander"):
+                if stamp and stamp < self._powerplay_latest_at:
+                    return  # old history / reader overlap must not clear a live pilot
+                self.powerplay.forget()
+                self._powerplay_session_at = stamp
+                self._powerplay_note = ""
+                self._powerplay_current_system = ""
+                self._powerplay_current_address = 0
+                self._powerplay_system_at = stamp
+            elif name in ("Location", "FSDJump", "CarrierJump") and event.get("StarSystem"):
+                if not stamp or stamp >= self._powerplay_system_at:
+                    if self._powerplay_current_system != str(event["StarSystem"]):
+                        self._powerplay_note = ""
+                    self._powerplay_current_system = str(event["StarSystem"])
+                    self._powerplay_current_address = event.get("SystemAddress") or 0
+                    self._powerplay_system_at = stamp
+                    self.powerplay.handle(event)
+            else:
+                self.powerplay.handle(event)
+            self._powerplay_latest_at = max(stamp, self._powerplay_latest_at)
 
-        Здесь только приём: подписи и перерисовку делает Qt-поток, а события
-        приходят из потока watcher'а.
-        """
-        if not isinstance(event, dict):
-            return
-        name = str(event.get("event") or "")
-        if name in ("LoadGame", "NewCommander"):
-            # Другой командир (или новая сессия): прошлые заслуги — чужие.
-            self.powerplay.forget()
-            self._powerplay_note = ""
-            self.after(0, self._render_powerplay)
-            return
-        try:
-            changed = self.powerplay.handle(event)
-        except Exception as exc:
-            self.log(f"PowerPlay: {exc}", "error")
-            return
-        if changed:
-            self.after(0, self._render_powerplay)
+    def _powerplay_state(self) -> dict:
+        with self._powerplay_lock:
+            system = self._powerplay_current_system or self._faction_tracker_system()[0]
+            state = self.powerplay.state(now_system=system)
+            state["note"] = self._powerplay_note or ""
+            return state
 
     def _refresh_powerplay(self, force: bool = False) -> None:
-        """Подтянуть PowerPlay текущей системы: хвосты журналов и карточка сайта.
-
-        Своё состояние (держава, ранг, заслуги) игра пишет в журнал, поэтому
-        основной источник — журнал; сайт нужен, только когда в хвостах нет
-        события о системе (Helper запустили посреди сессии).
-        """
-        if self._powerplay_inflight:
-            return
-        if (not force and self._powerplay_request_key
-                and (time.monotonic() - self._powerplay_request_at) < self.POWERPLAY_SITE_TTL):
+        if not self._powerplay_visible() or self._powerplay_inflight:
             return
         self._powerplay_inflight = True
-        threading.Thread(target=self._powerplay_refresh_worker, args=(force,),
+        threading.Thread(target=self._powerplay_refresh_worker,
+                         args=(force, self._powerplay_view_epoch, self._powerplay_reader),
                          name="powerplay-refresh", daemon=True).start()
 
-    def _powerplay_refresh_worker(self, force: bool = False) -> None:
-        """Фоновый сбор: события PowerPlay из журналов и состояние системы с сайта."""
-        system, address = self._faction_pilot_system()
-        key = system_key(system, address)
-        now = time.monotonic()
-        if (not force and key and key == self._powerplay_request_key
-                and (now - self._powerplay_request_at) < self.POWERPLAY_SITE_TTL):
-            self._powerplay_inflight = False
-            return
-        self._powerplay_request_key = key
-        self._powerplay_request_at = now
-        events = {}
+    def _powerplay_refresh_worker(self, force: bool = False, epoch=None, reader=None) -> None:
+        """Read appended local rows; rate-limit network separately from local IO."""
+        if epoch is None:
+            epoch = self._powerplay_view_epoch
         try:
-            events = scan_journal_for_powerplay(self.journal_path, system, address)
-        except Exception as exc:
-            self.log(f"PowerPlay journal scan: {exc}", "error")
-        site = None
-        site_error = ""
-        if system or address:
+            system, address = self._faction_tracker_system()
+            if self._powerplay_current_system:
+                system, address = self._powerplay_current_system, self._powerplay_current_address
             try:
-                payload = self.api.get_system_powerplay(address, system)
-                if payload.get("ok"):
-                    # Карточку разбирает ``powerplay_data.site_state``: ей нужен
-                    # весь ответ (``name``/``id64`` + блок ``powerplay``).
-                    site = payload
-                else:
-                    site_error = str(payload.get("error") or "")
-            except Exception as exc:
-                site_error = str(exc)
-        result = {"system": system, "address": address, "events": events,
-                  "site": site, "site_error": site_error}
-        try:
-            self.root.after(0, lambda: self._apply_powerplay_refresh(result))
-        except Exception:
-            self._powerplay_inflight = False
+                events = (reader or self._powerplay_reader).poll(self.journal_path, system, address)
+            except OSError:
+                events = []
+            for event in events:
+                if event.get("event") in ("FSDJump", "Location", "CarrierJump"):
+                    system = str(event.get("StarSystem") or system)
+                    address = event.get("SystemAddress") or 0
+            key = system_key(system, address)
+            site, error = None, ""
+            now = time.monotonic()
+            site_checked = False
+            if (epoch == self._powerplay_view_epoch and (system or address) and (force or key != self._powerplay_request_key
+                    or now - self._powerplay_request_at >= self.POWERPLAY_SITE_TTL)):
+                site_checked = True
+                self._powerplay_request_key, self._powerplay_request_at = key, now
+                try:
+                    payload = self.api.get_system_powerplay(address, system)
+                    if payload.get("ok"):
+                        site = payload
+                    else:
+                        error = str(payload.get("error") or "")
+                except Exception as exc:
+                    error = str(exc)
+            result = {"system": system, "events": events, "site": site, "site_checked": site_checked,
+                      "site_error": error, "epoch": epoch}
+        except Exception as exc:
+            result = {"events": [], "site_error": str(exc), "epoch": epoch}
+        self.root.after(0, lambda: self._apply_powerplay_refresh(result))
 
     def _apply_powerplay_refresh(self, result: dict) -> None:
-        """Ответ фона на экране: принять наблюдения и перерисовать вкладку."""
         self._powerplay_inflight = False
-        system = str(result.get("system") or "").strip()
-        events = result.get("events") if isinstance(result.get("events"), dict) else {}
-        commander = events.get("commander") if isinstance(events, dict) else None
-        system_event = events.get("system") if isinstance(events, dict) else None
-        site = result.get("site") if isinstance(result.get("site"), dict) else None
-        error = str(result.get("site_error") or "").strip()
-        try:
-            if isinstance(commander, dict):
-                self.powerplay.handle(commander)
-            snapshot = None
-            if isinstance(system_event, dict):
-                from powerplay_data import system_state
-
-                snapshot = system_state(system_event, source="journal-archive")
-            if snapshot is None and site is not None:
-                snapshot = powerplay_site_state(site, system)
+        # Reading can finish after leaving the tab; do not repaint hidden UI.
+        if result.get("epoch") != self._powerplay_view_epoch or not self._powerplay_visible():
+            return
+        for event in result.get("events") or []:
+            self._update_powerplay(event)
+        system = str(result.get("system") or "")
+        site = result.get("site")
+        # A jump may arrive from the normal watcher while the HTTP request runs.
+        if site and (not self._powerplay_current_system
+                     or system.casefold() == self._powerplay_current_system.casefold()):
+            snapshot = powerplay_site_state(site, system)
             if snapshot is not None:
                 self.powerplay.apply_system(snapshot)
-        except Exception as exc:
-            self.log(f"PowerPlay: {exc}", "error")
-        # Пояснение под карточками: только когда данных о системе нет вовсе.
-        state = self.powerplay.state(now_system=system)
-        note = ""
-        if not state.get("system"):
-            if error:
-                note = tr("Сайт проекта недоступен: {error}; в журнале игры данных "
-                          "о PowerPlay этой системы нет.", error=error)
-            elif system:
-                note = tr("PowerPlay системы {system} нет ни в журнале игры, "
-                          "ни в базе проекта.", system=system)
-        self._powerplay_note = note
+        error = result.get("site_error")
+        has_system = bool(self._powerplay_state().get("system"))
+        if result.get("site_checked") or error:
+            self._powerplay_note = (tr("Сайт проекта недоступен: {error}; в журнале игры данных "
+                                      "о PowerPlay этой системы нет.", error=error)
+                                    if error and not has_system else "")
+            if not error and system and not has_system:
+                self._powerplay_note = tr("PowerPlay системы {system} нет ни в журнале игры, "
+                                          "ни в базе проекта.", system=system)
+        elif has_system:
+            self._powerplay_note = ""
         self._render_powerplay()
 
     def _render_powerplay(self) -> None:
-        """Показать состояние PowerPlay в панели раздела BGS."""
-        panel = getattr(self, "powerplay_panel", None)
-        if panel is None:
+        if not self._powerplay_visible():
             return
-        system, _address = self._faction_tracker_system()
-        state = self.powerplay.state(now_system=system)
-        state["note"] = getattr(self, "_powerplay_note", "") or ""
-        panel.set_state(state)
+        state = self._powerplay_state()
+        if self.powerplay_panel.state() != state:
+            self.powerplay_panel.set_state(state)
 
     # Legacy renderer remains unreferenced; the system-map tab is removed.
     def _select_map_object(self, key: str):
@@ -3396,7 +3453,7 @@ class ColonialHelperApp:
             try:
                 if self.notebook.select() == str(self.tab_factions):
                     self._refresh_factions_data()
-                    self._refresh_powerplay()
+                    self._powerplay_visibility_changed()
             except Exception:
                 pass
 
@@ -4102,6 +4159,7 @@ class ColonialHelperApp:
         commerce = getattr(self, "_station_commerce", None)
         if commerce is not None:
             data["carrier"] = commerce.market_availability.decorate_carrier(data["carrier"])
+        data["powerplay"] = self._powerplay_state()
         data["last_delivery_system"] = self._last_delivery_system
         # Миникарта пешехода: Status.json перечитывается только при изменении
         # файла, поэтому тик оверлея не превращается в поток чтений с диска.
@@ -5475,6 +5533,12 @@ class ColonialHelperApp:
         if getattr(self, "_close_started", False):
             return
         self._close_started = True
+        try:
+            if getattr(self, "_powerplay_poll_job", None) is not None:
+                self.root.after_cancel(self._powerplay_poll_job)
+                self._powerplay_poll_job = None
+        except Exception as exc:
+            self.log(f"Остановка PowerPlay при выходе: {exc}", "warn")
         try:
             self.overlay_manager.stop()
         except Exception as exc:
@@ -7215,6 +7279,7 @@ class ColonialHelperApp:
             if f.exists()
         )
         if startup_reconciliation:
+            reconcile_wall, reconcile_cpu = time.monotonic(), time.process_time()
             self.root.after(0, lambda: self.log("Проверка ранее не отправленных журналов...", "info"))
             # Первичная сверка выполняется отдельным проходом, чтобы в UI был
             # виден реальный прогресс, а не только сообщение "обработка".
@@ -7264,6 +7329,11 @@ class ColonialHelperApp:
             elif not self.watcher_stop_event.is_set():
                 self.root.after(0, lambda: self._finish_journal_reconciliation(
                     tr("Первичная загрузка журналов завершена")))
+
+            self.root.after(0, lambda w=time.monotonic()-reconcile_wall,
+                            c=time.process_time()-reconcile_cpu, n=total_files, b=done_bytes:
+                            self.log(f"Startup journal reconciliation: {n} files, {b} bytes, "
+                                     f"wall={w:.2f}s, process CPU={c:.2f}s", "info"))
 
         while not self.watcher_stop_event.is_set():
             time.sleep(5)
@@ -9863,7 +9933,7 @@ class ColonialHelperApp:
     #  Утилиты
     # ============================================================
     def after(self, ms: int, callback):
-        self.root.after(ms, callback)
+        return self.root.after(ms, callback)
 
 
 def _journal(message: str) -> None:
