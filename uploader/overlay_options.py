@@ -34,6 +34,7 @@ CONTENT_OPTIONS = {
         'details': ('Топливо, прыжок и службы', ('detail_label',)),
         'project': ('Выбранная стройка', ('project_label',)),
         'items': ('Товары', ('list_frame',)),
+        'station_market': ('Подсвечивать товары текущей станции', ()),
         'summary': ('Общие итоги и источник данных', ('summary_label',)),
     },
     'session': {

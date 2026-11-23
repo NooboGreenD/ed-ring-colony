@@ -4097,6 +4097,11 @@ class ColonialHelperApp:
         need, need_label, need_source = self._carrier_need_info()
         data["carrier"] = self.carrier.get_state_dict(
             need, need_label=need_label, need_source=need_source)
+        # The pilot may be at a regular station while loading their carrier.
+        # Do not confuse that station's sale stock with the carrier's cargo.
+        commerce = getattr(self, "_station_commerce", None)
+        if commerce is not None:
+            data["carrier"] = commerce.market_availability.decorate_carrier(data["carrier"])
         data["last_delivery_system"] = self._last_delivery_system
         # Миникарта пешехода: Status.json перечитывается только при изменении
         # файла, поэтому тик оверлея не превращается в поток чтений с диска.
