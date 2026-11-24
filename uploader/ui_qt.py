@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from i18n import tr
+from app_icons import application_icon, tray_icon
 
 BG = "#1e2022"
 PANEL = "#2a2d30"
@@ -314,6 +315,11 @@ def ensure_app() -> QApplication:
         app.setQuitOnLastWindowClosed(True)
     app.setApplicationName("Colonial Helper")
     app.setApplicationDisplayName("ED Ring Colony — Colonial Helper")
+    if not getattr(app, '_colonial_icon_initialized', False):
+        icon = application_icon()
+        if not icon.isNull():
+            app.setWindowIcon(icon)
+            app._colonial_icon_initialized = True
     # Do not overwrite HelperWindow.run's tray-safe lifetime policy when
     # another HUD/dialog asks for the existing QApplication.
     install_wheel_guard(app)
@@ -500,6 +506,13 @@ class _TitleBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 6, 0)
         layout.setSpacing(2)
+        icon = tray_icon()
+        if not icon.isNull():
+            self.brand_icon = QLabel()
+            self.brand_icon.setFixedSize(20, 20)
+            self.brand_icon.setPixmap(icon.pixmap(20, 20))
+            layout.addWidget(self.brand_icon)
+            layout.addSpacing(6)
         self.title = QLabel(title)
         self.title.setObjectName("titlebarTitle")
         layout.addWidget(self.title)

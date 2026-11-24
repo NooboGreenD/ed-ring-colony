@@ -168,6 +168,12 @@ def main() -> int:
     args.extend(collect_package_args())
     if icon_path.exists():
         args.append(f"--icon={icon_path}")
+    # Standalone resources also brand frozen maintenance dialogs; --icon only
+    # sets the PE executable resource, not QApplication's runtime icon.
+    from app_icons import ICON_ASSETS
+    for asset in ICON_ASSETS:
+        if (HERE / asset).is_file():
+            args += ["--add-data", f"{HERE / asset}{os.pathsep}."]
 
     print(f"Сборка лаунчера Colonial Helper (пакет {version})")
     PyInstaller.__main__.run(args)

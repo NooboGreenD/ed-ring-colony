@@ -63,6 +63,10 @@ def main() -> int:
         args += ["--hidden-import", module]
     if icon.is_file():
         args.append(f"--icon={icon}")
+    from app_icons import ICON_ASSETS
+    for asset in ICON_ASSETS:
+        if (HERE / asset).is_file():
+            args += ["--add-data", f"{HERE / asset}{os.pathsep}."]
     PyInstaller.__main__.run(args)
     output = HERE / "dist" / "ColonialHelperSetup.exe"
     if not output.is_file() or output.stat().st_size <= 0:

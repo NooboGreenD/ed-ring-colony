@@ -17,6 +17,7 @@ from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from i18n import tr
+from app_icons import icon_resource, tray_icon
 
 from ui_qt import FramelessWindow, ensure_app
 
@@ -120,7 +121,9 @@ class HelperWindow(FramelessWindow):
         # hidden window on Linux desktops / remote sessions without a tray.
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
-        icon = self.windowIcon()
+        icon = tray_icon()
+        if icon.isNull():
+            icon = self.windowIcon()
         if icon.isNull():
             icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
         self._tray = QSystemTrayIcon(icon, self)
@@ -295,11 +298,13 @@ class HelperWindow(FramelessWindow):
 
     def iconbitmap(self, path: str) -> None:  # noqa: N802 - Tk-style call
         try:
-            icon = QIcon(str(path))
+            resolved = icon_resource(path)
+            icon = QIcon(str(resolved)) if resolved else QIcon()
             if not icon.isNull():
                 self.setWindowIcon(icon)
                 if self._tray is not None:
-                    self._tray.setIcon(icon)
+                    small = tray_icon()
+                    self._tray.setIcon(icon if small.isNull() else small)
         except Exception:
             pass
 
