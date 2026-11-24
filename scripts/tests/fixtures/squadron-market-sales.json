@@ -1,0 +1,6 @@
+[
+  {"timestamp":"2026-11-23T23:16:35Z","event":"MarketSell","MarketID":3713477376,"Type":"steel","Count":1320,"SellPrice":209,"TotalSale":275880,"AvgPricePaid":3476},
+  {"timestamp":"2026-11-23T23:37:32Z","event":"MarketSell","MarketID":3713477376,"Type":"steel","Count":1320,"SellPrice":209,"TotalSale":275880,"AvgPricePaid":3476},
+  {"timestamp":"2026-11-23T23:56:17Z","event":"MarketSell","MarketID":3713477376,"Type":"steel","Count":1320,"SellPrice":209,"TotalSale":275880,"AvgPricePaid":3476},
+  {"timestamp":"2026-11-24T00:22:22Z","event":"MarketSell","MarketID":3713477376,"Type":"steel","Count":1320,"SellPrice":209,"TotalSale":275880,"AvgPricePaid":3476}
+]

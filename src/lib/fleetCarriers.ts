@@ -530,8 +530,8 @@ export interface CarrierMarketItem {
  * и есть их количество на борту; распроданная позиция (ни продажи, ни
  * закупки) — ноль. Ордера на закупку (Consumer) о трюме ничего не говорят.
  */
-export function carrierMarketCargo(items: CarrierMarketItem[]): Array<{ commodity: string; qty: number; name_localised?: string }> {
-  const result = new Map<string, { commodity: string; qty: number; name_localised?: string }>();
+export function carrierMarketCargo(items: CarrierMarketItem[], squadron = false): Array<{ commodity: string; qty: number; name_localised?: string; stock_observed?: boolean }> {
+  const result = new Map<string, { commodity: string; qty: number; name_localised?: string; stock_observed?: boolean }>();
   for (const item of items) {
     const commodity = canonicalCommodity(item.name);
     if (!commodity) continue;
@@ -539,8 +539,10 @@ export function carrierMarketCargo(items: CarrierMarketItem[]): Array<{ commodit
     const demand = Math.max(0, Math.trunc(Number(item.demand ?? 0) || 0));
     const producer = item.producer ?? stock > 0;
     const consumer = item.consumer ?? (!producer && demand > 0);
-    if (producer || (!producer && !consumer)) {
-      result.set(commodity, { commodity, qty: Math.min(stock, MAX_TONS_PER_EVENT), name_localised: item.name_localised });
+    if (producer || (!producer && !consumer && !squadron)) {
+      result.set(commodity, { commodity, qty: Math.min(stock, MAX_TONS_PER_EVENT), name_localised: item.name_localised,
+        ...(stock === 0 && item.producer === true ? { stock_observed: true } : {}),
+      });
     }
   }
   return Array.from(result.values());
@@ -581,7 +583,7 @@ export function carrierOpsFromStationReport(report: {
   const market = report.inventories?.market;
   const marketAt = market ? isoTime(market.observed_at) : undefined;
   if (market && marketAt) {
-    ops.push({ op: 'baseline', carrier_id: id, at: marketAt, full: false, source_event: 'Market', items: carrierMarketCargo(market.items) });
+    ops.push({ op: 'baseline', carrier_id: id, at: marketAt, full: false, source_event: 'Market', items: carrierMarketCargo(market.items, type === 'SquadronCarrier') });
   }
   return ops;
 }

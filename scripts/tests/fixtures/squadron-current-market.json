@@ -1,0 +1,186 @@
+{
+  "timestamp": "2026-11-24T16:46:41Z",
+  "event": "Market",
+  "MarketID": 3713477376,
+  "StationName": "DNHG",
+  "StationType": "FleetCarrier",
+  "CarrierDockingAccess": "all",
+  "StarSystem": "Prua Dryou EC-B d1-37",
+  "Items": [
+    {
+      "Name": "$water_name;",
+      "Stock": 0,
+      "Demand": 1483,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$titanium_name;",
+      "Stock": 0,
+      "Demand": 10601,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$copper_name;",
+      "Stock": 0,
+      "Demand": 485,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$aluminium_name;",
+      "Stock": 0,
+      "Demand": 1001,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$fruitandvegetables_name;",
+      "Stock": 0,
+      "Demand": 101,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$foodcartridges_name;",
+      "Stock": 0,
+      "Demand": 189,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$polymers_name;",
+      "Stock": 0,
+      "Demand": 1043,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$semiconductors_name;",
+      "Stock": 0,
+      "Demand": 137,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$superconductors_name;",
+      "Stock": 0,
+      "Demand": 225,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$powergenerators_name;",
+      "Stock": 0,
+      "Demand": 39,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$waterpurifiers_name;",
+      "Stock": 0,
+      "Demand": 77,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$computercomponents_name;",
+      "Stock": 0,
+      "Demand": 125,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$terrainenrichmentsystems_name;",
+      "Stock": 0,
+      "Demand": 0,
+      "Producer": false,
+      "Consumer": false
+    },
+    {
+      "Name": "$nonlethalweapons_name;",
+      "Stock": 0,
+      "Demand": 27,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$ceramiccomposites_name;",
+      "Stock": 0,
+      "Demand": 1,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$surfacestabilisers_name;",
+      "Stock": 0,
+      "Demand": 0,
+      "Producer": false,
+      "Consumer": false
+    },
+    {
+      "Name": "$buildingfabricators_name;",
+      "Stock": 0,
+      "Demand": 0,
+      "Producer": false,
+      "Consumer": false
+    },
+    {
+      "Name": "$evacuationshelter_name;",
+      "Stock": 0,
+      "Demand": 0,
+      "Producer": false,
+      "Consumer": false
+    },
+    {
+      "Name": "$liquidoxygen_name;",
+      "Stock": 0,
+      "Demand": 3585,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$insulatingmembrane_name;",
+      "Stock": 0,
+      "Demand": 695,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$cmmcomposite_name;",
+      "Stock": 0,
+      "Demand": 1,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$medicaldiagnosticequipment_name;",
+      "Stock": 0,
+      "Demand": 27,
+      "Producer": false,
+      "Consumer": true
+    },
+    {
+      "Name": "$survivalequipment_name;",
+      "Stock": 0,
+      "Demand": 0,
+      "Producer": false,
+      "Consumer": false
+    },
+    {
+      "Name": "$thargoidtitandrivecomponent_name;",
+      "Stock": 0,
+      "Demand": 0,
+      "Producer": false,
+      "Consumer": false
+    },
+    {
+      "Name": "$steel_name;",
+      "Stock": 0,
+      "Demand": 7003,
+      "Producer": false,
+      "Consumer": true
+    }
+  ]
+}

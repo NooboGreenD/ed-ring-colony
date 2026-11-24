@@ -218,6 +218,19 @@ class SquadronCargoTests(unittest.TestCase):
         self.assertEqual(self.rows()['steel']['amount'], 600)
         self.assertEqual(self.rows()['water']['amount'], 80)
 
+    def test_inactive_market_cannot_erase_sales_and_next_sale_accumulates(self):
+        sale = {**DOCK, 'event': 'MarketSell', 'timestamp': '2026-03-01T10:01:00Z',
+                'Type': 'steel', 'Count': 1320}
+        self.feed(sale)
+        self.assertEqual(self.rows()['steel']['amount'], 1420)
+        inactive = market()
+        inactive['Items'] = [{'Name': 'steel', 'Stock': 0, 'Demand': 0,
+                              'Producer': False, 'Consumer': False}]
+        self.snapshot(inactive)
+        self.assertEqual(self.rows()['steel']['amount'], 1420)
+        self.feed({**sale, 'timestamp': '2026-03-01T10:03:00Z'})
+        self.assertEqual(self.rows()['steel']['amount'], 2740)
+
     def test_market_buy_orders_and_empty_inventory_do_not_erase_unknown_hold(self):
         event = market()
         event['Items'] = [{'Name': 'steel', 'Stock': 0, 'Demand': 500, 'Consumer': True, 'Producer': False}]

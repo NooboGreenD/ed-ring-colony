@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { bundleFile } from './helpers/bundle.mjs';
 
 /* Маршруты учёта авианосцев: авторизация (сессия сайта или API-токен Helper'а),
@@ -248,4 +249,36 @@ test('squadron unbinding is remembered for journals, manual binding clears it; a
   assert.equal('squadron_rejected' in update.payload, false);
   assert.equal((await bind.DELETE(del({ kind: 'squadron', carrier_id: '3713000001' }))).status, 200);
   assert.equal('squadron_rejected' in tables.fleet_carriers.at(-1), false);
+});
+
+// Minimal trading-only excerpt of the supplied journal: no commander/FID/chat.
+const squadronSales = JSON.parse(readFileSync(new URL('./fixtures/squadron-market-sales.json', import.meta.url), 'utf8'));
+
+test('ordinary member Helper token uploads all four observed squadron market sales without officer rights', async () => {
+  const tables = setup();
+  tables.api_tokens[0].user_id = MEMBER;
+  tables.api_tokens[0].token_hash = await tokenHash('rc_valid');
+  const response = await sync.POST(post({ events: squadronSales }, { authorization: 'Bearer rc_valid' }));
+  assert.equal(response.status, 200);
+  assert.equal(response.body.skipped, 0);
+  const call = globalThis.__db.calls.find(call => call.rpc === 'apply_fleet_carrier_batch');
+  assert.equal(call.params.p_user_id, MEMBER);
+  const deltas = call.params.p_ops.filter(op => op.op === 'delta');
+  assert.equal(deltas.length, 4);
+  assert.ok(deltas.every(op => op.carrier_id === '3713477376' && op.commodity === 'steel' && op.delta === 1320));
+  assert.equal(deltas.reduce((sum, op) => sum + op.delta, 0), 5280);
+});
+
+test('promoting a reader changes finance/management access, not cargo quantities or observation metadata', async () => {
+  const tables = setup();
+  tables.fleet_carrier_cargo[0].observed_at = '2026-03-01T10:00:00Z';
+  globalThis.__user = { id: MEMBER };
+  const member = (await mine.GET(get())).body;
+  globalThis.__user = { id: OFFICER };
+  const officer = (await mine.GET(get())).body;
+  assert.deepEqual(member.squadron[0].cargo, officer.squadron[0].cargo);
+  assert.equal(member.squadron[0].finance, null);
+  assert.equal(officer.squadron[0].finance.carrier_balance, 99);
+  assert.equal(member.can_manage_squadron, false);
+  assert.equal(officer.can_manage_squadron, true);
 });

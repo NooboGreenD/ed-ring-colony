@@ -108,6 +108,21 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(restored.pending_count, 0)
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), [])
 
+    def test_flush_preserves_server_ignored_and_skipped_outcomes(self):
+        collector = CarrierEventCollector()
+        collector.feed(JOURNAL[1])
+        class IgnoringApi:
+            is_connected = True
+            def sync_carrier_events(self, events):
+                return {"ok": True, "applied": 0, "duplicates": 0,
+                        "ignored": 2, "skipped": 1, "carriers": []}
+        result = collector.flush(IgnoringApi())
+        self.assertEqual(result['sent'], 1)
+        self.assertEqual(result['ignored'], 2)
+        self.assertEqual(result['skipped'], 1)
+        self.assertEqual(result['applied'], 0)
+        self.assertEqual(collector.pending_count, 0)
+
     def test_flush_is_skipped_without_connection(self):
         collector = CarrierEventCollector()
         collector.feed(JOURNAL[1])
