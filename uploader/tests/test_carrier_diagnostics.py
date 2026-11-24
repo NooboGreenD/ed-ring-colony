@@ -17,7 +17,7 @@ def helper_class():
     tree = ast.parse(source.read_text(encoding='utf-8'))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ColonialHelperApp')
     methods = [n for n in cls.body if isinstance(n, ast.FunctionDef)
-               and n.name in ('_feed_carrier', '_flush_carrier_sync')]
+               and n.name in ('_feed_carrier', '_flush_carrier_sync', '_handle_tracked_event')]
     node = ast.ClassDef(name='App', bases=[], keywords=[], body=methods, decorator_list=[])
     env = {'time': time, 'threading': mock.Mock(), 'canonical_commodity': canonical_commodity}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), '<diagnostics>', 'exec'), env)
@@ -69,3 +69,23 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn('0 → 1320 т', message)
         self.assertIn('MarketSell steel', message)
         self.assertEqual(level, 'info')
+
+    def test_local_carrier_update_survives_unrelated_session_failure(self):
+        self.app.carrier = CarrierTracker()
+        self.app.carrier.handle({'event': 'Docked', 'MarketID': 3713477376,
+                                 'timestamp': '2026-03-01T10:00:00Z',
+                                 'StationType': 'FleetCarrier', 'StationServices': ['squadronBank']})
+        self.app._refresh_carrier_cargo = mock.Mock()
+        self.app._station_commerce_collector = mock.Mock()
+        self.app._bgs_sync_collector = mock.Mock()
+        self.app._update_faction_infographic = mock.Mock()
+        self.app._squadron_collector = mock.Mock()
+        self.app._flush_squadron_sync = mock.Mock()
+        self.app._update_powerplay = mock.Mock()
+        self.app._log_session_event = mock.Mock(side_effect=RuntimeError('unrelated session UI failure'))
+        event = {'event': 'MarketSell', 'MarketID': 3713477376,
+                 'timestamp': '2026-03-01T10:01:00Z', 'Type': 'steel', 'Count': 1320}
+        with self.assertRaisesRegex(RuntimeError, 'session UI failure'):
+            self.app._handle_tracked_event(event, live=True)
+        self.collector.feed.assert_called_once_with(event, live=True)
+        self.assertEqual(self.app.carrier.states()[3713477376].commodities['steel'], 1320)

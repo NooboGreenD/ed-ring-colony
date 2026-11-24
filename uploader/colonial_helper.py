@@ -8234,6 +8234,13 @@ class ColonialHelperApp:
             self._carrier_sync_collector().feed(ev, live=live)
         except Exception as exc:
             self.log(f"Carrier sync queue: {exc}", "error")
+        # Keep the local inventory on the same early path as the durable
+        # carrier queue. An unrelated session/ship/UI failure below must not
+        # acknowledge the journal offset without updating the carrier HUD.
+        try:
+            self._feed_carrier(ev, live=live)
+        except Exception as exc:
+            self.root.after(0, lambda reason=str(exc): self.log(f"Carrier HUD: {reason}", "warn"))
         # Минорные фракции на сайте проекта: состояние посещённой населённой
         # системы (FSDJump / Location / CarrierJump) — и живые события, и
         # история; из нескольких посещений системы в очереди остаётся свежее.
@@ -8299,9 +8306,6 @@ class ColonialHelperApp:
         # Отслеживание корабля
         self.ship.parse_event(ev)
         self._maybe_sync_ship_state(ev, live=live)
-        # Груз авианосца: те же события, что уходят в Raven (/api/fc/.../cargo),
-        # только считаются локально для блока CARRIER в оверлее.
-        self._feed_carrier(ev, live=live)
         ev_name = ev.get("event")
         if ev_name in ("LoadGame", "Rank", "Progress", "Statistics"):
             self._update_pilot_stats_from_event(ev)
