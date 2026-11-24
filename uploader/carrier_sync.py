@@ -142,11 +142,13 @@ class CarrierEventCollector:
     """Отбор событий авианосца + outbox на диске + отправка на сервер."""
 
     def __init__(self, outbox_path=None,
-                 inventory_reader: Optional[Callable[[], Optional[Dict[str, int]]]] = None):
+                 inventory_reader: Optional[Callable[[], Optional[Dict[str, int]]]] = None,
+                 on_bank_transfer: Optional[Callable[[dict], None]] = None):
         self.path = Path(outbox_path) if outbox_path else None
         self.lock = threading.RLock()
         self.pending: List[dict] = []
         self.inventory_reader = inventory_reader
+        self.on_bank_transfer = on_bank_transfer
         self.collected = 0
         self.sent = 0
         self.last_result: dict = {}
@@ -339,12 +341,17 @@ class CarrierEventCollector:
             elif change > 0:
                 transfers.append({"Type": key, "Count": change, "Direction": "toship"})
         if transfers:
-            self._push({
+            transfer = {
                 "timestamp": event.get("timestamp"),
                 "event": "SquadronBankTransfer",
                 "MarketID": self._context["market_id"],
                 "Transfers": transfers,
-            })
+            }
+            self._push(transfer)
+            # Exactly the event queued for the server also drives the local
+            # HUD. Never replay persisted outbox entries through this callback.
+            if self.on_bank_transfer is not None:
+                self.on_bank_transfer(transfer)
 
     # -- вход ---------------------------------------------------------------------
     def feed(self, event: Mapping[str, Any], live: bool = False) -> None:

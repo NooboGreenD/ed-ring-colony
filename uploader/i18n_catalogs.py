@@ -19,6 +19,14 @@ from typing import Dict
 
 #: Строка → {код языка: перевод}.
 _STRINGS: Dict[str, Dict[str, str]] = {
+    'груз: по рынку носителя (частичный снимок)': {
+        'en': 'cargo: carrier market (partial snapshot)',
+        'de': 'Fracht: Trägermarkt (Teilaufnahme)',
+        'it': 'carico: mercato della portaerei (istantanea parziale)',
+        'ko': '화물: 항모 시장 (부분 스냅샷)',
+        'zh': '货物：航母市场（部分快照）',
+        'ja': '貨物: 空母市場（部分スナップショット）',
+    },
     'Показать Colonial Helper': {
         'en': 'Show Colonial Helper',
         'de': 'Colonial Helper anzeigen',

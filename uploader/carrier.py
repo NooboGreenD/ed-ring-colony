@@ -92,6 +92,7 @@ CARRIER_EVENTS = frozenset({
     "Location",
     "CarrierJump",
     "CargoTransfer",
+    "SquadronBankTransfer",
     "MarketBuy",
     "MarketSell",
 })
@@ -143,8 +144,8 @@ def _iso_epoch(value) -> float:
     if not raw:
         return 0.0
     try:
-        stamp = datetime.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S")
-        return stamp.replace(tzinfo=timezone.utc).timestamp()
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)).timestamp()
     except (TypeError, ValueError, OverflowError, OSError):
         return 0.0
 
@@ -228,6 +229,14 @@ class CarrierState:
         self.server_at: float = 0.0
         # Откуда последний «чистый» снимок груза: "server" или "raven".
         self.cargo_origin: str = ""
+        # Observation times for local squadron-bank changes and market rows.
+        # A server response's arrival time is NOT proof its cargo is current.
+        self.commodity_versions: Dict[str, float] = {}
+        self.cargo_observations: Dict[str, float] = {}
+        self.cargo_written_at: float = 0.0
+        self.cargo_snapshot_at: float = 0.0
+        self.docked_at: float = 0.0
+        self.docked_station: str = ""
 
     # -- производные величины ---------------------------------------------
     @property
@@ -443,6 +452,18 @@ class CarrierState:
         stored = max(0, int(self.stored))
         total = self.tracked_total
         fresher = max(self.remote_at, self.delta_at)
+        observed_at = max(self.cargo_snapshot_at, max(self.commodity_versions.values(), default=0),
+                          max(self.cargo_observations.values(), default=0))
+        if self.kind == "squadron" and observed_at > self.stats_at:
+            # A market/ledger snapshot is partial, so it supplies a lower bound,
+            # not an invented exact total. Retain any still-unidentified cargo.
+            if total > stored:
+                self.stored = total
+                self.free = max(0, self.free - (total - stored))
+                self.stored_estimated = True
+                stored = total
+            self.untracked = max(0, stored - total)
+            return False  # an older aggregate cannot trim observed bank/market cargo
         if fresher and fresher > self.stats_at + self.RECONCILE_GRACE_SECONDS:
             # Поимённые данные свежее тоннажа: сверять нечем и незачем.
             # Так же отрабатывает разбор старых журналов при запуске —
@@ -473,7 +494,7 @@ class CarrierState:
         пустая строка — данных по товарам нет вовсе.
         """
         if self.remote_seen:
-            return "server" if self.cargo_origin == "server" else "remote"
+            return self.cargo_origin if self.cargo_origin in ("server", "market") else "remote"
         if self.reconciled in ("trimmed", "dropped", "emptied"):
             return "estimate"
         if self.commodities or self.delivered:
@@ -687,6 +708,7 @@ class CarrierTracker:
             "CarrierJump": self._absorb_docked,
             "Undocked": self._absorb_undocked,
             "CargoTransfer": self._absorb_transfer,
+            "SquadronBankTransfer": self._absorb_transfer,
             "MarketBuy": self._absorb_market,
             "MarketSell": self._absorb_market,
         }.get(name)
@@ -849,6 +871,8 @@ class CarrierTracker:
         if event.get("SystemAddress"):
             state.system_address = _as_int(event["SystemAddress"])
         state.at_carrier = True
+        state.docked_at = event_time(event)
+        state.docked_station = str(event.get("StationName") or "")
         self._remember(state)
         return True
 
@@ -979,10 +1003,16 @@ class CarrierTracker:
         расхождение и урезали.
         """
         delta = int(delta)
-        current = int(self.state.commodities.get(key, 0) or 0)
-        self.state.commodities[key] = max(0, current + delta)
-        if not self.state.commodities[key]:
-            self.state.commodities.pop(key, None)
+        stamp = float(when if when is not None else time.time())
+        # A late bank event still counts as this commander's delivery, but its
+        # stock delta is already included in a newer market/full snapshot.
+        included = (self.state.kind == "squadron" and stamp <= max(
+            self.state.cargo_observations.get(key, 0), self.state.cargo_snapshot_at))
+        if not included:
+            current = int(self.state.commodities.get(key, 0) or 0)
+            self.state.commodities[key] = max(0, current + delta)
+            if not self.state.commodities[key]:
+                self.state.commodities.pop(key, None)
         if delta > 0:
             self.state.delivered[key] = int(self.state.delivered.get(key, 0) or 0) + delta
         elif delta < 0:
@@ -994,8 +1024,12 @@ class CarrierTracker:
         if label and key not in self.state.names:
             self.state.names[key] = str(label)
         # Цифры Raven перестали быть «чистым снимком»: после него были дельты.
+        if included:
+            return
         self.state.remote_seen = False
-        self.state.delta_at = float(when if when is not None else time.time())
+        self.state.delta_at = max(self.state.delta_at, stamp)
+        if self.state.kind == "squadron":
+            self.state.commodity_versions[key] = stamp
         if self.state.reconciled == "emptied":
             # Трюм был подтверждённо пуст, и всё, что в нём теперь есть, мы
             # видели своими глазами: это уже не «оценка», а точный учёт.
@@ -1011,6 +1045,55 @@ class CarrierTracker:
         # осталось не разложено по товарам.
         self.state.untracked = max(
             0, int(self.state.stored) - self.state.tracked_total) if self.state.stats_seen else 0
+
+    def merge_market(self, event: Mapping[str, Any], cargo: Mapping[str, Any], market_id=None) -> bool:
+        """Apply a current squadron carrier's *partial* market stock snapshot.
+
+        Missing / buy-order rows are not zero stock. Never infer personal
+        deliveries from a snapshot. Historical reports and other docks cannot
+        change the active hold. Personal carrier accounting is unchanged.
+        """
+        state = self.state
+        if not isinstance(event, Mapping) or not isinstance(cargo, Mapping):
+            return False
+        if (state.kind != "squadron" or not state.at_carrier
+                or _as_int(market_id or event.get("MarketID")) != state.market_id
+                or (event.get("MarketID") is not None and _as_int(event.get("MarketID")) != state.market_id)
+                or str(event.get("StarSystem") or "") != state.system_name
+                or str(event.get("StationName") or "") != state.docked_station):
+            return False
+        stamp = _iso_epoch(event.get("timestamp"))
+        if (not stamp or stamp > time.time() + 300
+                or stamp < max(state.cargo_snapshot_at, state.docked_at, state.stats_at)):
+            return False
+        changed = False
+        for raw, amount in cargo.items():
+            key = canonical_commodity(raw)
+            if not key or isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+                continue
+            if stamp <= max(state.commodity_versions.get(key, 0), state.cargo_observations.get(key, 0)):
+                continue
+            if amount:
+                state.commodities[key] = amount
+            else:
+                state.commodities.pop(key, None)
+            state.commodity_versions[key] = stamp
+            state.cargo_observations[key] = stamp
+            changed = True
+        if not changed:
+            return False
+        for item in event.get("Items") or []:
+            if isinstance(item, Mapping) and isinstance(item.get("Name_Localised"), str):
+                key = canonical_commodity(item.get("Name"))
+                if key in state.commodity_versions and state.commodity_versions[key] == stamp:
+                    state.names[key] = item["Name_Localised"]
+        state.remote_at = stamp
+        state.remote_seen = True
+        state.cargo_origin = "market"
+        state.reconciled = ""
+        state.reconcile()
+        self._remember(state)
+        return True
 
     def merge_remote(self, cargo: Mapping[str, Any], capacity: Optional[int] = None,
                      name: str = "", market_id: Optional[int] = None,
@@ -1058,6 +1141,8 @@ class CarrierTracker:
             merged.setdefault(key, value)
         state = self.state if market_id in (None, 0) else self._state_for(market_id)
         if state is None:
+            return False
+        if state.kind == "squadron" and state.commodity_versions:
             return False
         if not merged:
             if not allow_empty:
@@ -1137,11 +1222,14 @@ class CarrierTracker:
         if isinstance(stations, list) and stations:
             state.station_services = [str(item).lower() for item in stations]
 
+        state.kind = self._kind_for(state)
+
         # Тоннаж с сайта — только если он новее нашего CarrierStats.
         space = view.get("space") if isinstance(view.get("space"), Mapping) else None
         if space and space.get("statsAt") and space.get("cargo") is not None:
             stats_at = _iso_epoch(space.get("statsAt"))
-            if stats_at and stats_at > state.stats_at:
+            local_at = max(state.commodity_versions.values(), default=0) if state.kind == "squadron" else 0
+            if stats_at and stats_at > state.stats_at and stats_at >= local_at:
                 state.stored = _as_int(space.get("cargo"))
                 state.free = _as_int(space.get("freeSpace"))
                 state.reserved = _as_int(space.get("reserved"))
@@ -1151,7 +1239,9 @@ class CarrierTracker:
                 state.stored_estimated = False
 
         cargo = view.get("cargo") if isinstance(view.get("cargo"), Mapping) else None
-        if cargo is not None and merge_cargo:
+        cargo_at = _iso_epoch(cargo.get("updatedAt")) if cargo else 0
+        if (cargo is not None and merge_cargo
+                and (state.kind != "squadron" or cargo_at >= state.cargo_written_at)):
             items = {}
             for item in cargo.get("items") or []:
                 if not isinstance(item, Mapping):
@@ -1162,11 +1252,31 @@ class CarrierTracker:
                     items[key] = amount
                     if item.get("name"):
                         state.names[key] = str(item["name"])
+            protected = set()
+            if state.kind == "squadron":
+                observations = cargo.get("observations")
+                observations = observations if isinstance(observations, Mapping) else {}
+                baseline_at = _iso_epoch(cargo.get("baselineAt"))
+                protected = {key for key, stamp in state.commodity_versions.items()
+                             if stamp > max(baseline_at, _iso_epoch(observations.get(key)))}
+                for key in protected:
+                    if key in state.commodities:
+                        items[key] = state.commodities[key]
+                    else:
+                        items.pop(key, None)  # preserve an explicit local depletion
+                state.commodity_versions = {key: stamp for key, stamp in state.commodity_versions.items()
+                                            if key in protected}
+                for key, value in observations.items():
+                    key = canonical_commodity(key)
+                    if key and key not in protected:
+                        state.cargo_observations[key] = max(state.cargo_observations.get(key, 0), _iso_epoch(value))
+                state.cargo_snapshot_at = max(state.cargo_snapshot_at, baseline_at)
+                state.cargo_written_at = max(state.cargo_written_at, cargo_at)
             state.commodities = dict(items)
             state.remote_cargo = dict(items)
             state.remote_at = time.time()
-            state.remote_seen = True
-            state.cargo_origin = "server"
+            state.remote_seen = state.remote_seen if protected else True
+            state.cargo_origin = "server" if not protected else state.cargo_origin
             state.reconciled = ""
             state.reconcile()
         state.server_seen = True

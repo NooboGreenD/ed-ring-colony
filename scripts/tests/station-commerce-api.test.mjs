@@ -9,7 +9,7 @@ const eddn = await import(await bundleFile({ entry: 'src/app/api/eddn/ingest/rou
 const report = { system_name: 'Sol', station_name: 'Galileo', market_id: '123', observed_at: '2026-01-01T00:00:00Z',
   inventories: { market: { observed_at: '2026-01-01T00:00:00Z', items: [{ name: 'steel', stock: 30, buyPrice: 100 }] } } };
 const request = (body, headers = {}) => new Request('http://test.local', { method: 'POST', body: JSON.stringify(body), headers });
-function setup({ revoked = false, rpcError = false } = {}) {
+function setup({ revoked = false, rpcError = false, carrierRpcError = false } = {}) {
   const calls = [];
   globalThis.__stationDb = {
     calls,
@@ -20,7 +20,7 @@ function setup({ revoked = false, rpcError = false } = {}) {
       };
       return query;
     },
-    async rpc(name, params) { calls.push({ name, params }); return { error: rpcError ? { message: 'Unavailable' } : null }; },
+    async rpc(name, params) { calls.push({ name, params }); return { error: (rpcError || (carrierRpcError && name === 'apply_fleet_carrier_batch')) ? { message: 'Unavailable' } : null }; },
   };
   return calls;
 }
@@ -57,6 +57,37 @@ test('malformed/future/oversized inventory is rejected before any report in batc
 test('database failures return retriable errors rather than acknowledging lost reports', async () => {
   setup({ rpcError: true });
   assert.equal((await api.POST(request({ token: 'valid', reports: [report] }))).status, 503);
+});
+
+const squadronReport = {
+  ...report, market_id: '3709000001', station_name: 'SQD-001', station_type: 'FleetCarrier',
+  metadata: { services: ['dock', 'squadronBank'] },
+  inventories: { market: { observed_at: report.observed_at,
+    items: [{ name: '$steel_name;', stock: 300, producer: true, consumer: false },
+            { name: 'water', stock: 0, demand: 50, producer: false, consumer: true }] } },
+};
+
+test('squadron market updates carrier cargo accounting as well as station inventory', async () => {
+  const calls = setup();
+  const response = await api.POST(request({ token: 'valid', reports: [squadronReport] }));
+  assert.equal(response.status, 200);
+  const accounting = calls.find((call) => call.name === 'apply_fleet_carrier_batch');
+  assert.ok(accounting);
+  assert.deepEqual(accounting.params.p_ops.find((op) => op.op === 'baseline').items,
+    [{ commodity: 'steel', qty: 300, name_localised: undefined }]);
+  assert.equal(accounting.params.p_ops[0].carrier_type, 'SquadronCarrier');
+});
+
+test('failed squadron cargo accounting is retried rather than silently acknowledged after saving market', async () => {
+  const failed = setup({ carrierRpcError: true });
+  const response = await api.POST(request({ token: 'valid', reports: [squadronReport] }));
+  assert.equal(response.status, 503);
+  assert.match(response.body.error, /retry/i);
+  assert.ok(failed.find((call) => call.name === 'save_station_commerce'));
+  assert.ok(failed.find((call) => call.name === 'apply_fleet_carrier_batch'));
+  const retried = setup();
+  assert.equal((await api.POST(request({ token: 'valid', reports: [squadronReport] }))).status, 200);
+  assert.ok(retried.find((call) => call.name === 'apply_fleet_carrier_batch'));
 });
 
 test('EDDN refuses missing configured secret and stores independent module/ship snapshots', async () => {

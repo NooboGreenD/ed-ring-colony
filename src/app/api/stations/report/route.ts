@@ -40,7 +40,7 @@ export async function POST(request: Request) {
     // Рынок авианосца обновляет и учёт самого носителя: его систему, службы и
     // груз (товары на продажу = что лежит на борту). Берём исходные имена
     // товаров ($steel_name;), а не локализованные: ключи должны совпасть с
-    // MarketSell/CargoTransfer. Сбой учёта носителей не отменяет отчёт о станции.
+    // MarketSell/CargoTransfer. При сбое учёта сохраняем отчёт о станции, но просим Helper повторить пакет.
     const carrierOps: CarrierOp[] = body.reports.flatMap((raw: any) => {
       try { return carrierOpsFromStationReport(raw); } catch { return []; }
     });
@@ -48,7 +48,11 @@ export async function POST(request: Request) {
       try {
         await applyCarrierOps(svc, user.userId, 'helper', carrierOps);
       } catch (error) {
-        console.warn('[Station Report] carrier accounting skipped:', error instanceof Error ? error.message : error);
+        console.warn('[Station Report] carrier accounting failed:', error instanceof Error ? error.message : error);
+        // Station snapshots have already been saved, but this report must stay
+        // in Helper's outbox until carrier accounting is saved too. Retrying is
+        // safe: both stores compare observation times / deduplicate operations.
+        return NextResponse.json({ error: 'Carrier accounting unavailable; retry the report' }, { status: 503 });
       }
     }
     return NextResponse.json({ ok: true, accepted: reports.length, carriers: carrierOps.length ? 'updated' : undefined });

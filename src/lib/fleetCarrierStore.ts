@@ -138,9 +138,8 @@ export async function buildViews(svc: Svc, rows: Array<Record<string, any>>, vie
   if (privateIds.length) {
     const { data, error } = await svc
       .from('fleet_carrier_cargo')
-      .select('carrier_id, commodity, name_localised, quantity, baseline_at, baseline_source, updated_at')
-      .in('carrier_id', privateIds)
-      .gt('quantity', 0);
+      .select('carrier_id, commodity, name_localised, quantity, baseline_at, baseline_source, observed_at, updated_at')
+      .in('carrier_id', privateIds);
     if (error) throw new Error(`Fleet carrier cargo: ${error.message}`);
     for (const row of Array.isArray(data) ? data : []) {
       const key = String(row.carrier_id);

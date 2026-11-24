@@ -7980,6 +7980,7 @@ class ColonialHelperApp:
             collector = CarrierEventCollector(
                 self.data_dir / ".carrier_events_outbox.json",
                 inventory_reader=self._read_ship_inventory,
+                on_bank_transfer=self._on_squadron_bank_transfer,
             )
             self._carrier_sync = collector
         return collector
@@ -8084,6 +8085,10 @@ class ColonialHelperApp:
             return None
         return inventory_from_cargo(data)
 
+    def _on_squadron_bank_transfer(self, event: dict):
+        """The live bank diff must update HUD totals, not only the upload outbox."""
+        self.carrier.handle(event)
+
     def _on_station_inventory(self, kind: str, event: dict, report: dict):
         """Снимок рынка текущей стоянки. У авианосца — исправление груза в Raven.
 
@@ -8100,6 +8105,11 @@ class ColonialHelperApp:
         if not (is_carrier_market(market_id) or "carrier" in station_type.lower()):
             return
         cargo = carrier_market_cargo(event.get("Items"))
+        # Market stock is a partial inventory, not the whole hold. Apply only
+        # verified rows and preserve unrelated commodities / personal deliveries.
+        # Squadron banks have no ordinary CargoTransfer journal event to repair
+        # the HUD later; they must not wait for Raven or a server round trip.
+        self.carrier.merge_market(event, cargo, market_id=market_id)
         if cargo:
             self.dispatcher.submit_fc_cargo_correction(market_id, cargo=cargo, reason="по рынку носителя")
         # Отчёт о станции вот-вот уйдёт на сайт — перечитать учёт носителя.
@@ -8427,6 +8437,8 @@ class ColonialHelperApp:
         # Главный источник груза — сайт проекта. Raven Colonial опрашиваем,
         # только если сайт этот носитель не знает или давно не отвечал.
         known = self.carrier.states().get(market_id)
+        if known is not None and known.kind == "squadron" and known.commodity_versions:
+            return  # unversioned Raven data cannot supersede fresh bank/market observations
         if (known is not None and known.cargo_origin == "server" and known.server_at
                 and time.time() - known.server_at < self.CARRIER_SERVER_FRESH_SECONDS):
             return

@@ -137,7 +137,7 @@ class StationCommerceCollector:
             self.context.pop("station_name", None)
             self.context.pop("market_id", None)
         elif name in KINDS:
-            self.inventory(event)
+            self.inventory(event, notify=live)
 
     def _report(self, event):
         station = event.get("StationName") or self.context.get("station_name")
@@ -156,7 +156,7 @@ class StationCommerceCollector:
             report["market_id"] = str(market)
         return report
 
-    def inventory(self, event):
+    def inventory(self, event, notify=True):
         kind = KINDS.get(event.get("event"))
         if not kind:
             return False
@@ -166,7 +166,7 @@ class StationCommerceCollector:
             return False
         report["inventories"][kind] = {"observed_at": report["observed_at"], "items": items}
         self._queue(report, kind)
-        if self.on_inventory:
+        if notify and self.on_inventory:
             try:
                 self.on_inventory(kind, event, report)
             except Exception:
