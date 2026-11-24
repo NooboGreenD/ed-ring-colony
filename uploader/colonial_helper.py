@@ -8120,7 +8120,11 @@ class ColonialHelperApp:
         station_type = str(event.get("StationType") or report.get("station_type") or "")
         if not (is_carrier_market(market_id) or "carrier" in station_type.lower()):
             return
-        cargo = carrier_market_cargo(event.get("Items"))
+        known = self.carrier.states().get(int(market_id or 0))
+        services = event.get("StationServices") or (report.get("metadata") or {}).get("services") or []
+        squadron = (known is not None and known.kind == "squadron") or any(
+            str(service).lower() == "squadronbank" for service in services)
+        cargo = carrier_market_cargo(event.get("Items"), squadron=squadron)
         # Market stock is a partial inventory, not the whole hold. Apply only
         # verified rows and preserve unrelated commodities / personal deliveries.
         # Squadron banks have no ordinary CargoTransfer journal event to repair
@@ -8145,6 +8149,17 @@ class ColonialHelperApp:
         # недоступный сайт не подвешивал чтение журнала таймаутами.
         if collector.pending_count and time.monotonic() >= float(getattr(self, "_carrier_flush_retry_at", 0.0)):
             result = collector.flush(self.api, max_batches=3)
+            if result.get("sent"):
+                # HTTP success alone does not establish an inventory update.
+                # Keep server outcomes visible without dumping events or tokens.
+                message = (f"Авианосцы: отправлено событий — {result['sent']}; "
+                           f"применено операций — {result.get('applied', 0)}, "
+                           f"дубли — {result.get('duplicates', 0)}, "
+                           f"игнорировано — {result.get('ignored', 0)}, "
+                           f"пропущено событий — {result.get('skipped', 0)}; "
+                           f"носители: {', '.join(result.get('carriers') or []) or '—'}")
+                level = "warn" if result.get('ignored') or result.get('skipped') else "info"
+                self.root.after(0, lambda m=message, severity=level: self.log(m, severity))
             if result.get("ok") and result.get("sent"):
                 self._carrier_server_at = 0.0
             elif not result.get("ok"):
@@ -8406,10 +8421,24 @@ class ColonialHelperApp:
         отдельных чтений журнала не добавляет. В историческом разборе
         (`live=False`) Raven не опрашиваем — там десятки тысяч событий.
         """
+        trade = live and event.get("event") in ("MarketSell", "MarketBuy")
+        key = canonical_commodity(event.get("Type") or "") if trade else ""
+        carrier_id = int(event.get("MarketID") or 0) if trade else 0
+        before_state = self.carrier.states().get(carrier_id) if carrier_id else None
+        before = int(before_state.commodities.get(key, 0)) if before_state and key else 0
         try:
             changed = self.carrier.handle(event)
-        except Exception:
+        except Exception as exc:
+            if trade:
+                self.root.after(0, lambda reason=str(exc): self.log(f"Авианосец: ошибка локального учёта сделки — {reason}", "warn"))
             return
+        after_state = self.carrier.states().get(carrier_id) if carrier_id else None
+        if trade and after_state and key:
+            after = int(after_state.commodities.get(key, 0))
+            message = (f"Авианосец {carrier_id}: {event.get('event')} {key}, "
+                       f"{event.get('Count', 0)} т; локальный запас {before} → {after} т; "
+                       f"обработано: {'да' if changed else 'нет'}")
+            self.root.after(0, lambda m=message: self.log(m, "info"))
         if not changed or not live:
             return
         if str(event.get("event")) == "CarrierStats":

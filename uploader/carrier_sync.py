@@ -240,7 +240,7 @@ class CarrierEventCollector:
         """Отправить накопленное. Неудачная пачка остаётся в outbox до следующей попытки."""
         if not getattr(api, "is_connected", False):
             return {"ok": False, "error": "Not connected", "sent": 0}
-        total = {"ok": True, "sent": 0, "applied": 0, "duplicates": 0, "carriers": []}
+        total = {"ok": True, "sent": 0, "applied": 0, "duplicates": 0, "ignored": 0, "skipped": 0, "carriers": []}
         carriers = set()
         for _ in range(max(1, int(max_batches))):
             with self.lock:
@@ -262,6 +262,8 @@ class CarrierEventCollector:
             total["sent"] += len(batch)
             total["applied"] += int(result.get("applied") or 0)
             total["duplicates"] += int(result.get("duplicates") or 0)
+            total["ignored"] += int(result.get("ignored") or 0)
+            total["skipped"] += int(result.get("skipped") or 0)
             carriers.update(str(item) for item in (result.get("carriers") or []))
             self.last_error = ""
         total["carriers"] = sorted(carriers)
@@ -568,7 +570,7 @@ class CarrierEventCollector:
 # ---------------------------------------------------------------------------
 #  Рынок авианосца → исправление груза в Raven Colonial
 # ---------------------------------------------------------------------------
-def carrier_market_cargo(items) -> Dict[str, int]:
+def carrier_market_cargo(items, squadron: bool = False) -> Dict[str, int]:
     """Что по снимку рынка FC лежит на борту — правило SrvSurvey/Raven Colonial.
 
     Товар на продажу (Producer) — его Stock и есть количество на борту;
@@ -591,6 +593,6 @@ def carrier_market_cargo(items) -> Dict[str, int]:
             producer = stock > 0
         if consumer is None:
             consumer = (not producer) and demand > 0
-        if producer or (not producer and not consumer):
+        if producer or (not producer and not consumer and not squadron):
             result[key] = stock
     return result

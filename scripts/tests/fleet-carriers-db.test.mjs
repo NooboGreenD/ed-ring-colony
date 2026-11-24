@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
+import { normalizeCarrierEvents, carrierOpsFromStationReport } from '../../src/lib/fleetCarriers.ts';
 
 /* Учёт авианосцев в БД (supabase/migrations/20261017000000_fleet_carriers.sql и
    20261018000000_fleet_carrier_squadron_claims.sql — правила привязки Javelin).
@@ -286,4 +287,101 @@ test('cargo observation migration backfills existing rows, is repeatable and doe
   assert.deepEqual(await cargo(id), { water: 50 });
   const acl = (await db.query("SELECT has_function_privilege('anon', 'public.fleet_carrier_cargo_observation_time()', 'EXECUTE') AS allowed")).rows[0];
   assert.equal(acl.allowed, false);
+});
+
+test('member sales enter the real ledger, but cannot reveal pre-existing squadron stock without a baseline', async () => {
+  const id = '3713477376';
+  const sales = JSON.parse(readFileSync(new URL('./fixtures/squadron-market-sales.json', import.meta.url), 'utf8'));
+  const { ops } = normalizeCarrierEvents(sales, { userId: MEMBER, now: new Date('2026-11-24T01:00:00Z') });
+  // MEMBER has squadron membership, no carrier ownership or officer proof.
+  await apply([{ op: 'identity', carrier_id: id, at: '2026-11-23T22:00:00Z', carrier_type: 'SquadronCarrier' }], MEMBER);
+  const result = await apply(ops, MEMBER);
+  assert.equal(result.applied, 4);
+  assert.deepEqual(await cargo(id), { steel: 5280 });
+  assert.equal((await carrier(id)).owner_id, null);
+  assert.equal((await apply(ops, MEMBER)).duplicates, 4);
+  // A consumer order (the carrier BUYS steel) exposes demand, not bank stock.
+  const marketOps = carrierOpsFromStationReport({ market_id: id, station_type: 'FleetCarrier',
+    station_name: 'DNHG', system_name: 'Test System', observed_at: '2026-11-24T00:23:00Z',
+    metadata: { services: ['squadronBank'] }, inventories: { market: {
+      observed_at: '2026-11-24T00:23:00Z', items: [
+        { name: 'steel', stock: 0, demand: 20000, producer: false, consumer: true },
+      ],
+    } },
+  });
+  assert.deepEqual(marketOps.find(op => op.op === 'baseline').items, []);
+  await apply(marketOps, MEMBER);
+  assert.deepEqual(await cargo(id), { steel: 5280 });
+  // Officer-only CarrierStats supplies a total, NOT a per-commodity inventory.
+  await apply([{ op: 'stats', carrier_id: id, at: '2026-11-24T00:24:00Z',
+    space_usage: { cargo: 17280, free_space: 42720, total_capacity: 60000 } }], OWNER);
+  assert.deepEqual(await cargo(id), { steel: 5280 });
+  // Illustrative prior inventory, NOT a measurement of the user's carrier.
+  // Even an older snapshot supplies missing opening stock; later sales remain.
+  await apply([{ op: 'baseline', carrier_id: id, at: '2026-11-23T23:00:00Z',
+    full: true, source_event: 'capi', items: [
+      { commodity: 'steel', qty: 10000 }, { commodity: 'water', qty: 2000 },
+    ] }], OWNER);
+  assert.deepEqual(await cargo(id), { steel: 15280, water: 2000 });
+  assert.equal((await apply(ops, MEMBER)).duplicates, 4);
+  assert.deepEqual(await cargo(id), { steel: 15280, water: 2000 });
+});
+
+test('a later inactive market row must not erase squadron sales; the next sale must add to existing bank stock', async () => {
+  const { bundleFile } = await import('./helpers/bundle.mjs');
+  const { applyCarrierOps } = await import(await bundleFile({ entry: 'src/lib/fleetCarrierStore.ts' }));
+  const id = '3713477999';
+  const svc = {
+    from(table) { assert.equal(table, 'fleet_carriers'); return {
+      select() { return this; },
+      async in(_column, ids) { return { data: (await db.query('SELECT carrier_id, carrier_type FROM fleet_carriers WHERE carrier_id = ANY($1::bigint[])', [ids])).rows, error: null }; },
+    }; },
+    async rpc(_name, params) { return { data: await apply(params.p_ops, MEMBER), error: null }; },
+  };
+  const send = ops => applyCarrierOps(svc, MEMBER, 'helper', ops);
+  await send([{ op: 'identity', carrier_id: id, at: '2026-03-01T10:00:00Z', carrier_type: 'SquadronCarrier' },
+    delta('2026-03-01T10:01:00Z', 'steel', 1320, hash(), id)]);
+  // Old Helper/report without station services: lookup must still recognise Javelin.
+  const snapshot = carrierOpsFromStationReport({ market_id: id, station_type: 'FleetCarrier', station_name: 'TEST',
+    system_name: 'Sol', observed_at: '2026-03-01T10:02:00Z', inventories: { market: {
+      observed_at: '2026-03-01T10:02:00Z', items: [{ name: 'steel', stock: 0, demand: 0, producer: false, consumer: false }],
+    } },
+  });
+  await send(snapshot);
+  assert.deepEqual(await cargo(id), { steel: 1320 });
+  await send([delta('2026-03-01T10:03:00Z', 'steel', 1320, hash(), id)]);
+  assert.deepEqual(await cargo(id), { steel: 2640 });
+});
+
+test('actual Nov 24 market: steel demand is not bank stock; no inventory row may erase tracked squadron goods', async () => {
+  const market = JSON.parse(readFileSync(new URL('./fixtures/squadron-current-market.json', import.meta.url), 'utf8'));
+  const id = String(market.MarketID);
+  const steel = market.Items.find(item => item.Name === '$steel_name;');
+  assert.deepEqual(steel, { Name: '$steel_name;', Stock: 0, Demand: 7003, Producer: false, Consumer: true });
+  const before = await cargo(id);
+  assert.ok(before.steel > 0);
+  const { bundleFile } = await import('./helpers/bundle.mjs');
+  const { applyCarrierOps } = await import(await bundleFile({ entry: 'src/lib/fleetCarrierStore.ts' }));
+  const ops = carrierOpsFromStationReport({
+    market_id: id, station_type: market.StationType, station_name: market.StationName,
+    system_name: market.StarSystem, observed_at: market.timestamp,
+    inventories: { market: { observed_at: market.timestamp, items: market.Items.map(item => ({
+      name: item.Name, stock: item.Stock, demand: item.Demand, producer: item.Producer, consumer: item.Consumer,
+    })) } },
+  });
+  const baseline = ops.find(op => op.op === 'baseline');
+  assert.equal(baseline.items.length, 6); // inactive rows, before persisted-type protection
+  assert.ok(!baseline.items.some(item => item.commodity === 'steel'));
+  const svc = {
+    from(table) { assert.equal(table, 'fleet_carriers'); return {
+      select() { return this; },
+      async in(_column, ids) { return { data: (await db.query('SELECT carrier_id, carrier_type FROM fleet_carriers WHERE carrier_id = ANY($1::bigint[])', [ids])).rows, error: null }; },
+    }; },
+    async rpc(_name, params) {
+      assert.deepEqual(params.p_ops.find(op => op.op === 'baseline').items, []);
+      return { data: await apply(params.p_ops, MEMBER), error: null };
+    },
+  };
+  await applyCarrierOps(svc, MEMBER, 'helper', ops);
+  assert.deepEqual(await cargo(id), before);
 });

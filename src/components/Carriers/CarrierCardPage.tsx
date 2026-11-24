@@ -16,11 +16,14 @@
  *
  * Инфографика — SVG с `viewBox` в долях (как на вкладке «История»): столбцы
  * тянутся по ширине без пересчёта пикселей. Ничего личного: груза и финансов
- * на публичной карточке нет никогда.
+ * в публичном ответе нет никогда. Участники отдельно запрашивают учтённый банк.
  */
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { authFetch } from '@/lib/supabaseClient';
+import type { CarrierView } from '@/lib/fleetCarriers';
+import { CarrierBankPanel } from './CarrierBankPanel';
 import {
   IconChart,
   IconClock,
@@ -207,27 +210,53 @@ export function CarrierCardPage({ carrierId }: CarrierCardPageProps) {
   const [status, setStatus] = useState<'loading' | 'error' | 'empty' | 'ready'>('loading');
   const [error, setError] = useState('');
   const [now, setNow] = useState(() => Date.now());
+  const [bank, setBank] = useState<CarrierView | null>(null);
+  const [bankError, setBankError] = useState(false);
+  const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
+    // Never retain another viewer's private inventory across a refresh/logout.
+    setBank(null);
+    setBankError(false);
     try {
-      const response = await fetch(`/api/carriers/${encodeURIComponent(carrierId)}/card`, { cache: 'no-store' });
+      const response = await authFetch(`/api/carriers/${encodeURIComponent(carrierId)}/card`, { cache: 'no-store' });
+      if (sequence !== loadSequence.current) return;
       if (response.status === 404) {
         setStatus('empty');
         return;
       }
       const payload = await response.json().catch(() => ({})) as CardResponse;
+      if (sequence !== loadSequence.current) return;
       if (!response.ok || !payload.card) throw new Error(payload.error || String(response.status));
       setCard(payload.card);
       setStatus('ready');
       setError('');
       setNow(Date.now());
+      if (payload.card.type === 'SquadronCarrier' && payload.card.squadron?.member) {
+        try {
+          // Private endpoint rechecks membership. Public /card stays free of cargo.
+          const privateResponse = await authFetch(`/api/carriers/${encodeURIComponent(carrierId)}`, { cache: 'no-store' });
+          const privatePayload = await privateResponse.json();
+          if (sequence !== loadSequence.current) return;
+          if (!privateResponse.ok || !privatePayload.ok) throw new Error('bank unavailable');
+          const view = privatePayload.carrier as CarrierView | undefined;
+          setBank(view?.carrierId === carrierId && view.relation === 'squadron' ? view : null);
+        } catch {
+          if (sequence === loadSequence.current) setBankError(true);
+        }
+      }
     } catch (cause) {
+      if (sequence !== loadSequence.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
       setStatus('error');
     }
   }, [carrierId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { loadSequence.current += 1; };
+  }, [load]);
 
   // Носитель живёт минутами: без обновления карточка устареет незаметно.
   useEffect(() => {
@@ -271,6 +300,10 @@ export function CarrierCardPage({ carrierId }: CarrierCardPageProps) {
           </Link>
         </div>
       </div>
+
+      {status === 'ready' && card?.type === 'SquadronCarrier' && card.squadron?.member ? (
+        bankError ? <p role="status">{t('fc.bankUnavailable')}</p> : <CarrierBankPanel carrier={bank} />
+      ) : null}
 
       {status === 'loading' ? (
         <div className="cj-state-block">

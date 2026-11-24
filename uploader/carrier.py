@@ -1066,10 +1066,16 @@ class CarrierTracker:
         if (not stamp or stamp > time.time() + 300
                 or stamp < max(state.cargo_snapshot_at, state.docked_at, state.stats_at)):
             return False
+        # An inactive market order does not observe bank stock. Keep a zero
+        # only when this snapshot explicitly identifies a sale/Producer row.
+        observed_sale = {canonical_commodity(item.get("Name")) for item in event.get("Items") or []
+                         if isinstance(item, Mapping) and item.get("Producer") is True}
         changed = False
         for raw, amount in cargo.items():
             key = canonical_commodity(raw)
             if not key or isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+                continue
+            if amount == 0 and key not in observed_sale:
                 continue
             if stamp <= max(state.commodity_versions.get(key, 0), state.cargo_observations.get(key, 0)):
                 continue

@@ -163,7 +163,8 @@ export default function CarrierCard({ carrier, actions }: { carrier: CarrierView
       )}
 
       {cargo && (
-        <Section title={t("fc.sectionCargo")} right={cargo.updatedAt ? <span style={{ fontSize: 11, color: DIM }}>{t("fc.cargoUpdated", { ago: relativeTime(t, cargo.updatedAt) })}</span> : null}>
+        <Section title={t(squadron ? "fc.sectionBank" : "fc.sectionCargo")} right={cargo.updatedAt ? <span style={{ fontSize: 11, color: DIM }}>{t("fc.cargoUpdated", { ago: relativeTime(t, cargo.updatedAt) })}</span> : null}>
+          {squadron && <p style={{ color: MUTED, fontSize: 12 }}>{t('fc.bankTrackedHint')}</p>}
           {capacity != null && stored != null && (
             <>
               <div style={{ fontSize: 13, color: TEXT, marginBottom: 4 }}>
