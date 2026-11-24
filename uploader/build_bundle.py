@@ -45,6 +45,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import bundle  # noqa: E402
+from app_icons import ICON_ASSETS  # noqa: E402
 
 #: Что в пакет не попадает: инструменты сборки и сам загрузчик (`launcher.py`
 #: внутри exe). `launcher_ui.py` здесь БОЛЬШЕ НЕТ: стартовый экран едет
@@ -111,8 +112,9 @@ def latest_changelog(changes_path: Path, max_lines: int = NOTES_MAX_LINES) -> st
 
 
 def bundle_files(source: Path) -> List[str]:
-    """Модули программы: все `*.py` каталога, кроме инструментов сборки."""
-    return sorted(p.name for p in source.glob("*.py") if p.name not in EXCLUDE)
+    """Модули программы и явный список ресурсов (не дизайн-исходники)."""
+    modules = [p.name for p in source.glob("*.py") if p.name not in EXCLUDE]
+    return sorted(modules + [name for name in ICON_ASSETS if (source / name).is_file()])
 
 
 def bundle_version(source: Path, override: str = "") -> str:
