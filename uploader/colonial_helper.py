@@ -6770,7 +6770,7 @@ class ColonialHelperApp:
     #: журнала карта знала бы только станцию, у которой стоит пилот.
     RESTORE_MAP_EVENTS = RESTORE_STATE_EVENTS | frozenset({
         "Scan", "SAAScanComplete", "FSSDiscoveryScan", "FSSSignalDiscovered",
-        "FSDJump", "ApproachBody", "LeaveBody", "LoadGame", "NavBeaconScan",
+        "FSDJump", "ApproachBody", "LeaveBody", "LoadGame", "Shutdown", "NavBeaconScan",
         "Touchdown", "Liftoff",
         # `SquadronStartup` пишется при каждом запуске игры и восстанавливает
         # эскадрилью пилота, если сессия началась раньше Helper'а. Это же
@@ -6871,6 +6871,9 @@ class ColonialHelperApp:
         # старым, а положение пилота определяет последнее событие, а не первое
         # попавшееся. Поэтому сортируем всё собранное и прогоняем одним списком.
         map_events.sort(key=lambda item: str(item.get("timestamp") or ""))
+        # Saved journal offsets may mean no Docked/Location is replayed by the
+        # watcher. Bank collection needs the same restored dock as the HUD.
+        self._carrier_sync_collector().restore_context(map_events)
         for event in map_events:
             try:
                 self.system_map.handle(event)
@@ -7335,6 +7338,9 @@ class ColonialHelperApp:
                             self.log(f"Startup journal reconciliation: {n} files, {b} bytes, "
                                      f"wall={w:.2f}s, process CPU={c:.2f}s", "info"))
 
+        # History deliberately does not diff Cargo.json. Prime the live bank
+        # baseline now, even when saved offsets skipped the historical pass.
+        self._carrier_sync_collector().begin_live()
         while not self.watcher_stop_event.is_set():
             time.sleep(5)
             if self.watcher_stop_event.is_set():
@@ -7366,6 +7372,10 @@ class ColonialHelperApp:
 
             # 2. Потом читаем JSON-файлы — НЕ перезаписываем health модулей
             self._load_current_state_files()
+            try:
+                self._carrier_sync_collector().poll_cargo()
+            except Exception as exc:
+                self.root.after(0, lambda message=str(exc): self.log(f"Squadron bank cargo: {message}", "warn"))
             try:
                 commerce = self._station_commerce_collector()
                 commerce.read_files(self.journal_path)
@@ -7979,7 +7989,7 @@ class ColonialHelperApp:
             from carrier_sync import CarrierEventCollector
             collector = CarrierEventCollector(
                 self.data_dir / ".carrier_events_outbox.json",
-                inventory_reader=self._read_ship_inventory,
+                cargo_reader=self._read_ship_cargo,
                 on_bank_transfer=self._on_squadron_bank_transfer,
             )
             self._carrier_sync = collector
@@ -8073,21 +8083,27 @@ class ColonialHelperApp:
                 self.root.after(0, lambda message=result.get("error", ""): self.log(
                     f"Фракции: данные ждут отправки на сайт ({collector.pending_count}) — {message}", "warn"))
 
-    def _read_ship_inventory(self):
-        """Текущий трюм корабля из Cargo.json (для учёта банка эскадры)."""
-        from carrier_sync import inventory_from_cargo
+    def _read_ship_cargo(self):
+        """Cargo.json with its observation time; do not discard it before diffing."""
         try:
             path = self.journal_path / "Cargo.json"
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError, TypeError, AttributeError):
             return None
         if not isinstance(data, dict) or str(data.get("Vessel") or "Ship") != "Ship":
             return None
-        return inventory_from_cargo(data)
+        return data
 
     def _on_squadron_bank_transfer(self, event: dict):
         """The live bank diff must update HUD totals, not only the upload outbox."""
-        self.carrier.handle(event)
+        if self.carrier.handle(event):
+            transfers = event.get("Transfers") or []
+            supplied = sum(int(item.get("Count") or 0) for item in transfers if item.get("Direction") == "tocarrier")
+            withdrawn = sum(int(item.get("Count") or 0) for item in transfers if item.get("Direction") == "toship")
+            message = (f"Эскадренный авианосец {event.get('MarketID')}: банк — "
+                       f"на носитель {supplied} т, на корабль {withdrawn} т; "
+                       "учтено локально, поставлено в очередь отправки.")
+            self.root.after(0, lambda: self.log(message, "info"))
 
     def _on_station_inventory(self, kind: str, event: dict, report: dict):
         """Снимок рынка текущей стоянки. У авианосца — исправление груза в Raven.
