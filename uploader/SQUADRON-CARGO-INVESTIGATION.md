@@ -79,3 +79,50 @@ they are not an asserted fix for the unresolved live steel symptom.
 Diagnostics-focused and related non-Qt Python suite: 87 tests passed. The broader
 `test_carrier` GUI-backed tests could not run in this environment because
 PySide6 is unavailable; that run failed at GUI setup, not a passing validation.
+
+## Follow-up: accepted operation, no visible inventory change
+
+A later user log reports 1320 t delivery and one carrier operation applied,
+with zero duplicates/ignored/skipped for 3713477376. This rules out a rejected
+batch, but does not prove that quantity changed. Two ledger cases can produce
+that response: an older event covered by a newer genuine baseline (correct),
+and a hidden negative balance from withdrawals of unobserved opening inventory
+(incorrect for the tracked-stock estimate).
+
+The second case is reproduced in real SQL: -10000 steel from unknown stock,
+then +1320, returns applied=1 but remains at zero. Helper already floors its
+estimate after each event; the old SQL only floored the final sum. The new
+`20261124100000_squadron_cargo_no_negative_debt.sql` migration aligns squadron
+inventory with the chronological per-event floor. Its trigger covers existing
+batch RPC writes without changing RPC authentication, parent-carrier locking or
+personal-carrier semantics. The prefix-minimum calculation is equivalent to
+`quantity = max(0, quantity + delta)` at each event. All events/hashes remain so
+late older uploads and newer baselines can still be correctly recomputed.
+
+The migration repairs existing squadron rows from available events, preserving
+baseline and observation times. **It must be applied to the site database**;
+a Helper-only update cannot fix this SQL calculation. It does not reconstruct
+history previously deleted by a full baseline or recover unobserved stock.
+
+Separately, the local HUD update ran after unrelated session/ship/UI handlers;
+a swallowed downstream exception could acknowledge the journal offset after
+queuing the server event but before updating local cargo. It now runs adjacent
+to the carrier collector. A test injects a session UI failure and verifies that
+the inventory update has already happened exactly once.
+
+Production negative debt or a future/incorrect baseline has NOT been observed
+directly. Before attributing the live symptom to this defect, run the read-only
+`scripts/diagnose-squadron-cargo.sql` in the project's SQL editor. It returns
+stored quantity, old/new calculations, negative-prefix deficit, baseline time
+and latest event/upload times, plus recent non-personal event fields. It works
+before the new migration and does not change records or require sharing secrets.
+The carrier/good defaults are 3713477376/steel; comparisons are to event time,
+not the helper log's local wall clock.
+
+Validation: new underflow regression failed before the fix (expected 1320,
+actual zero). Real-SQL regressions cover late uploads, idempotency, partial/full
+baselines, preservation of genuinely covered deliveries, migration repair,
+repeatability, private function grants and unchanged personal semantics. Local
+Helper tests execute actual methods without Qt. The broader GUI run is blocked
+by missing libGL.so.1 even after installing PySide6 in the disposable venv;
+it is not counted as passing.

@@ -43,6 +43,7 @@ await db.exec(readFileSync(new URL('../../supabase/migrations/20261014000000_sta
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261017000000_fleet_carriers.sql', import.meta.url), 'utf8'));
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261018000000_fleet_carrier_squadron_claims.sql', import.meta.url), 'utf8'));
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261123120000_carrier_cargo_observation_time.sql', import.meta.url), 'utf8'));
+await db.exec(readFileSync(new URL('../../supabase/migrations/20261124100000_squadron_cargo_no_negative_debt.sql', import.meta.url), 'utf8'));
 
 let hashCounter = 0;
 const hash = () => (++hashCounter).toString(16).padStart(64, '0');
@@ -384,4 +385,106 @@ test('actual Nov 24 market: steel demand is not bank stock; no inventory row may
   };
   await applyCarrierOps(svc, MEMBER, 'helper', ops);
   assert.deepEqual(await cargo(id), before);
+});
+
+test('squadron withdrawal from unknown stock must not leave debt that swallows later deliveries', async () => {
+  const id = '3713477881';
+  await apply([{ op: 'identity', carrier_id: id, at: '2026-03-02T10:00:00Z', carrier_type: 'SquadronCarrier' }], MEMBER);
+  // Missing opening inventory: somebody withdraws stock we never observed.
+  await apply([{ ...delta('2026-03-02T10:01:00Z', 'steel', -10000, hash(), id), event: 'MarketBuy' }], MEMBER);
+  assert.deepEqual(await cargo(id), {});
+  // Previously returns applied=1 but quantity remains zero: -10000+1320 < 0.
+  const result = await apply([delta('2026-03-02T10:02:00Z', 'steel', 1320, hash(), id)], MEMBER);
+  assert.equal(result.applied, 1);
+  assert.equal(result.ignored, 0);
+  assert.deepEqual(await cargo(id), { steel: 1320 });
+  await apply([delta('2026-03-02T10:03:00Z', 'steel', 1320, hash(), id)], MEMBER);
+  assert.deepEqual(await cargo(id), { steel: 2640 });
+});
+
+test('squadron per-event floor preserves known stock, delayed uploads, baselines and deduplication', async () => {
+  const id = '3713477882';
+  await apply([{ op: 'identity', carrier_id: id, at: '2026-03-03T00:00:00Z', carrier_type: 'SquadronCarrier' }], MEMBER);
+  const withdrawal = { ...delta('2026-03-03T10:01:00Z', 'steel', -10000, hash(), id), event: 'MarketBuy' };
+  const sale = delta('2026-03-03T10:02:00Z', 'steel', 1320, hash(), id);
+  await apply([withdrawal, sale], MEMBER);
+  assert.deepEqual(await cargo(id), { steel: 1320 });
+  // Delayed older evidence fills opening stock; recompute, don't discard the withdrawal.
+  await apply([delta('2026-03-03T10:00:00Z', 'steel', 12000, hash(), id)], MEMBER);
+  assert.deepEqual(await cargo(id), { steel: 3320 });
+  assert.equal((await apply([sale], MEMBER)).duplicates, 1);
+  assert.deepEqual(await cargo(id), { steel: 3320 });
+  await apply([{ op: 'baseline', carrier_id: id, at: '2026-03-03T10:01:30Z',
+    source_event: 'Market', full: false, items: [{ commodity: 'steel', qty: 500 }] }], MEMBER);
+  assert.deepEqual(await cargo(id), { steel: 1820 });
+  await apply([delta('2026-03-03T10:03:00Z', 'steel', -2000, hash(), id)], MEMBER);
+  await apply([delta('2026-03-03T10:04:00Z', 'steel', 1320, hash(), id)], MEMBER);
+  assert.deepEqual(await cargo(id), { steel: 1320 });
+  const row = (await db.query("SELECT observed_at FROM fleet_carrier_cargo WHERE carrier_id=$1 AND commodity='steel'", [id])).rows[0];
+  assert.equal(new Date(row.observed_at).toISOString(), '2026-03-03T10:04:00.000Z');
+});
+
+test('squadron floor matches chronological clamp even when events arrive backwards', async () => {
+  const id = '3713477883';
+  await apply([{ op: 'identity', carrier_id: id, at: '2026-03-04T00:00:00Z', carrier_type: 'SquadronCarrier' }], MEMBER);
+  const amounts = [-6000, 1320, -500, 1320, -6000, 1320, 1320, -100, -100, 50];
+  const ops = amounts.map((amount, i) => delta(new Date(Date.parse('2026-03-04T10:00:00Z') + i * 1000).toISOString(), 'steel', amount, hash(), id));
+  for (const op of [...ops].reverse()) await apply([op], MEMBER);
+  const expected = amounts.reduce((qty, amount) => Math.max(0, qty + amount), 0);
+  assert.deepEqual(await cargo(id), { steel: expected });
+  assert.equal((await apply(ops, MEMBER)).duplicates, amounts.length);
+  assert.deepEqual(await cargo(id), { steel: expected });
+});
+
+test('migration repairs existing squadron estimates, is repeatable and leaves personal semantics and event hashes alone', async () => {
+  const id = '3713477884';
+  const personal = '3713477885';
+  await apply([{ op: 'identity', carrier_id: id, at: '2026-03-05T00:00:00Z', carrier_type: 'SquadronCarrier' }], MEMBER);
+  await db.exec('DROP TRIGGER squadron_cargo_quantity_floor ON fleet_carrier_cargo');
+  for (const cid of [id, personal]) {
+    await apply([delta('2026-03-05T10:00:00Z', 'steel', -10000, hash(), cid),
+      delta('2026-03-05T10:01:00Z', 'steel', 1320, hash(), cid)], MEMBER);
+    assert.deepEqual(await cargo(cid), {}); // the previous SQL semantics
+  }
+  const before = (await db.query('SELECT * FROM fleet_carrier_events WHERE carrier_id=$1 ORDER BY id', [id])).rows;
+  const observedBefore = (await db.query('SELECT observed_at, baseline_at FROM fleet_carrier_cargo WHERE carrier_id=$1', [id])).rows;
+  const migration = readFileSync(new URL('../../supabase/migrations/20261124100000_squadron_cargo_no_negative_debt.sql', import.meta.url), 'utf8');
+  await db.exec(migration);
+  await db.exec(migration);
+  assert.deepEqual(await cargo(id), { steel: 1320 });
+  assert.deepEqual(await cargo(personal), {});
+  assert.deepEqual((await db.query('SELECT * FROM fleet_carrier_events WHERE carrier_id=$1 ORDER BY id', [id])).rows, before);
+  assert.deepEqual((await db.query('SELECT observed_at, baseline_at FROM fleet_carrier_cargo WHERE carrier_id=$1', [id])).rows, observedBefore);
+  for (const role of ['anon', 'authenticated']) {
+    const result = await db.query("SELECT has_function_privilege($1, 'public.squadron_cargo_running_quantity(bigint,text,integer,timestamp with time zone)', 'EXECUTE') AS allowed", [role]);
+    assert.equal(result.rows[0].allowed, false);
+  }
+});
+
+test('read-only diagnosis distinguishes accepted-event debt from a newer baseline without changing cargo', async () => {
+  const id = '3713477884';
+  const before = await cargo(id);
+  const sql = readFileSync(new URL('../diagnose-squadron-cargo.sql', import.meta.url), 'utf8').replaceAll('3713477376', id);
+  const [summary, recent] = await db.exec(sql);
+  const row = summary.rows[0];
+  assert.equal(Number(row.quantity), 1320);
+  assert.equal(Number(row.old_formula_quantity), 0);
+  assert.equal(Number(row.per_event_floor_quantity), 1320);
+  assert.equal(Number(row.unobserved_withdrawal_deficit), 10000);
+  assert.equal(row.latest_deposit_covered_by_baseline, false);
+  assert.equal(recent.rows.length, 2);
+  assert.deepEqual(await cargo(id), before);
+});
+
+test('squadron floor never adds a late delivery already covered by a newer inventory baseline', async () => {
+  const id = '3713477886';
+  await apply([{ op: 'identity', carrier_id: id, at: '2026-03-06T00:00:00Z', carrier_type: 'SquadronCarrier' },
+    { op: 'baseline', carrier_id: id, at: '2026-03-06T12:00:00Z', full: true,
+      source_event: 'capi', items: [{ commodity: 'steel', qty: 500 }, { commodity: 'water', qty: 100 }] }], MEMBER);
+  const result = await apply([delta('2026-03-06T11:00:00Z', 'steel', 1320, hash(), id)], MEMBER);
+  assert.equal(result.applied, 1);
+  // applied is not quantity-changed; a real newer observation must still win.
+  assert.deepEqual(await cargo(id), { steel: 500, water: 100 });
+  await apply([delta('2026-03-06T12:01:00Z', 'steel', 1320, hash(), id)], MEMBER);
+  assert.deepEqual(await cargo(id), { steel: 1820, water: 100 });
 });
