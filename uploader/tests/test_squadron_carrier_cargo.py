@@ -10,6 +10,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -58,13 +59,19 @@ class SquadronCargoTests(unittest.TestCase):
         self.app.carrier = CarrierTracker()
         self.app.dispatcher = mock.Mock()
         self.app.log = mock.Mock()
+        self.app.root = SimpleNamespace(after=lambda _delay, fn: fn())
         self.app.raven_api = mock.Mock(is_connected=True)
         self.app.api = mock.Mock(is_connected=True)
         self.app.api.fetch_my_carriers.return_value = {'ok': True, 'own': None, 'squadron': []}
         self.app.CARRIER_SERVER_FRESH_SECONDS = 600
         self.app.CARRIER_CARGO_REFRESH_SECONDS = 300
         self.inventory = {'steel': 700, 'water': 50}
-        self.app._read_ship_inventory = lambda: dict(self.inventory)
+        self.ship_stamp = '2026-03-01T10:00:00Z'
+        self.app._read_ship_cargo = lambda: {
+            'event': 'Cargo', 'timestamp': self.ship_stamp, 'Vessel': 'Ship',
+            'Count': sum(self.inventory.values()),
+            'Inventory': [{'Name': key, 'Count': amount} for key, amount in self.inventory.items()],
+        }
         self.collector = self.app._carrier_sync_collector()
         self.feed(DOCK)
         self.app.carrier.merge_server(server(steel=100, water=50))
@@ -74,6 +81,7 @@ class SquadronCargoTests(unittest.TestCase):
         self.app.carrier.handle(event)
 
     def cargo(self, stamp="2026-03-01T10:01:00Z", live=True):
+        self.ship_stamp = stamp
         self.feed({'event': 'Cargo', 'timestamp': stamp, 'Vessel': 'Ship'}, live=live)
 
     def rows(self):

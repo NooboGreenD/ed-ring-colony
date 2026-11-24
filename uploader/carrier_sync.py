@@ -31,6 +31,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 from i18n import tr
@@ -143,12 +144,14 @@ class CarrierEventCollector:
 
     def __init__(self, outbox_path=None,
                  inventory_reader: Optional[Callable[[], Optional[Dict[str, int]]]] = None,
-                 on_bank_transfer: Optional[Callable[[dict], None]] = None):
+                 on_bank_transfer: Optional[Callable[[dict], None]] = None,
+                 cargo_reader: Optional[Callable[[], Optional[dict]]] = None):
         self.path = Path(outbox_path) if outbox_path else None
         self.lock = threading.RLock()
         self.pending: List[dict] = []
         self.inventory_reader = inventory_reader
         self.on_bank_transfer = on_bank_transfer
+        self.cargo_reader = cargo_reader
         self.collected = 0
         self.sent = 0
         self.last_result: dict = {}
@@ -161,6 +164,12 @@ class CarrierEventCollector:
         # Банк эскадры: ожидаемый трюм корабля у эскадренного носителя.
         self._bank_expected: Optional[Dict[str, int]] = None
         self._bank_unknown_change = False
+        self._bank_snapshot = None
+        self._bank_snapshot_at = 0.0
+        self._bank_docked_at = 0.0
+        self._bank_operation_at = 0.0
+        self._pending_cargo_at = 0.0
+        self._pending_cargo_count = None
         if self.path:
             try:
                 value = json.loads(self.path.read_text(encoding="utf-8"))
@@ -284,6 +293,12 @@ class CarrierEventCollector:
             str(event.get("CarrierType") or "") == "SquadronCarrier" or "squadronbank" in _services(event))
         self._bank_expected = None
         self._bank_unknown_change = False
+        self._bank_snapshot = None
+        self._bank_snapshot_at = 0.0
+        self._bank_docked_at = self._snapshot_time(event)
+        self._bank_operation_at = 0.0
+        self._pending_cargo_at = 0.0
+        self._pending_cargo_count = None
         if live and self._context["squadron"] and self._docked_at_carrier():
             self._bank_expected = self._read_inventory()
 
@@ -291,8 +306,91 @@ class CarrierEventCollector:
         self._context.update(market_id=None, station_type="", squadron=False)
         self._bank_expected = None
         self._bank_unknown_change = False
+        self._pending_cargo_at = 0.0
+        self._pending_cargo_count = None
+
+    @staticmethod
+    def _snapshot_time(event) -> float:
+        try:
+            stamp = datetime.fromisoformat(str(event.get("timestamp", "")).replace("Z", "+00:00"))
+            stamp = (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)).timestamp()
+            return stamp if 0 < stamp <= time.time() + 300 else 0.0
+        except (ValueError, TypeError, OverflowError, OSError):
+            return 0.0
+
+    def _read_cargo_snapshot(self) -> Optional[dict]:
+        try:
+            snapshot = self.cargo_reader() if self.cargo_reader else None
+        except Exception:
+            return None
+        return snapshot if self._valid_snapshot(snapshot) else None
+
+    @classmethod
+    def _valid_snapshot(cls, snapshot) -> bool:
+        if (not isinstance(snapshot, dict) or snapshot.get("event") != "Cargo"
+                or snapshot.get("Vessel") != "Ship" or not cls._snapshot_time(snapshot)
+                or not isinstance(snapshot.get("Inventory"), list)):
+            return False
+        total = 0
+        for item in snapshot["Inventory"]:
+            if (not isinstance(item, dict) or not canonical_commodity(item.get("Name"))
+                    or _as_int(item.get("Count")) is None or _as_int(item.get("Count")) < 0):
+                return False
+            total += _as_int(item["Count"])
+        # Include drones in validation even though they are excluded from bank deltas.
+        return _as_int(snapshot.get("Count")) == total
+
+    def _remember_snapshot(self, snapshot) -> None:
+        self._bank_snapshot_at = self._snapshot_time(snapshot)
+        self._bank_snapshot = (snapshot.get("timestamp"), tuple(sorted(inventory_from_cargo(snapshot).items())))
+
+    def restore_context(self, events) -> None:
+        """Restore only the current dock. Never enqueue/replay cargo from history."""
+        self._undock()
+        for event in events:
+            name = event.get("event")
+            if name in ("LoadGame", "Shutdown", "Undocked", "FSDJump"):
+                self._undock()
+            elif name in ("Docked", "Location", "CarrierJump"):
+                if name == "Location" and event.get("Docked") is not True:
+                    self._undock()
+                elif name != "CarrierJump" or event.get("Docked") is not False:
+                    self._dock(event, live=False)
+
+    def begin_live(self) -> None:
+        """Establish a baseline AFTER startup reconciliation, before the first tick.
+
+        Startup can have saved offsets and no new Docked/Cargo events at all.
+        Reading today's Cargo.json here must not create historical deliveries.
+        """
+        self._bank_expected = None
+        self._bank_unknown_change = False
+        self._bank_snapshot = None
+        self._bank_snapshot_at = 0.0
+        self._bank_operation_at = 0.0
+        self._pending_cargo_at = 0.0
+        self._pending_cargo_count = None
+        if self._context["squadron"] and self._docked_at_carrier():
+            self._bank_expected = self._read_inventory()
+
+    def poll_cargo(self) -> None:
+        """Retry a late sidecar once per existing watcher tick, never a new timer."""
+        if self.cargo_reader and self._context["squadron"] and self._docked_at_carrier():
+            snapshot = self._read_cargo_snapshot()
+            # Cargo.json can be ahead of the journal too. Wait until its
+            # Cargo marker was processed, so an as-yet unread MarketBuy etc.
+            # cannot masquerade as a bank transfer.
+            if (snapshot is not None and self._snapshot_time(snapshot) == self._pending_cargo_at
+                    and (self._pending_cargo_count is None or snapshot.get("Count") == self._pending_cargo_count)):
+                self._bank_cargo(snapshot)
 
     def _read_inventory(self) -> Optional[Dict[str, int]]:
+        if self.cargo_reader:
+            snapshot = self._read_cargo_snapshot()
+            if snapshot is None:
+                return None
+            self._remember_snapshot(snapshot)
+            return inventory_from_cargo(snapshot)
         if not self.inventory_reader:
             return None
         try:
@@ -325,7 +423,22 @@ class CarrierEventCollector:
     def _bank_cargo(self, event: Mapping[str, Any]) -> None:
         if str(event.get("Vessel") or "Ship") != "Ship":
             return
-        current = inventory_from_cargo(event) if isinstance(event.get("Inventory"), list) else self._read_inventory()
+        if self.cargo_reader:
+            snapshot = event if isinstance(event.get("Inventory"), list) else self._read_cargo_snapshot()
+            # A journal marker must not borrow a future/older snapshot. Let the
+            # end-of-tick poll run after ALL known trades/transfers in the batch.
+            if (not self._valid_snapshot(snapshot)
+                    or snapshot.get("timestamp") != event.get("timestamp")
+                    or (event.get("Count") is not None and snapshot.get("Count") != event.get("Count"))):
+                return
+            stamp = self._snapshot_time(snapshot)
+            token = (snapshot.get("timestamp"), tuple(sorted(inventory_from_cargo(snapshot).items())))
+            if stamp < max(self._bank_docked_at, self._bank_snapshot_at, self._bank_operation_at) or token == self._bank_snapshot:
+                return
+            self._remember_snapshot(snapshot)
+            current = inventory_from_cargo(snapshot)
+        else:
+            current = inventory_from_cargo(event) if isinstance(event.get("Inventory"), list) else self._read_inventory()
         if current is None:
             return
         expected = self._bank_expected
@@ -404,6 +517,7 @@ class CarrierEventCollector:
             market_id = _as_int(event.get("MarketID"))
             same_dock = market_id is not None and market_id == self._context["market_id"]
             if same_dock:
+                self._bank_operation_at = max(self._bank_operation_at, self._snapshot_time(event))
                 count = _as_int(event.get("Count")) or 0
                 self._bank_adjust(event.get("Type"), count if name == "MarketBuy" else -count)
             if not is_carrier_market(market_id) and not (
@@ -415,6 +529,7 @@ class CarrierEventCollector:
             self._push(projected)
             return
         if name == "CargoTransfer":
+            self._bank_operation_at = max(self._bank_operation_at, self._snapshot_time(event))
             for transfer in event.get("Transfers") or []:
                 if not isinstance(transfer, Mapping):
                     continue
@@ -434,10 +549,16 @@ class CarrierEventCollector:
         if name in ("BuyDrones", "SellDrones"):
             return  # дроны не учитываются ни в трюме носителя, ни в диффе
         if name in UNKNOWN_CARGO_CHANGES:
+            self._bank_operation_at = max(self._bank_operation_at, self._snapshot_time(event))
             self._bank_unknown_change = True
             return
         if name == "Cargo":
             if live and self._context["squadron"] and self._docked_at_carrier():
+                if str(event.get("Vessel") or "Ship") == "Ship":
+                    stamp = self._snapshot_time(event)
+                    if stamp >= self._pending_cargo_at:
+                        self._pending_cargo_at = stamp
+                        self._pending_cargo_count = _as_int(event.get("Count"))
                 self._bank_cargo(event)
             return
         if name.startswith("Carrier") and name in CARRIER_EVENT_FIELDS:
