@@ -80,3 +80,46 @@ test('loading UI: old catalogue warning is explicit without silently saving a te
   assert.equal(h.calls.filter(call=>call.init?.method==='PATCH').length,0);
  }finally{await h.close();}
 });
+
+const collaboration=(canManage=false,accepted=false)=>({canManage,self:{accepted,sharedCarrierIds:[]},ownCarrierIds:['123'],participants:[{userId:'pilot',name:'Cargo Pilot',accepted,sharedCarrierIds:[]}]});
+test('loading team UI: invitation acceptance shares only explicitly selected own carriers, no assignment write',async()=>{
+ let accepted=false,sharedCarrierIds=[];
+ const h=await harness({link:true,canEdit:false,api:async(url,init)=>{
+  if(url.endsWith('/members')) {const body=JSON.parse(init.body);accepted=true;sharedCarrierIds=body.sharedCarrierIds;return{body:{ok:true}};}
+  if(url.endsWith('/'+id))return{body:{ok:true,pattern:view(false),collaboration:{...collaboration(false,accepted),self:{accepted,sharedCarrierIds}},progress:{total:100,loaded:5,carriers:[]}}};
+ }});
+ try {
+  assert.match(h.doc.body.textContent,/Вас пригласили/);
+  const box=h.doc.querySelector('.lp-team input[type="checkbox"]');assert.ok(box);assert.equal(box.checked,false);
+  await h.click(box);await h.click(h.button('Принять приглашение и сохранить доступ'));
+  const call=h.calls.find(call=>call.url.endsWith('/members'));
+  assert.equal(call.init.method,'PATCH');assert.deepEqual(JSON.parse(call.init.body),{accept:true,sharedCarrierIds:['123']});
+  assert.equal(h.calls.filter(call=>call.init?.method==='PATCH'&&!call.url.endsWith('/members')).length,0);
+  assert.equal(h.doc.querySelector('input[aria-label="Название паттерна"]').disabled,true);
+  assert.ok(h.button('Сохранить доступ к остаткам'));
+  await h.click(h.doc.querySelector('.lp-team input[type="checkbox"]'));
+  await h.click(h.button('Сохранить доступ к остаткам'));
+  const calls=h.calls.filter(call=>call.url.endsWith('/members'));assert.deepEqual(JSON.parse(calls.at(-1).init.body).sharedCarrierIds,[]);
+  await h.click(h.button('Копировать себе'));assert.equal(h.doc.querySelector('.lp-team'),null);
+ } finally {await h.close();}
+});
+test('loading team UI: loaders without own carriers accept without exposing any stock; logout clears team',async()=>{
+ const h=await harness({link:true,canEdit:false,api:async(url)=>url.endsWith('/'+id)?{body:{ok:true,pattern:view(false),collaboration:{...collaboration(),ownCarrierIds:[]},progress:{total:100,loaded:0,carriers:[]}}}:null});
+ try {
+  assert.match(h.doc.querySelector('.lp-team').textContent,/нет авианосцев/);
+  assert.equal(h.doc.querySelectorAll('.lp-team input[type="checkbox"]').length,0);
+  await h.click(h.button('Принять приглашение и сохранить доступ'));
+  const call=h.calls.find(call=>call.url.endsWith('/members'));assert.deepEqual(JSON.parse(call.init.body),{accept:true,sharedCarrierIds:[]});
+  await h.act(async()=>globalThis.__lpAuth('SIGNED_OUT',null));await h.flush();
+  assert.equal(h.doc.querySelector('.lp-team'),null);
+ } finally {await h.close();}
+});
+test('loading team UI: membership actions disabled while editing unsaved assignments',async()=>{
+ const h=await harness({link:true,api:async(url)=>url.endsWith('/'+id)?{body:{ok:true,pattern:view(),collaboration:collaboration(true,true),progress:{total:100,loaded:0,carriers:[]}}}:null});
+ try {
+  assert.ok(h.button('Пригласить пилота'));await h.click(h.button('+ Постройка'));
+  assert.equal(h.doc.querySelector('.lp-team fieldset').disabled,true);
+  assert.equal(h.doc.querySelector('.lp-team input[aria-label="Точное имя CMDR"]').disabled,true);
+  assert.equal(h.button('Убрать участника').disabled,true);
+ } finally {await h.close();}
+});

@@ -9,6 +9,7 @@ import {
 import {
   loadingContext,
   LOADING_TABLE,
+  LOADING_MEMBERS,
   LOADING_PRIVATE,
   readLoadingBody,
 } from "@/lib/architect/loadingPatternServer";
@@ -34,10 +35,33 @@ export async function GET(request: Request) {
         : query.eq("owner_id", userId!);
     const { data, error } = await query;
     if (error) throw error;
+    // "mine" includes invitations/team patterns for both website and Helper.
+    const combined = [...(data ?? [])];
+    if (scope !== "public" && userId) {
+      const { data: memberships, error: memberError } = await svc
+        .from(LOADING_MEMBERS)
+        .select("pattern_id")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (memberError) throw memberError;
+      const ids = (memberships ?? []).map((row) => row.pattern_id);
+      if (ids.length) {
+        const { data: shared, error: sharedError } = await svc
+          .from(LOADING_TABLE)
+          .select("*")
+          .in("id", ids)
+          .order("updated_at", { ascending: false })
+          .limit(100);
+        if (sharedError) throw sharedError;
+        for (const row of shared ?? [])
+          if (!combined.some((item) => item.id === row.id)) combined.push(row);
+      }
+    }
     return NextResponse.json(
       {
         ok: true,
-        patterns: (data ?? []).map((row) => loadingPatternView(row, userId)),
+        patterns: combined.map((row) => loadingPatternView(row, userId)),
       },
       { headers: LOADING_PRIVATE },
     );

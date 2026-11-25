@@ -23,3 +23,31 @@ test('loading migration: idempotent, service-only grants/RLS, constraints and ow
   await db.query('DELETE FROM auth.users WHERE id=$1',[owner]);assert.equal((await db.query('SELECT * FROM carrier_loading_patterns')).rows.length,0);
  }finally{await db.close();}
 });
+
+test('loading team migration: idempotent, private grants, consent constraint and cascade removal',async()=>{
+ const db=new PGlite();
+ try {
+  await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role BYPASSRLS;CREATE SCHEMA auth;CREATE TABLE auth.users(id uuid PRIMARY KEY);GRANT USAGE ON SCHEMA public TO anon,authenticated,service_role;`);
+  await db.exec(readFileSync('supabase/migrations/20261128090000_carrier_loading_patterns.sql','utf8'));
+  const migration=readFileSync('supabase/migrations/20261129090000_loading_pattern_members.sql','utf8');
+  await db.exec(migration);await db.exec(migration);
+  const owner='11111111-2222-4333-8444-555555555555',pilot='aaaaaaaa-2222-4333-8444-555555555555';
+  await db.query('INSERT INTO auth.users VALUES ($1),($2)',[owner,pilot]);
+  await db.query(`INSERT INTO carrier_loading_patterns(id,owner_id,name,visibility,definition,catalogue_version) VALUES ($1,$1,'Team','private','{}',5)`,[owner]);
+  for(const role of ['anon','authenticated']) {
+   const result=await db.query(`SELECT has_table_privilege('${role}','carrier_loading_pattern_members','SELECT') AS r,has_table_privilege('${role}','carrier_loading_pattern_members','INSERT') AS w`);
+   assert.deepEqual(result.rows,[{r:false,w:false}]);
+   await db.exec(`SET ROLE ${role}`);await assert.rejects(()=>db.query('SELECT * FROM carrier_loading_pattern_members'),/permission denied/);await db.exec('RESET ROLE');
+  }
+  assert.equal((await db.query(`SELECT relrowsecurity FROM pg_class WHERE relname='carrier_loading_pattern_members'`)).rows[0].relrowsecurity,true);
+  await db.exec('SET ROLE service_role');
+  await db.query(`INSERT INTO carrier_loading_pattern_members(pattern_id,user_id,cmdr_name) VALUES ($1,$2,'Pilot')`,[owner,pilot]);
+  await assert.rejects(()=>db.query(`UPDATE carrier_loading_pattern_members SET shared_carrier_ids=ARRAY['123']`),/check constraint/);
+  await db.query(`UPDATE carrier_loading_pattern_members SET accepted_at=now(),shared_carrier_ids=ARRAY['123']`);
+  await assert.rejects(()=>db.query(`UPDATE carrier_loading_pattern_members SET shared_carrier_ids=array_fill('123'::text,ARRAY[21])`),/check constraint/);
+  await db.exec('RESET ROLE');
+  await db.query('DELETE FROM auth.users WHERE id=$1',[pilot]);assert.equal((await db.query('SELECT * FROM carrier_loading_pattern_members')).rows.length,0);
+  await db.query(`INSERT INTO carrier_loading_pattern_members(pattern_id,user_id,cmdr_name) VALUES ($1,$1,'Owner')`,[owner]);
+  await db.query('DELETE FROM carrier_loading_patterns WHERE id=$1',[owner]);assert.equal((await db.query('SELECT * FROM carrier_loading_pattern_members')).rows.length,0);
+ } finally {await db.close();}
+});

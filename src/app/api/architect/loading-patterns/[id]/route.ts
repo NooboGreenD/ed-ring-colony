@@ -8,6 +8,9 @@ import {
 } from "@/lib/architect/loadingPatterns";
 import {
   currentLoadingProgress,
+  loadingMembers,
+  loadingParticipant,
+  loadingCollaboration,
   loadingContext,
   loadingUuid,
   LOADING_PRIVATE,
@@ -32,18 +35,35 @@ export async function GET(request: Request, { params }: Params) {
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
-    if (!data || (data.owner_id !== userId && data.visibility !== "public"))
+    const members = data && userId ? await loadingMembers(svc, id) : [];
+    if (
+      !data ||
+      (data.owner_id !== userId &&
+        data.visibility !== "public" &&
+        !loadingParticipant(members, userId))
+    )
       return NextResponse.json(
         { error: t("lp.notFound") },
         { status: 404, headers: LOADING_PRIVATE },
       );
     const view = loadingPatternView(data, userId);
-    const progress = await currentLoadingProgress(svc, userId, view.pattern);
+    const progress = await currentLoadingProgress(svc, userId, view.pattern, {
+      ownerId: data.owner_id,
+      members,
+    });
+    const collaboration = await loadingCollaboration(
+      svc,
+      userId,
+      data.owner_id,
+      view.pattern,
+      members,
+    );
     return NextResponse.json(
       {
         ok: true,
         pattern: view,
         progress,
+        collaboration,
         checkedAt: new Date().toISOString(),
       },
       { headers: LOADING_PRIVATE },
@@ -101,16 +121,14 @@ async function mutate(request: Request, { params }: Params, remove: boolean) {
       );
     const query = remove
       ? svc.from(LOADING_TABLE).delete()
-      : svc
-          .from(LOADING_TABLE)
-          .update({
-            name: pattern!.name,
-            visibility: pattern!.visibility,
-            definition: pattern,
-            version: Number(body.version) + 1,
-            catalogue_version: LOADING_CATALOGUE_VERSION,
-            updated_at: new Date().toISOString(),
-          });
+      : svc.from(LOADING_TABLE).update({
+          name: pattern!.name,
+          visibility: pattern!.visibility,
+          definition: pattern,
+          version: Number(body.version) + 1,
+          catalogue_version: LOADING_CATALOGUE_VERSION,
+          updated_at: new Date().toISOString(),
+        });
     const { data, error } = await query
       .eq("id", id)
       .eq("owner_id", userId)

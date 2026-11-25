@@ -3890,6 +3890,10 @@ class ColonialHelperApp:
     def _on_overlay_settings_changed(self, key: str, name: str, _value):
         """Настройка изменилась из оверлея (например, по горячей клавише)."""
         self._sync_overlay_block_rows()
+        if name == "content" and isinstance(_value, dict):
+            page = getattr(self, "overlay_page", None)
+            if page is not None:
+                page.set_content_value(_value["setting"], _value["value"])
 
     def _update_overlay_hotkey_hint(self):
         """Строка подсказки: какие клавиши за чем закреплены."""

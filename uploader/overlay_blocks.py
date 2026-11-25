@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -3017,10 +3018,10 @@ class PowerplayOverlay(HudWindow):
 
 
 class LoadingOverlay(HudWindow):
-    """Managed compact loading HUD: same layout/font/content controls as other blocks."""
+    """Managed per-carrier manifest, square progress and live goods filtering."""
 
     def __init__(self, master, settings):
-        from i18n import tr
+        from qt_loading_hud import LoadingManifest
 
         super().__init__(
             master,
@@ -3036,29 +3037,39 @@ class LoadingOverlay(HudWindow):
         self.summary_label = self.make_label(
             self.content, tr("Паттерн не выбран"), wrap=True
         )
-        self.summary_label.setWordWrap(True)
-        self.carriers_label = self.make_label(self.content, "", dp=-1)
-        self.items_text = QTextEdit(self.content)
-        self.items_text.setReadOnly(True)
-        self.items_text.setFrameShape(QFrame.NoFrame)
-        self.items_text.setFont(hud_font(self._font_family, self._font_size))
-        self.items_text.setStyleSheet(
-            f"QTextEdit{{background:{COLOR_SURFACE};color:{COLOR_TEXT};border:0;}}"
+        self.summary_label.setTextFormat(Qt.PlainText)
+        self.summary_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.filter_combo = QComboBox(self.content)
+        self.filter_combo.addItem(tr("Оставшиеся товары"), False)
+        self.filter_combo.addItem(tr("Все товары"), True)
+        self.filter_combo.setAccessibleName(tr("Показывать товары"))
+        self.filter_combo.setToolTip(tr("Показывать товары"))
+        self.filter_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
         )
-        self.source_label = self.make_label(self.content, "", dp=-2)
-        self.source_label.setWordWrap(True)
-        for widget in (
-            self.summary_label,
-            self.carriers_label,
-            self.items_text,
-            self.source_label,
-        ):
-            self.body.addWidget(widget)
+        self.filter_combo.setMinimumContentsLength(8)
+        self.filter_combo.currentIndexChanged.connect(self._filter_changed)
+        top = QHBoxLayout()
+        top.addWidget(self.summary_label, 1)
+        top.addWidget(self.filter_combo)
+        self.body.addLayout(top)
+        self.manifest = LoadingManifest(self.content)
+        self.body.addWidget(self.manifest, 1)
+        self.source_label = self.make_label(self.content, "", dp=-2, wrap=True)
+        self.body.addWidget(self.source_label)
+        self.update_loading({})
+        self.on_font_changed()
+
+    def _filter_changed(self):
+        value = bool(self.filter_combo.currentData())
+        key = option_key("loading", "completed")
+        if self.settings.get(key, False) == value:
+            return
+        self.settings[key] = value
+        self.apply_data_options()
+        self._persist("content", {"setting": key, "value": value})
 
     def update_loading(self, data):
-        from i18n import tr
-        from loading_patterns import loading_lines
-
         self._last_loading = data
         progress = data.get("progress") or {}
         name = (data.get("pattern") or {}).get("pattern", {}).get("name", "")
@@ -3067,17 +3078,22 @@ class LoadingOverlay(HudWindow):
             if progress
             else data.get("note") or tr("Паттерн не выбран")
         )
-        summaries, rows = loading_lines(
-            data, bool(self.settings.get(option_key("loading", "completed"), False))
+        enabled = lambda section: bool(
+            self.settings.get(option_key("loading", section), True)
         )
-        self.carriers_label.setText(
-            "\n".join(summaries[:3])
-            + (f"\n+ {len(summaries)-3}" if len(summaries) > 3 else "")
+        completed = bool(self.settings.get(option_key("loading", "completed"), False))
+        self.filter_combo.blockSignals(True)
+        self.filter_combo.setCurrentIndex(1 if completed else 0)
+        self.filter_combo.blockSignals(False)
+        self.manifest.render(
+            data,
+            show_completed=completed,
+            family=self._font_family,
+            size=self._font_size,
+            show_carriers=enabled("carriers"),
+            show_progress=enabled("progress"),
+            show_items=enabled("items"),
         )
-        self.carriers_label.setToolTip("\n".join(summaries))
-        text = "\n".join(rows)
-        if self.items_text.toPlainText() != text:
-            self.items_text.setPlainText(text)
         self.source_label.setText(
             (
                 tr("Учёт сайта · неизвестно")
@@ -3089,23 +3105,26 @@ class LoadingOverlay(HudWindow):
             if progress
             else ""
         )
-
         if (data.get("pattern") or {}).get("catalogueUpdated"):
-            self.source_label.setText(self.source_label.text() + "\n" + tr("Каталог обновлён: проверьте распределение на сайте."))
+            self.source_label.setText(
+                self.source_label.text()
+                + "\n"
+                + tr("Каталог обновлён: проверьте распределение на сайте.")
+            )
 
     def apply_data_options(self):
         super().apply_data_options()
-        if hasattr(self, "_last_loading"):
+        if hasattr(self, "manifest"):
             self.update_loading(self._last_loading)
 
     def on_font_changed(self):
-        if hasattr(self, "items_text"):
-            self.items_text.setFont(hud_font(self._font_family, self._font_size))
-            for label, delta in (
-                (self.summary_label, 0),
-                (self.carriers_label, -1),
-                (self.source_label, -2),
-            ):
-                label.setFont(
-                    hud_font(self._font_family, max(7, self._font_size + delta))
-                )
+        if not hasattr(self, "manifest"):
+            return
+        self.summary_label.setFont(hud_font(self._font_family, self._font_size))
+        self.source_label.setFont(
+            hud_font(self._font_family, max(6, self._font_size - 2))
+        )
+        self.filter_combo.setFont(
+            hud_font(self._font_family, max(6, self._font_size - 2))
+        )
+        self.update_loading(self._last_loading)

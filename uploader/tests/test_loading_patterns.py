@@ -204,11 +204,10 @@ class LoadingQtTests(unittest.TestCase):
         self.addCleanup(overlay.destroy)
         overlay.update_loading(payload())
         self.assertIn("Two carriers", overlay.summary_label.text())
-        self.assertIn("-?", overlay.items_text.toPlainText())
+        self.assertEqual(overlay.manifest.cards["456"].table.item(0, 2).text(), "?")
         for section, name in [
             ("summary", "summary_label"),
-            ("carriers", "carriers_label"),
-            ("items", "items_text"),
+            ("filter", "filter_combo"),
             ("source", "source_label"),
         ]:
             settings["overlay_loading_" + section] = False
@@ -218,15 +217,19 @@ class LoadingQtTests(unittest.TestCase):
             overlay.apply_data_options()
             self.assertFalse(getattr(overlay, name).isHidden())
         overlay.apply_font("Arial", 16)
-        self.assertEqual(overlay.items_text.font().family(), "Arial")
-        self.assertEqual(overlay.items_text.font().pixelSize(), 20)
+        self.assertEqual(overlay.manifest.cards["123"].table.font().family(), "Arial")
+        self.assertEqual(overlay.manifest.cards["123"].table.font().pixelSize(), 19)
         updated = payload()
         updated["pattern"]["catalogueUpdated"] = True
         overlay.update_loading(updated)
         from i18n import tr
-        self.assertIn(tr("Каталог обновлён: проверьте распределение на сайте."), overlay.source_label.text())
+
+        self.assertIn(
+            tr("Каталог обновлён: проверьте распределение на сайте."),
+            overlay.source_label.text(),
+        )
         overlay.update_loading({})
-        self.assertEqual(overlay.items_text.toPlainText(), "")
+        self.assertEqual(overlay.manifest.cards, {})
 
     def test_settings_roundtrip(self):
         with tempfile.TemporaryDirectory() as folder:

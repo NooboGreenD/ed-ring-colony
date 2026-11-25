@@ -139,6 +139,16 @@ class OverlayPageTests(unittest.TestCase):
         self.assertIsInstance(self.page.content_tabs, QTabWidget)
         self.assertEqual(self.page.content_tabs.count(), 2)
 
+    def test_hud_content_sync_does_not_emit_another_save(self):
+        self.events.clear()
+        self.page.set_content_value("overlay_ship_modules", True)
+        self.assertTrue(self.page.content_value("overlay_ship_modules"))
+        self.assertEqual(self.events, [])
+        self.page.set_content_value("overlay_loading_completed", True)
+        self.assertEqual(self.events, [])  # absent sections are harmless
+        self.page.content_widgets["overlay_ship_modules"].setChecked(False)
+        self.assertIn(("content_changed", "overlay_ship_modules", False), self.events)
+
     def test_carrier_tab_has_filter_and_search(self):
         self.assertEqual(self.page.carrier_filter_text(), "Все товары")
         self.assertEqual(self.page.carrier_search_text(), "steel")
@@ -293,6 +303,7 @@ class OverlayPageTests(unittest.TestCase):
         self.assertIsInstance(page.toggle_btn, QPushButton)
 
 
+@unittest.skipIf(QT_ERROR is not None, f"Qt runtime unavailable: {QT_ERROR}")
 class OverlayPageStructureTests(unittest.TestCase):
     """Раздел «Оверлей» разложен по вкладкам, а не одной простынёй."""
 

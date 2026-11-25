@@ -2635,6 +2635,14 @@ class OverlayPage(QWidget):
             button.setChecked(True)
             button.blockSignals(blocked)
 
+    def set_content_value(self, setting: str, value: bool) -> None:
+        """Mirror a HUD-side preference without triggering a second write."""
+        widget = self.content_widgets.get(setting)
+        if widget is not None:
+            previous = widget.blockSignals(True)
+            widget.setChecked(bool(value))
+            widget.blockSignals(previous)
+
     def content_value(self, setting: str) -> bool:
         return self.content_widgets[setting].isChecked()
 
