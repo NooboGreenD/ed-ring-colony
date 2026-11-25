@@ -634,6 +634,30 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def fetch_loading_patterns(self, *, scope="mine") -> dict:
+        return self._loading_get("/architect/loading-patterns", {"scope": scope})
+
+    def fetch_loading_pattern(self, pattern_id: str) -> dict:
+        import re
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(pattern_id)):
+            return {"ok": False, "error": tr("Не удалось загрузить паттерн")}
+        return self._loading_get("/architect/loading-patterns/" + pattern_id)
+
+    def _loading_get(self, path, params=None):
+        if not self.token:
+            return {"ok": False, "error": tr("Нет токена")}
+        try:
+            resp = _session_for_thread().get(
+                self.api_base + path, params=params,
+                headers={"Authorization": "Bearer " + self.token, "Accept-Language": self.locale},
+                timeout=20, allow_redirects=False)
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error") or f"HTTP {resp.status_code}"}
+        except Exception:
+            return {"ok": False, "error": tr("Не удалось загрузить паттерн")}
+
     def fetch_site_projects(self, *, cmdr: str = "", system: str = "",
                             system_address: int = 0, market_id: int = 0) -> dict:
         """Действующие проекты строительства с сайта проекта.

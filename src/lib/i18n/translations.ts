@@ -1,3 +1,4 @@
+import { loadingPatternTranslations } from "./loadingPatterns.ts";
 import type { Locale } from "./types";
 import { engineersTranslations } from "./engineers.ts";
 import { commodityTranslations } from "./commodities.ts";
@@ -55567,6 +55568,7 @@ const baseTranslations: Record<string, Record<string, string>> = {
  * держим в разных файлах, но `t()` видит их одинаково — по плоскому ключу.
  */
 const sectionTranslations = [
+  loadingPatternTranslations,
   outfittingTranslations,
   outfittingAnalysisTranslations,
   outfittingSpecialsTranslations,

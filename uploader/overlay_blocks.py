@@ -3014,3 +3014,95 @@ class PowerplayOverlay(HudWindow):
     def on_font_changed(self):
         if hasattr(self, "panel"):
             self._apply_panel_font()
+
+
+class LoadingOverlay(HudWindow):
+    """Managed compact loading HUD: same layout/font/content controls as other blocks."""
+
+    def __init__(self, master, settings):
+        from i18n import tr
+
+        super().__init__(
+            master,
+            "LOADING",
+            settings.get("loading_x", 1480),
+            settings.get("loading_y", 690),
+            settings.get("loading_width", 380),
+            settings.get("loading_height", 300),
+            settings,
+            "loading",
+        )
+        self._last_loading = {}
+        self.summary_label = self.make_label(
+            self.content, tr("Паттерн не выбран"), wrap=True
+        )
+        self.summary_label.setWordWrap(True)
+        self.carriers_label = self.make_label(self.content, "", dp=-1)
+        self.items_text = QTextEdit(self.content)
+        self.items_text.setReadOnly(True)
+        self.items_text.setFrameShape(QFrame.NoFrame)
+        self.items_text.setFont(hud_font(self._font_family, self._font_size))
+        self.items_text.setStyleSheet(
+            f"QTextEdit{{background:{COLOR_SURFACE};color:{COLOR_TEXT};border:0;}}"
+        )
+        self.source_label = self.make_label(self.content, "", dp=-2)
+        self.source_label.setWordWrap(True)
+        for widget in (
+            self.summary_label,
+            self.carriers_label,
+            self.items_text,
+            self.source_label,
+        ):
+            self.body.addWidget(widget)
+
+    def update_loading(self, data):
+        from i18n import tr
+        from loading_patterns import loading_lines
+
+        self._last_loading = data
+        progress = data.get("progress") or {}
+        name = (data.get("pattern") or {}).get("pattern", {}).get("name", "")
+        self.summary_label.setText(
+            f"{name} · {progress.get('loaded', 0)} / {progress.get('total', 0)} t"
+            if progress
+            else data.get("note") or tr("Паттерн не выбран")
+        )
+        summaries, rows = loading_lines(
+            data, bool(self.settings.get(option_key("loading", "completed"), False))
+        )
+        self.carriers_label.setText(
+            "\n".join(summaries[:3])
+            + (f"\n+ {len(summaries)-3}" if len(summaries) > 3 else "")
+        )
+        self.carriers_label.setToolTip("\n".join(summaries))
+        text = "\n".join(rows)
+        if self.items_text.toPlainText() != text:
+            self.items_text.setPlainText(text)
+        self.source_label.setText(
+            (
+                tr("Учёт сайта · неизвестно")
+                + f" {progress.get('unknown', 0)} t · "
+                + tr("Не распределено")
+                + f" {progress.get('unassigned', 0)} t\n"
+                + str(data.get("checkedAt") or "")
+            )
+            if progress
+            else ""
+        )
+
+    def apply_data_options(self):
+        super().apply_data_options()
+        if hasattr(self, "_last_loading"):
+            self.update_loading(self._last_loading)
+
+    def on_font_changed(self):
+        if hasattr(self, "items_text"):
+            self.items_text.setFont(hud_font(self._font_family, self._font_size))
+            for label, delta in (
+                (self.summary_label, 0),
+                (self.carriers_label, -1),
+                (self.source_label, -2),
+            ):
+                label.setFont(
+                    hud_font(self._font_family, max(7, self._font_size + delta))
+                )

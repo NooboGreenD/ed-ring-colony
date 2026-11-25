@@ -10,11 +10,12 @@ import Link from 'next/link';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import type { CSSProperties } from 'react';
 
-export type ArchitectSection = 'planner' | 'projects';
+export type ArchitectSection = 'planner' | 'projects' | 'loading';
 
 const TABS: Array<{ id: ArchitectSection; href: string; labelKey: string; hintKey: string }> = [
   { id: 'planner', href: '/architect', labelKey: 'anav.planner', hintKey: 'anav.plannerHint' },
   { id: 'projects', href: '/architect/projects', labelKey: 'anav.projects', hintKey: 'anav.projectsHint' },
+  { id: 'loading', href: '/architect/loading', labelKey: 'lp.title', hintKey: 'lp.intro' },
 ];
 
 const navStyle: CSSProperties = {
