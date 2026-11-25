@@ -1483,8 +1483,16 @@ class ColonialHelperApp:
         )
         self.colony_page.set_combo_values(
             "buildType", [build_type_label(code) for code, _ru, _en in BUILD_TYPES])
-        self.tab_colony._get_tk_layout("pack").addWidget(self.colony_page)
-        self._show_page(self.colony_page)
+        from PySide6.QtWidgets import QTabWidget
+        from qt_loading_patterns import LoadingPatternsPage
+        self.loading_patterns_page = LoadingPatternsPage(
+            self.api, self.config, self.save_config,
+            lambda: bool(self.overlay_manager.enabled and self.overlay_manager.settings.get("show_loading", False)))
+        self.colony_tabs = QTabWidget()
+        self.colony_tabs.addTab(self.colony_page, tr("Проекты"))
+        self.colony_tabs.addTab(self.loading_patterns_page, tr("Паттерны погрузки"))
+        self.tab_colony._get_tk_layout("pack").addWidget(self.colony_tabs)
+        self._show_page(self.colony_tabs)
 
         # Имена, которыми пользуется остальной код и тесты: это те же виджеты.
         self.colony_cmdr_entry = self.colony_page.cmdr_entry
@@ -4160,6 +4168,8 @@ class ColonialHelperApp:
         if commerce is not None:
             data["carrier"] = commerce.market_availability.decorate_carrier(data["carrier"])
         data["powerplay"] = self._powerplay_state()
+        loading_page = getattr(self, "loading_patterns_page", None)
+        data["loading"] = loading_page.overlay_state() if loading_page else {}
         data["last_delivery_system"] = self._last_delivery_system
         # Миникарта пешехода: Status.json перечитывается только при изменении
         # файла, поэтому тик оверлея не превращается в поток чтений с диска.

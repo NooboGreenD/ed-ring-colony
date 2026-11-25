@@ -23,6 +23,7 @@ BLOCK_LABELS = {
     "bio": "BIO — биология планет",
     "carrier": "CARRIER — авианосец",
     "footmap": "FOOTMAP — миникарта",
+    "loading": "LOADING — погрузка",
     "powerplay": "POWERPLAY — держава и система",
 }
 
@@ -43,6 +44,7 @@ DEFAULT_BLOCK_POSITIONS = {
     # Свободное место под блоком CARRIER: карта не перекрывает соседей
     # и целиком влезает в 1080p.
     "footmap": (770, 650, 340, 400),
+    "loading": (1480, 690, 380, 300),
     "powerplay": (1480, 50, 380, 620),
 }
 

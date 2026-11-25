@@ -14567,3 +14567,9 @@ def _build_catalogs() -> Dict[str, Dict[str, str]]:
 CATALOGS: Dict[str, Dict[str, str]] = _build_catalogs()
 
 __all__ = ["CATALOGS"]
+
+# Loading patterns: English fallback until dedicated locale translations land.
+_LOADING_EN = {'Паттерны погрузки': 'Loading patterns', 'Паттерны погрузки: Архитектор → Погрузка. Остатки — учёт сайта, не полный снимок игры.': 'Loading patterns: Architect → Loading. Stock is tracked site data, not a full game inventory.', 'Мои паттерны': 'My patterns', 'Публичные паттерны': 'Public patterns', 'Применить паттерн': 'Apply pattern', 'Отключить паттерн': 'Stop tracking pattern', 'Все авианосцы': 'All carriers', 'Открыть паттерны на сайте': 'Open patterns on website', 'Не удалось загрузить паттерн': 'Could not load pattern', 'Нет подключения к сайту': 'Not connected to website', 'Паттерн не выбран': 'No pattern selected', 'Учёт сайта · неизвестно': 'Site records · unknown', 'Не распределено': 'Unassigned', 'LOADING — погрузка': 'LOADING — loading', 'Общий прогресс погрузки': 'Overall loading progress', 'Прогресс авианосцев': 'Carrier progress', 'Осталось погрузить': 'Remaining cargo', 'Источник и время проверки': 'Source and check time', 'Показывать завершённые товары': 'Show completed commodities'}
+for _locale in ("en", "de", "it", "ko", "zh", "ja"):
+    for _source, _text in _LOADING_EN.items():
+        CATALOGS.setdefault(_locale, {}).setdefault(_source, _text)

@@ -3,6 +3,13 @@ import math
 
 # section -> (UI label, direct child widgets of the overlay content frame)
 CONTENT_OPTIONS = {
+    'loading': {
+        'summary': ('Общий прогресс погрузки', ('summary_label',)),
+        'carriers': ('Прогресс авианосцев', ('carriers_label',)),
+        'items': ('Осталось погрузить', ('items_text',)),
+        'source': ('Источник и время проверки', ('source_label',)),
+        'completed': ('Показывать завершённые товары', ()),
+    },
     'route': {
         'current': ('Текущая система', ('current_label',)),
         'next': ('Следующая система', ('next_label',)),
@@ -75,7 +82,7 @@ CONTENT_OPTIONS = {
 CONTENT_DEFAULTS = {option: True for option in (
     f'overlay_{block}_{section}' for block, sections in CONTENT_OPTIONS.items() for section in sections)}
 # Five lines fit the existing compact window; context/progress remain optional.
-CONTENT_DEFAULTS.update(overlay_route_current=False, overlay_route_progress=False)
+CONTENT_DEFAULTS.update(overlay_route_current=False, overlay_route_progress=False, overlay_loading_completed=False)
 
 CARRIER_FILTERS = {'all': 'Все товары', 'aboard': 'Только на борту',
                    'project': 'Материалы стройки', 'missing': 'Только недостающие'}

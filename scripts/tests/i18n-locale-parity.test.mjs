@@ -42,6 +42,7 @@ const DICTIONARIES = [
   'carrierJumps.ts',
   'carrierCard.ts',
   'carrierCatalog.ts',
+  'loadingPatterns.ts',
 ];
 
 const LOCALES = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
