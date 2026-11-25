@@ -8187,3 +8187,17 @@ html[data-hud-effect="glow"]::before {
   .dm-message { max-width:96%; }
 }
 @media(max-height:550px) { .friends-layout { height:calc(100dvh - 110px); min-height:0; } }
+
+.bank-correction { margin:16px 0; overflow-wrap:anywhere; }
+.bank-correction-form { border:1px solid #d97706; border-radius:8px; padding:16px; margin:12px 0; }
+.bank-correction-form [role=note] { color:#fbbf24; font-size:13px; }
+.bank-correction-form > label { display:flex; flex-direction:column; gap:5px; margin:12px 0; font-size:13px; }
+.bank-correction-form input:not([type=checkbox]), .bank-correction-form select, .bank-correction-form textarea { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:8px; min-width:0; max-width:100%; }
+.bank-correction-form textarea { min-height:70px; resize:vertical; }
+.bank-correction-form small { display:block; color:var(--muted); }
+.bank-correction-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(70px,120px) auto; gap:8px; margin:8px 0; }
+.bank-correction-form > .bank-correction-confirm { flex-direction:row; align-items:flex-start; }
+.bank-correction-form > button { margin:4px 8px 4px 0; }
+.bank-correction details { margin-top:12px; font-size:12px; }
+.bank-correction [role=alert] { color:#fca5a5; }
+.bank-correction [role=status] { color:#86efac; }

@@ -13,6 +13,9 @@ export function CarrierBankPanel({ carrier }: { carrier: Pick<CarrierView, 'type
     <section className="ccd-panel" data-testid="squadron-bank">
       <h2>{t('fc.sectionBank')}</h2>
       <p style={{ color: '#9ca3af', fontSize: 12 }}>{t('fc.bankTrackedHint')}</p>
+      {cargo.baselineSource === 'BankReconciliation' && cargo.baselineAt && <p style={{ color: '#86efac', fontSize: 12 }}>
+        {t('bc.verifiedAt', { time: new Date(cargo.baselineAt).toLocaleString(locale) })}
+      </p>}
       {cargo.items.length ? (
         <div className="table-scroll"><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr>

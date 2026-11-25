@@ -12,11 +12,13 @@ const entry = await bundleFile({
     'next/navigation': `export const useParams=()=>({id:'7'});`,
     '@/lib/supabaseClient': `
       export const authFetch=(...args)=>globalThis.fetch(...args);
+      const listeners=new Set();
       export const supabase={auth:{
         getUser:async()=>({data:{user:globalThis.__bankUiUser}}),
         onAuthStateChange:(callback)=>{
-          globalThis.__bankAuthCallback=callback;
-          return {data:{subscription:{unsubscribe(){globalThis.__bankAuthCallback=null;}}}};
+          listeners.add(callback);
+          globalThis.__bankAuthCallback=(event)=>{for(const listener of [...listeners])listener(event)};
+          return {data:{subscription:{unsubscribe(){listeners.delete(callback);}}}};
         }
       }};
     `,
@@ -49,6 +51,7 @@ async function render({ page = false, member = true, url = 'https://example.test
   globalThis.clearInterval = id => intervals.delete(id);
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), init });
+    if (String(url).endsWith('/bank/correction')) return response({ok:true,canCorrect:false});
     if (String(url).endsWith('/bank')) return api ? api(calls.filter(call => call.url.endsWith('/bank')).length) : response({ ok: true, carriers });
     return response({ squadron: { id: 7, name: 'Test Squadron', tag: 'TEST', color: '#e67e22', description: '', created_by: 'officer' },
       members: member ? [{ user_id: 'member', cmdr_name: 'Pilot', rank_name: 'Member' }] : [], ranks: [], projects: [] });
@@ -153,11 +156,11 @@ test('bank refreshes once per minute only while visible and clears stale goods o
     assert.equal(timer.ms, 60000);
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     await ui.act(async () => timer.callback());
-    assert.equal(ui.calls.length, 1);
+    assert.equal(ui.calls.filter(call=>call.url.endsWith('/bank')).length, 1);
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     await ui.act(async () => timer.callback());
     await ui.flush();
-    assert.equal(ui.calls.length, 2);
+    assert.equal(ui.calls.filter(call=>call.url.endsWith('/bank')).length, 2);
     assert.match(ui.text(), /только участникам/);
     assert.doesNotMatch(ui.text(), /Сталь/);
   } finally { await ui.close(); }
