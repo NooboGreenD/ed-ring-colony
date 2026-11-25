@@ -10,6 +10,7 @@
 
 export const carrierCardTranslations: Record<string, Record<string, string>> = {
   ru: {
+    'fc.cargoInconsistent': "Свежий общий тоннаж не совпадает со старым списком товаров. Поимённые остатки неизвестны, а не равны нулю. Откройте рынок авианосца с товарами на продажу и обновите учёт через Helper. Сделки других пилотов не появляются в журнале владельца.",
     'ccd.intro': 'Всё, что сайт знает об авианосце: где он стоит и у какого тела, куда прыгает, какие службы работают и как часто он прыгал за год. Груза и финансов здесь нет — это данные капитана.',
     'ccd.loading': 'Загрузка карточки авианосца',
     'ccd.loadingDetail': 'Система, службы и история прыжков собираются из учёта сайта и реестра EDDN.',
@@ -83,6 +84,7 @@ export const carrierCardTranslations: Record<string, Record<string, string>> = {
     'sysOv.carrierDecommission': 'списывается · ',
   },
   en: {
+    'fc.cargoInconsistent': "The latest hold total contradicts the old commodity list. Itemised stock is unknown, not zero. Open the carrier market with goods offered for sale and sync via Helper. Other pilots’ trades do not appear in the owner’s journal.",
     'ccd.intro': 'Everything the site knows about this carrier: where it is and which body it orbits, where it is jumping, which services work and how often it jumped during the year. No cargo or finances here — those belong to the captain.',
     'ccd.loading': 'Loading the carrier card',
     'ccd.loadingDetail': 'System, services and jump history are collected from the site registry and the EDDN feed.',
@@ -156,6 +158,7 @@ export const carrierCardTranslations: Record<string, Record<string, string>> = {
     'sysOv.carrierDecommission': 'decommissioning · ',
   },
   de: {
+    'fc.cargoInconsistent': "Die aktuelle Gesamtfracht widerspricht der alten Warenliste. Einzelbestände sind unbekannt, nicht null. Öffne den Trägermarkt mit Verkaufsangeboten und synchronisiere über Helper. Geschäfte anderer Piloten erscheinen nicht im Journal des Eigentümers.",
     'ccd.intro': 'Alles, was die Seite über diesen Träger weiß: wo er steht und an welchem Körper, wohin er springt, welche Dienste laufen und wie oft er im Jahr gesprungen ist. Keine Fracht und keine Finanzen — das gehört dem Kapitän.',
     'ccd.loading': 'Trägerkarte wird geladen',
     'ccd.loadingDetail': 'System, Dienste und Sprunghistorie stammen aus der Seite und dem EDDN-Feed.',
@@ -229,6 +232,7 @@ export const carrierCardTranslations: Record<string, Record<string, string>> = {
     'sysOv.carrierDecommission': 'wird abgewrackt · ',
   },
   it: {
+    'fc.cargoInconsistent': "Il totale recente della stiva contraddice il vecchio elenco merci. Le scorte per merce sono sconosciute, non zero. Apri il mercato della portaerei con merci in vendita e sincronizza tramite Helper. Gli scambi di altri piloti non appaiono nel diario del proprietario.",
     'ccd.intro': 'Tutto ciò che il sito sa del vettore: dove si trova e presso quale corpo, dove salta, quali servizi funzionano e quanto spesso ha saltato nell’anno. Niente carico né finanze: sono dati del capitano.',
     'ccd.loading': 'Caricamento della scheda del vettore',
     'ccd.loadingDetail': 'Sistema, servizi e cronologia dei salti provengono dal registro del sito e dal flusso EDDN.',
@@ -302,6 +306,7 @@ export const carrierCardTranslations: Record<string, Record<string, string>> = {
     'sysOv.carrierDecommission': 'in dismissione · ',
   },
   ko: {
+    'fc.cargoInconsistent': "최근 화물 총량이 이전 품목 목록과 일치하지 않습니다. 품목별 재고는 0이 아니라 미확인 상태입니다. 판매 물품이 있는 캐리어 시장을 열고 Helper로 동기화하세요. 다른 조종사의 거래는 소유자의 일지에 기록되지 않습니다.",
     'ccd.intro': '사이트가 아는 항공모함 정보: 위치와 궤도 천체, 점프 목적지, 작동 중인 서비스, 1년간 점프 횟수. 화물과 재무 정보는 없습니다 — 함장의 데이터입니다.',
     'ccd.loading': '항공모함 카드 불러오는 중',
     'ccd.loadingDetail': '시스템, 서비스, 점프 기록을 사이트 기록과 EDDN 피드에서 모읍니다.',
@@ -375,6 +380,7 @@ export const carrierCardTranslations: Record<string, Record<string, string>> = {
     'sysOv.carrierDecommission': '폐기 예정 · ',
   },
   zh: {
+    'fc.cargoInconsistent': "最新货舱总量与旧商品清单不符。各商品库存为未知，并非零。请打开设有出售商品的航母市场并通过 Helper 同步。其他飞行员的交易不会出现在船主日志中。",
     'ccd.intro': '本站已知的航母信息：位置与所在天体、跳跃目的地、可用服务以及一年内的跳跃次数。这里没有货物和财务信息——那属于舰长。',
     'ccd.loading': '正在加载航母档案',
     'ccd.loadingDetail': '系统、服务与跳跃历史来自本站登记与 EDDN 数据流。',
@@ -448,6 +454,7 @@ export const carrierCardTranslations: Record<string, Record<string, string>> = {
     'sysOv.carrierDecommission': '正在退役 · ',
   },
   ja: {
+    'fc.cargoInconsistent': "最新の貨物総量と以前の商品リストが一致しません。商品別在庫はゼロではなく不明です。販売商品がある空母市場を開き、Helper で同期してください。他のパイロットの取引は所有者のログに記録されません。",
     'ccd.intro': 'サイトが把握している母艦の情報：位置と周回する天体、ジャンプ先、稼働中のサービス、1年間のジャンプ回数。貨物や財務は含みません — 艦長のデータです。',
     'ccd.loading': '母艦カードを読み込み中',
     'ccd.loadingDetail': '星系・サービス・ジャンプ履歴はサイトの記録と EDDN から収集します。',

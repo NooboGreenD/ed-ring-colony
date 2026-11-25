@@ -162,6 +162,11 @@ export default function CarrierCard({ carrier, actions }: { carrier: CarrierView
         </Section>
       )}
 
+      {carrier.cargoInvalidatedAt && (
+        <Section title={t("fc.sectionCargo")}>
+          <p role="status" style={{color: MUTED}}>{t("fc.cargoInconsistent")}</p>
+        </Section>
+      )}
       {cargo && (
         <Section title={t(squadron ? "fc.sectionBank" : "fc.sectionCargo")} right={cargo.updatedAt ? <span style={{ fontSize: 11, color: DIM }}>{t("fc.cargoUpdated", { ago: relativeTime(t, cargo.updatedAt) })}</span> : null}>
           {squadron && <p style={{ color: MUTED, fontSize: 12 }}>{t('fc.bankTrackedHint')}</p>}

@@ -301,14 +301,14 @@ class SquadronCargoTests(unittest.TestCase):
         self.env['threading'].Thread.assert_not_called()
         self.assertEqual(self.rows()['steel']['amount'], 900)
 
-    def test_personal_carrier_and_new_station_never_receive_squadron_snapshot(self):
+    def test_personal_market_updates_only_its_addressed_hold_not_squadron_stock(self):
         self.feed({**DOCK, 'MarketID': OWN, 'StationName': 'OWN-001', 'StationServices': ['dock']})
         self.app.carrier.handle({'event': 'CargoTransfer', 'MarketID': OWN,
                                  'timestamp': '2026-03-01T10:01:00Z',
                                  'Transfers': [{'Type': 'steel', 'Count': 40, 'Direction': 'tocarrier'}]})
         event = {**market(steel=900), 'MarketID': OWN, 'StationName': 'OWN-001'}
         self.app._on_station_inventory('market', event, {'market_id': OWN})
-        self.assertEqual(self.rows()['steel']['amount'], 40)
+        self.assertEqual(self.rows()['steel']['amount'], 900)
         self.assertEqual(self.rows()['steel']['delivered'], 40)
         self.assertEqual(self.app.carrier.states()[SQ].commodities['steel'], 100)
 

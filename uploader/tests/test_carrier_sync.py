@@ -230,7 +230,8 @@ class TrackerTests(unittest.TestCase):
             "services": [{"role": "Refuel", "label": "Заправка", "activated": True, "enabled": True},
                          {"role": "Shipyard", "label": "Верфь", "activated": False, "enabled": False}],
             "space": {"cargo": 800, "freeSpace": 17000, "totalCapacity": 25000, "statsAt": "2026-03-01T09:00:00.000Z"},
-            "cargo": {"items": [{"commodity": "steel", "name": "Steel", "quantity": 700},
+            "cargo": {"updatedAt": "2026-03-01T09:00:00Z", "baselineAt": "2026-03-01T09:00:00Z",
+                      "items": [{"commodity": "steel", "name": "Steel", "quantity": 700},
                                 {"commodity": "titanium", "name": "Titanium", "quantity": 100}]},
         }
         # Пока по носителю есть неотправленные события, груз с сайта не подставляем.

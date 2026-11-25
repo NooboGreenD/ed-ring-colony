@@ -655,6 +655,8 @@ export interface CarrierView {
     baselineSource: string | null;
     updatedAt: string | null;
   } | null;
+  /** A newer personal CarrierStats disproved the itemised estimate. Not zero stock. */
+  cargoInvalidatedAt?: string;
   orders: Array<{ commodity: string; name: string; purchase: number | null; sale: number | null; price: number | null; blackMarket: boolean; at: string | null }>;
   market: { observedAt: string; items: CarrierMarketItem[] } | null;
   updatedAt: string | null;
@@ -740,6 +742,19 @@ export function buildCarrierView(
 
   const cargoTons = usage ? asNumberOrNull(usage.cargo) : null;
   const freeSpace = usage ? asNumberOrNull(usage.free_space) : null;
+  const statsAt = asIso(row.stats_at);
+  // CarrierStats gives a total, not a per-commodity distribution. If it is
+  // strictly newer than EVERY tracked observation and disproves the sum, do
+  // not publish old deliveries as current stock or scale guesses to that total.
+  // Never use updated_at here: replaying old journals changes ingestion time.
+  const cargoRows = (options.cargoRows ?? []).filter(item => Number(item.quantity) > 0);
+  const disprovedCargo = showCargo && row.carrier_type !== 'SquadronCarrier'
+    && cargoTons != null && cargoTons >= 0 && !!statsAt
+    && cargoItems.reduce((sum, item) => sum + item.quantity, 0) > cargoTons
+    && cargoRows.length > 0 && cargoRows.every(item => {
+      const observedAt = asIso(item.observed_at ?? item.baseline_at ?? row.cargo_baseline_at);
+      return observedAt != null && Date.parse(observedAt) < Date.parse(statsAt!);
+    });
 
   return {
     carrierId: String(row.carrier_id),
@@ -790,7 +805,8 @@ export function buildCarrierView(
       statsAt: asIso(row.stats_at),
     } : null,
     finance: options.showFinance && isRecord(row.finance) ? row.finance as Record<string, number> : null,
-    cargo: showCargo ? {
+    ...(disprovedCargo ? { cargoInvalidatedAt: statsAt! } : {}),
+    cargo: showCargo && !disprovedCargo ? {
       items: cargoItems,
       observations: Object.fromEntries((options.cargoRows ?? []).flatMap((item) => {
         const at = asIso(item.observed_at);
