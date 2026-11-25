@@ -488,3 +488,144 @@ test('squadron floor never adds a late delivery already covered by a newer inven
   await apply([delta('2026-03-06T12:01:00Z', 'steel', 1320, hash(), id)], MEMBER);
   assert.deepEqual(await cargo(id), { steel: 1820, water: 100 });
 });
+
+const reconciliationMigration = readFileSync(new URL('../../supabase/migrations/20261126090000_squadron_bank_reconciliation.sql', import.meta.url), 'utf8');
+const observedBank = [
+  { commodity: 'tritium', qty: 1034, name_localised: 'Тритий' },
+  { commodity: 'thargoidtitandrivecomponent', qty: 4 },
+  { commodity: 'drones', qty: 2 },
+];
+async function reconcileBank(id, at, items = observedBank, callsign = 'DNHG', reason = 'Complete inventory verified in game by operator') {
+  return (await db.query('SELECT public.reconcile_squadron_bank($1::bigint,$2,$3::timestamptz,$4::jsonb,$5) AS result',
+    [id, callsign, at, JSON.stringify(items), reason])).rows[0].result;
+}
+async function bankFixture(id) {
+  await apply([{ op: 'identity', carrier_id: id, carrier_type: 'SquadronCarrier', callsign: 'DNHG', at: '2026-03-10T09:00:00Z' }], MEMBER);
+  await db.query('UPDATE fleet_carriers SET squadron_id=1 WHERE carrier_id=$1', [id]);
+}
+
+test('reconciliation migration is repeatable and does not change inventory without an explicit call', async () => {
+  const before = (await db.query('SELECT * FROM fleet_carrier_cargo ORDER BY carrier_id,commodity')).rows;
+  await db.exec(reconciliationMigration);
+  await db.exec(reconciliationMigration);
+  assert.deepEqual((await db.query('SELECT * FROM fleet_carrier_cargo ORDER BY carrier_id,commodity')).rows, before);
+  for (const role of ['anon', 'authenticated']) {
+    assert.equal((await db.query("SELECT has_function_privilege($1,'public.reconcile_squadron_bank(bigint,text,timestamptz,jsonb,text)','EXECUTE') AS allowed", [role])).rows[0].allowed, false);
+    assert.equal((await db.query("SELECT has_table_privilege($1,'public.squadron_bank_reconciliations','SELECT') AS allowed", [role])).rows[0].allowed, false);
+  }
+  assert.equal((await db.query("SELECT has_function_privilege('service_role','public.reconcile_squadron_bank(bigint,text,timestamptz,jsonb,text)','EXECUTE') AS allowed")).rows[0].allowed, true);
+});
+
+test('complete bank reconciliation replaces stale construction goods and retains all event hashes and an audit snapshot', async () => {
+  const id='3713477901';await bankFixture(id);
+  // Reduced stock-only reproduction of the user's site/in-game mismatch.
+  // No personal journals or guessed withdrawals are required for reconciliation.
+  const stale = { aluminium:13736, steel:13334, titanium:11173, cmmcomposite:10909,
+    liquidoxygen:8961, water:3706, polymers:2372, ceramiccomposites:2085, copper:969,
+    insulatingmembrane:695, nonlethalweapons:461, semiconductors:273, fruitandvegetables:269,
+    computercomponents:250, structuralregulators:232, superconductors:225, foodcartridges:224,
+    tritium:107, emergencypowercells:100, powergenerators:96, waterpurifiers:76,
+    diagnosticmedequipment:66, microcontrollers:62 };
+  await apply(Object.entries(stale).map(([commodity, qty]) =>
+    delta('2026-03-10T10:00:00Z', commodity, qty, hash(), id)), MEMBER);
+  assert.ok(Object.values(await cargo(id)).reduce((sum, qty) => sum + qty, 0) > 60000);
+  const before = (await db.query('SELECT * FROM fleet_carrier_events WHERE carrier_id=$1 ORDER BY id',[id])).rows;
+  const result=await reconcileBank(id,'2026-03-10T11:00:00Z');assert.equal(result.ok,true);assert.equal(result.observed_total,1040);
+  assert.deepEqual(await cargo(id),{drones:2,thargoidtitandrivecomponent:4,tritium:1034});
+  assert.deepEqual((await db.query('SELECT * FROM fleet_carrier_events WHERE carrier_id=$1 ORDER BY id',[id])).rows,before);
+  const audit=(await db.query('SELECT * FROM squadron_bank_reconciliations WHERE carrier_id=$1',[id])).rows[0];
+  assert.deepEqual(audit.items,observedBank);assert.equal(audit.previous_cargo.length,Object.keys(stale).length);
+  assert.equal(audit.previous_cargo.find(row=>row.commodity==='steel').quantity,13334);
+  assert.equal((await carrier(id)).cargo_baseline_source,'BankReconciliation');
+});
+
+test('reconciliation preserves later transfers, excludes late old uploads including unseen goods, and is retry-safe', async () => {
+  const id='3713477902';await bankFixture(id);
+  const earlier=delta('2026-03-10T10:00:00Z','steel',1000,hash(),id);
+  await apply([earlier,delta('2026-03-10T12:00:00Z','tritium',-34,hash(),id),
+    delta('2026-03-10T12:01:00Z','steel',25,hash(),id)],MEMBER);
+  await reconcileBank(id,'2026-03-10T11:00:00Z');
+  assert.deepEqual(await cargo(id),{drones:2,steel:25,thargoidtitandrivecomponent:4,tritium:1000});
+  // Both a duplicate and a previously unseen OLD operation cannot restore ghosts.
+  const retry=await apply([earlier,delta('2026-03-10T10:30:00Z','water',5000,hash(),id)],MEMBER);
+  assert.equal(retry.duplicates,1);assert.deepEqual(await cargo(id),{drones:2,steel:25,thargoidtitandrivecomponent:4,tritium:1000});
+  await apply([delta('2026-03-10T12:02:00Z','water',10,hash(),id)],MEMBER);
+  const before=await cargo(id);const again=await reconcileBank(id,'2026-03-10T11:00:00Z');assert.equal(again.duplicate,true);
+  assert.deepEqual(await cargo(id),before);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM squadron_bank_reconciliations WHERE carrier_id=$1',[id])).rows[0].n,1);
+  await assert.rejects(reconcileBank(id,'2026-03-10T11:00:00Z',[{commodity:'tritium',qty:999}]));
+  assert.deepEqual(await cargo(id),before);
+});
+
+test('reconciliation fails closed for wrong carrier identity, personal/unbound carriers, missing/future/stale time and malformed inventory', async () => {
+  const id='3713477903';await bankFixture(id);
+  const at='2026-03-10T11:00:00Z';
+  for(const items of [null,{},[{commodity:'steel',qty:1.5}],[{commodity:'steel',qty:'1'}],
+    [{commodity:'$Steel_Name;',qty:1}],[{commodity:'steel',qty:-1}],[{commodity:'steel',qty:60001}],
+    [{commodity:'steel',qty:40000},{commodity:'water',qty:30000}],
+    [{commodity:'steel',qty:1},{commodity:'steel',qty:2}],[{commodity:'steel'}],Array(513).fill({commodity:'steel',qty:1})]){
+    await assert.rejects(reconcileBank(id,at,items));
+  }
+  await assert.rejects(reconcileBank(id,at,observedBank,'WRONG'));
+  await assert.rejects(reconcileBank(id,at,observedBank,'DNHG',''));
+  await assert.rejects(reconcileBank(id,null));
+  await assert.rejects(reconcileBank(id,'infinity'));
+  await assert.rejects(reconcileBank(id,new Date(Date.now()+3600000).toISOString()));
+  await assert.rejects(reconcileBank('3999999999',at));
+  await assert.rejects(reconcileBank(FC,at,observedBank,(await carrier(FC)).callsign));
+  await db.query('UPDATE fleet_carriers SET squadron_id=NULL WHERE carrier_id=$1',[id]);
+  await assert.rejects(reconcileBank(id,at));
+  await db.query('UPDATE fleet_carriers SET squadron_id=1 WHERE carrier_id=$1',[id]);
+  assert.deepEqual(await cargo(id),{});
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM squadron_bank_reconciliations WHERE carrier_id=$1',[id])).rows[0].n,0);
+  await apply([{op:'baseline',carrier_id:id,at:'2026-03-10T12:00:00Z',source_event:'Market',full:false,items:[{commodity:'steel',qty:10}]}],MEMBER);
+  await assert.rejects(reconcileBank(id,at));assert.deepEqual(await cargo(id),{steel:10});
+});
+
+test('an explicitly empty full bank observation clears old goods but does not alter another carrier or market/orders/finance', async () => {
+  const id='3713477904';await bankFixture(id);
+  await apply([delta('2026-03-10T10:00:00Z','steel',2000,hash(),id)],MEMBER);
+  await db.query(`UPDATE fleet_carriers SET trade_orders='{"steel":{"purchase":123}}'::jsonb,finance='{"balance":999}'::jsonb WHERE carrier_id=$1`,[id]);
+  const other=await cargo(FC);const before=await carrier(id);
+  await reconcileBank(id,'2026-03-10T11:00:00Z',[]);
+  assert.deepEqual(await cargo(id),{});assert.deepEqual(await cargo(FC),other);
+  const after=await carrier(id);assert.deepEqual(after.trade_orders,before.trade_orders);assert.deepEqual(after.finance,before.finance);
+});
+
+test('only the operator/service role can execute reconciliation; exact retry after a newer reconciliation is still a no-op', async () => {
+  const id='3713477905';await bankFixture(id);
+  for(const role of ['anon','authenticated']){
+    await db.exec(`SET ROLE ${role}`);
+    try { await assert.rejects(reconcileBank(id,'2026-03-10T11:00:00Z'), /permission denied/); }
+    finally { await db.exec('RESET ROLE'); }
+  }
+  await db.exec('SET ROLE service_role');
+  try { assert.equal((await reconcileBank(id,'2026-03-10T11:00:00Z')).ok,true); }
+  finally { await db.exec('RESET ROLE'); }
+  await reconcileBank(id,'2026-03-10T12:00:00Z',[{commodity:'tritium',qty:900}]);
+  assert.deepEqual(await cargo(id),{tritium:900});
+  assert.equal((await reconcileBank(id,'2026-03-10T11:00:00Z')).duplicate,true);
+  assert.deepEqual(await cargo(id),{tritium:900});
+  const actor=(await db.query('SELECT recorded_by FROM squadron_bank_reconciliations WHERE carrier_id=$1 ORDER BY observed_at LIMIT 1',[id])).rows[0].recorded_by;
+  assert.equal(actor,'service_role');
+});
+
+test('Brewers Port operator script defaults to rollback, requires a timestamp, and reconciles the explicitly supplied three-item inventory', async () => {
+  const id='3713477906';await bankFixture(id);
+  await apply([delta('2026-03-10T10:00:00Z','steel',13334,hash(),id)],MEMBER);
+  const before=await cargo(id);
+  const rawTemplate=readFileSync(new URL('../reconcile-brewers-port-bank.sql',import.meta.url),'utf8');
+  assert.match(rawTemplate,/3713477376/);
+  const template=rawTemplate.replaceAll('3713477376',id);
+  // Running the unchecked template cannot silently apply a stale observation.
+  await assert.rejects(db.exec(template),/observation time/);
+  await db.exec('ROLLBACK');assert.deepEqual(await cargo(id),before);
+  const filled=template.replace('NULL::timestamptz',"'2026-03-10T11:00:00Z'::timestamptz");
+  await db.exec(filled);assert.deepEqual(await cargo(id),before); // default dry-run
+  await db.exec(filled.replace(/ROLLBACK;\s*$/, 'COMMIT;'));
+  assert.deepEqual(await cargo(id),{drones:2,thargoidtitandrivecomponent:4,tritium:1034});
+  // The read-only diagnosis is valid against the real ledger schema.
+  const snapshot=(await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1 ORDER BY commodity',[id])).rows;
+  await db.exec(readFileSync(new URL('../diagnose-squadron-bank.sql',import.meta.url),'utf8').replaceAll('3713477376',id));
+  assert.deepEqual((await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1 ORDER BY commodity',[id])).rows,snapshot);
+});
