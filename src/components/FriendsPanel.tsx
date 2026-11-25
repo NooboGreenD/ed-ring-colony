@@ -1,18 +1,18 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
+import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 import { useFriends } from "@/hooks/useFriends";
 import { supabase } from "@/lib/supabaseClient";
-import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 import Avatar from "@/components/Avatar";
+import DirectConversation from "@/components/DirectConversation";
 import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   IconSearch,
   IconCheck,
   IconError,
   IconTrash,
-  IconSend,
   IconMessage
 } from "@/components/Icons";
 
@@ -30,7 +30,6 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
   const [searching, setSearching] = useState(false);
   const [chatPeer, setChatPeer] = useState<string | null>(null);
   const [chatPeerName, setChatPeerName] = useState<string>("");
-  const [chatPeerAvatar, setChatPeerAvatar] = useState<string | null>(null);
   const [tab, setTab] = useState<"friends" | "requests">("friends");
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
@@ -73,15 +72,14 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
     const fid = friend.friend_id || null;
     setChatPeer(fid);
     setChatPeerName(friend.friend_name || "Unknown");
-    setChatPeerAvatar(friend.friend_avatar || null);
     // Сбрасываем badge непрочитанных для выбранного друга
     setUnreadCounts((prev) => ({ ...prev, [fid]: 0 }));
   };
 
   return (
-    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", minHeight: "100vh" }}>
+    <div className="friends-layout">
       {/* Левая панель: список друзей */}
-      <div style={{ flex: "0 0 280px", minWidth: 240, minHeight: "100vh" }}>
+      <div className="friends-sidebar">
         <div className="tabs" style={{ marginBottom: 12 }}>
           <button className={tab === "friends" ? "tab tab-active" : "tab"} onClick={() => setTab("friends")}>
             {t('frnd.tabFriends', { count: friends.length })}
@@ -240,7 +238,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
       </div>
 
       {/* Правая панель: чат */}
-      <div style={{ flex: 1, minWidth: 280, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+      <div className="friends-chat">
         {!chatPeer && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", color: "#9ca3af" }}>
             <div style={{ fontSize: 48, marginBottom: 16, display: "flex", justifyContent: "center" }}><IconMessage size={48} color="#9ca3af" /></div>
@@ -248,234 +246,16 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
           </div>
         )}
         {chatPeer && (
-          <DirectChat
+          <DirectConversation
+            key={`${userId}:${chatPeer}`}
             userId={userId}
             peerId={chatPeer}
             peerName={chatPeerName}
-            peerAvatar={chatPeerAvatar}
             myName={myName}
             myAvatar={myAvatar}
             onUnreadReset={(pid) => setUnreadCounts((prev) => ({ ...prev, [pid]: 0 }))}
           />
         )}
-      </div>
-    </div>
-  );
-}
-
-// ========== Встроенный DirectChat для друзей ==========
-function DirectChat({
-  userId,
-  peerId,
-  peerName,
-  peerAvatar,
-  myName,
-  myAvatar,
-  onUnreadReset,
-}: {
-  userId: string;
-  peerId: string;
-  peerName: string;
-  peerAvatar: string | null;
-  myName: string;
-  myAvatar: string | null;
-  onUnreadReset: (peerId: string) => void;
-}) {
-  const { t, locale } = useI18n();
-  const [messages, setMessages] = useState<any[]>([]);
-  const [text, setText] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [messagesError, setMessagesError] = useState<string | null>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  const loadMessages = async () => {
-    if (!peerId) { setMessages([]); setLoading(false); setMessagesError(null); return; }
-    setLoading(true);
-    setMessagesError(null);
-    try {
-      const filter =
-        "and(sender_id.eq." +
-        userId +
-        ",recipient_id.eq." +
-        peerId +
-        ")," +
-        "and(sender_id.eq." +
-        peerId +
-        ",recipient_id.eq." +
-        userId +
-        ")";
-      const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .or(filter)
-        .order("created_at", { ascending: true })
-        .limit(300);
-      if (error) throw error;
-      setMessages(data ?? []);
-      // Помечаем входящие прочитанными
-      await supabase
-        .from("messages")
-        .update({ read_at: new Date().toISOString() })
-        .eq("recipient_id", userId)
-        .eq("sender_id", peerId)
-        .is("read_at", null);
-      // Сбрасываем badge непрочитанных для этого друга
-      onUnreadReset(peerId);
-    } catch (err: any) {
-      setMessagesError(err.message || 'Не удалось загрузить сообщения');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadMessages();
-  }, [peerId]);
-
-  // Realtime
-  useEffect(() => {
-    if (!peerId) return;
-    const channel = supabase
-      .channel(`dm_friend_${peerId}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages" },
-        (p) => {
-          const m: any = p.new;
-          const inDialog =
-            (m.sender_id === userId && m.recipient_id === peerId) ||
-            (m.sender_id === peerId && m.recipient_id === userId);
-          if (inDialog) {
-            setMessages((prev) =>
-              prev.some((x) => x.id === m.id) ? prev : [...prev, m]
-            );
-            if (m.recipient_id === userId) {
-              supabase
-                .from("messages")
-                .update({ read_at: new Date().toISOString() })
-                .eq("id", m.id);
-            }
-          }
-        }
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          setMessagesError(null);
-        } else if (status === 'CHANNEL_ERROR') {
-          setMessagesError('Ошибка подписки на обновления чата');
-        }
-      });
-    return () => { supabase.removeChannel(channel); };
-  }, [peerId, userId]);
-
-  useEffect(() => {
-    boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
-
-  const send = async () => {
-    const content = text.trim();
-    if (!content || !peerId) return;
-    setText("");
-    const { error } = await supabase.from("messages").insert({
-      sender_id: userId,
-      recipient_id: peerId,
-      author_name: myName,
-      avatar_url: myAvatar,
-      content,
-    });
-    if (error) alert(error.message);
-  };
-
-  const remove = async (id: number) => {
-    await supabase.from("messages").delete().eq("id", id);
-    setMessages((prev) => prev.filter((m) => m.id !== id));
-  };
-
-  const formatTime = (date: string) => {
-    return new Date(date).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Заголовок диалога */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#1a1c1e", borderRadius: "6px 6px 0 0", borderBottom: "1px solid #2d3033" }}>
-        <Avatar url={peerAvatar} name={peerName} size={32} />
-        <span style={{ fontWeight: 600, fontSize: 14 }}>{peerName}</span>
-        <Link href={`/cmdr/${encodeURIComponent(peerName)}`} style={{ marginLeft: "auto", fontSize: 11, color: "#e67e22" }}>
-          {t('frnd.profile')}
-        </Link>
-      </div>
-
-      {/* Сообщения */}
-      <div
-        ref={boxRef}
-        style={{
-          flex: 1, overflowY: "auto",
-          background: "#1a1c1e", border: "1px solid #2d3033", borderTop: "none", borderRadius: "0 0 6px 6px",
-          padding: "12px 16px", display: "flex", flexDirection: "column", gap: 10,
-        }}
-      >
-        {loading && messages.length === 0 && (
-          <div style={{ textAlign: "center", color: "#9ca3af", padding: 40, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-            {t('frnd.loading')}
-          </div>
-        )}
-        {messagesError && messages.length === 0 && !loading && (
-          <div style={{ textAlign: "center", color: "#fca5a5", padding: 40, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-            <div style={{ marginBottom: 10 }}>{messagesError}</div>
-            <button onClick={() => void loadMessages()} className="btn btn-cyan" style={{ padding: "6px 12px", fontSize: 11 }}>
-              {t('common.retry') || 'Повторить'}
-            </button>
-          </div>
-        )}
-        {messages.length === 0 && !loading && !messagesError && (
-          <div style={{ textAlign: "center", color: "#9ca3af", padding: 40, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-            {t('frnd.emptyChat')}
-          </div>
-        )}
-        {messages.map((m) => {
-          const isMe = m.sender_id === userId;
-          return (
-            <div key={m.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", flexDirection: isMe ? "row-reverse" : "row" }}>
-              <div style={{ maxWidth: "80%" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexDirection: isMe ? "row-reverse" : "row" }}>
-                  <PilotIdentity userId={m.sender_id} cmdrName={m.author_name || "Unknown"} avatarUrl={m.avatar_url} size={28} fontSize={11} showTier={false} />
-                  <span style={{ fontSize: 10, color: "#6b7280", fontFamily: "ui-monospace, monospace" }}>
-                    {formatTime(m.created_at)}
-                  </span>
-                  {isMe && (
-                    <button onClick={() => remove(m.id)} style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.3, padding: 0 }} title={t('frnd.deleteMessage')}>
-                      <IconTrash size={10} color="#e74c3c" />
-                    </button>
-                  )}
-                </div>
-                <div style={{
-                  background: isMe ? "rgba(230,126,34,0.12)" : "#25282b",
-                  border: `1px solid ${isMe ? "rgba(230,126,34,0.2)" : "#2d3033"}`,
-                  borderRadius: isMe ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
-                  padding: "8px 12px", fontSize: 13, lineHeight: 1.5, color: "var(--text)", wordBreak: "break-word",
-                }}>
-                  {m.content}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Ввод */}
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <input
-          value={text}
-          maxLength={1000}
-          placeholder={t('frnd.messagePlaceholder')}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          style={{ flex: 1, fontSize: 13, padding: "10px 14px" }}
-        />
-        <button onClick={send} disabled={!text.trim()} className="btn btn-cyan" style={{ padding: "10px 14px" }}>
-          <IconSend size={14} />
-        </button>
       </div>
     </div>
   );

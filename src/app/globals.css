@@ -8146,3 +8146,44 @@ html[data-hud-effect="glow"]::before {
   .cl-pager { justify-content: space-between; }
   .cl-page-btn.wide { flex: 1 1 40%; justify-content: center; }
 }
+
+/* Private conversations: only the message pane scrolls, not an expanding page. */
+.friends-layout { display:flex; gap:14px; height:clamp(320px, calc(100dvh - 230px), 800px); min-height:0; max-width:100%; }
+.friends-sidebar { flex:0 0 280px; min-width:0; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+.friends-chat { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; }
+.dm-conversation { display:flex; flex-direction:column; height:100%; min-height:0; min-width:0; border:1px solid var(--line); border-radius:8px; background:#1a1c1e; overflow:hidden; }
+.dm-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px; border-bottom:1px solid var(--line); flex-shrink:0; }
+.dm-header a { color:var(--orange); font-size:12px; }
+.dm-messages { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; overflow-wrap:anywhere; padding:14px; display:flex; flex-direction:column; gap:12px; }
+.dm-message { flex-shrink:0; align-self:flex-start; max-width:90%; min-width:0; background:#25282b; border:1px solid var(--line); border-radius:12px 12px 12px 2px; padding:10px 12px; }
+.dm-mine { align-self:flex-end; background:rgba(230,126,34,.10); border-color:rgba(230,126,34,.25); border-radius:12px 12px 2px 12px; }
+.dm-meta { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:10px; color:var(--muted); }
+.dm-meta button { margin-left:auto; }
+.dm-markdown { font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.dm-markdown p { white-space:pre-wrap; margin:4px 0; }
+.dm-markdown pre { max-width:100%; overflow:auto; background:#111315; padding:8px; border-radius:4px; }
+.dm-markdown :not(pre)>code { background:#111315; padding:1px 4px; }
+.dm-markdown ul, .dm-markdown ol { padding-left:20px; }
+.dm-markdown table { display:block; max-width:100%; overflow:auto; }
+.dm-markdown a { color:var(--orange); text-decoration:underline; }
+.dm-attachment { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+.dm-attachment button { overflow-wrap:anywhere; white-space:normal; text-align:left; font-size:12px; }
+.dm-attachment img { display:block; max-width:100%; max-height:280px; object-fit:contain; border-radius:4px; }
+.dm-composer { flex-shrink:0; padding:10px; border-top:1px solid var(--line); max-height:55%; overflow-y:auto; }
+.dm-composer [role=alert] { color:#fca5a5; margin-bottom:6px; }
+.dm-composer small { color:var(--muted); font-size:10px; }
+.dm-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin-bottom:6px; }
+.dm-toolbar button, .dm-file-label { padding:4px 9px; font-size:12px; cursor:pointer; border:1px solid var(--line); border-radius:4px; }
+.dm-file-label input { display:block; max-width:220px; font-size:10px; }
+.dm-input { display:flex; align-items:flex-end; gap:8px; }
+.dm-input textarea { flex:1; min-width:0; resize:vertical; min-height:52px; max-height:150px; padding:8px; font:inherit; font-size:13px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:4px; }
+.dm-files { list-style:none; padding:0; margin:4px 0; font-size:12px; overflow-wrap:anywhere; }
+@media(max-width:680px) {
+  .friends-layout { flex-direction:column; height:calc(100dvh - 170px); min-height:360px; }
+  .friends-sidebar { flex:0 0 130px; }
+  .friends-chat { flex:1; }
+  .dm-header { padding:8px; }
+  .dm-messages { padding:8px; }
+  .dm-message { max-width:96%; }
+}
+@media(max-height:550px) { .friends-layout { height:calc(100dvh - 110px); min-height:0; } }
