@@ -303,3 +303,22 @@ test('private cargo exposes observation times for both positive and depleted row
   assert.deepEqual(view.cargo.observations, { steel: '2026-03-01T10:02:00.000Z', water: '2026-03-01T10:03:00.000Z' });
   assert.equal(buildCarrierView(row, { relation: 'public', showFinance: false, cargoRows }).cargo, null);
 });
+
+test('personal hold: a newer aggregate disproves stale per-good stock, without guessing its distribution', () => {
+  const row={carrier_id:'3700005632',carrier_type:'FleetCarrier',stats_at:'2026-03-01T11:00:00Z',
+    cargo_updated_at:'2026-03-01T12:00:00Z',space_usage:{cargo:2,free_space:24998,total_capacity:25000}};
+  const cargoRows=[{commodity:'steel',quantity:1301,observed_at:'2026-03-01T10:00:00Z'},
+    {commodity:'aluminium',quantity:501,observed_at:'2026-03-01T10:00:00Z'}];
+  const view=buildCarrierView(row,{relation:'own',showFinance:false,cargoRows});
+  assert.equal(view.cargo,null);assert.equal(view.cargoInvalidatedAt,'2026-03-01T11:00:00.000Z');
+  const pub=buildCarrierView(row,{relation:'public',showFinance:false,cargoRows});
+  assert.equal(pub.cargo,null);assert.equal(pub.cargoInvalidatedAt,undefined);
+  // An old journal uploaded today isn't a current inventory observation.
+  assert.ok(Date.parse(row.cargo_updated_at)>Date.parse(row.stats_at));
+  for (const change of [{observed_at:'2026-03-01T11:01:00Z'},{observed_at:'2026-03-01T11:00:00Z'}]) {
+    const fresh=buildCarrierView(row,{relation:'own',showFinance:false,cargoRows:cargoRows.map(item=>({...item,...change}))});
+    assert.ok(fresh.cargo);assert.equal(fresh.cargoInvalidatedAt,undefined);
+  }
+  const squad=buildCarrierView({...row,carrier_type:'SquadronCarrier'},{relation:'squadron',showFinance:false,cargoRows});
+  assert.equal(squad.cargo.trackedTotal,1802); // no change to squadron bank semantics
+});

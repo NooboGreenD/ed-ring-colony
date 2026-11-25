@@ -229,7 +229,7 @@ class CarrierState:
         self.server_at: float = 0.0
         # Откуда последний «чистый» снимок груза: "server" или "raven".
         self.cargo_origin: str = ""
-        # Observation times for local squadron-bank changes and market rows.
+        # Observation times for local transfers/trades and partial market rows.
         # A server response's arrival time is NOT proof its cargo is current.
         self.commodity_versions: Dict[str, float] = {}
         self.cargo_observations: Dict[str, float] = {}
@@ -454,7 +454,7 @@ class CarrierState:
         fresher = max(self.remote_at, self.delta_at)
         observed_at = max(self.cargo_snapshot_at, max(self.commodity_versions.values(), default=0),
                           max(self.cargo_observations.values(), default=0))
-        if self.kind == "squadron" and observed_at > self.stats_at:
+        if (self.kind == "squadron" or self.cargo_origin in ("market", "server")) and observed_at > self.stats_at:
             # A market/ledger snapshot is partial, so it supplies a lower bound,
             # not an invented exact total. Retain any still-unidentified cargo.
             if total > stored:
@@ -1006,8 +1006,10 @@ class CarrierTracker:
         stamp = float(when if when is not None else time.time())
         # A late bank event still counts as this commander's delivery, but its
         # stock delta is already included in a newer market/full snapshot.
-        included = (self.state.kind == "squadron" and stamp <= max(
-            self.state.cargo_observations.get(key, 0), self.state.cargo_snapshot_at))
+        observed = max(self.state.cargo_observations.get(key, 0), self.state.cargo_snapshot_at)
+        # Personal MarketBuy/Sell may follow opening Market in the SAME second.
+        # Do not silently discard that later live trade on coarse timestamps.
+        included = stamp <= observed if self.state.kind == "squadron" else stamp < observed
         if not included:
             current = int(self.state.commodities.get(key, 0) or 0)
             self.state.commodities[key] = max(0, current + delta)
@@ -1028,8 +1030,7 @@ class CarrierTracker:
             return
         self.state.remote_seen = False
         self.state.delta_at = max(self.state.delta_at, stamp)
-        if self.state.kind == "squadron":
-            self.state.commodity_versions[key] = stamp
+        self.state.commodity_versions[key] = max(self.state.commodity_versions.get(key, 0), stamp)
         if self.state.reconciled == "emptied":
             # Трюм был подтверждённо пуст, и всё, что в нём теперь есть, мы
             # видели своими глазами: это уже не «оценка», а точный учёт.
@@ -1047,16 +1048,17 @@ class CarrierTracker:
             0, int(self.state.stored) - self.state.tracked_total) if self.state.stats_seen else 0
 
     def merge_market(self, event: Mapping[str, Any], cargo: Mapping[str, Any], market_id=None) -> bool:
-        """Apply a current squadron carrier's *partial* market stock snapshot.
+        """Apply a current carrier's *partial* market stock snapshot.
 
         Missing / buy-order rows are not zero stock. Never infer personal
         deliveries from a snapshot. Historical reports and other docks cannot
-        change the active hold. Personal carrier accounting is unchanged.
+        change the active hold. This also repairs personal carriers after trades
+        by other commanders (their MarketBuy is absent from the owner's log).
         """
         state = self.state
         if not isinstance(event, Mapping) or not isinstance(cargo, Mapping):
             return False
-        if (state.kind != "squadron" or not state.at_carrier
+        if (not state.at_carrier
                 or _as_int(market_id or event.get("MarketID")) != state.market_id
                 or (event.get("MarketID") is not None and _as_int(event.get("MarketID")) != state.market_id)
                 or str(event.get("StarSystem") or "") != state.system_name
@@ -1066,8 +1068,9 @@ class CarrierTracker:
         if (not stamp or stamp > time.time() + 300
                 or stamp < max(state.cargo_snapshot_at, state.docked_at, state.stats_at)):
             return False
-        # An inactive market order does not observe bank stock. Keep a zero
-        # only when this snapshot explicitly identifies a sale/Producer row.
+        # An inactive market order does not observe squadron-bank stock.
+        # Squadron zero needs an explicit Producer row; keep the existing
+        # personal-carrier market conversion rules for inactive rows.
         observed_sale = {canonical_commodity(item.get("Name")) for item in event.get("Items") or []
                          if isinstance(item, Mapping) and item.get("Producer") is True}
         changed = False
@@ -1075,7 +1078,7 @@ class CarrierTracker:
             key = canonical_commodity(raw)
             if not key or isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
                 continue
-            if amount == 0 and key not in observed_sale:
+            if state.kind == "squadron" and amount == 0 and key not in observed_sale:
                 continue
             if stamp <= max(state.commodity_versions.get(key, 0), state.cargo_observations.get(key, 0)):
                 continue
@@ -1148,7 +1151,11 @@ class CarrierTracker:
         state = self.state if market_id in (None, 0) else self._state_for(market_id)
         if state is None:
             return False
-        if state.kind == "squadron" and state.commodity_versions:
+        if ((state.commodity_versions and state.kind == "squadron") or
+                (state.cargo_origin in ("market", "server") and
+                 (state.commodity_versions or state.cargo_observations or state.cargo_snapshot_at))):
+            # An unversioned Raven reply cannot acknowledge a newer observed
+            # market row or an unsynchronised trade on a personal carrier either.
             return False
         if not merged:
             if not allow_empty:
@@ -1234,7 +1241,7 @@ class CarrierTracker:
         space = view.get("space") if isinstance(view.get("space"), Mapping) else None
         if space and space.get("statsAt") and space.get("cargo") is not None:
             stats_at = _iso_epoch(space.get("statsAt"))
-            local_at = max(state.commodity_versions.values(), default=0) if state.kind == "squadron" else 0
+            local_at = max(state.commodity_versions.values(), default=0)
             if stats_at and stats_at > state.stats_at and stats_at >= local_at:
                 state.stored = _as_int(space.get("cargo"))
                 state.free = _as_int(space.get("freeSpace"))
@@ -1244,10 +1251,23 @@ class CarrierTracker:
                 state.stats_at = stats_at
                 state.stored_estimated = False
 
+        invalidated_at = _iso_epoch(view.get("cargoInvalidatedAt"))
+        if (merge_cargo and invalidated_at and invalidated_at >= max(
+                state.delta_at, state.cargo_snapshot_at,
+                max(state.commodity_versions.values(), default=0),
+                max(state.cargo_observations.values(), default=0))):
+            state.clear_cargo("dropped")
+            state.remote_cargo = {}
+            state.commodity_versions = {}
+            state.cargo_observations = {}
+            state.cargo_snapshot_at = invalidated_at
+            state.remote_seen = False
+            state.cargo_origin = "server"
+
         cargo = view.get("cargo") if isinstance(view.get("cargo"), Mapping) else None
         cargo_at = _iso_epoch(cargo.get("updatedAt")) if cargo else 0
         if (cargo is not None and merge_cargo
-                and (state.kind != "squadron" or cargo_at >= state.cargo_written_at)):
+                and cargo_at >= state.cargo_written_at):
             items = {}
             for item in cargo.get("items") or []:
                 if not isinstance(item, Mapping):
@@ -1258,26 +1278,32 @@ class CarrierTracker:
                     items[key] = amount
                     if item.get("name"):
                         state.names[key] = str(item["name"])
-            protected = set()
-            if state.kind == "squadron":
-                observations = cargo.get("observations")
-                observations = observations if isinstance(observations, Mapping) else {}
-                baseline_at = _iso_epoch(cargo.get("baselineAt"))
-                protected = {key for key, stamp in state.commodity_versions.items()
-                             if stamp > max(baseline_at, _iso_epoch(observations.get(key)))}
-                for key in protected:
-                    if key in state.commodities:
-                        items[key] = state.commodities[key]
-                    else:
-                        items.pop(key, None)  # preserve an explicit local depletion
-                state.commodity_versions = {key: stamp for key, stamp in state.commodity_versions.items()
-                                            if key in protected}
-                for key, value in observations.items():
-                    key = canonical_commodity(key)
-                    if key and key not in protected:
-                        state.cargo_observations[key] = max(state.cargo_observations.get(key, 0), _iso_epoch(value))
-                state.cargo_snapshot_at = max(state.cargo_snapshot_at, baseline_at)
-                state.cargo_written_at = max(state.cargo_written_at, cargo_at)
+            observations = cargo.get("observations")
+            observations = observations if isinstance(observations, Mapping) else {}
+            baseline_at = _iso_epoch(cargo.get("baselineAt"))
+            candidates = set(items) | set(state.commodity_versions) | set(state.commodities)
+
+            def newer_local(key):
+                local = max(state.commodity_versions.get(key, 0), state.cargo_snapshot_at)
+                remote = max(baseline_at, _iso_epoch(observations.get(key)))
+                # Same-second personal trades cannot be acknowledged by a
+                # coarse snapshot timestamp alone. Wait for a newer observation.
+                return local > remote or (state.kind != "squadron" and local > 0 and local == remote)
+
+            protected = {key for key in candidates if newer_local(key)}
+            for key in protected:
+                if key in state.commodities:
+                    items[key] = state.commodities[key]
+                else:
+                    items.pop(key, None)  # preserve an explicit local depletion
+            state.commodity_versions = {key: stamp for key, stamp in state.commodity_versions.items()
+                                        if key in protected}
+            for key, value in observations.items():
+                key = canonical_commodity(key)
+                if key and key not in protected:
+                    state.cargo_observations[key] = max(state.cargo_observations.get(key, 0), _iso_epoch(value))
+            state.cargo_snapshot_at = max(state.cargo_snapshot_at, baseline_at)
+            state.cargo_written_at = max(state.cargo_written_at, cargo_at)
             state.commodities = dict(items)
             state.remote_cargo = dict(items)
             state.remote_at = time.time()

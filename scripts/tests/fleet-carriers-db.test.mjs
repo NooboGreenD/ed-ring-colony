@@ -678,3 +678,44 @@ test('SQL independently rejects ordinary/revoked/foreign-rank officers, nonmembe
  assert.deepEqual(await cargo(id),before);
  assert.equal((await db.query('SELECT count(*)::int AS n FROM squadron_bank_reconciliations WHERE carrier_id=$1',[id])).rows[0].n,0);
 });
+
+test('personal market stock: stale deliveries are unknown after fresh Stats; snapshot repairs website and LOADING to 1t per good', async () => {
+  const { buildCarrierView }=await import('../../src/lib/fleetCarriers.ts');
+  const { loadingProgress }=await import('../../src/lib/architect/loadingPatterns.ts');
+  const id='3708000088';
+  const plan={name:'Two goods',visibility:'private',buildings:[{installationId:'no_truss',count:1,primary:false}],
+    carriers:[{carrierId:id,name:'Personal',capacity:25000}],allocations:{[id]:{steel:200,aluminium:100}}};
+  async function project() {
+    const row=await carrier(id);
+    const rows=(await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1',[id])).rows;
+    const view=buildCarrierView(row,{relation:'own',showFinance:false,cargoRows:rows});
+    const progress=loadingProgress(plan,new Map(view.cargo?[[id,view.cargo]]:[]));
+    return {view,progress};
+  }
+  await apply([{op:'baseline',carrier_id:id,at:'2026-03-04T10:00:00Z',full:true,source_event:'test',
+    items:[{commodity:'steel',qty:1301},{commodity:'aluminium',qty:501}]},
+    {op:'stats',carrier_id:id,at:'2026-03-04T10:01:00Z',space_usage:{cargo:2,free_space:24998,total_capacity:25000}}]);
+  let result=await project();assert.equal(result.view.cargo,null);assert.ok(result.view.cargoInvalidatedAt);
+  assert.equal(result.progress.loaded,0);assert.equal(result.progress.unknown,300);
+  assert.ok(result.progress.carriers[0].items.every(item=>item.loaded===null));
+  // No destructive repair, no proportional guess of which goods remain.
+  assert.deepEqual(await cargo(id),{aluminium:501,steel:1301});
+  function snapshot(at,steel=1,aluminium=1) {
+    return carrierOpsFromStationReport({market_id:id,station_type:'FleetCarrier',station_name:'OWN-001',system_name:'Sol',observed_at:at,
+      inventories:{market:{observed_at:at,items:[{name:'steel',stock:steel,producer:true,consumer:false},
+        {name:'aluminium',stock:aluminium,producer:true,consumer:false}]}}});
+  }
+  await apply(snapshot('2026-03-04T10:02:00Z'));
+  result=await project();assert.equal(result.view.cargoInvalidatedAt,undefined);
+  assert.deepEqual(await cargo(id),{aluminium:1,steel:1});assert.equal(result.view.cargo.trackedTotal,2);
+  assert.equal(result.progress.loaded,2);assert.equal(result.progress.unknown,0);
+  assert.deepEqual(result.progress.carriers[0].items.map(item=>[item.loaded,item.remaining]),[[1,199],[1,99]]);
+  // A guest buying FROM this personal carrier must subtract; replay via web deduplicates.
+  const ops=normalizeCarrierEvents([{event:'MarketBuy',timestamp:'2026-03-04T10:03:00Z',MarketID:id,Type:'steel',Count:1,BuyPrice:500,TotalCost:500}],
+    {userId:OTHER,now:new Date('2026-03-04T12:00:00Z')}).ops;
+  await apply(ops,OTHER);assert.deepEqual(await cargo(id),{aluminium:1});
+  assert.equal((await apply(ops,OTHER,'web')).duplicates,1);
+  await apply(snapshot('2026-03-04T10:02:00Z')); // even a retried snapshot excludes the later purchase
+  assert.deepEqual(await cargo(id),{aluminium:1});
+  result=await project();assert.equal(result.progress.carriers[0].items[0].loaded,0);
+});
