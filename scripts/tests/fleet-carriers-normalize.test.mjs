@@ -322,3 +322,34 @@ test('personal hold: a newer aggregate disproves stale per-good stock, without g
   const squad=buildCarrierView({...row,carrier_type:'SquadronCarrier'},{relation:'squadron',showFinance:false,cargoRows});
   assert.equal(squad.cargo.trackedTotal,1802); // no change to squadron bank semantics
 });
+
+test('verified Market sidecar follows the station-report absolute-stock path, without claiming ownership', () => {
+  const snapshot = {event:'Market',timestamp:'2026-03-01T10:05:00Z',MarketID:3700005632,
+    StationType:'FleetCarrier',StationName:'L14-X1J',StarSystem:'Sol',Items:[
+      {Name:'$steel_name;',Stock:1,Producer:true,Consumer:false},
+      {Name:'aluminium',Stock:0,Producer:false,Consumer:false},
+      {Name:'water',Stock:0,Demand:25000,Consumer:true},
+      {Name:'gold',Demand:100}, {Name:'silver',Stock:-1},
+    ]};
+  const result=norm([snapshot]);
+  assert.deepEqual(result.ops.map(op=>op.op),['identity','location','baseline']);
+  const baseline=opsOf(result,'baseline')[0];
+  assert.equal(baseline.at,'2026-03-01T10:05:00.000Z');
+  assert.equal(baseline.full,false);
+  assert.deepEqual(baseline.items.map(row=>[row.commodity,row.qty]),[['steel',1],['aluminium',0]]);
+  assert.deepEqual(result.ops,carrierOpsFromStationReport({market_id:'3700005632',station_type:'FleetCarrier',
+    station_name:'L14-X1J',system_name:'Sol',observed_at:snapshot.timestamp,
+    inventories:{market:{observed_at:snapshot.timestamp,items:[
+      {name:'$steel_name;',stock:1,producer:true,consumer:false},
+      {name:'aluminium',stock:0,producer:false,consumer:false},
+      {name:'water',stock:0,demand:25000,consumer:true},
+    ]}}}));
+  for (const changes of [{Items:undefined},{Items:Array(5001).fill({})},{StationName:''},{StarSystem:''},
+    {MarketID:128666762,StationType:'Coriolis'},{timestamp:'2099-01-01T00:00:00Z'}]) {
+    assert.equal(norm([{...snapshot,...changes}]).ops.length,0);
+  }
+  const squadron=norm([{...snapshot,CarrierType:'SquadronCarrier',StationName:'ENEX'}]);
+  assert.equal(opsOf(squadron,'identity')[0].carrier_type,'SquadronCarrier');
+  assert.equal(opsOf(squadron,'owner').length,0);
+  assert.equal(opsOf(squadron,'squadron_claim').length,0);
+});

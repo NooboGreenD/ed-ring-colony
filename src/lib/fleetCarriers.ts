@@ -31,7 +31,7 @@ export const CARRIER_JOURNAL_EVENTS = new Set([
   'CarrierStats', 'CarrierBuy', 'CarrierLocation', 'CarrierJump', 'CarrierJumpRequest',
   'CarrierJumpCancelled', 'CarrierNameChanged', 'CarrierNameChange', 'CarrierDecommission',
   'CarrierCancelDecommission', 'CarrierDockingPermission', 'CarrierCrewServices',
-  'CarrierTradeOrder', 'Docked', 'Location', 'MarketBuy', 'MarketSell', 'CargoTransfer',
+  'CarrierTradeOrder', 'Docked', 'Location', 'Market', 'MarketBuy', 'MarketSell', 'CargoTransfer',
   // Синтетическое событие Helper'а: дифф трюма у эскадренного носителя (банк эскадры
   // не пишет в журнал ни CargoTransfer, ни Market*).
   'SquadronBankTransfer',
@@ -303,6 +303,33 @@ export function normalizeCarrierEvents(
     const squadron = carrierType === 'SquadronCarrier';
 
     switch (name) {
+      case 'Market': {
+        // A verified Market.json sidecar, not the journal's item-less marker.
+        // Same absolute observation also travels via station reports; retrying
+        // it through the durable carrier queue cannot add cargo twice.
+        if (!Array.isArray(event.Items) || event.Items.length > 5000
+            || !text(event.StationName, 120) || !text(event.StarSystem, 120)) break;
+        const items: CarrierMarketItem[] = [];
+        for (const item of event.Items) {
+          if (!isRecord(item) || typeof item.Name !== 'string') continue;
+          const stock = integerOf(item.Stock), demand = integerOf(item.Demand);
+          if (stock == null || stock < 0) continue; // missing Stock is not an observed zero
+          items.push(compactObject({
+            name: item.Name, name_localised: text(item.Name_Localised, 120), stock,
+            demand: demand != null && demand >= 0 ? demand : undefined,
+            producer: typeof item.Producer === 'boolean' ? item.Producer : undefined,
+            consumer: typeof item.Consumer === 'boolean' ? item.Consumer : undefined,
+          }));
+        }
+        const services = stationServices(event.StationServices);
+        ops.push(...carrierOpsFromStationReport({
+          market_id: String(event.MarketID ?? ''), station_type: String(event.StationType ?? ''),
+          station_name: String(event.StationName), system_name: String(event.StarSystem), observed_at: at,
+          metadata: { services: squadron ? [...(services ?? []), 'squadronbank'] : services },
+          inventories: { market: { observed_at: at, items } },
+        }));
+        break;
+      }
       case 'CarrierStats': {
         const id = positiveId(event.CarrierID);
         if (!id) break;
