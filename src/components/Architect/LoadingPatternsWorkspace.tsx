@@ -415,6 +415,11 @@ export default function LoadingPatternsWorkspace() {
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
+      {selected?.catalogueUpdated && (
+        <p role="status" className="lp-warning">
+          {t("lp.catalogueUpdated")}
+        </p>
+      )}
       <div className="lp-layout">
         <aside className="card lp-library">
           <div className="lp-actions">

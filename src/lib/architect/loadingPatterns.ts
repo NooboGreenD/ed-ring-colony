@@ -17,6 +17,8 @@ export type LoadingPatternView = {
   requirements: Record<string, number>;
   total: number;
   unassigned: Record<string, number>;
+  catalogueUpdated: boolean;
+  allocationsAdjusted: boolean;
 };
 export const LOADING_CATALOGUE_VERSION = CATALOGUE_VERSION;
 const installations = new Map(INSTALLATIONS.map((item) => [item.id, item]));
@@ -66,7 +68,10 @@ export function unassignedLoading(
     }
   return Object.fromEntries(Object.entries(goods).filter(([, qty]) => qty > 0));
 }
-export function parseLoadingPattern(input: unknown): LoadingPattern {
+function parsePattern(
+  input: unknown,
+  reconcileCatalogue = false,
+): LoadingPattern {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("lp.invalid");
   const raw = input as Record<string, unknown>;
@@ -138,7 +143,14 @@ export function parseLoadingPattern(input: unknown): LoadingPattern {
     )
       throw new Error("lp.invalid");
     const totals: Record<string, number> = {};
-    for (const [id, rows] of Object.entries(raw.allocations)) {
+    const entries = Object.entries(raw.allocations);
+    if (reconcileCatalogue)
+      entries.sort(
+        ([left], [right]) =>
+          carriers.findIndex((row) => row.carrierId === left) -
+          carriers.findIndex((row) => row.carrierId === right),
+      );
+    for (const [id, rows] of entries) {
       if (
         !ids.has(id) ||
         !rows ||
@@ -149,16 +161,22 @@ export function parseLoadingPattern(input: unknown): LoadingPattern {
       let load = 0;
       for (const [good, qty] of Object.entries(rows)) {
         if (
-          !Object.hasOwn(requirements, good) ||
+          (!reconcileCatalogue && !Object.hasOwn(requirements, good)) ||
           typeof qty !== "number" ||
           !Number.isSafeInteger(qty) ||
           qty < 0 ||
           qty > 60000
         )
           throw new Error("lp.invalid");
-        if (qty) allocations[id][good] = qty;
+        // Validate the saved load too: a catalogue update is not permission to
+        // accept malformed data or over-capacity assignments.
         load += qty;
-        totals[good] = (totals[good] ?? 0) + qty;
+        if (!Object.hasOwn(requirements, good)) continue;
+        const accepted = reconcileCatalogue
+          ? Math.min(qty, Math.max(0, requirements[good] - (totals[good] ?? 0)))
+          : qty;
+        if (accepted) allocations[id][good] = accepted;
+        totals[good] = (totals[good] ?? 0) + accepted;
         if (totals[good] > requirements[good]) throw new Error("lp.invalid");
       }
       if (load > carriers.find((row) => row.carrierId === id)!.capacity)
@@ -173,11 +191,30 @@ export function parseLoadingPattern(input: unknown): LoadingPattern {
     allocations,
   };
 }
+/** New writes always use strict current-catalogue validation. */
+export function parseLoadingPattern(input: unknown): LoadingPattern {
+  return parsePattern(input);
+}
 export function loadingPatternView(
   row: Record<string, any>,
   userId: string | null,
 ): LoadingPatternView {
-  const pattern = parseLoadingPattern(row.definition);
+  const catalogueUpdated =
+    Number.isInteger(row.catalogue_version) &&
+    row.catalogue_version > 0 &&
+    row.catalogue_version < CATALOGUE_VERSION;
+  let pattern: LoadingPattern;
+  let allocationsAdjusted = false;
+  try {
+    pattern = parseLoadingPattern(row.definition);
+  } catch (error) {
+    if (!catalogueUpdated) throw error;
+    // Read old templates without writing to the DB: only remove obsolete
+    // goods/cap excess targets, never transfer assignments between carriers.
+    // Newly required quantities remain explicitly unassigned.
+    pattern = parsePattern(row.definition, true);
+    allocationsAdjusted = true;
+  }
   const requirements = loadingRequirements(pattern.buildings);
   return {
     id: row.id,
@@ -189,6 +226,8 @@ export function loadingPatternView(
     requirements,
     total: Object.values(requirements).reduce((a, b) => a + b, 0),
     unassigned: unassignedLoading(pattern),
+    catalogueUpdated,
+    allocationsAdjusted,
   };
 }
 export function loadingProgress(

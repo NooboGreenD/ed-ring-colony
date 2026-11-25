@@ -486,9 +486,9 @@ test('основной порт: один на план, пометка пере
   const evaluation = evaluatePlan(plan, bodies);
   assert.equal(evaluation.primaryPort.siteId, plan.sites[1].id);
   assert.equal(evaluation.primaryPort.installationId, 'vesta');
-  // 21 795 т основного аванпоста + 53 723 т обычного Кориолиса.
-  assert.equal(evaluation.haulTons, 21_795 + coriolis.haulTons);
-  assert.equal(evaluation.primaryPort.approximate, true, 'список аванпоста оценочный');
+  // 21 835 т основного аванпоста + 53 723 т обычного Кориолиса.
+  assert.equal(evaluation.haulTons, 21_835 + coriolis.haulTons);
+  assert.equal(evaluation.primaryPort.approximate, false, 'фиксированный рецепт Raven');
   // Основной порт бесплатный даже когда это аванпост, а Кориолис платит очки.
   assert.deepEqual(evaluation.portCosts.map((port) => port.cost), [3]);
 
@@ -547,7 +547,7 @@ test('редактирование записи: тип, тело, статус,
   assert.ok(evaluatePlan(plan, bodies).primaryPort);
 });
 
-test('основной порт меняет грузы: Кориолис везёт ~69 000 т, а не 53 723 т', () => {
+test('основной порт меняет грузы: Кориолис везёт 70 533 т, а не 53 723 т', () => {
   const bodies = fromScanRecords([
     scanRow({ body_name: 'Test A', body_type: 'Star', is_landable: false }),
     scanRow({ body_name: 'Test A 1', is_landable: false }),
@@ -556,26 +556,26 @@ test('основной порт меняет грузы: Кориолис вез
   let plan = createPlan('Test');
   plan = addSite(plan, 'Test A', 'no_truss', { primary: true });
   const primaryEvaluation = evaluatePlan(plan, bodies);
-  assert.equal(primaryEvaluation.haulTons, 68_825);
-  assert.equal(primaryEvaluation.primaryPort.tons, 68_825);
-  assert.equal(primaryEvaluation.primaryPort.approximate, false, 'Кориолис — точный скан');
-  assert.equal(primaryEvaluation.cargo.steel, 18_200);
+  assert.equal(primaryEvaluation.haulTons, 70_533);
+  assert.equal(primaryEvaluation.primaryPort.tons, 70_533);
+  assert.equal(primaryEvaluation.primaryPort.approximate, false, 'Кориолис — фиксированный рецепт Raven');
+  assert.equal(primaryEvaluation.cargo.steel, 19_436);
   assert.equal(primaryEvaluation.issues.filter((issue) => issue.level === 'error').length, 0);
 
   plan = setSitePrimary(plan, plan.sites[0].id, false);
   const regularEvaluation = evaluatePlan(plan, bodies);
   assert.equal(regularEvaluation.haulTons, getInstallation('no_truss').haulTons);
 
-  // Орбис и Оцеллус делят один список основного порта, Додекаэдр — оценочный.
-  assert.equal(Object.values(getInstallation('apollo').primary.cargo).reduce((a, b) => a + b, 0), 241_960);
+  // Орбис и Оцеллус делят один список основного порта, Додекаэдр — свой фиксированный рецепт.
+  assert.equal(Object.values(getInstallation('apollo').primary.cargo).reduce((a, b) => a + b, 0), 242_742);
   assert.equal(getInstallation('ocellus').primary.approximate, false);
-  assert.equal(getInstallation('dodec').primary.approximate, true);
-  assert.equal(Object.values(getInstallation('dodec').primary.cargo).reduce((a, b) => a + b, 0), 273_410);
+  assert.equal(getInstallation('dodec').primary.approximate, false);
+  assert.equal(Object.values(getInstallation('dodec').primary.cargo).reduce((a, b) => a + b, 0), 269_924);
 
   // В оверрей основной порт уходит «основным» списком и со звездой.
   const structures = planToStructures(addSite(createPlan('Test'), 'Test A', 'no_truss', { primary: true }));
   assert.match(structures[0].name, /^★ /);
-  assert.equal(structures[0].requiredTons, 68_825);
+  assert.equal(structures[0].requiredTons, 70_533);
 });
 
 test('импорт: пометка основного порта читается, чистится и мигрирует из v1', () => {

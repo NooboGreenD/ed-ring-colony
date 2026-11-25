@@ -71,3 +71,19 @@ test('loading API: validation, size bound, auth, rate limit and database failure
  globalThis.lpRate=false;assert.equal((await collection.POST(req('POST',pattern()))).status,429);
  const state=setup();state.error=true;assert.equal((await collection.GET(req())).status,503);assert.equal((await collection.POST(req('POST',pattern()))).status,503);
 });
+
+
+test('loading API: catalogue v4 primary templates list/open safely and only explicit save persists v5',async()=>{
+ const state=setup();const row=state.tables.carrier_loading_patterns[0];
+ row.catalogue_version=4;
+ row.definition={...pattern(),buildings:[{installationId:'nemesis',count:1,primary:true}],allocations:{'123':{steel:3500,battleweapons:35}}};
+ const before=structuredClone(row);
+ const list=await collection.GET(req());assert.equal(list.status,200);assert.equal(list.body.patterns[0].total,21835);
+ const result=await detail.GET(req(),params);assert.equal(result.status,200);
+ assert.equal(result.body.pattern.catalogueUpdated,true);assert.equal(result.body.pattern.allocationsAdjusted,true);
+ assert.equal(result.body.pattern.requirements.aluminium,500);assert.equal(result.body.progress.unassigned,21835-3500);
+ assert.deepEqual(row,before);assert.deepEqual(state.writes,[]);
+ const bad=await detail.PATCH(req('PATCH',{...row.definition,catalogue_version:4,version:1}),params);assert.equal(bad.status,400);
+ const saved=await detail.PATCH(req('PATCH',{...result.body.pattern.pattern,version:1}),params);
+ assert.equal(saved.status,200);assert.equal(saved.body.pattern.catalogueUpdated,false);assert.equal(row.catalogue_version,5);
+});

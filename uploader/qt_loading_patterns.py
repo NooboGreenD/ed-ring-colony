@@ -233,6 +233,8 @@ class LoadingPatternsPage(QWidget):
         self.status.setText(
             f"{name} · {loaded} / {total} t · ? {progress.get('unknown', 0)} t · {data.get('checkedAt', '')}"
         )
+        if (data.get("pattern") or {}).get("catalogueUpdated"):
+            self.status.setText(self.status.text() + "\n" + tr("Каталог обновлён: проверьте распределение на сайте."))
         self.bar.setValue(int(1000 * loaded / max(1, total)))
         summaries, rows = loading_lines(data, True)
         self.details.setPlainText("\n".join(summaries + [""] + rows))
