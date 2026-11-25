@@ -20,6 +20,7 @@ from loading_patterns import LoadingPatternState, loading_lines
 
 class LoadingPatternsPage(QWidget):
     received = Signal(int, object, object, str)
+    inventory_changed = Signal()
 
     def __init__(self, api, config, save, overlay_active, parent=None):
         super().__init__(parent)
@@ -35,6 +36,7 @@ class LoadingPatternsPage(QWidget):
         self._identity = self.identity()
         self.state.clear(self._identity, self.active_id)
         self._seq, self._busy, self._last = 0, False, 0.0
+        self._refresh_pending = False
         layout = QVBoxLayout(self)
         info = QLabel(
             tr(
@@ -84,6 +86,7 @@ class LoadingPatternsPage(QWidget):
         self.details.setReadOnly(True)
         layout.addWidget(self.details, 1)
         self.received.connect(self.apply_result)
+        self.inventory_changed.connect(self._on_inventory_changed)
         self.timer = QTimer(self)
         self.timer.setInterval(5000)
         self.timer.timeout.connect(self.tick)
@@ -126,6 +129,7 @@ class LoadingPatternsPage(QWidget):
         self._seq += 1
         self._busy = False
         self.active_id = ""
+        self._refresh_pending = False
         self.config.pop("loading_pattern_id", None)
         self.save()
         self.state.clear(self.identity(), "")
@@ -141,6 +145,7 @@ class LoadingPatternsPage(QWidget):
             self._identity = identity
             self._seq += 1
             self._busy = False
+            self._refresh_pending = False
             self.state.clear(identity, self.active_id)
             self.patterns.clear()
             self.focus.clear()
@@ -151,6 +156,17 @@ class LoadingPatternsPage(QWidget):
             self.isVisible() or (self.active_id and self.overlay_active())
         ) and time.monotonic() - self._last >= 30:
             self.refresh(self.isVisible())
+
+    def _on_inventory_changed(self):
+        """Acknowledge server writes before rereading progress, without HUD polling."""
+        if (not self.active_id or self.identity() != self._identity
+                or not (self.isVisible() or self.overlay_active())):
+            return
+        if self._busy:
+            self._refresh_pending = True  # coalesce, don't start overlapping requests
+            return
+        self._refresh_pending = False
+        self.refresh(False)
 
     def refresh(self, include_list=False, force=False):
         if self._busy and not force:
@@ -215,6 +231,9 @@ class LoadingPatternsPage(QWidget):
             self.focus_id = str(self.focus.currentData() or "")
             self.focus.blockSignals(False)
         self.render()
+        if self._refresh_pending:
+            self._refresh_pending = False
+            self._on_inventory_changed()
 
     def overlay_state(self):
         # Called by the existing HUD collector: no Qt calls, disk or network IO.

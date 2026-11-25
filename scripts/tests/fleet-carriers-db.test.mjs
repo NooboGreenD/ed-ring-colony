@@ -719,3 +719,29 @@ test('personal market stock: stale deliveries are unknown after fresh Stats; sna
   assert.deepEqual(await cargo(id),{aluminium:1});
   result=await project();assert.equal(result.progress.carriers[0].items[0].loaded,0);
 });
+
+test('direct Market queue and station reports converge with delayed trade replay and retries', async () => {
+  const id='3708000099', at='2026-03-04T10:02:00Z';
+  const snapshot={event:'Market',timestamp:at,MarketID:id,StationType:'FleetCarrier',
+    StationName:'SNP-001',StarSystem:'Sol',Items:[{Name:'steel',Stock:1,Producer:true},
+      {Name:'aluminium',Stock:1,Producer:true}]};
+  const normalize=events=>normalizeCarrierEvents(events,{userId:OTHER,now:new Date('2026-03-04T12:00:00Z')}).ops;
+  await apply(normalize([snapshot]),OTHER);
+  assert.deepEqual(await cargo(id),{aluminium:1,steel:1});
+  // Prioritize a current observation, then replay the backlog: no double counting.
+  const oldSale=normalize([{event:'MarketSell',timestamp:'2026-03-04T10:01:00Z',MarketID:id,Type:'steel',Count:500}]);
+  await apply(oldSale,OTHER);
+  assert.deepEqual(await cargo(id),{aluminium:1,steel:1});
+  const purchase=normalize([{event:'MarketBuy',timestamp:'2026-03-04T10:03:00Z',MarketID:id,Type:'steel',Count:1}]);
+  await apply(purchase,OTHER);
+  for(let retry=0;retry<2;retry++) {
+    await apply(normalize([snapshot]),OTHER);
+    await apply(carrierOpsFromStationReport({market_id:id,station_type:'FleetCarrier',station_name:'SNP-001',
+      system_name:'Sol',observed_at:at,inventories:{market:{observed_at:at,items:[
+        {name:'steel',stock:1,producer:true},{name:'aluminium',stock:1,producer:true}]}}}),OTHER);
+    await apply(oldSale,OTHER);
+    await apply(purchase,OTHER);
+    assert.deepEqual(await cargo(id),{aluminium:1});
+  }
+  assert.equal((await carrier(id)).owner_id,null,'a visitor can report stock without acquiring the carrier');
+});

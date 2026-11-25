@@ -78,6 +78,7 @@ IGNORED_COMMODITIES = frozenset({"drones", "limpet", "limpets"})
 
 MAX_OUTBOX = 50_000
 BATCH_SIZE = 500
+MAX_BATCH_BYTES = 2 * 1024 * 1024  # API envelope is limited to 3 MiB
 SAVE_INTERVAL_SECONDS = 3.0
 
 
@@ -159,7 +160,7 @@ class CarrierEventCollector:
         self._dirty = False
         self._saved_at = 0.0
         self._context: Dict[str, Any] = {
-            "market_id": None, "station_type": "", "system": "", "star_pos": None, "squadron": False,
+            "market_id": None, "station_type": "", "station_name": "", "services": [], "system": "", "star_pos": None, "squadron": False,
         }
         # Банк эскадры: ожидаемый трюм корабля у эскадренного носителя.
         self._bank_expected: Optional[Dict[str, int]] = None
@@ -177,6 +178,35 @@ class CarrierEventCollector:
                     self.pending = [entry for entry in value if isinstance(entry, dict)][-MAX_OUTBOX:]
             except (OSError, ValueError):
                 pass
+
+    def queue_market_snapshot(self, event: Mapping[str, Any]) -> bool:
+        """Persist the exact current-dock Market.json used by CARRIER.
+
+        Never upload the HUD's estimates, Raven replies or delivery counters.
+        The independent station-report queue is not an acknowledgement of the
+        carrier ledger; both channels use the original observation timestamp.
+        """
+        if (not isinstance(event.get("Items"), list) or len(event["Items"]) > 5000
+                or not self._docked_at_carrier()
+                or _as_int(event.get("MarketID")) != self._context["market_id"]
+                or event.get("StarSystem") != self._context["system"]
+                or event.get("StationName") != self._context["station_name"]
+                or self._snapshot_time(event) < self._bank_docked_at):
+            return False
+        fields = ("Name", "Name_Localised", "Stock", "Demand", "Producer", "Consumer")
+        snapshot = {key:event[key] for key in ("timestamp", "MarketID", "StationName", "StarSystem") if key in event}
+        if not snapshot.get("StationName") or not self._snapshot_time(event):
+            return False
+        snapshot.update(event="Market", StationType=self._context["station_type"],
+                        StationServices=list(self._context["services"]),
+                        CarrierType="SquadronCarrier" if self._context["squadron"] else "FleetCarrier",
+                        Items=[{key:item[key] for key in fields if key in item}
+                               for item in event["Items"] if isinstance(item, Mapping)])
+        if len(json.dumps(snapshot, ensure_ascii=True).encode("utf-8")) + 2 > MAX_BATCH_BYTES:
+            return False
+        self._push(snapshot)
+        self.save()  # sidecar signature dedupe must not outrun durable storage
+        return True
 
     # -- outbox ---------------------------------------------------------------
     def _push(self, event: dict) -> None:
@@ -226,7 +256,7 @@ class CarrierEventCollector:
             snapshot = list(self.pending)
         for event in snapshot:
             name = event.get("event")
-            if name in ("MarketBuy", "MarketSell", "SquadronBankTransfer"):
+            if name in ("Market", "MarketBuy", "MarketSell", "SquadronBankTransfer"):
                 value = _as_int(event.get("MarketID"))
             elif name == "CargoTransfer":
                 value = _as_int(event.get("_MarketID"))
@@ -240,11 +270,21 @@ class CarrierEventCollector:
         """Отправить накопленное. Неудачная пачка остаётся в outbox до следующей попытки."""
         if not getattr(api, "is_connected", False):
             return {"ok": False, "error": "Not connected", "sent": 0}
-        total = {"ok": True, "sent": 0, "applied": 0, "duplicates": 0, "ignored": 0, "skipped": 0, "carriers": []}
+        total = {"ok": True, "sent": 0, "applied": 0, "duplicates": 0, "ignored": 0, "skipped": 0, "carriers": [], "inventory_changed": False}
         carriers = set()
         for _ in range(max(1, int(max_batches))):
             with self.lock:
-                batch = list(self.pending[:BATCH_SIZE])
+                # A current absolute Market observation need not wait behind
+                # thousands of old Docked/identity events. The server orders
+                # observations/deltas by their ORIGINAL event timestamps.
+                ordered = sorted(self.pending, key=lambda event: event.get("event") != "Market")
+                batch, size = [], 0
+                for event in ordered[:BATCH_SIZE]:
+                    length = len(json.dumps(event, ensure_ascii=True).encode("utf-8")) + 2
+                    if batch and size + length > MAX_BATCH_BYTES:
+                        break
+                    batch.append(event)
+                    size += length
             if not batch:
                 break
             result = api.sync_carrier_events(batch) or {}
@@ -254,10 +294,15 @@ class CarrierEventCollector:
                 total.update(ok=False, error=self.last_error)
                 break
             with self.lock:
-                # Удаляем ровно отправленное: пока шёл запрос, могли прийти новые события.
-                if self.pending[: len(batch)] == batch:
-                    del self.pending[: len(batch)]
+                # Remove only these objects, not equal new entries appended
+                # while the HTTP request was in flight (batch may not be a prefix).
+                sent_ids = {id(event) for event in batch}
+                self.pending = [event for event in self.pending if id(event) not in sent_ids]
                 self._dirty = True
+            if (int(result.get("applied") or 0) or int(result.get("duplicates") or 0)) and any(
+                    event.get("event") in ("Market", "MarketBuy", "MarketSell", "CargoTransfer",
+                                           "SquadronBankTransfer", "CarrierBuy", "CarrierStats") for event in batch):
+                total["inventory_changed"] = True
             self.sent += len(batch)
             total["sent"] += len(batch)
             total["applied"] += int(result.get("applied") or 0)
@@ -291,6 +336,8 @@ class CarrierEventCollector:
     def _dock(self, event: Mapping[str, Any], live: bool) -> None:
         self._context["market_id"] = _as_int(event.get("MarketID"))
         self._context["station_type"] = str(event.get("StationType") or "")
+        self._context["station_name"] = str(event.get("StationName") or "")
+        self._context["services"] = _services(event)
         self._context["squadron"] = (
             str(event.get("CarrierType") or "") == "SquadronCarrier" or "squadronbank" in _services(event))
         self._bank_expected = None

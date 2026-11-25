@@ -49,6 +49,22 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn('3713477376', message)
         self.assertNotIn('token', message)
 
+    def test_committed_inventory_notifies_loading_page_via_signal(self):
+        self.app.loading_patterns_page = mock.Mock()
+        self.collector.flush.return_value = {'ok': True, 'sent': 1, 'applied': 3,
+                                            'inventory_changed': True}
+        self.app._flush_carrier_sync()
+        self.app.loading_patterns_page.inventory_changed.emit.assert_called_once_with()
+
+    def test_ignored_or_failed_upload_does_not_notify_loading_page(self):
+        self.app.loading_patterns_page = mock.Mock()
+        for result in ({'ok': True, 'sent': 1, 'ignored': 1, 'inventory_changed': False},
+                       {'ok': False, 'sent': 0, 'error': 'offline'}):
+            self.app._carrier_flush_retry_at = 0
+            self.collector.flush.return_value = result
+            self.app._flush_carrier_sync()
+        self.app.loading_patterns_page.inventory_changed.emit.assert_not_called()
+
     def test_idle_watcher_does_not_spam_success_logs(self):
         self.collector.pending_count = 0
         self.app._flush_carrier_sync()

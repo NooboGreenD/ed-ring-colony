@@ -7391,8 +7391,17 @@ class ColonialHelperApp:
             except Exception as exc:
                 self.root.after(0, lambda message=str(exc): self.log(f"Squadron bank cargo: {message}", "warn"))
             try:
+                self._station_commerce_collector().read_files(self.journal_path)
+            except Exception as exc:
+                self.root.after(0, lambda message=str(exc): self.log(f"Station inventory: {message}", "error"))
+            # Upload current carrier stock before the independent, potentially
+            # backlogged station catalogue queue. No jump/redock is needed.
+            try:
+                self._flush_carrier_sync()
+            except Exception as exc:
+                self.root.after(0, lambda message=str(exc): self.log(f"Авианосцы: {message}", "error"))
+            try:
                 commerce = self._station_commerce_collector()
-                commerce.read_files(self.journal_path)
                 result = commerce.flush(self.api)
                 if not result.get("ok") and commerce.pending:
                     # Keep data queued; avoid flooding the log every five seconds.
@@ -7402,10 +7411,6 @@ class ColonialHelperApp:
                         self.root.after(0, lambda message=result.get("error", ""): self.log(f"Station reports pending: {message}", "warn"))
             except Exception as exc:
                 self.root.after(0, lambda message=str(exc): self.log(f"Station inventory: {message}", "error"))
-            try:
-                self._flush_carrier_sync()
-            except Exception as exc:
-                self.root.after(0, lambda message=str(exc): self.log(f"Авианосцы: {message}", "error"))
             try:
                 self._flush_bgs_sync()
             except Exception as exc:
@@ -8139,6 +8144,13 @@ class ColonialHelperApp:
         squadron = (known is not None and known.kind == "squadron") or any(
             str(service).lower() == "squadronbank" for service in services)
         cargo = carrier_market_cargo(event.get("Items"), squadron=squadron)
+        # Send the same verified, timestamped stock observation to the carrier
+        # ledger directly. A delayed station-report queue must not leave the
+        # website/LOADING behind the correctly updated local CARRIER view.
+        try:
+            self._carrier_sync_collector().queue_market_snapshot(event)
+        except Exception as exc:
+            self.root.after(0, lambda message=str(exc): self.log(f"Carrier snapshot queue: {message}", "warn"))
         # Market stock is a partial inventory, not the whole hold. Apply only
         # verified rows and preserve unrelated commodities / personal deliveries.
         # Squadron banks have no ordinary CargoTransfer journal event to repair
@@ -8176,6 +8188,10 @@ class ColonialHelperApp:
                 self.root.after(0, lambda m=message, severity=level: self.log(m, severity))
             if result.get("ok") and result.get("sent"):
                 self._carrier_server_at = 0.0
+                loading_page = getattr(self, "loading_patterns_page", None)
+                if result.get("inventory_changed") and loading_page is not None:
+                    # Signal crosses from the watcher to the GUI thread.
+                    loading_page.inventory_changed.emit()
             elif not result.get("ok"):
                 self._carrier_flush_retry_at = time.monotonic() + 60.0
                 now = time.monotonic()
