@@ -6,6 +6,7 @@ import { authFetch, supabase } from '@/lib/supabaseClient';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import type { SquadronBankCarrier } from '@/lib/squadronBank';
 import { CarrierBankPanel } from './CarrierBankPanel';
+import BankCorrection from './BankCorrection';
 
 type State = {
   squadronId: number;
@@ -19,12 +20,12 @@ export default function SquadronBankPanel({ squadronId }: { squadronId: number }
   const [state, setState] = useState<State>({ squadronId, status: 'loading', carriers: [] });
   const sequence = useRef(0);
   const pending = useRef<AbortController | null>(null);
-  const load = useCallback(async () => {
+  const load = useCallback(async (background = false) => {
     const current = ++sequence.current;
     pending.current?.abort();
     const controller = new AbortController();
     pending.current = controller;
-    setState({ squadronId, status: 'loading', carriers: [] });
+    if (!background) setState({ squadronId, status: 'loading', carriers: [] });
     try {
       const response = await authFetch(`/api/squadrons/${squadronId}/bank`, {
         cache: 'no-store', signal: controller.signal,
@@ -51,7 +52,7 @@ export default function SquadronBankPanel({ squadronId }: { squadronId: number }
   useEffect(() => {
     void load();
     const refresh = setInterval(() => {
-      if (document.visibilityState === 'visible') void load();
+      if (document.visibilityState === 'visible') void load(true);
     }, 60_000);
     let alive = true;
     const { data: { subscription } } = supabase.auth.onAuthStateChange(event => {
@@ -101,6 +102,7 @@ export default function SquadronBankPanel({ squadronId }: { squadronId: number }
                   {carrier.callsign && carrier.name && <small style={{ color: '#9ca3af', marginLeft: 10 }}>{carrier.callsign}</small>}
                 </h3>
                 {carrier.cargo ? <CarrierBankPanel carrier={carrier} /> : <p>{t('fc.cargoNotTracked')}</p>}
+                <BankCorrection carrierId={carrier.carrierId} callsign={carrier.callsign} onCorrected={() => void load(true)} />
               </article>
             ))}
           </div>

@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { authFetch } from '@/lib/supabaseClient';
 import type { CarrierView } from '@/lib/fleetCarriers';
 import { CarrierBankPanel } from './CarrierBankPanel';
+import BankCorrection from './BankCorrection';
 import {
   IconChart,
   IconClock,
@@ -302,7 +303,10 @@ export function CarrierCardPage({ carrierId }: CarrierCardPageProps) {
       </div>
 
       {status === 'ready' && card?.type === 'SquadronCarrier' && card.squadron?.member ? (
-        bankError ? <p role="status">{t('fc.bankUnavailable')}</p> : <CarrierBankPanel carrier={bank} />
+        <>
+          {bankError ? <p role="status">{t('fc.bankUnavailable')}</p> : <CarrierBankPanel carrier={bank} />}
+          <BankCorrection key={carrierId} carrierId={carrierId} callsign={card.callsign} onCorrected={() => void load()} />
+        </>
       ) : null}
 
       {status === 'loading' ? (

@@ -629,3 +629,52 @@ test('Brewers Port operator script defaults to rollback, requires a timestamp, a
   await db.exec(readFileSync(new URL('../diagnose-squadron-bank.sql',import.meta.url),'utf8').replaceAll('3713477376',id));
   assert.deepEqual((await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1 ORDER BY commodity',[id])).rows,snapshot);
 });
+
+const officerCorrectionMigration=readFileSync(new URL('../../supabase/migrations/20261127090000_squadron_bank_officer_correction.sql',import.meta.url),'utf8');
+async function officerCorrect(actor,id,at='2026-03-11T11:00:00Z',items=observedBank,squadron=1){
+ return (await db.query('SELECT public.correct_squadron_bank_as_officer($1::uuid,$2::bigint,$3::bigint,$4,$5::timestamptz,$6::jsonb,$7) AS result',
+  [actor,squadron,id,'DNHG',at,JSON.stringify(items),'Officer verified complete in-game bank inventory'])).rows[0].result;
+}
+test('website correction migration is repeatable, changes no bank and remains inaccessible to browser roles',async()=>{
+ // Bring the reduced test schema up to the production squadron permission model.
+ await db.exec(`ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS created_by uuid;
+ ALTER TABLE squadron_members ADD COLUMN IF NOT EXISTS rank_id bigint;
+ CREATE TABLE IF NOT EXISTS squadron_ranks(id bigint PRIMARY KEY,squadron_id bigint,can_edit_squadron boolean);
+ INSERT INTO squadron_ranks VALUES(1,1,true),(2,2,true);
+ UPDATE squadrons SET created_by='${OWNER}' WHERE id=1;
+ INSERT INTO squadron_members(squadron_id,user_id) VALUES(1,'${OWNER}');
+ UPDATE squadron_members SET rank_id=1 WHERE user_id='${MEMBER}';
+ GRANT SELECT ON squadron_members,squadron_ranks,squadrons TO service_role;`);
+ const before=(await db.query('SELECT * FROM fleet_carrier_cargo ORDER BY carrier_id,commodity')).rows;
+ await db.exec(officerCorrectionMigration);await db.exec(officerCorrectionMigration);
+ assert.deepEqual((await db.query('SELECT * FROM fleet_carrier_cargo ORDER BY carrier_id,commodity')).rows,before);
+ for(const role of ['anon','authenticated'])assert.equal((await db.query("SELECT has_function_privilege($1,'public.correct_squadron_bank_as_officer(uuid,bigint,bigint,text,timestamptz,jsonb,text)','EXECUTE') AS allowed",[role])).rows[0].allowed,false);
+});
+test('locked officer RPC reconciles real inventory and records the actor; duplicate retry does not rewrite audit author',async()=>{
+ const id='3713477910';await bankFixture(id);
+ await apply([delta('2026-03-11T10:00:00Z','steel',13334,hash(),id),delta('2026-03-11T12:00:00Z','tritium',-34,hash(),id)],MEMBER);
+ await db.exec('SET ROLE service_role');let result;
+ try{result=await officerCorrect(MEMBER,id)}finally{await db.exec('RESET ROLE')}
+ assert.equal(result.ok,true);assert.deepEqual(await cargo(id),{drones:2,thargoidtitandrivecomponent:4,tritium:1000});
+ assert.equal((await db.query('SELECT actor_id FROM squadron_bank_reconciliations WHERE id=$1',[result.id])).rows[0].actor_id,MEMBER);
+ assert.equal((await officerCorrect(OWNER,id)).duplicate,true);
+ assert.equal((await db.query('SELECT actor_id FROM squadron_bank_reconciliations WHERE id=$1',[result.id])).rows[0].actor_id,MEMBER);
+});
+test('SQL independently rejects ordinary/revoked/foreign-rank officers, nonmember leaders and rebound/personal carriers',async()=>{
+ const id='3713477911';await bankFixture(id);const before=await cargo(id);
+ await assert.rejects(officerCorrect(OTHER,id),error=>error.code==='42501');
+ await db.query('UPDATE squadron_members SET rank_id=NULL WHERE user_id=$1',[MEMBER]);
+ await assert.rejects(officerCorrect(MEMBER,id),error=>error.code==='42501');
+ await db.query('UPDATE squadron_members SET rank_id=2 WHERE user_id=$1',[MEMBER]);
+ await assert.rejects(officerCorrect(MEMBER,id),error=>error.code==='42501');
+ await db.query('UPDATE squadron_members SET rank_id=1 WHERE user_id=$1',[MEMBER]);
+ await db.query('DELETE FROM squadron_members WHERE user_id=$1 AND squadron_id=1',[OWNER]);
+ await assert.rejects(officerCorrect(OWNER,id),error=>error.code==='42501');
+ await db.query('INSERT INTO squadron_members(squadron_id,user_id) VALUES(1,$1)',[OWNER]);
+ await db.query('UPDATE fleet_carriers SET squadron_id=2 WHERE carrier_id=$1',[id]);
+ await assert.rejects(officerCorrect(MEMBER,id),error=>error.code==='42501');
+ await db.query("UPDATE fleet_carriers SET squadron_id=1,carrier_type='FleetCarrier' WHERE carrier_id=$1",[id]);
+ await assert.rejects(officerCorrect(MEMBER,id),error=>error.code==='42501');
+ assert.deepEqual(await cargo(id),before);
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM squadron_bank_reconciliations WHERE carrier_id=$1',[id])).rows[0].n,0);
+});
