@@ -25,6 +25,7 @@ import {
 } from "@/components/Icons";
 import SquadronChat from "@/components/SquadronChat";
 import CarrierPanel from "@/components/Carriers/CarrierPanel";
+import SquadronBankPanel from "@/components/Carriers/SquadronBankPanel";
 import Avatar from "@/components/Avatar";
 import { useI18n } from '@/lib/i18n/I18nContext';
 
@@ -51,7 +52,7 @@ const ACTIVITY_KEYS: Record<string, string> = {
 const LANGUAGE_KEYS: Record<string, string> = { Other: "sq.langOther" };
 
 
-type Tab = "overview" | "pilots" | "ranks" | "projects" | "carrier" | "settings" | "chat";
+type Tab = "overview" | "pilots" | "ranks" | "projects" | "carrier" | "bank" | "settings" | "chat";
 
 export default function SquadronPage() {
   const { t, locale } = useI18n();
@@ -112,8 +113,16 @@ export default function SquadronPage() {
   // Прямая ссылка на вкладку (карта галактики ведёт на «Авианосец»).
   useEffect(() => {
     const requested = new URLSearchParams(window.location.search).get("tab");
-    if (requested === "carrier") setTab("carrier");
-  }, []);
+    setTab(requested === "carrier" || requested === "bank" ? requested : "overview");
+  }, [id]);
+
+  const changeTab = (next: Tab) => {
+    setTab(next);
+    const url = new URL(window.location.href);
+    if (next === "bank" || next === "carrier") url.searchParams.set("tab", next);
+    else url.searchParams.delete("tab");
+    window.history.replaceState(window.history.state, "", url);
+  };
 
   const saveSettings = async () => {
     if (!form) return;
@@ -306,17 +315,20 @@ export default function SquadronPage() {
 
       {/* Вкладки */}
       <div className="tabs" style={{ marginBottom: 20 }}>
-        <button className={tab === "overview" ? "tab tab-active" : "tab"} onClick={() => setTab("overview")}>{t("sq.tabOverview")}</button>
-        <button className={tab === "pilots" ? "tab tab-active" : "tab"} onClick={() => setTab("pilots")}>{t("sq.tabPilots", { count: members.length })}</button>
-        <button className={tab === "ranks" ? "tab tab-active" : "tab"} onClick={() => setTab("ranks")}>{t("sq.tabRanks")}</button>
-        <button className={tab === "projects" ? "tab tab-active" : "tab"} onClick={() => setTab("projects")}>{t("sq.tabProjects", { count: projects.length })}</button>
-        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => setTab("carrier")}>{t("sq.tabCarrier")}</button>
+        <button className={tab === "overview" ? "tab tab-active" : "tab"} onClick={() => changeTab("overview")}>{t("sq.tabOverview")}</button>
+        <button className={tab === "pilots" ? "tab tab-active" : "tab"} onClick={() => changeTab("pilots")}>{t("sq.tabPilots", { count: members.length })}</button>
+        <button className={tab === "ranks" ? "tab tab-active" : "tab"} onClick={() => changeTab("ranks")}>{t("sq.tabRanks")}</button>
+        <button className={tab === "projects" ? "tab tab-active" : "tab"} onClick={() => changeTab("projects")}>{t("sq.tabProjects", { count: projects.length })}</button>
+        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => changeTab("carrier")}>{t("sq.tabCarrier")}</button>
+        {myMembership && (
+          <button className={tab === "bank" ? "tab tab-active" : "tab"} onClick={() => changeTab("bank")}>{t("sq.tabBank")}</button>
+        )}
         {(canEditSquadron || isCreator) && (
-          <button className={tab === "settings" ? "tab tab-active" : "tab"} onClick={() => setTab("settings")}>{t("sq.tabSettings")}</button>
+          <button className={tab === "settings" ? "tab tab-active" : "tab"} onClick={() => changeTab("settings")}>{t("sq.tabSettings")}</button>
         )}
         {myMembership && (
           <>
-            <button className={tab === "chat" ? "tab tab-active" : "tab"} onClick={() => setTab("chat")}>{t("sq.tabChat")}</button>
+            <button className={tab === "chat" ? "tab tab-active" : "tab"} onClick={() => changeTab("chat")}>{t("sq.tabChat")}</button>
           </>
         )}
       </div>
@@ -464,6 +476,10 @@ export default function SquadronPage() {
       {tab === "carrier" && Number.isSafeInteger(Number(id)) && (
         <CarrierPanel mode="squadron" squadronId={Number(id)} />
       )}
+
+      {tab === "bank" && (myMembership ? (
+        <SquadronBankPanel key={id} squadronId={id} />
+      ) : <p role="status">{t("sq.bankMembersOnly")}</p>)}
 
       {/* Настройки — отдельная вкладка */}
       {tab === "settings" && (canEditSquadron || isCreator) && (
