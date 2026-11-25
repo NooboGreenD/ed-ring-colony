@@ -5,10 +5,12 @@ import math
 CONTENT_OPTIONS = {
     'loading': {
         'summary': ('Общий прогресс погрузки', ('summary_label',)),
-        'carriers': ('Прогресс авианосцев', ('carriers_label',)),
-        'items': ('Осталось погрузить', ('items_text',)),
+        'carriers': ('Прогресс авианосцев', ()),
+        'progress': ('Квадратные индикаторы прогресса', ()),
+        'items': ('Таблица товаров', ()),
+        'filter': ('Выбор режима товаров', ('filter_combo',)),
         'source': ('Источник и время проверки', ('source_label',)),
-        'completed': ('Показывать завершённые товары', ()),
+        'completed': ('Все товары (иначе только оставшиеся)', ()),
     },
     'route': {
         'current': ('Текущая система', ('current_label',)),

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ArchitectNav from "./ArchitectNav";
+import LoadingPatternTeam from "./LoadingPatternTeam";
+import type { LoadingCollaboration } from "@/lib/architect/loadingPatternMembers";
 import { authFetch, supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { INSTALLATIONS, installationName } from "@/lib/architect/catalogue";
@@ -30,6 +32,8 @@ export default function LoadingPatternsWorkspace() {
   const [selected, setSelected] = useState<LoadingPatternView | null>(null);
   const [draft, setDraft] = useState<LoadingPattern>(empty);
   const [dirty, setDirty] = useState(false);
+  const [collaboration, setCollaboration] =
+    useState<LoadingCollaboration | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [checked, setChecked] = useState("");
   const [error, setError] = useState("");
@@ -135,6 +139,7 @@ export default function LoadingPatternsWorkspace() {
       if (!refresh && revision !== draftRevision.current) return;
       if (refresh && data.pattern.version !== selectedRef.current?.version) {
         setProgress(null);
+        setCollaboration(null);
         setError(tRef.current("lp.conflict"));
         return;
       }
@@ -145,12 +150,14 @@ export default function LoadingPatternsWorkspace() {
         dirtyRef.current = false;
         window.history.replaceState(null, "", `?pattern=${id}`);
       }
+      setCollaboration(data.collaboration ?? null);
       setProgress(data.progress);
       setChecked(data.checkedAt);
       setError("");
     } catch (e) {
       if (version === epoch.current && sequence === requestSequence.current) {
         setProgress(null);
+        setCollaboration(null);
         setError(
           e instanceof Error ? e.message : tRef.current("lp.unavailable"),
         );
@@ -180,6 +187,7 @@ export default function LoadingPatternsWorkspace() {
       epoch.current++;
       requestSequence.current++;
       setSelected(null);
+      setCollaboration(null);
       setDraft(empty());
       setProgress(null);
       setList([]);
@@ -291,6 +299,7 @@ export default function LoadingPatternsWorkspace() {
       if (version !== epoch.current) return;
       if (!response.ok) throw new Error(data.error);
       setSelected(null);
+      setCollaboration(null);
       setDraft(empty());
       setProgress(null);
       setDirty(false);
@@ -300,6 +309,50 @@ export default function LoadingPatternsWorkspace() {
         setError(
           e instanceof Error ? e.message : tRef.current("lp.unavailable"),
         );
+    } finally {
+      if (version === epoch.current) {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    }
+  };
+  const mutateTeam = async (
+    method: "POST" | "PATCH" | "DELETE",
+    body: Record<string, unknown>,
+  ) => {
+    const current = selectedRef.current;
+    if (!current || dirtyRef.current || busyRef.current) return false;
+    const version = epoch.current;
+    busyRef.current = true;
+    setBusy(true);
+    setProgress(null);
+    requestSequence.current++;
+    try {
+      const response = await authFetch(
+        `/api/architect/loading-patterns/${current.id}/members`,
+        {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      const data = await response.json();
+      if (version !== epoch.current || selectedRef.current?.id !== current.id)
+        return false;
+      if (!response.ok)
+        throw new Error(data.error || tRef.current("lp.unavailable"));
+      setCollaboration(null);
+      await open(current.id, true);
+      void loadList();
+      return true;
+    } catch (error) {
+      if (version === epoch.current)
+        setError(
+          error instanceof Error
+            ? error.message
+            : tRef.current("lp.unavailable"),
+        );
+      return false;
     } finally {
       if (version === epoch.current) {
         busyRef.current = false;
@@ -398,6 +451,7 @@ export default function LoadingPatternsWorkspace() {
               requestSequence.current++;
               draftRevision.current++;
               setSelected(null);
+              setCollaboration(null);
               setDraft(empty());
               setDirty(false);
               setProgress(null);
@@ -454,6 +508,15 @@ export default function LoadingPatternsWorkspace() {
           ))}
         </aside>
         <section className="lp-editor">
+          {selected && collaboration && (
+            <LoadingPatternTeam
+              key={selected.id}
+              collaboration={collaboration}
+              carriers={selected.pattern.carriers}
+              disabled={busy || dirty}
+              mutate={mutateTeam}
+            />
+          )}
           <div className="card lp-settings">
             <div className="lp-actions">
               <input
@@ -489,8 +552,11 @@ export default function LoadingPatternsWorkspace() {
               ) : (
                 <button
                   className="btn"
+                  disabled={busy}
                   onClick={() => {
+                    requestSequence.current++;
                     setSelected(null);
+                    setCollaboration(null);
                     update({
                       ...draft,
                       name: draft.name + " · " + t("lp.copy"),
