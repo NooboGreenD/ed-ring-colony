@@ -70,3 +70,13 @@ test('loading UI: saving uses authenticated PATCH with version and structured ta
   const body=JSON.parse(call.init.body);assert.equal(body.version,1);assert.equal(body.name,'Test load');assert.equal(body.carriers[0].carrierId,'123');assert.ok(body.allocations['123']);
  }finally{await h.close();}
 });
+
+
+test('loading UI: old catalogue warning is explicit without silently saving a template',async()=>{
+ const h=await harness({link:true,api:async(url)=>url.endsWith('/'+id)?{body:{ok:true,pattern:{...view(),catalogueUpdated:true,allocationsAdjusted:true},progress:{total:100,loaded:0,unknown:100,carriers:[],unassigned:100}}}:null});
+ try{
+  const notices=[...h.doc.querySelectorAll('[role="status"]')].map(el=>el.textContent).join(' ');
+  assert.match(notices,/Каталог обновлён/);assert.match(notices,/Raven/);
+  assert.equal(h.calls.filter(call=>call.init?.method==='PATCH').length,0);
+ }finally{await h.close();}
+});

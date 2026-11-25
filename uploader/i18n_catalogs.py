@@ -14573,3 +14573,6 @@ _LOADING_EN = {'Паттерны погрузки': 'Loading patterns', 'Пат�
 for _locale in ("en", "de", "it", "ko", "zh", "ja"):
     for _source, _text in _LOADING_EN.items():
         CATALOGS.setdefault(_locale, {}).setdefault(_source, _text)
+
+for _locale in ("en", "de", "it", "ko", "zh", "ja"):
+    CATALOGS.setdefault(_locale, {})["Каталог обновлён: проверьте распределение на сайте."] = "Catalogue updated: review allocations on the website."

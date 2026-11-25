@@ -3090,6 +3090,9 @@ class LoadingOverlay(HudWindow):
             else ""
         )
 
+        if (data.get("pattern") or {}).get("catalogueUpdated"):
+            self.source_label.setText(self.source_label.text() + "\n" + tr("Каталог обновлён: проверьте распределение на сайте."))
+
     def apply_data_options(self):
         super().apply_data_options()
         if hasattr(self, "_last_loading"):

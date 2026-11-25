@@ -220,6 +220,11 @@ class LoadingQtTests(unittest.TestCase):
         overlay.apply_font("Arial", 16)
         self.assertEqual(overlay.items_text.font().family(), "Arial")
         self.assertEqual(overlay.items_text.font().pixelSize(), 20)
+        updated = payload()
+        updated["pattern"]["catalogueUpdated"] = True
+        overlay.update_loading(updated)
+        from i18n import tr
+        self.assertIn(tr("Каталог обновлён: проверьте распределение на сайте."), overlay.source_label.text())
         overlay.update_loading({})
         self.assertEqual(overlay.items_text.toPlainText(), "")
 

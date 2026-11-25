@@ -23,9 +23,10 @@ import type {
   PrimaryPortCargo,
   SystemEconomy,
 } from './types.ts';
+import { PRIMARY_PORT_SOURCE, RAVEN_PRIMARY_PORT_RECIPES } from './primaryPortRecipes.ts';
 
 /** Версия набора данных: bump при изменении стоимостей или правил. */
-export const CATALOGUE_VERSION = 4;
+export const CATALOGUE_VERSION = 5;
 
 /** Русские названия товаров (как в русской локализации игры). */
 export const COMMODITY_LABELS_RU: Record<string, string> = {
@@ -2288,158 +2289,45 @@ const CATALOGUE_ENTRIES: ArchitectInstallation[] = [
 ];
 
 /**
- * Материалы основного порта системы.
- *
- * Основной порт — первый порт колонии: он строится с колониального корабля,
- * не тратит очки системы, но требует больше материалов, чем тот же порт
- * в уже колонизированной системе (аванпосты ≈ +18 %, Кориолис ≈ +28 %,
- * порты T3 ≈ +16 %). Игра «плавает» количества на ±5 % и пересчитывает их
- * при каждой новой заявке, поэтому списки — ориентир для планирования
- * перевозок, а не точный счёт; оценочные списки помечены `approximate`.
- *
- * Источники: сканы стройплощадок, опубликованные сообществом
- * (ED Wiki: Coriolis / Orbis / Outpost; обсуждения Frontier и Steam).
- * Точные списки сняты с реальных основных портов; для остальных классов
- * (аванпосты, Додекаэдр, планетарный порт) обычный список умножен на
- * коэффициент подорожания и округлён до 5 т.
+ * Основные орбитальные порты: фиксированные рецепты Raven, без множителей,
+ * округления или случайного разброса. Обычные рецепты выше не изменяются.
+ * Отдельного primary-рецепта планетарного Zeus в Raven нет: его прежняя
+ * оценка оставлена отдельно, чтобы не менять допустимость старых планов.
  */
-const CORIOLIS_PRIMARY_CARGO: Record<string, number> = {
-  aluminium: 12550,
-  ceramiccomposites: 1300,
-  cmmcomposite: 14200,
-  computercomponents: 200,
-  copper: 730,
-  foodcartridges: 230,
-  fruitandvegetables: 140,
-  insulatingmembrane: 800,
-  liquidoxygen: 5000,
-  medicaldiagnosticequipment: 25,
-  nonlethalweapons: 25,
-  polymers: 1100,
-  powergenerators: 60,
-  semiconductors: 210,
-  steel: 18200,
-  superconductors: 350,
-  titanium: 11500,
-  water: 2100,
-  waterpurifiers: 105,
-};
-
-const ORBIS_PRIMARY_CARGO: Record<string, number> = {
-  aluminium: 44962,
-  ceramiccomposites: 4964,
-  cmmcomposite: 51993,
-  computercomponents: 397,
-  copper: 2785,
-  foodcartridges: 489,
-  fruitandvegetables: 295,
-  insulatingmembrane: 1630,
-  liquidoxygen: 16696,
-  medicaldiagnosticequipment: 49,
-  nonlethalweapons: 49,
-  polymers: 2324,
-  powergenerators: 136,
-  semiconductors: 429,
-  steel: 67426,
-  superconductors: 676,
-  titanium: 38828,
-  water: 7618,
-  waterpurifiers: 214,
-};
-
-/** Обычный список постройки × коэффициент подорожания, округление до 5 т. */
-function scaledPrimaryCargo(base: Record<string, number>, factor: number): Record<string, number> {
-  const cargo: Record<string, number> = {};
-  for (const [key, tons] of Object.entries(base)) {
-    cargo[key] = Math.round((tons * factor) / 5) * 5;
-  }
-  return cargo;
+function fixedPrimaryCargo(recipe: string): PrimaryPortCargo {
+  const cargo = RAVEN_PRIMARY_PORT_RECIPES[recipe];
+  const tons = Object.values(cargo).reduce((sum, value) => sum + value, 0);
+  return {
+    cargo,
+    approximate: false,
+    note: `Raven Colonial: фиксированный рецепт основного порта — ${tons} т`,
+    noteKey: 'arch.primary.ravenFixed',
+    noteParams: { tons },
+    sourceUrl: PRIMARY_PORT_SOURCE,
+  };
 }
-
-function rawCargo(id: string): Record<string, number> {
-  const entry = CATALOGUE_ENTRIES.find((installation) => installation.id === id);
-  return entry ? entry.cargo : {};
-}
-
-const OUTPOST_PRIMARY_FACTOR = 1.18;
-const T3_PRIMARY_FACTOR = 1.157;
 
 const PRIMARY_PORT_DATA: Record<string, PrimaryPortCargo> = {
-  no_truss: {
-    cargo: CORIOLIS_PRIMARY_CARGO,
-    note: 'Скан основного порта (ED Wiki): ≈69 000 т против 53 723 т у обычного Кориолиса',
-    noteKey: 'arch.primary.scanCoriolis',
-  },
-  asteroid: {
-    cargo: CORIOLIS_PRIMARY_CARGO,
-    note: 'База стоит как Кориолис, поэтому основной порт взят по списку Кориолиса (≈69 000 т)',
-    noteKey: 'arch.primary.estimateCoriolis',
-  },
-  apollo: {
-    cargo: ORBIS_PRIMARY_CARGO,
-    note: 'Скан основного порта (ED Wiki): ≈242 000 т против 209 122 т у обычного Орбиса',
-    noteKey: 'arch.primary.scanOrbis',
-  },
-  ocellus: {
-    cargo: ORBIS_PRIMARY_CARGO,
-    note: 'Оцеллус стоит как Орбис, поэтому основной порт взят по списку Орбиса (≈242 000 т)',
-    noteKey: 'arch.primary.estimateOrbis',
-  },
-  dodec: {
-    cargo: scaledPrimaryCargo(rawCargo('dodec'), T3_PRIMARY_FACTOR),
-    approximate: true,
-    note: `Оценка: обычный список ×${T3_PRIMARY_FACTOR} — точного скана основного Додекаэдра нет`,
-    noteKey: 'arch.primary.estimateDodec',
-    noteParams: { factor: T3_PRIMARY_FACTOR },
-  },
+  no_truss: fixedPrimaryCargo('coriolis-primary'),
+  asteroid: fixedPrimaryCargo('asteroid-primary'),
+  apollo: fixedPrimaryCargo('orbis-primary'),
+  ocellus: fixedPrimaryCargo('ocellus-primary'),
+  dodec: fixedPrimaryCargo('dodec-primary'),
+  plutus: fixedPrimaryCargo('orbital-outpost-primary'),
+  vulcan: fixedPrimaryCargo('orbital-outpost-primary'),
+  dysnomia: fixedPrimaryCargo('orbital-outpost-primary'),
+  vesta: fixedPrimaryCargo('orbital-outpost-primary'),
+  prometheus: fixedPrimaryCargo('orbital-outpost-primary'),
+  nemesis: fixedPrimaryCargo('orbital-outpost-primary'),
+  // No dedicated primary entry in Raven. Preserve legacy support explicitly
+  // as an estimate; never present the regular planetary recipe as primary.
   zeus: {
-    cargo: scaledPrimaryCargo(rawCargo('zeus'), T3_PRIMARY_FACTOR),
+    cargo: Object.fromEntries(Object.entries(CATALOGUE_ENTRIES.find(item => item.id === 'zeus')!.cargo)
+      .map(([key, tons]) => [key, Math.round((tons * 1.157) / 5) * 5])),
     approximate: true,
-    note: `Оценка: обычный список ×${T3_PRIMARY_FACTOR} — точного скана основного планетарного порта нет`,
+    note: 'Оценка: обычный список ×1.157 — точного скана основного планетарного порта нет',
     noteKey: 'arch.primary.estimatePlanetary',
-    noteParams: { factor: T3_PRIMARY_FACTOR },
-  },
-  plutus: {
-    cargo: scaledPrimaryCargo(rawCargo('plutus'), OUTPOST_PRIMARY_FACTOR),
-    approximate: true,
-    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
-    noteKey: 'arch.primary.estimateOutpost',
-    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
-  },
-  vulcan: {
-    cargo: scaledPrimaryCargo(rawCargo('vulcan'), OUTPOST_PRIMARY_FACTOR),
-    approximate: true,
-    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
-    noteKey: 'arch.primary.estimateOutpost',
-    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
-  },
-  dysnomia: {
-    cargo: scaledPrimaryCargo(rawCargo('dysnomia'), OUTPOST_PRIMARY_FACTOR),
-    approximate: true,
-    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
-    noteKey: 'arch.primary.estimateOutpost',
-    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
-  },
-  vesta: {
-    cargo: scaledPrimaryCargo(rawCargo('vesta'), OUTPOST_PRIMARY_FACTOR),
-    approximate: true,
-    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
-    noteKey: 'arch.primary.estimateOutpost',
-    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
-  },
-  prometheus: {
-    cargo: scaledPrimaryCargo(rawCargo('prometheus'), OUTPOST_PRIMARY_FACTOR),
-    approximate: true,
-    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
-    noteKey: 'arch.primary.estimateOutpost',
-    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
-  },
-  nemesis: {
-    cargo: scaledPrimaryCargo(rawCargo('nemesis'), OUTPOST_PRIMARY_FACTOR),
-    approximate: true,
-    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — военный аванпост везёт другой набор грузов`,
-    noteKey: 'arch.primary.estimateMilitary',
-    noteParams: { factor: OUTPOST_PRIMARY_FACTOR },
+    noteParams: { factor: 1.157 },
   },
 };
 

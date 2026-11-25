@@ -1,5 +1,6 @@
 export const loadingPatternTranslations: Record<string, Record<string, string>> = {
   ru: {
+    'lp.catalogueUpdated': 'Каталог обновлён: требования пересчитаны по таблице Raven. Устаревшие назначения ограничены новой потребностью, добавленные товары оставлены нераспределёнными. Проверьте распределение; для сохранения изменений автору нужно сохранить паттерн.',
     'lp.title': 'Погрузка',
     'lp.intro': 'Постройки → товары → авианосцы. Личные и публичные паттерны погрузки.',
     'lp.name': 'Название паттерна',
@@ -49,6 +50,7 @@ export const loadingPatternTranslations: Record<string, Record<string, string>> 
     'lp.conflict': 'Паттерн изменён в другом окне. Скопируйте правки и откройте его заново.',
   },
   en: {
+    'lp.catalogueUpdated': 'Catalogue updated: requirements now use the Raven table. Obsolete assignments are capped to new demand; added goods remain unassigned. Review allocations; the author must save the pattern to persist changes.',
     'lp.title': 'Loading',
     'lp.intro': 'Buildings → commodities → carriers. Private and public loading patterns.',
     'lp.name': 'Pattern name',
@@ -98,6 +100,7 @@ export const loadingPatternTranslations: Record<string, Record<string, string>> 
     'lp.conflict': 'This pattern changed in another window. Copy your edits, then reopen it.',
   },
   de: {
+    'lp.catalogueUpdated': 'Catalogue updated: requirements now use the Raven table. Obsolete assignments are capped to new demand; added goods remain unassigned. Review allocations; the author must save the pattern to persist changes.',
     'lp.title': 'Loading',
     'lp.intro': 'Buildings → commodities → carriers. Private and public loading patterns.',
     'lp.name': 'Pattern name',
@@ -147,6 +150,7 @@ export const loadingPatternTranslations: Record<string, Record<string, string>> 
     'lp.conflict': 'This pattern changed in another window. Copy your edits, then reopen it.',
   },
   it: {
+    'lp.catalogueUpdated': 'Catalogue updated: requirements now use the Raven table. Obsolete assignments are capped to new demand; added goods remain unassigned. Review allocations; the author must save the pattern to persist changes.',
     'lp.title': 'Loading',
     'lp.intro': 'Buildings → commodities → carriers. Private and public loading patterns.',
     'lp.name': 'Pattern name',
@@ -196,6 +200,7 @@ export const loadingPatternTranslations: Record<string, Record<string, string>> 
     'lp.conflict': 'This pattern changed in another window. Copy your edits, then reopen it.',
   },
   ko: {
+    'lp.catalogueUpdated': 'Catalogue updated: requirements now use the Raven table. Obsolete assignments are capped to new demand; added goods remain unassigned. Review allocations; the author must save the pattern to persist changes.',
     'lp.title': 'Loading',
     'lp.intro': 'Buildings → commodities → carriers. Private and public loading patterns.',
     'lp.name': 'Pattern name',
@@ -245,6 +250,7 @@ export const loadingPatternTranslations: Record<string, Record<string, string>> 
     'lp.conflict': 'This pattern changed in another window. Copy your edits, then reopen it.',
   },
   zh: {
+    'lp.catalogueUpdated': 'Catalogue updated: requirements now use the Raven table. Obsolete assignments are capped to new demand; added goods remain unassigned. Review allocations; the author must save the pattern to persist changes.',
     'lp.title': 'Loading',
     'lp.intro': 'Buildings → commodities → carriers. Private and public loading patterns.',
     'lp.name': 'Pattern name',
@@ -294,6 +300,7 @@ export const loadingPatternTranslations: Record<string, Record<string, string>> 
     'lp.conflict': 'This pattern changed in another window. Copy your edits, then reopen it.',
   },
   ja: {
+    'lp.catalogueUpdated': 'Catalogue updated: requirements now use the Raven table. Obsolete assignments are capped to new demand; added goods remain unassigned. Review allocations; the author must save the pattern to persist changes.',
     'lp.title': 'Loading',
     'lp.intro': 'Buildings → commodities → carriers. Private and public loading patterns.',
     'lp.name': 'Pattern name',
