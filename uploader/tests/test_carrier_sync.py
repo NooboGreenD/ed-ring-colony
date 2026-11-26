@@ -146,6 +146,24 @@ class SquadronBankTests(unittest.TestCase):
     def bank(self):
         return [event for event in self.collector.pending if event["event"] == "SquadronBankTransfer"]
 
+    def test_market_sale_is_queued_and_not_reinterpreted_as_a_second_bank_deposit(self):
+        sale = {"event": "MarketSell", "timestamp": "2026-03-01T09:01:00Z",
+                "MarketID": SQ, "Type": "steel", "Count": 500,
+                "SellPrice": 1000, "TotalSale": 500000}
+        self.collector.feed(sale, live=True)
+        self.inventory["steel"] -= 500
+        self.cargo("2026-03-01T09:01:01Z")
+        self.assertEqual(self.bank(), [])
+        queued = [event for event in self.collector.pending if event["event"] == "MarketSell"]
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0]["Count"], 500)
+        self.assertEqual(queued[0]["MarketID"], SQ)
+        api = FakeApi()
+        result = self.collector.flush(api)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["inventory_changed"])
+        self.assertTrue(any(event["event"] == "MarketSell" for batch in api.batches for event in batch))
+
     def test_deposit_and_withdrawal_are_counted_from_the_hold_diff(self):
         self.inventory = {"steel": 200, "aluminium": 100, "drones": 4}
         self.cargo("2026-03-01T09:01:00Z")

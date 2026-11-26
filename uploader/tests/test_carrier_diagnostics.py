@@ -105,3 +105,19 @@ class DiagnosticsTests(unittest.TestCase):
             self.app._handle_tracked_event(event, live=True)
         self.collector.feed.assert_called_once_with(event, live=True)
         self.assertEqual(self.app.carrier.states()[3713477376].commodities['steel'], 1320)
+
+    def test_empty_squadron_stats_never_send_a_false_empty_raven_correction(self):
+        self.app.carrier = CarrierTracker()
+        self.app.dispatcher = mock.Mock()
+        self.app.overlay_manager = mock.Mock()
+        self.app._refresh_carrier_cargo = mock.Mock()
+        self.app.carrier.handle({'event': 'Docked', 'MarketID': 3713477376,
+                                 'timestamp': '2026-03-01T10:00:00Z',
+                                 'StationType': 'FleetCarrier', 'StationServices': ['squadronBank']})
+        for typed in (True, False):
+            event = {'event': 'CarrierStats', 'CarrierID': 3713477376,
+                     'timestamp': '2026-03-01T11:00:00Z', 'SpaceUsage': {'Cargo': 0}}
+            if typed:
+                event['CarrierType'] = 'SquadronCarrier'
+            self.app._feed_carrier(event, live=True)
+        self.app.dispatcher.submit_fc_cargo_correction.assert_not_called()

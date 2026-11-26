@@ -432,7 +432,8 @@ class CarrierState:
         """Свести поимённый список с достоверным тоннажем `CarrierStats`.
 
         Возвращает True, если список пришлось править. Без `CarrierStats`
-        (чужой или эскадренный носитель) сверять не с чем — выходим сразу.
+        сверять не с чем. Эскадренный банк никогда не обнуляем и не масштабируем
+        по общему Cargo: для него нужен поимённый снимок или операции.
 
         Правила и зачем они такие:
 
@@ -454,7 +455,7 @@ class CarrierState:
         fresher = max(self.remote_at, self.delta_at)
         observed_at = max(self.cargo_snapshot_at, max(self.commodity_versions.values(), default=0),
                           max(self.cargo_observations.values(), default=0))
-        if (self.kind == "squadron" or self.cargo_origin in ("market", "server")) and observed_at > self.stats_at:
+        if self.kind == "squadron" or (self.cargo_origin in ("market", "server") and observed_at > self.stats_at):
             # A market/ledger snapshot is partial, so it supplies a lower bound,
             # not an invented exact total. Retain any still-unidentified cargo.
             if total > stored:
@@ -463,7 +464,7 @@ class CarrierState:
                 self.stored_estimated = True
                 stored = total
             self.untracked = max(0, stored - total)
-            return False  # an older aggregate cannot trim observed bank/market cargo
+            return False  # no aggregate may trim bank stock; old totals cannot trim market stock
         if fresher and fresher > self.stats_at + self.RECONCILE_GRACE_SECONDS:
             # Поимённые данные свежее тоннажа: сверять нечем и незачем.
             # Так же отрабатывает разбор старых журналов при запуске —
@@ -732,7 +733,9 @@ class CarrierTracker:
         carrier_id = _as_int(event.get("CarrierID"))
         if not carrier_id:
             return False
-        squadron = str(event.get("CarrierType") or "") == "SquadronCarrier"
+        known = self._state_for(carrier_id)
+        squadron = (str(event.get("CarrierType") or "") == "SquadronCarrier"
+                    or (known is not None and self._kind_for(known) == "squadron"))
         # CarrierStats приходит только тому, кто управляет носителем. Личный —
         # значит свой. Эскадренный (CarrierType: SquadronCarrier) открывают и
         # офицеры эскадрильи: раньше он становился «своим» и затирал учёт

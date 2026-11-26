@@ -166,11 +166,11 @@ export class CapiClient {
   }
 
   /** Сырой запрос: сюда сведён весь разбор кодов ответа Frontier. */
-  private async request(endpoint: string): Promise<CapiResponse> {
+  private async request(endpoint: string, timeoutMs = this.timeoutMs): Promise<CapiResponse> {
     let res: Response;
     try {
       res = await fetch(`${this.base}${endpoint}`, {
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
         cache: 'no-store',
         headers: {
           Authorization: `Bearer ${this.accessToken}`,
@@ -304,6 +304,15 @@ export class CapiClient {
       if (err instanceof CapiError && err.kind === 'no_content') return null;
       throw err;
     }
+  }
+
+  /** Current commander's squadron bank; never a public arbitrary-carrier lookup. */
+  async getSquadron(): Promise<unknown> {
+    const { status, body, partial } = await this.request('/squadron', 20_000);
+    if (partial || body.length > 4 * 1024 * 1024) throw new CapiError('malformed', '/squadron', status);
+    if (status === 204 || !body.trim()) throw new CapiError('no_content', '/squadron', status);
+    try { return JSON.parse(body); }
+    catch { throw new CapiError('malformed', '/squadron', status); }
   }
 
   async getCommunityGoals(): Promise<CapiCommunityGoalsResponse> {

@@ -8206,12 +8206,49 @@ class ColonialHelperApp:
             self._carrier_server_at = now
             threading.Thread(target=self._load_server_carriers, daemon=True).start()
 
+    def _refresh_squadron_bank_from_frontier(self):
+        """Runs in the carrier read worker, never on the journal/GUI thread.
+
+        Periodic while docked covers deliveries by pilots without Helper.
+        Skip queued own operations; the server rejects observed snapshot races.
+        """
+        state = self.carrier.state
+        if not self.api.is_connected or not state.at_carrier or state.kind != "squadron":
+            return
+        if self._carrier_sync_collector().pending_count:
+            return
+        identity = (self.api.api_base, self.api.token, int(state.market_id or 0))
+        now = time.monotonic()
+        if now < getattr(self, "_bank_snapshot_retry", {}).get(identity, 0):
+            return
+        # Set before network IO: overlapping carrier-read workers cannot flood CAPI.
+        self._bank_snapshot_retry = {identity: now + 120.0}
+        result = self.api.refresh_squadron_bank(identity[2])
+        current = self.carrier.state
+        if (self.api.api_base, self.api.token, int(current.market_id or 0)) != identity or not current.at_carrier:
+            return  # account/server/dock changed while the request was in flight
+        if result.get("ok"):
+            self.root.after(0, lambda: self.log(
+                tr("Эскадренный банк: остатки сверены с Frontier CAPI, включая неучтённые доставки."), "info"))
+            page = getattr(self, "loading_patterns_page", None)
+            if page is not None:
+                page.inventory_changed.emit()
+        elif result.get("needsSiteLink") or result.get("status") in (403, 422):
+            self._bank_snapshot_retry = {identity: now + 600.0}
+            self.root.after(0, lambda: self.log(
+                tr("Эскадренный банк: полная сверка недоступна. Нужны привязка Frontier на сайте "
+                   "и доступ к банку; пока показаны только учтённые операции."), "warn"))
+
     def _load_server_carriers(self):
         """Фоновый запрос учёта авианосцев с сайта проекта → блок CARRIER.
 
         Личный носитель, носители эскадрильи и тот, у которого пилот стоит
         сейчас (чужому сайт отдаёт статус и рынок без груза).
         """
+        try:
+            self._refresh_squadron_bank_from_frontier()
+        except Exception:
+            pass  # optional CAPI must not suppress the existing ledger read
         try:
             result = self.api.fetch_my_carriers()
         except Exception:
@@ -8479,8 +8516,11 @@ class ColonialHelperApp:
             return
         if str(event.get("event")) == "CarrierStats":
             usage = event.get("SpaceUsage") if isinstance(event.get("SpaceUsage"), dict) else {}
-            if usage.get("Cargo") == 0 and event.get("CarrierID"):
-                # Трюм подтверждённо пуст — Raven тоже должен это знать.
+            stats_carrier = self.carrier.states().get(int(event.get("CarrierID") or 0))
+            if (usage.get("Cargo") == 0 and event.get("CarrierID")
+                    and event.get("CarrierType") != "SquadronCarrier"
+                    and (stats_carrier is None or stats_carrier.kind != "squadron")):
+                # Only an empty personal hold is established by this aggregate.
                 self.dispatcher.submit_fc_cargo_correction(
                     event.get("CarrierID"), empty=True, reason="трюм пуст по CarrierStats")
         if str(event.get("event")) in ("Docked", "CarrierStats", "CarrierJump", "CarrierLocation"):

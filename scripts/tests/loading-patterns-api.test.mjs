@@ -172,3 +172,27 @@ test('loading team: consent revocation, current ownership and participant remova
  globalThis.lpUser='owner';assert.equal((await membersApi.DELETE(req('DELETE',{userId:pilotId}),params)).status,200);
  globalThis.lpUser=pilotId;assert.equal((await membersApi.PATCH(req('PATCH',{accept:true,sharedCarrierIds:['123']}),params)).status,404);
 });
+
+test('loading API: in-game docking restrictions do not revoke accepted pattern stock sharing',async()=>{
+ const state=teamFixture();globalThis.lpUser=pilotId;
+ await membersApi.PATCH(req('PATCH',{accept:true,sharedCarrierIds:['123']}),params);
+ globalThis.lpUser=loaderId;
+ const before=await detail.GET(req(),params);
+ assert.equal(before.status,200);assert.ok(before.body.progress.loaded>0);
+ const savedPattern=structuredClone(state.tables.carrier_loading_patterns);
+ const savedMemberships=structuredClone(state.tables.carrier_loading_pattern_members);
+ for(const access of ['none','friends','squadron','squadronfriends','all']){
+   state.tables.fleet_carriers[0].docking_access=access;
+   state.tables.fleet_carriers[0].allow_notorious=access==='all';
+   const after=await detail.GET(req(),params);
+   assert.equal(after.status,200);assert.deepEqual(after.body.progress,before.body.progress);
+   assert.deepEqual(state.tables.carrier_loading_patterns,savedPattern);
+   assert.deepEqual(state.tables.carrier_loading_pattern_members,savedMemberships);
+ }
+ // Game access does not substitute for actual consent: revocation still hides stock.
+ globalThis.lpUser=pilotId;await membersApi.PATCH(req('PATCH',{accept:true,sharedCarrierIds:[]}),params);
+ globalThis.lpUser=loaderId;
+ const revoked=await detail.GET(req(),params);
+ assert.equal(revoked.body.progress.loaded,0);
+ assert.ok(revoked.body.progress.unknown>0);
+});
