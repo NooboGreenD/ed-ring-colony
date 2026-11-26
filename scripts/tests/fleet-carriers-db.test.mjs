@@ -745,3 +745,68 @@ test('direct Market queue and station reports converge with delayed trade replay
   }
   assert.equal((await carrier(id)).owner_id,null,'a visitor can report stock without acquiring the carrier');
 });
+
+test('legacy notification type check blocks a watched jump and its cargo batch; additive migration unblocks retries', async () => {
+  const migration = name => readFileSync(new URL(`../../supabase/migrations/${name}`, import.meta.url), 'utf8');
+  const repair = migration('20261130090000_carrier_jump_notification_type.sql');
+  const id='3708000100';
+  await db.exec(`
+    CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT NULL::uuid $$;
+    CREATE TABLE public.user_notifications(
+      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id uuid NOT NULL REFERENCES public.profiles(id), type text NOT NULL,
+      title text NOT NULL, body text, href text, metadata jsonb NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE public.carrier_directory(
+      carrier_id bigint PRIMARY KEY, callsign text, name text, system_name text,
+      updated_at timestamptz DEFAULT now(), previous_system_name text, previous_at timestamptz
+    );
+    INSERT INTO public.profiles(id) VALUES ('${MEMBER}') ON CONFLICT DO NOTHING;
+  `);
+  // Exact legacy allowlist, rather than a permissive mock of notifications.
+  await db.exec(migration('20250907_fix_support_notifications.sql'));
+  for(const name of ['20261107090000_atlas_carrier_watch.sql', '20261110190000_carrier_watch_jump.sql',
+    '20261113120000_carrier_jump_history.sql','20261114100000_carrier_jump_notify.sql']) await db.exec(migration(name));
+  await apply([{op:'identity',carrier_id:id,at:'2026-03-05T10:00:00Z',carrier_type:'SquadronCarrier'},
+    {op:'location',carrier_id:id,at:'2026-03-05T10:00:00Z',system_name:'Sol'}]);
+  await db.query(`INSERT INTO atlas_carrier_watch(user_id,carrier_id,jump_seen_at) VALUES($1,$2,now())`,[MEMBER,id]);
+  const ops=[{op:'location',carrier_id:id,at:'2026-03-05T10:01:00Z',system_name:'Lave'},
+    delta('2026-03-05T10:02:00Z','cmmcomposite',1320,hash(),id)];
+  await assert.rejects(apply(ops), error=>error.code==='23514' && /user_notifications_type_check/.test(error.message));
+  assert.equal((await carrier(id)).system_name,'Sol','notification failure rolls the location back');
+  assert.deepEqual(await cargo(id),{},'the batch has not acknowledged its cargo');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM carrier_jump_history WHERE carrier_id=$1',[id])).rows[0].n,0);
+
+  await db.exec(repair);
+  const constraint=async()=>(await db.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+    WHERE conrelid='public.user_notifications'::regclass AND conname='user_notifications_type_check'`)).rows[0].def;
+  const first=await constraint();
+  await db.exec(repair);
+  assert.equal(await constraint(),first,'reapplication does not keep nesting OR arms');
+  await apply(ops);
+  await apply(ops); // outbox retries use the same original events/hashes
+  assert.equal((await carrier(id)).system_name,'Lave');
+  assert.deepEqual(await cargo(id),{cmmcomposite:1320});
+  const notes=(await db.query('SELECT * FROM user_notifications')).rows;
+  assert.equal(notes.length,1);assert.equal(notes[0].type,'carrier_jump');
+  assert.equal(notes[0].user_id,MEMBER);assert.equal(notes[0].body,'Sol → Lave');
+  // Old allowed values continue to work, unknown types remain forbidden.
+  for(const type of ['forum_reply','forum_mention','squadron_invite','friend_request','project_update',
+    'news_comment','support_ticket','support_reply']) {
+    await db.query(`INSERT INTO user_notifications(user_id,type,title) VALUES($1,$2,'test')`,[MEMBER,type]);
+  }
+  await assert.rejects(db.query(`INSERT INTO user_notifications(user_id,type,title) VALUES($1,'unknown_kind','test')`,[MEMBER]),
+    error=>error.code==='23514');
+  // Preserve a locally extended allowlist as well; never replace it with ours.
+  await db.exec(`ALTER TABLE user_notifications DROP CONSTRAINT user_notifications_type_check;
+    ALTER TABLE user_notifications ADD CONSTRAINT user_notifications_type_check
+      CHECK(type IN ('custom_notice','carrier_jump','forum_reply','forum_mention','squadron_invite',
+        'friend_request','project_update','news_comment','support_ticket','support_reply'))`);
+  await db.exec(repair);
+  await db.query(`INSERT INTO user_notifications(user_id,type,title) VALUES($1,'custom_notice','test')`,[MEMBER]);
+  await db.exec('ALTER TABLE user_notifications DROP CONSTRAINT user_notifications_type_check');
+  await db.exec(repair);
+  assert.equal((await db.query(`SELECT count(*)::int AS n FROM pg_constraint
+    WHERE conrelid='public.user_notifications'::regclass AND conname='user_notifications_type_check'`)).rows[0].n,0,
+  'a schema with no allowlist remains unrestricted');
+});

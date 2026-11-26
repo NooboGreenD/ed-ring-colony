@@ -6791,6 +6791,8 @@ class ColonialHelperApp:
         # событие нужно и при первом запуске программы: полный разбор истории
         # идёт следом, но до него сайт уже знает эскадрилью.
         "SquadronStartup", "SquadronPromotion",
+        # Type evidence for bank tracking when the latest Location is sparse.
+        "CarrierLocation", "CarrierBuy",
     })
     #: Трекеру экзобиологии дополнительно нужны биосигналы и образцы: без них
     #: блок EXOBIO после перезапуска «не видел» отсканированную систему.

@@ -212,8 +212,107 @@ class BankWatcherTests(unittest.TestCase):
                 self.collector.poll_cargo()
                 self.assertFalse(self.bank())
 
+    def test_sparse_carrier_jump_keeps_bank_tracking_and_does_not_borrow_future_cargo(self):
+        self.start()
+        # The sidecar may already contain the post-jump deposit when the
+        # watcher is still reading CarrierJump. It is NOT a new dock baseline.
+        self.write(snapshot('2026-03-01T10:02:00Z', 200), notify=False)
+        self.collector.feed({'event': 'CarrierJump', 'timestamp': '2026-03-01T10:01:00Z',
+                             'MarketID': SQ, 'StationType': 'FleetCarrier', 'StarSystem': 'Lave'}, live=True)
+        self.collector.feed({'event': 'Cargo', 'timestamp': '2026-03-01T10:02:00Z', 'Count': 200}, live=True)
+        self.collector.poll_cargo()
+        self.assertEqual(len(self.bank()), 1)
+        self.assertEqual(self.bank()[0]['Transfers'], [{'Type': 'steel', 'Count': 500, 'Direction': 'tocarrier'}])
+        self.assertEqual(self.tracker.state.commodities['steel'], 500)
+
+    def test_restored_sparse_location_keeps_known_carrier_kind(self):
+        location = {key: value for key, value in DOCK.items() if key != 'StationServices'}
+        location.update(event='Location', Docked=True, timestamp='2026-03-01T10:00:00Z')
+        for evidence in (DOCK, {'event': 'CarrierStats', 'CarrierID': SQ, 'CarrierType': 'SquadronCarrier'},
+                         {'event': 'CarrierLocation', 'CarrierID': SQ, 'CarrierType': 'SquadronCarrier'}):
+            with self.subTest(evidence=evidence['event']):
+                self.write(snapshot(), notify=False)
+                self.collector = CarrierEventCollector(cargo_reader=self.read)
+                self.collector.restore_context([evidence, {'event': 'LoadGame'}, location])
+                self.collector.begin_live()
+                self.write(snapshot('2026-03-01T10:01:00Z', 200))
+                self.collector.poll_cargo()
+                self.assertEqual(len(self.bank()), 1)
+                self.assertEqual(self.bank()[0]['Transfers'][0]['Count'], 500)
+
+    def test_identity_after_sparse_restored_location_is_used_before_live_baseline(self):
+        location = {key: value for key, value in DOCK.items() if key != 'StationServices'}
+        location.update(event='Location', Docked=True)
+        self.collector.restore_context([location, {'event': 'CarrierLocation', 'CarrierID': SQ,
+                                                   'CarrierType': 'SquadronCarrier'}])
+        self.collector.begin_live()
+        self.assertEqual(self.collector.pending, [])
+        self.write(snapshot('2026-03-01T10:01:00Z', 200))
+        self.collector.poll_cargo()
+        self.assertEqual(self.bank()[0]['Transfers'][0]['Count'], 500)
+
+    def test_known_bank_is_recognised_after_leaving_and_returning_to_sparse_dock(self):
+        self.start()
+        self.collector.feed({'event': 'Undocked'}, live=True)
+        self.collector.feed({key: value for key, value in DOCK.items() if key != 'StationServices'}, live=True)
+        self.write(snapshot('2026-03-01T10:01:00Z', 200))
+        self.collector.poll_cargo()
+        self.assertEqual(self.bank()[0]['Transfers'][0]['Count'], 500)
+
+    def test_untyped_snapshot_never_asserts_that_a_carrier_is_personal(self):
+        self.collector.restore_context([{key: value for key, value in DOCK.items() if key != 'StationServices'}])
+        event = {**DOCK, 'event': 'Market', 'timestamp': '2026-03-01T10:01:00Z',
+                 'Items': [{'Name': 'steel', 'Stock': 1, 'Producer': True}]}
+        self.assertTrue(self.collector.queue_market_snapshot(event))
+        self.assertNotIn('CarrierType', self.collector.pending[-1])
+        self.assertFalse(self.bank())
+
+    def test_known_squadron_type_does_not_leak_to_another_carrier(self):
+        self.start()
+        self.collector.feed({'event': 'Undocked'}, live=True)
+        self.collector.feed({**DOCK, 'MarketID': SQ + 1, 'StationName': 'OWN-001',
+                             'StationServices': ['dock'], 'timestamp': '2026-03-01T10:00:01Z'}, live=True)
+        self.write(snapshot('2026-03-01T10:01:00Z', 200))
+        self.collector.poll_cargo()
+        self.assertFalse(self.bank())
+
+    def test_restored_dock_can_queue_verified_market_in_its_actual_system(self):
+        self.start()
+        event = {**DOCK, 'event': 'Market', 'timestamp': '2026-03-01T10:01:00Z',
+                 'Items': [{'Name': 'steel', 'Stock': 1, 'Producer': True}]}
+        self.assertTrue(self.collector.queue_market_snapshot(event))
+        self.assertFalse(self.collector.queue_market_snapshot({**event, 'StarSystem': 'Lave'}))
+
+    def test_late_identity_does_not_misclassify_a_trade_missing_from_stale_sidecar(self):
+        self.collector.feed({key: value for key, value in DOCK.items() if key != 'StationServices'}, live=True)
+        self.collector.feed({'event': 'MarketBuy', 'timestamp': '2026-03-01T10:00:02Z',
+                             'MarketID': SQ, 'Type': 'steel', 'Count': 50}, live=True)
+        self.collector.feed({'event': 'CarrierStats', 'timestamp': '2026-03-01T10:00:03Z',
+                             'CarrierID': SQ, 'CarrierType': 'SquadronCarrier'}, live=True)
+        self.write(snapshot('2026-03-01T10:00:04Z', 750))
+        self.collector.poll_cargo()
+        self.assertFalse(self.bank())  # known purchase is not an extra withdrawal
+        self.write(snapshot('2026-03-01T10:01:00Z', 200))
+        self.collector.poll_cargo()
+        self.assertEqual(self.bank()[0]['Transfers'][0]['Count'], 550)
+
+    def test_live_identity_can_enable_bank_tracking_without_claiming_old_changes(self):
+        self.collector.feed({key: value for key, value in DOCK.items() if key != 'StationServices'}, live=True)
+        self.collector.feed({'event': 'CarrierStats', 'timestamp': '2026-03-01T10:00:02Z',
+                             'CarrierID': SQ, 'CarrierType': 'SquadronCarrier'}, live=True)
+        self.assertFalse(self.bank())
+        self.write(snapshot('2026-03-01T10:01:00Z', 200))
+        self.collector.poll_cargo()
+        self.assertEqual(len(self.bank()), 1)
+        self.assertEqual(self.bank()[0]['Transfers'][0]['Count'], 500)
+
     def test_actual_helper_restores_bank_context_with_saved_offsets_and_reads_real_sidecar(self):
-        (self.root/'Journal.01.log').write_text(json.dumps(DOCK)+'\n', encoding='utf-8')
+        # Exercise the Helper's tail event allowlist, not just collector calls.
+        identity = {'event': 'CarrierLocation', 'timestamp': '2026-03-01T09:59:00Z',
+                    'CarrierID': SQ, 'CarrierType': 'SquadronCarrier', 'StarSystem': 'Sol'}
+        location = {key: value for key, value in DOCK.items() if key != 'StationServices'}
+        location.update(event='Location', Docked=True)
+        (self.root/'Journal.01.log').write_text('\n'.join(map(json.dumps, [identity, location]))+'\n', encoding='utf-8')
         app = self.App()
         app.journal_path = app.data_dir = self.root
         app.carrier = CarrierTracker()
@@ -226,6 +325,9 @@ class BankWatcherTests(unittest.TestCase):
         result = app._restore_station_state_from_journal()
         self.assertTrue(result['carrier'])
         collector = app._carrier_sync_collector()
+        self.assertTrue(collector.queue_market_snapshot({**DOCK, 'event': 'Market',
+            'timestamp': '2026-03-01T10:00:02Z', 'Items': [{'Name': 'steel', 'Stock': 1, 'Producer': True}]}))
+        self.assertEqual(collector.pending[-1]['CarrierType'], 'SquadronCarrier')
         collector.begin_live()
         self.write(snapshot('2026-03-01T10:01:00Z', 200))
         collector.poll_cargo()
