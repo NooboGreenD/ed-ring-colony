@@ -162,6 +162,9 @@ class CarrierEventCollector:
         self._context: Dict[str, Any] = {
             "market_id": None, "station_type": "", "station_name": "", "services": [], "system": "", "star_pos": None, "squadron": False,
         }
+        # Carrier identity survives sparse Location/CarrierJump events and
+        # undocking, but is keyed by MarketID (never inherited by another FC).
+        self._carrier_types: Dict[int, str] = {}
         # Банк эскадры: ожидаемый трюм корабля у эскадренного носителя.
         self._bank_expected: Optional[Dict[str, int]] = None
         self._bank_unknown_change = False
@@ -199,9 +202,12 @@ class CarrierEventCollector:
             return False
         snapshot.update(event="Market", StationType=self._context["station_type"],
                         StationServices=list(self._context["services"]),
-                        CarrierType="SquadronCarrier" if self._context["squadron"] else "FleetCarrier",
                         Items=[{key:item[key] for key in fields if key in item}
                                for item in event["Items"] if isinstance(item, Mapping)])
+        carrier_type = self._carrier_types.get(self._context["market_id"])
+        if carrier_type:
+            snapshot["CarrierType"] = carrier_type
+        # Missing squadron evidence is unknown, not proof of a personal FC.
         if len(json.dumps(snapshot, ensure_ascii=True).encode("utf-8")) + 2 > MAX_BATCH_BYTES:
             return False
         self._push(snapshot)
@@ -333,13 +339,36 @@ class CarrierEventCollector:
         if isinstance(pos, list) and len(pos) == 3:
             self._context["star_pos"] = pos
 
+    def _remember_carrier_type(self, event: Mapping[str, Any]) -> None:
+        name = event.get("event")
+        if name in ("Docked", "Location", "CarrierJump"):
+            carrier_id = _as_int(event.get("MarketID"))
+        elif name in ("CarrierStats", "CarrierLocation", "CarrierBuy"):
+            carrier_id = _as_int(event.get("CarrierID"))
+        else:
+            return
+        if not carrier_id:
+            return
+        if event.get("CarrierType") == "SquadronCarrier" or "squadronbank" in _services(event):
+            self._carrier_types[carrier_id] = "SquadronCarrier"
+        elif event.get("CarrierType") == "FleetCarrier":
+            self._carrier_types[carrier_id] = "FleetCarrier"
+
     def _dock(self, event: Mapping[str, Any], live: bool) -> None:
-        self._context["market_id"] = _as_int(event.get("MarketID"))
-        self._context["station_type"] = str(event.get("StationType") or "")
-        self._context["station_name"] = str(event.get("StationName") or "")
-        self._context["services"] = _services(event)
-        self._context["squadron"] = (
-            str(event.get("CarrierType") or "") == "SquadronCarrier" or "squadronbank" in _services(event))
+        market_id = _as_int(event.get("MarketID"))
+        same_dock = self._docked_at_carrier() and market_id == self._context["market_id"]
+        was_squadron = self._context["squadron"]
+        self._context["market_id"] = market_id
+        for key, field in (("station_type", "StationType"), ("station_name", "StationName")):
+            if field in event or not same_dock:
+                self._context[key] = str(event.get(field) or "")
+        if isinstance(event.get("StationServices"), list) or not same_dock:
+            self._context["services"] = _services(event)
+        self._context["squadron"] = self._carrier_types.get(market_id) == "SquadronCarrier"
+        if live and same_dock and was_squadron and self._context["squadron"] and self._bank_expected is not None:
+            # CarrierJump/Location is not a new docking. Reading Cargo.json
+            # here could absorb a later deposit before its journal marker.
+            return
         self._bank_expected = None
         self._bank_unknown_change = False
         self._bank_snapshot = None
@@ -352,7 +381,7 @@ class CarrierEventCollector:
             self._bank_expected = self._read_inventory()
 
     def _undock(self) -> None:
-        self._context.update(market_id=None, station_type="", squadron=False)
+        self._context.update(market_id=None, station_type="", station_name="", services=[], squadron=False)
         self._bank_expected = None
         self._bank_unknown_change = False
         self._pending_cargo_at = 0.0
@@ -396,8 +425,13 @@ class CarrierEventCollector:
     def restore_context(self, events) -> None:
         """Restore only the current dock. Never enqueue/replay cargo from history."""
         self._undock()
+        self._carrier_types.clear()
+        self._context.update(system="", star_pos=None)
         for event in events:
             name = event.get("event")
+            self._remember_carrier_type(event)
+            if name in ("Location", "Docked", "CarrierJump", "FSDJump"):
+                self._set_system(event)
             if name in ("LoadGame", "Shutdown", "Undocked", "FSDJump"):
                 self._undock()
             elif name in ("Docked", "Location", "CarrierJump"):
@@ -405,6 +439,8 @@ class CarrierEventCollector:
                     self._undock()
                 elif name != "CarrierJump" or event.get("Docked") is not False:
                     self._dock(event, live=False)
+        # CarrierStats/CarrierLocation can follow the last dock in the tail.
+        self._context["squadron"] = self._carrier_types.get(self._context["market_id"]) == "SquadronCarrier"
 
     def begin_live(self) -> None:
         """Establish a baseline AFTER startup reconciliation, before the first tick.
@@ -530,6 +566,18 @@ class CarrierEventCollector:
             return
 
     def _feed(self, event: Mapping[str, Any], name: str, live: bool) -> None:
+        self._remember_carrier_type(event)
+        if name in ("CarrierStats", "CarrierLocation", "CarrierBuy") and self._docked_at_carrier():
+            # A typed identity may arrive after a sparse Docked/Location.
+            squadron = self._carrier_types.get(self._context["market_id"]) == "SquadronCarrier"
+            if squadron != self._context["squadron"]:
+                self._context["squadron"] = squadron
+                self._bank_expected = self._read_inventory() if live and squadron else None
+                if self.cargo_reader and self._bank_snapshot_at < self._bank_operation_at:
+                    # The stale file does not yet include a known trade from
+                    # before type discovery. Baseline the next valid Cargo;
+                    # never reinterpret that trade as a bank withdrawal.
+                    self._bank_expected = None
         if name in ("LoadGame", "Shutdown", "Undocked"):
             self._undock()
             return

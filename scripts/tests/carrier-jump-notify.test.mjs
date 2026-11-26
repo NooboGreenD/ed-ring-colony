@@ -236,10 +236,14 @@ INSERT INTO public.profiles(id) VALUES ('${PILOT}'), ('${FAVORITE}'), ('${OTHER_
 `);
 
 for (const file of [
+  // The deployed legacy allowlist must be present: a TEXT-only stub hid
+  // the constraint failure that rolled back carrier accounting.
+  '20250907_fix_support_notifications.sql',
   '20261107090000_atlas_carrier_watch.sql',
   '20261110190000_carrier_watch_jump.sql',
   '20261113120000_carrier_jump_history.sql',
   '20261114100000_carrier_jump_notify.sql',
+  '20261130090000_carrier_jump_notification_type.sql',
 ]) {
   await db.exec(readFileSync(join(TEST_ROOT, 'supabase', 'migrations', file), 'utf8'));
 }
