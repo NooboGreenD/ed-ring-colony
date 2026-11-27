@@ -21,6 +21,7 @@ import {
   writeLauncherUploadChunk,
 } from '@/lib/launcherUploadSessions';
 import { LAUNCHER_UPLOAD_CHUNK_BYTES } from '@/lib/launcherUploadProtocol';
+import { HELPER_RUNTIME_RESOURCES } from '@/lib/helperRuntimeResources';
 import { publicOrigin } from '@/lib/siteUrl';
 import {
   CHANNELS,
@@ -46,7 +47,7 @@ async function serverSourceFiles(version: string, t: (key: string, params?: Reco
   const entries = await readdir(root, { withFileTypes: true });
   const files = new Map<string, Buffer>();
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.py') || SERVER_SOURCE_EXCLUDE.has(entry.name)) continue;
+    if (!entry.isFile() || (!entry.name.endsWith('.py') && !HELPER_RUNTIME_RESOURCES.includes(entry.name)) || SERVER_SOURCE_EXCLUDE.has(entry.name)) continue;
     let data = await readFile(join(root, entry.name));
     if (entry.name === 'colonial_helper.py') {
       const source = data.toString('utf8');

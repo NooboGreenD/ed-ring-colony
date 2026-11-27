@@ -123,3 +123,64 @@ test('loading team UI: membership actions disabled while editing unsaved assignm
   assert.equal(h.button('Убрать участника').disabled,true);
  } finally {await h.close();}
 });
+
+async function changeSelect(h, selector, value) {
+ const element=h.doc.querySelector(selector);assert.ok(element,selector);
+ await h.act(async()=>{element.value=value;element.dispatchEvent(new h.dom.window.Event('change',{bubbles:true}));});
+ await h.flush();
+}
+test('loading UI: read-only category/name filters group rows without modifying targets, totals or save state',async()=>{
+ const h=await harness({link:true,canEdit:false});try{
+  const rows=()=>[...h.doc.querySelectorAll('tbody tr')].filter(row=>row.querySelector('td.lp-good-name'));
+  const initialCount=rows().length;const metrics=h.doc.querySelector('.lp-metrics').textContent;
+  const inputValues=()=>[...h.doc.querySelectorAll('tbody input')].map(el=>[el.getAttribute('aria-label'),el.value]);
+  const before=inputValues();
+  await changeSelect(h,'select[aria-label="Группировка и порядок"]','category');
+  assert.ok(h.doc.querySelector('.lp-category-heading'));assert.equal(rows().length,initialCount);
+  assert.deepEqual(inputValues().sort(),before.sort());
+  await changeSelect(h,'select[aria-label="Категория"]','Metals');
+  assert.ok(rows().length<initialCount);assert.ok(rows().length>0);
+  assert.ok(rows().every(row=>row.firstChild.title==='Металлы'));
+  assert.equal(h.doc.querySelector('.lp-metrics').textContent,metrics);
+  await changeSelect(h,'select[aria-label="Категория"]','');
+  await changeSelect(h,'select[aria-label="Группировка и порядок"]','name');
+  assert.equal(h.doc.querySelector('.lp-category-heading'),null);assert.equal(rows().length,initialCount);
+  assert.equal(h.calls.filter(c=>c.init?.method==='PATCH').length,0);
+  assert.ok(!h.doc.body.textContent.includes('Есть несохранённые изменения'));
+  assert.equal(h.doc.querySelector('select[aria-label="Alpha: Лимит целых комплектов"]').disabled,true);
+ }finally{await h.close();}
+});
+
+test('loading UI: whole-recipe method is explicit, saves carrier limits and ignores display filters',async()=>{
+ const h=await harness({link:true});try{
+  await changeSelect(h,'select[aria-label="Alpha: Лимит целых комплектов"]','2');
+  await changeSelect(h,'select[aria-label="Способ распределения"]','kits');
+  assert.match(h.doc.body.textContent,/только целиком/);
+  await changeSelect(h,'select[aria-label="Категория"]','Metals');
+  await h.click(h.button('Распределить автоматически'));
+  await h.click(h.button('Сохранить'));
+  const call=h.calls.find(c=>c.init?.method==='PATCH');assert.ok(call);
+  const body=JSON.parse(call.init.body);assert.equal(body.carriers[0].recipeLimit,2);
+  // The selected starport recipe exceeds 25kt: do not split or allocate just
+  // the visible metals. It remains completely unassigned.
+  assert.deepEqual(body.allocations['123'],{});
+  assert.equal(body.version,1);
+ }finally{await h.close();}
+});
+
+test('loading UI: progress filters keep unknown rows and overall progress unchanged',async()=>{
+ const progress={total:10,loaded:5,unknown:3,unassigned:0,carriers:[{carrierId:'123',name:'Alpha',known:false,loaded:5,target:10,items:[{commodity:'steel',required:5,loaded:5,remaining:0},{commodity:'water',required:3,loaded:null,remaining:null},{commodity:'titanium',required:2,loaded:0,remaining:2}]}]};
+ const h=await harness({link:true,api:async(url)=>url.endsWith('/'+id)?{body:{ok:true,pattern:view(),progress}}:null});try{
+  const card=()=>h.doc.querySelector('.lp-progress-grid details');
+  assert.equal(card().querySelectorAll('.lp-progress-item').length,3);
+  const bar=h.doc.querySelector('progress');assert.equal(bar.value,5);assert.equal(bar.max,10);
+  const completed=h.doc.querySelector('.lp-view-checks input[type="checkbox"]');await h.click(completed);
+  assert.equal(card().querySelectorAll('.lp-progress-item').length,2);
+  assert.match(card().textContent,/\?/);
+  await changeSelect(h,'select[aria-label="Группировка и порядок"]','remaining');
+  assert.match(card().querySelector('.lp-progress-item').textContent,/Вода/);
+  assert.equal(h.doc.querySelector('progress').value,5);assert.equal(h.doc.querySelector('progress').max,10);
+  assert.equal(h.button('Сохранить').disabled,false); // display changes do not dirty the draft
+  assert.ok(!h.doc.body.textContent.includes('Есть несохранённые изменения'));
+ }finally{await h.close();}
+});

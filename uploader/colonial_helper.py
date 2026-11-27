@@ -61,6 +61,7 @@ from route_tracker import RouteTracker
 import route_export
 import route_hint
 import route_travel
+from loading_goods import display_options, valid_display_option
 from overlay_options import CONTENT_OPTIONS, CARRIER_FILTERS, option_key, route_summary
 from helper_shell import PageHost, build_shell
 from overlay import (
@@ -3530,6 +3531,7 @@ class ColonialHelperApp:
                          for key, text in self.OVERLAY_SHIP_BLOCKS],
             ship_modules=str(settings.get("ship_modules_view", "important")),
             content=content,
+            loading_display=display_options(settings),
             carrier_filters=carrier_labels,
             carrier_filter=tr(CARRIER_FILTERS.get(
                 settings.get("carrier_filter", "all"), list(CARRIER_FILTERS.values())[0])),
@@ -3845,8 +3847,11 @@ class ColonialHelperApp:
         seconds = self._idle_seconds(self.overlay_page.idle_text())
         self.overlay_manager.set_idle_timeout(seconds)
 
-    def _on_overlay_content_changed(self, setting: str, enabled: bool):
-        """Галочка «отображаемые данные»: ключ — overlay_<блок>_<раздел>."""
+    def _on_overlay_content_changed(self, setting: str, enabled):
+        """Boolean sections and validated value-based LOADING selectors."""
+        if valid_display_option(setting, enabled):
+            self.overlay_manager.set_loading_display_option(setting, enabled)
+            return
         for block, sections in CONTENT_OPTIONS.items():
             for section in sections:
                 if option_key(block, section) == setting:
@@ -3868,6 +3873,8 @@ class ColonialHelperApp:
         if page is None:
             return
         settings = self.overlay_manager.settings
+        for setting, _text, _choices, value in display_options(settings):
+            page.set_content_value(setting, value)
         for key in self.overlay_manager.BLOCKS:
             page.set_block_value(key, "visible", bool(settings.get(f"show_{key}", True)))
             page.set_block_value(key, "locked", bool(settings.get(f"{key}_locked", False)))

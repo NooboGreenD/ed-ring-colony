@@ -162,6 +162,31 @@ class LoadingHudQtTests(unittest.TestCase):
         self.assertEqual(self.overlay.manifest.cards, {})
         self.assertEqual(self.overlay.summary_label.text(), "Offline")
 
+    def test_category_groups_and_selectors_persist_without_changing_totals(self):
+        controller = Mock()
+        self.overlay.set_controller(controller)
+        combo = self.overlay.goods_combos["loading_goods_order"]
+        combo.setCurrentIndex(combo.findData("category"))
+        card = self.overlay.manifest.cards["123"]
+        self.assertEqual(card.table.rowCount(), 2)  # Metals heading + titanium
+        self.assertEqual(card.table.columnSpan(0, 0), 3)
+        self.assertEqual(card.table.item(1, 2).text(), "2")
+        controller._notify_block.assert_called_with(
+            "loading", "content", {"setting": "loading_goods_order", "value": "category"})
+        category = self.overlay.goods_combos["loading_goods_category"]
+        totals = card.totals_label.text()
+        category.setCurrentIndex(category.findData("Technology"))
+        self.assertEqual(card.table.rowCount(), 0)
+        self.assertEqual(card.totals_label.text(), totals)
+        category.setCurrentIndex(0)
+        combo.setCurrentIndex(combo.findData("recipe"))
+        self.assertEqual(card.table.rowCount(), 1)
+        self.assertEqual(card.table.columnSpan(0, 0), 1)  # no stale spans
+        self.settings["loading_goods_order"] = "category"
+        self.overlay.apply_data_options()
+        self.assertEqual(combo.currentData(), "category")
+        self.assertEqual(card.table.columnSpan(0, 0), 3)
+
     def test_many_carriers_are_scrollable_not_truncated_and_focus_clears_old_cards(
         self,
     ):

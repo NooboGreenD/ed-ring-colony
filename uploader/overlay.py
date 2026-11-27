@@ -1031,6 +1031,16 @@ class OverlayManager:
         for _key, overlay in self._blocks():
             overlay.apply_data_options()
 
+    def set_loading_display_option(self, key, value):
+        from loading_goods import valid_display_option
+        if not valid_display_option(key, value):
+            return
+        self.settings[key] = value
+        self.save_settings()
+        if getattr(self, "loading_overlay", None):
+            self.loading_overlay.apply_data_options()
+        self._notify_block("loading", "content", {"setting": key, "value": value})
+
     def set_content_option(self, block, section, value):
         if section not in CONTENT_OPTIONS.get(block, {}):
             return
@@ -1803,6 +1813,8 @@ DEFAULT_SETTINGS = {
     "active_profile": "",
 }
 
+from loading_goods import DISPLAY_DEFAULTS
+DEFAULT_SETTINGS.update(DISPLAY_DEFAULTS)
 DEFAULT_SETTINGS.update(CONTENT_DEFAULTS)
 DEFAULT_SETTINGS.update(carrier_filter='all', carrier_search='')
 

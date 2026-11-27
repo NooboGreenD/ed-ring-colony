@@ -171,3 +171,24 @@ maybe('удаление версии снимает манифест, но не 
   assert.equal(removed.ok, true, removed.error);
   assert.equal(await store.readManifest('8.4.0'), null);
 });
+
+maybe('loading HUD metadata is included in server releases but arbitrary JSON and pilot config are not', async () => {
+  const files=filesFor('8.5.0');
+  files.set('uploader/loading_goods.py',Buffer.from('METADATA = True\n'));
+  files.set('uploader/loading_goods.json',Buffer.from('{"goods":{"steel":{"category":"Metals"}}}'));
+  files.set('uploader/config.json',Buffer.from('{"token":"do not publish"}'));
+  files.set('uploader/arbitrary.json',Buffer.from('{}'));
+  files.set('uploader/tests/loading_goods.json',Buffer.from('{}'));
+  const result=await store.createServerRelease({version:'8.5.0',channel:'beta',promote:false,files});
+  assert.equal(result.ok,true,result.error);
+  const manifest=await store.readManifest('8.5.0');
+  assert.deepEqual(manifest.files.map(f=>f.path).sort(),['colonial_helper.py','loading_goods.json','loading_goods.py','overlay.py']);
+  const names=zipEntryNames(await store.readBundleArchive('8.5.0'));
+  assert.ok(names.includes('loading_goods.json'));assert.ok(!names.includes('config.json'));
+});
+maybe('a release with loading metadata module but without its data fails closed', async () => {
+  const files=filesFor('8.5.1');files.set('uploader/loading_goods.py',Buffer.from('pass\n'));
+  const result=await store.createServerRelease({version:'8.5.1',channel:'beta',promote:false,files});
+  assert.equal(result.ok,false);assert.match(result.error,/loading_goods\.json/);
+  assert.equal(await store.readManifest('8.5.1'),null);
+});

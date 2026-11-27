@@ -97,6 +97,19 @@ class OverlayPageTests(unittest.TestCase):
         self.page = helper_pages.OverlayPage(_state(), self.actions)
 
     # ------------------------------------------------------------- structure
+    def test_loading_value_selectors_mirror_without_bool_coercion_or_duplicate_writes(self):
+        from loading_goods import display_options
+        page = helper_pages.OverlayPage(_state(
+            content=[("loading", "Loading", [])], loading_display=display_options({})), self.actions)
+        combo = page.loading_display_widgets["loading_goods_order"]
+        combo.setCurrentIndex(combo.findData("category"))
+        self.assertIn(("content_changed", "loading_goods_order", "category"), self.events)
+        self.events.clear()
+        page.set_content_value("loading_goods_order", "remaining")
+        self.assertEqual(combo.currentData(), "remaining")
+        self.assertEqual(self.events, [])
+        page.deleteLater()
+
     def test_header_controls_exist(self):
         self.assertIsInstance(self.page.toggle_btn, QPushButton)
         self.assertIsInstance(self.page.reset_btn, QPushButton)

@@ -1,0 +1,278 @@
+{
+  "categories": {
+    "Metals": {
+      "ru": "Металлы",
+      "color": "#c89a78"
+    },
+    "Industrial Materials": {
+      "ru": "Промышленные материалы",
+      "color": "#e9a15b"
+    },
+    "Technology": {
+      "ru": "Технологии",
+      "color": "#79b8eb"
+    },
+    "Foods": {
+      "ru": "Продукты питания",
+      "color": "#b1ca7c"
+    },
+    "Chemicals": {
+      "ru": "Химикаты",
+      "color": "#7dcc9c"
+    },
+    "Weapons": {
+      "ru": "Оружие",
+      "color": "#ea9292"
+    },
+    "Machinery": {
+      "ru": "Машины",
+      "color": "#dcc775"
+    },
+    "Medicines": {
+      "ru": "Медикаменты",
+      "color": "#c4a4df"
+    },
+    "Other": {
+      "ru": "Прочее",
+      "color": "#acb4bf"
+    },
+    "Textiles": {
+      "ru": "Текстиль",
+      "color": "#acb4bf"
+    },
+    "Waste": {
+      "ru": "Отходы",
+      "color": "#acb4bf"
+    },
+    "Legal Drugs": {
+      "ru": "Легальные наркотики",
+      "color": "#acb4bf"
+    },
+    "Consumer Items": {
+      "ru": "Потребительские товары",
+      "color": "#acb4bf"
+    }
+  },
+  "goods": {
+    "aluminium": {
+      "category": "Metals",
+      "order": 0
+    },
+    "ceramiccomposites": {
+      "category": "Industrial Materials",
+      "order": 1
+    },
+    "cmmcomposite": {
+      "category": "Industrial Materials",
+      "order": 2
+    },
+    "computercomponents": {
+      "category": "Technology",
+      "order": 3
+    },
+    "copper": {
+      "category": "Metals",
+      "order": 4
+    },
+    "foodcartridges": {
+      "category": "Foods",
+      "order": 5
+    },
+    "fruitandvegetables": {
+      "category": "Foods",
+      "order": 6
+    },
+    "insulatingmembrane": {
+      "category": "Industrial Materials",
+      "order": 7
+    },
+    "liquidoxygen": {
+      "category": "Chemicals",
+      "order": 8
+    },
+    "medicaldiagnosticequipment": {
+      "category": "Technology",
+      "order": 9
+    },
+    "nonlethalweapons": {
+      "category": "Weapons",
+      "order": 10
+    },
+    "polymers": {
+      "category": "Industrial Materials",
+      "order": 11
+    },
+    "powergenerators": {
+      "category": "Machinery",
+      "order": 12
+    },
+    "semiconductors": {
+      "category": "Industrial Materials",
+      "order": 13
+    },
+    "steel": {
+      "category": "Metals",
+      "order": 14
+    },
+    "superconductors": {
+      "category": "Industrial Materials",
+      "order": 15
+    },
+    "titanium": {
+      "category": "Metals",
+      "order": 16
+    },
+    "water": {
+      "category": "Chemicals",
+      "order": 17
+    },
+    "waterpurifiers": {
+      "category": "Machinery",
+      "order": 18
+    },
+    "autofabricators": {
+      "category": "Technology",
+      "order": 19
+    },
+    "basicmedicines": {
+      "category": "Medicines",
+      "order": 20
+    },
+    "battleweapons": {
+      "category": "Weapons",
+      "order": 21
+    },
+    "combatstabilisers": {
+      "category": "Medicines",
+      "order": 22
+    },
+    "microcontrollers": {
+      "category": "Technology",
+      "order": 23
+    },
+    "militarygradefabrics": {
+      "category": "Textiles",
+      "order": 24
+    },
+    "reactivearmour": {
+      "category": "Weapons",
+      "order": 25
+    },
+    "agriculturalmedicines": {
+      "category": "Medicines",
+      "order": 26
+    },
+    "biowaste": {
+      "category": "Waste",
+      "order": 27
+    },
+    "cropharvesters": {
+      "category": "Machinery",
+      "order": 28
+    },
+    "grain": {
+      "category": "Foods",
+      "order": 29
+    },
+    "pesticides": {
+      "category": "Chemicals",
+      "order": 30
+    },
+    "beer": {
+      "category": "Legal Drugs",
+      "order": 31
+    },
+    "liquor": {
+      "category": "Legal Drugs",
+      "order": 32
+    },
+    "bioreducinglichen": {
+      "category": "Technology",
+      "order": 33
+    },
+    "geologicalequipment": {
+      "category": "Machinery",
+      "order": 34
+    },
+    "hazardousenvironmentsuits": {
+      "category": "Technology",
+      "order": 35
+    },
+    "mutomimager": {
+      "category": "Technology",
+      "order": 36
+    },
+    "resonatingseparators": {
+      "category": "Technology",
+      "order": 37
+    },
+    "robotics": {
+      "category": "Technology",
+      "order": 38
+    },
+    "advancedcatalysers": {
+      "category": "Technology",
+      "order": 39
+    },
+    "animalmeat": {
+      "category": "Foods",
+      "order": 40
+    },
+    "coffee": {
+      "category": "Foods",
+      "order": 41
+    },
+    "fish": {
+      "category": "Foods",
+      "order": 42
+    },
+    "tea": {
+      "category": "Foods",
+      "order": 43
+    },
+    "wine": {
+      "category": "Legal Drugs",
+      "order": 44
+    },
+    "buildingfabricators": {
+      "category": "Machinery",
+      "order": 45
+    },
+    "emergencypowercells": {
+      "category": "Machinery",
+      "order": 46
+    },
+    "evacuationshelter": {
+      "category": "Consumer Items",
+      "order": 47
+    },
+    "structuralregulators": {
+      "category": "Technology",
+      "order": 48
+    },
+    "surfacestabilisers": {
+      "category": "Chemicals",
+      "order": 49
+    },
+    "survivalequipment": {
+      "category": "Consumer Items",
+      "order": 50
+    },
+    "terrainenrichmentsystems": {
+      "category": "Technology",
+      "order": 51
+    },
+    "heliostaticfurnaces": {
+      "category": "Machinery",
+      "order": 52
+    },
+    "mineralextractors": {
+      "category": "Machinery",
+      "order": 53
+    },
+    "thermalcoolingunits": {
+      "category": "Machinery",
+      "order": 54
+    }
+  }
+}

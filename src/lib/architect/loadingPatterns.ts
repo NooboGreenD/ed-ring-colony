@@ -4,7 +4,12 @@ export type LoadingPattern = {
   name: string;
   visibility: "private" | "public";
   buildings: { installationId: string; count: number; primary: boolean }[];
-  carriers: { carrierId: string; name: string; capacity: number }[];
+  carriers: {
+    carrierId: string;
+    name: string;
+    capacity: number;
+    recipeLimit?: 1 | 2;
+  }[];
   allocations: Record<string, Record<string, number>>;
 };
 export type LoadingPatternView = {
@@ -55,6 +60,36 @@ export function distributeLoading(
       free[index] -= put;
       remaining -= put;
     });
+  }
+  return result;
+}
+/** Keep each selected building recipe intact. Limits are explicit, not inferred
+ * from available capacity (a partially occupied squadron carrier can have <25kt).
+ * Stable first-fit; recipes that do not fit remain unassigned in their entirety.
+ */
+export function distributeLoadingRecipes(
+  buildings: LoadingPattern["buildings"],
+  carriers: LoadingPattern["carriers"],
+): LoadingPattern["allocations"] {
+  const result: LoadingPattern["allocations"] = Object.fromEntries(
+    carriers.map((c) => [c.carrierId, {}]),
+  );
+  const free = carriers.map((c) => c.capacity);
+  const counts = carriers.map(() => 0);
+  for (const building of buildings) {
+    const recipe = loadingRequirements([{ ...building, count: 1 }]);
+    const tons = Object.values(recipe).reduce((a, b) => a + b, 0);
+    for (let n = 0; n < building.count; n++) {
+      const index = carriers.findIndex(
+        (c, i) => counts[i] < (c.recipeLimit ?? 1) && free[i] >= tons,
+      );
+      if (index < 0) continue;
+      const allocation = result[carriers[index].carrierId];
+      for (const [good, qty] of Object.entries(recipe))
+        allocation[good] = (allocation[good] ?? 0) + qty;
+      counts[index]++;
+      free[index] -= tons;
+    }
   }
   return result;
 }
@@ -121,7 +156,10 @@ function parsePattern(
       row.name.length > 100 ||
       !Number.isSafeInteger(row.capacity) ||
       row.capacity < 0 ||
-      row.capacity > 60000
+      row.capacity > 60000 ||
+      (row.recipeLimit !== undefined &&
+        row.recipeLimit !== 1 &&
+        row.recipeLimit !== 2)
     )
       throw new Error("lp.invalid");
     ids.add(row.carrierId);
@@ -129,6 +167,9 @@ function parsePattern(
       carrierId: row.carrierId as string,
       name: row.name.trim() as string,
       capacity: row.capacity as number,
+      ...(row.recipeLimit === undefined
+        ? {}
+        : { recipeLimit: row.recipeLimit as 1 | 2 }),
     };
   });
   const requirements = loadingRequirements(buildings);
