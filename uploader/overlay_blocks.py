@@ -3053,12 +3053,39 @@ class LoadingOverlay(HudWindow):
         top.addWidget(self.summary_label, 1)
         top.addWidget(self.filter_combo)
         self.body.addLayout(top)
+        from loading_goods import display_options
+        self.goods_controls = QWidget(self.content)
+        controls = QVBoxLayout(self.goods_controls)
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(3)
+        self.goods_combos = {}
+        for key, text, choices, value in display_options(settings):
+            combo = QComboBox(self.goods_controls)
+            combo.setAccessibleName(text)
+            combo.setToolTip(text)
+            combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            combo.setMinimumContentsLength(5)
+            for mode, title in choices:
+                combo.addItem(title, mode)
+            combo.setCurrentIndex(max(0, combo.findData(value)))
+            combo.currentIndexChanged.connect(lambda _index, k=key: self._goods_changed(k))
+            controls.addWidget(combo)
+            self.goods_combos[key] = combo
+        self.body.addWidget(self.goods_controls)
         self.manifest = LoadingManifest(self.content)
         self.body.addWidget(self.manifest, 1)
         self.source_label = self.make_label(self.content, "", dp=-2, wrap=True)
         self.body.addWidget(self.source_label)
         self.update_loading({})
         self.on_font_changed()
+
+    def _goods_changed(self, key):
+        value = self.goods_combos[key].currentData()
+        if self.settings.get(key) == value:
+            return
+        self.settings[key] = value
+        self.apply_data_options()
+        self._persist("content", {"setting": key, "value": value})
 
     def _filter_changed(self):
         value = bool(self.filter_combo.currentData())
@@ -3085,8 +3112,14 @@ class LoadingOverlay(HudWindow):
         self.filter_combo.blockSignals(True)
         self.filter_combo.setCurrentIndex(1 if completed else 0)
         self.filter_combo.blockSignals(False)
+        for key, combo in self.goods_combos.items():
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(self.settings.get(key, "recipe" if key.endswith("order") else ""))))
+            combo.blockSignals(False)
         self.manifest.render(
             data,
+            order=self.goods_combos["loading_goods_order"].currentData(),
+            category=self.goods_combos["loading_goods_category"].currentData(),
             show_completed=completed,
             family=self._font_family,
             size=self._font_size,
@@ -3124,7 +3157,6 @@ class LoadingOverlay(HudWindow):
         self.source_label.setFont(
             hud_font(self._font_family, max(6, self._font_size - 2))
         )
-        self.filter_combo.setFont(
-            hud_font(self._font_family, max(6, self._font_size - 2))
-        )
+        for combo in [self.filter_combo, *self.goods_combos.values()]:
+            combo.setFont(hud_font(self._font_family, max(6, self._font_size - 2)))
         self.update_loading(self._last_loading)

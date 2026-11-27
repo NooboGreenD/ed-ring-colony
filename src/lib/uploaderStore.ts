@@ -1,3 +1,4 @@
+import { HELPER_RUNTIME_RESOURCES } from './helperRuntimeResources';
 /**
  * Хранилище пакетов Colonial Helper: манифесты, файлы, архивы, каналы.
  *
@@ -1087,14 +1088,16 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
     if (!MEMBER.test(path) || path.includes('..')) {
       return { ok: false, error: `небезопасный путь ${rawPath}` };
     }
-    // Текущий bundle-контракт — только корневые Python-модули, как у
-    // build_bundle.py. Выбор каталога также приносит tests/, __pycache__,
-    // README и requirements; они пилоту не нужны и не должны раздувать пакет.
-    if (path.includes('/') || !path.endsWith('.py')) continue;
+    // Only root Python modules and explicit runtime data. A directory upload
+    // must not publish tests, caches, arbitrary JSON or pilot configuration.
+    if (path.includes('/') || (!path.endsWith('.py') && !HELPER_RUNTIME_RESOURCES.includes(path))) continue;
     if (['build_exe.py', 'build_bundle.py', 'launcher.py', 'updater.py'].includes(path)) continue;
     if (data.length > MAX_FILE_BYTES) return { ok: false, error: `файл ${path} слишком велик` };
     total += data.length;
     clean.set(path, data);
+  }
+  if (clean.has('loading_goods.py') && !clean.has('loading_goods.json')) {
+    return { ok: false, error: 'в пакете отсутствует справочник loading_goods.json' };
   }
   if (clean.has('bundle.py')) {
     const stamped = Buffer.from(stampTrustedKeysSource(clean.get('bundle.py')!.toString('utf8'), {

@@ -1956,6 +1956,7 @@ class OverlayPageState:
     ship_blocks: Sequence[Tuple[str, str, bool]] = ()
     ship_modules: str = "important"
     content: Sequence[Tuple[str, str, Sequence[Tuple[str, str, bool]]]] = ()
+    loading_display: Sequence = ()
     carrier_filters: Sequence[Tuple[str, str]] = ()
     carrier_filter: str = ""
     carrier_search: str = ""
@@ -2411,6 +2412,7 @@ class OverlayPage(QWidget):
         self._section(tr("Отображаемые данные по оверлеям"))
         self.content_tabs = QTabWidget()
         self.content_widgets: Dict[str, QCheckBox] = {}
+        self.loading_display_widgets = {}
         for block_key, block_title, sections in self.state.content:
             tab = QWidget()
             tab_layout = QVBoxLayout(tab)
@@ -2423,6 +2425,18 @@ class OverlayPage(QWidget):
                     lambda state, name=setting: self._call("content_changed", name, bool(state)))
                 tab_layout.addWidget(check)
                 self.content_widgets[setting] = check
+            if block_key == "loading":
+                for setting, text, choices, value in self.state.loading_display:
+                    tab_layout.addWidget(label(text, size=9))
+                    combo = QComboBox()
+                    for mode, title in choices:
+                        combo.addItem(title, mode)
+                    combo.setCurrentIndex(max(0, combo.findData(value)))
+                    combo.setAccessibleName(text)
+                    combo.currentIndexChanged.connect(
+                        lambda _index, name=setting, widget=combo: self._call("content_changed", name, widget.currentData()))
+                    tab_layout.addWidget(combo)
+                    self.loading_display_widgets[setting] = combo
             if block_key == "ship":
                 tab_layout.addWidget(label(tr(
                     "Показатели и режим списка модулей настраиваются на вкладке «Корабль»."),
@@ -2635,8 +2649,14 @@ class OverlayPage(QWidget):
             button.setChecked(True)
             button.blockSignals(blocked)
 
-    def set_content_value(self, setting: str, value: bool) -> None:
+    def set_content_value(self, setting: str, value: Any) -> None:
         """Mirror a HUD-side preference without triggering a second write."""
+        combo = self.loading_display_widgets.get(setting)
+        if combo is not None:
+            previous = combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(value)))
+            combo.blockSignals(previous)
+            return
         widget = self.content_widgets.get(setting)
         if widget is not None:
             previous = widget.blockSignals(True)

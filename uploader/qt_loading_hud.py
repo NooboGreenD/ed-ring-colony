@@ -26,6 +26,7 @@ from hud_window import (
 )
 from i18n import tr
 from loading_patterns import loading_segments, loading_tables
+from loading_goods import CATEGORIES, good_category, category_name
 from system_map import commodity_label
 
 
@@ -148,9 +149,26 @@ class LoadingCarrierTable(QFrame):
             f"  ·  {tr('Осталось')}: {tonnes(data['remaining'])} t"
         )
         self.squares.set_progress(data["loaded"], data["target"], data["unknown"])
-        rows = data["rows"]
+        rows = []
+        previous = None
+        for row in data["rows"]:
+            category = good_category(row["commodity"])
+            if data.get("grouped") and category != previous:
+                rows.append({"group": category})
+            rows.append(row)
+            previous = category
+        self.table.clearSpans()
+        self.table.clearContents()
         self.table.setRowCount(len(rows))
         for index, row in enumerate(rows):
+            if "group" in row:
+                category = row["group"]
+                cell = QTableWidgetItem(category_name(category))
+                cell.setForeground(QColor(CATEGORIES[category]["color"]))
+                cell.setBackground(QColor("#20242a"))
+                self.table.setItem(index, 0, cell)
+                self.table.setSpan(index, 0, 1, 3)
+                continue
             translated = commodity_label(row["commodity"])
             label = translated if translated != row["commodity"] else row["name"]
             for column, text in enumerate(
@@ -167,13 +185,15 @@ class LoadingCarrierTable(QFrame):
                 )
                 cell.setForeground(
                     QColor(
+                        CATEGORIES[good_category(row["commodity"])]["color"] if column == 0 else
                         COLOR_ACCENT if column == 2 and row["remaining"] else COLOR_TEXT
                     )
                 )
                 cell.setToolTip(
-                    f"{label} · {tr('Требуется')}: {tonnes(row['required'])} t"
+                    f"{label} · {category_name(good_category(row['commodity']))} · {tr('Требуется')}: {tonnes(row['required'])} t"
                 )
         self.empty_label.setText(
+            tr("Нет товаров по выбранным условиям") if data.get("filtered") else
             tr("Нет оставшихся товаров")
             if data["target"]
             else tr("Нет назначенных товаров")
@@ -253,8 +273,10 @@ class LoadingManifest(QScrollArea):
         show_carriers=True,
         show_progress=True,
         show_items=True,
+        order="recipe",
+        category="",
     ):
-        models = loading_tables(data, show_completed)
+        models = loading_tables(data, show_completed, order=order, category=category)
         ids = {model["carrierId"] for model in models}
         for key in list(self.cards):
             if key not in ids:

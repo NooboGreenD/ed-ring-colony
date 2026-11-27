@@ -7,6 +7,7 @@ import type { HelperReleaseJob } from '@/types/helperRelease';
 import { uploadLauncherInChunks } from '@/lib/launcherChunkUpload';
 import { uploadSetupInChunks, type SetupInfo } from '@/lib/setupChunkUpload';
 import { useI18n, type TranslationParams } from '@/lib/i18n/I18nContext';
+import { HELPER_RUNTIME_RESOURCES } from '@/lib/helperRuntimeResources';
 import { authFetch } from '@/lib/supabaseClient';
 
 /**
@@ -994,7 +995,7 @@ export default function HelperUpdatesTab() {
                   const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
                   const parts = relative.replace(/\\/g, '/').split('/');
                   const name = parts.at(-1) || file.name;
-                  return parts.length <= 2 && name.endsWith('.py') && !excluded.has(name);
+                  return parts.length <= 2 && (name.endsWith('.py') || HELPER_RUNTIME_RESOURCES.includes(name)) && !excluded.has(name);
                 });
                 setReleaseFiles(selected);
               }}

@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ArchitectNav from "./ArchitectNav";
 import LoadingPatternTeam from "./LoadingPatternTeam";
 import type { LoadingCollaboration } from "@/lib/architect/loadingPatternMembers";
@@ -9,6 +16,7 @@ import { useI18n } from "@/lib/i18n/I18nContext";
 import { INSTALLATIONS, installationName } from "@/lib/architect/catalogue";
 import {
   distributeLoading,
+  distributeLoadingRecipes,
   loadingRequirements,
   parseLoadingPattern,
   unassignedLoading,
@@ -16,6 +24,15 @@ import {
   type LoadingPatternView,
   type loadingProgress,
 } from "@/lib/architect/loadingPatterns";
+
+import {
+  loadingCategories,
+  loadingCategoryName,
+  loadingGoodCategory,
+  loadingGoodColor,
+  orderLoadingGoods,
+  type LoadingGoodsOrder,
+} from "@/lib/architect/loadingGoods";
 
 type Progress = ReturnType<typeof loadingProgress>;
 const empty = (): LoadingPattern => ({
@@ -27,6 +44,12 @@ const empty = (): LoadingPattern => ({
 });
 export default function LoadingPatternsWorkspace() {
   const { t, locale } = useI18n();
+  const [goodsOrder, setGoodsOrder] = useState<LoadingGoodsOrder>("recipe");
+  const [category, setCategory] = useState("");
+  const [query, setQuery] = useState("");
+  const [showCompleted, setShowCompleted] = useState(true);
+  const [onlyUnassigned, setOnlyUnassigned] = useState(false);
+  const [distribution, setDistribution] = useState("sequential");
   const [scope, setScope] = useState<"mine" | "public">("mine");
   const [list, setList] = useState<LoadingPatternView[]>([]);
   const [selected, setSelected] = useState<LoadingPatternView | null>(null);
@@ -40,9 +63,7 @@ export default function LoadingPatternsWorkspace() {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [reference, setReference] = useState("");
-  const [available, setAvailable] = useState<
-    { carrierId: string; name: string; capacity: number }[]
-  >([]);
+  const [available, setAvailable] = useState<LoadingPattern["carriers"]>([]);
   const epoch = useRef(0);
   const requestSequence = useRef(0);
   const busyRef = useRef(false);
@@ -76,6 +97,27 @@ export default function LoadingPatternsWorkspace() {
     () => loadingRequirements(draft.buildings),
     [draft.buildings],
   );
+  const matchesGood = (good: string) =>
+    (!category || loadingGoodCategory(good) === category) &&
+    (!query.trim() ||
+      `${label(good)} ${good}`
+        .toLocaleLowerCase(locale)
+        .includes(query.trim().toLocaleLowerCase(locale)));
+  const sortedGoods = <
+    T extends {
+      commodity: string;
+      required: number;
+      remaining?: number | null;
+    },
+  >(
+    rows: T[],
+  ) =>
+    orderLoadingGoods(
+      rows.filter((row) => matchesGood(row.commodity)),
+      goodsOrder,
+      label,
+      locale,
+    );
   const total = Object.values(requirements).reduce((a, b) => a + b, 0);
   const unassigned = useMemo(() => unassignedLoading(draft), [draft]);
   const allocationInvalid = useMemo(() => {
@@ -99,6 +141,15 @@ export default function LoadingPatternsWorkspace() {
     }
     return false;
   }, [draft, requirements]);
+  const matrixRows = sortedGoods(
+    Object.entries(requirements).map(([commodity, required]) => ({
+      commodity,
+      required,
+      remaining: unassigned[commodity] ?? 0,
+    })),
+  ).filter((row) => !onlyUnassigned || (unassigned[row.commodity] ?? 0) > 0);
+  const categoryTitle = (good: string) =>
+    loadingCategoryName(loadingGoodCategory(good), locale);
   const outstanding = Object.values(unassigned).reduce((a, b) => a + b, 0);
   const loadList = useCallback(async () => {
     const version = epoch.current;
@@ -396,6 +447,7 @@ export default function LoadingPatternsWorkspace() {
       addCarrier({
         carrierId: c.carrierId,
         name: c.name || c.callsign || c.carrierId,
+        recipeLimit: c.type === "SquadronCarrier" ? 2 : 1,
         capacity: Math.max(
           0,
           Math.min(
@@ -427,7 +479,15 @@ export default function LoadingPatternsWorkspace() {
           (c) => ({
             carrierId: c.carrierId,
             name: c.name || c.callsign || c.carrierId,
-            capacity: Math.max(0, Math.min(c.space?.freeSpace ?? 25000, 60000)),
+            capacity: Math.max(
+              0,
+              Math.min(
+                c.space?.freeSpace ??
+                  (c.type === "SquadronCarrier" ? 60000 : 25000),
+                60000,
+              ),
+            ),
+            recipeLimit: (c.type === "SquadronCarrier" ? 2 : 1) as 1 | 2,
           }),
         ),
       );
@@ -719,6 +779,30 @@ export default function LoadingPatternsWorkspace() {
               {draft.carriers.map((carrier, i) => (
                 <div className="lp-row" key={carrier.carrierId}>
                   <a href={`/carriers/${carrier.carrierId}`}>{carrier.name}</a>
+                  <label className="lp-kit-limit">
+                    {t("lp.recipeLimit")}
+                    <select
+                      aria-label={`${carrier.name}: ${t("lp.recipeLimit")}`}
+                      value={carrier.recipeLimit ?? 1}
+                      disabled={!editable || busy}
+                      onChange={(e) =>
+                        update({
+                          ...draft,
+                          carriers: draft.carriers.map((c, n) =>
+                            n === i
+                              ? {
+                                  ...c,
+                                  recipeLimit: Number(e.target.value) as 1 | 2,
+                                }
+                              : c,
+                          ),
+                        })
+                      }
+                    >
+                      <option value={1}>{t("lp.oneKit")}</option>
+                      <option value={2}>{t("lp.twoKits")}</option>
+                    </select>
+                  </label>
                   <input
                     aria-label={t("lp.capacity")}
                     type="number"
@@ -792,6 +876,81 @@ export default function LoadingPatternsWorkspace() {
               )}
             </section>
           </div>
+          <section
+            className="card lp-goods-controls"
+            aria-label={t("lp.goodsView")}
+          >
+            <h2>{t("lp.goodsView")}</h2>
+            <div className="lp-view-controls">
+              <label>
+                {t("lp.order")}
+                <select
+                  aria-label={t("lp.order")}
+                  value={goodsOrder}
+                  onChange={(e) =>
+                    setGoodsOrder(e.target.value as LoadingGoodsOrder)
+                  }
+                >
+                  {(
+                    [
+                      "recipe",
+                      "category",
+                      "name",
+                      "quantity",
+                      "remaining",
+                    ] as const
+                  ).map((mode) => (
+                    <option key={mode} value={mode}>
+                      {t(`lp.order.${mode}`)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                {t("lp.category")}
+                <select
+                  aria-label={t("lp.category")}
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                >
+                  <option value="">{t("lp.allCategories")}</option>
+                  {Object.keys(loadingCategories).map((cat) => (
+                    <option key={cat} value={cat}>
+                      {loadingCategoryName(cat, locale)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                {t("lp.searchGoods")}
+                <input
+                  aria-label={t("lp.searchGoods")}
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="lp-actions lp-view-checks">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={showCompleted}
+                  onChange={(e) => setShowCompleted(e.target.checked)}
+                />{" "}
+                {t("lp.showCompleted")}
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={onlyUnassigned}
+                  onChange={(e) => setOnlyUnassigned(e.target.checked)}
+                />{" "}
+                {t("lp.onlyUnassigned")}
+              </label>
+            </div>
+            <p className="lp-hint">{t("lp.viewHint")}</p>
+          </section>
           <section className="card">
             <div className="lp-heading">
               <h2>{t("lp.distribution")}</h2>
@@ -811,6 +970,25 @@ export default function LoadingPatternsWorkspace() {
                 </button>
               )}
               {editable && (
+                <label className="lp-distribution-mode">
+                  {t("lp.distributionMode")}
+                  <select
+                    aria-label={t("lp.distributionMode")}
+                    value={distribution}
+                    disabled={busy}
+                    onChange={(e) => setDistribution(e.target.value)}
+                  >
+                    {["sequential", "kits", "category", "quantity"].map(
+                      (mode) => (
+                        <option key={mode} value={mode}>
+                          {t(`lp.distribute.${mode}`)}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+              )}
+              {editable && (
                 <button
                   disabled={
                     busy || !draft.carriers.length || !draft.buildings.length
@@ -825,10 +1003,34 @@ export default function LoadingPatternsWorkspace() {
                       return;
                     update({
                       ...draft,
-                      allocations: distributeLoading(
-                        requirements,
-                        draft.carriers,
-                      ),
+                      allocations:
+                        distribution === "kits"
+                          ? distributeLoadingRecipes(
+                              draft.buildings,
+                              draft.carriers,
+                            )
+                          : distributeLoading(
+                              distribution === "sequential"
+                                ? requirements
+                                : Object.fromEntries(
+                                    orderLoadingGoods(
+                                      Object.entries(requirements).map(
+                                        ([commodity, required]) => ({
+                                          commodity,
+                                          required,
+                                        }),
+                                      ),
+                                      distribution === "category"
+                                        ? "category"
+                                        : "quantity",
+                                      (good) => good,
+                                    ).map((row) => [
+                                      row.commodity,
+                                      row.required,
+                                    ]),
+                                  ),
+                              draft.carriers,
+                            ),
                     });
                   }}
                 >
@@ -836,6 +1038,9 @@ export default function LoadingPatternsWorkspace() {
                 </button>
               )}
             </div>
+            {distribution === "kits" && (
+              <p className="lp-hint">{t("lp.kitsHint")}</p>
+            )}
             {allocationInvalid && (
               <p role="alert" className="lp-warning">
                 {t("lp.adjust")}
@@ -854,43 +1059,78 @@ export default function LoadingPatternsWorkspace() {
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(requirements).map(([good, qty]) => (
-                    <tr key={good}>
-                      <td>{label(good)}</td>
-                      <td>{nf.format(qty)}</td>
-                      {draft.carriers.map((c) => (
-                        <td key={c.carrierId}>
-                          <input
-                            aria-label={`${c.name}: ${label(good)}`}
-                            type="number"
-                            min={0}
-                            max={qty}
-                            value={draft.allocations[c.carrierId]?.[good] ?? 0}
-                            disabled={!editable || busy}
-                            onChange={(e) =>
-                              update({
-                                ...draft,
-                                allocations: {
-                                  ...draft.allocations,
-                                  [c.carrierId]: {
-                                    ...draft.allocations[c.carrierId],
-                                    [good]: Number(e.target.value),
-                                  },
-                                },
-                              })
+                  {matrixRows.map(
+                    ({ commodity: good, required: qty }, index) => (
+                      <Fragment key={good}>
+                        {goodsOrder === "category" &&
+                          (index === 0 ||
+                            loadingGoodCategory(
+                              matrixRows[index - 1].commodity,
+                            ) !== loadingGoodCategory(good)) && (
+                            <tr className="lp-category-heading">
+                              <th
+                                colSpan={draft.carriers.length + 3}
+                                style={{ color: loadingGoodColor(good) }}
+                              >
+                                {categoryTitle(good)}
+                              </th>
+                            </tr>
+                          )}
+                        <tr>
+                          <td
+                            className="lp-good-name"
+                            style={{
+                              borderLeft: `3px solid ${loadingGoodColor(good)}`,
+                            }}
+                            title={categoryTitle(good)}
+                          >
+                            {label(good)}
+                          </td>
+                          <td>{nf.format(qty)}</td>
+                          {draft.carriers.map((c) => (
+                            <td key={c.carrierId}>
+                              <input
+                                aria-label={`${c.name}: ${label(good)}`}
+                                type="number"
+                                min={0}
+                                max={qty}
+                                value={
+                                  draft.allocations[c.carrierId]?.[good] ?? 0
+                                }
+                                disabled={!editable || busy}
+                                onChange={(e) =>
+                                  update({
+                                    ...draft,
+                                    allocations: {
+                                      ...draft.allocations,
+                                      [c.carrierId]: {
+                                        ...draft.allocations[c.carrierId],
+                                        [good]: Number(e.target.value),
+                                      },
+                                    },
+                                  })
+                                }
+                              />
+                            </td>
+                          ))}
+                          <td
+                            className={
+                              (unassigned[good] ?? 0) > 0 ? "lp-warning" : ""
                             }
-                          />
-                        </td>
-                      ))}
-                      <td
-                        className={
-                          (unassigned[good] ?? 0) > 0 ? "lp-warning" : ""
-                        }
-                      >
-                        {nf.format(unassigned[good] ?? 0)}
+                          >
+                            {nf.format(unassigned[good] ?? 0)}
+                          </td>
+                        </tr>
+                      </Fragment>
+                    ),
+                  )}
+                  {!matrixRows.length && (
+                    <tr>
+                      <td colSpan={draft.carriers.length + 3}>
+                        {t("lp.noGoods")}
                       </td>
                     </tr>
-                  ))}
+                  )}
                 </tbody>
               </table>
             </div>
@@ -954,17 +1194,52 @@ export default function LoadingPatternsWorkspace() {
                               ? new Date(c.updatedAt).toLocaleString(locale)
                               : t("lp.unknown")}
                           </small>
-                          {c.items.map((item) => (
-                            <div className="lp-actions" key={item.commodity}>
-                              <span>{label(item.commodity)}</span>
-                              <span>
-                                {item.loaded === null
-                                  ? "?"
-                                  : nf.format(item.loaded)}{" "}
-                                / {nf.format(item.required)} t
-                              </span>
-                            </div>
-                          ))}
+                          {sortedGoods(c.items)
+                            .filter(
+                              (item) => showCompleted || item.remaining !== 0,
+                            )
+                            .map((item, index, rows) => (
+                              <Fragment key={item.commodity}>
+                                {goodsOrder === "category" &&
+                                  (index === 0 ||
+                                    loadingGoodCategory(
+                                      rows[index - 1].commodity,
+                                    ) !==
+                                      loadingGoodCategory(item.commodity)) && (
+                                    <div
+                                      className="lp-category-heading"
+                                      style={{
+                                        color: loadingGoodColor(item.commodity),
+                                      }}
+                                    >
+                                      {categoryTitle(item.commodity)}
+                                    </div>
+                                  )}
+                                <div
+                                  className="lp-progress-item"
+                                  style={{
+                                    borderLeft: `3px solid ${loadingGoodColor(item.commodity)}`,
+                                  }}
+                                  title={categoryTitle(item.commodity)}
+                                >
+                                  <span>{label(item.commodity)}</span>
+                                  <span>
+                                    {item.loaded === null
+                                      ? "?"
+                                      : nf.format(item.loaded)}{" "}
+                                    / {nf.format(item.required)} t ·{" "}
+                                    {t("lp.remaining")}:{" "}
+                                    {item.remaining === null
+                                      ? "?"
+                                      : nf.format(item.remaining)}{" "}
+                                    t
+                                  </span>
+                                </div>
+                              </Fragment>
+                            ))}
+                          {!sortedGoods(c.items).some(
+                            (item) => showCompleted || item.remaining !== 0,
+                          ) && <p className="lp-hint">{t("lp.noGoods")}</p>}
                         </details>
                       ))}
                     </div>

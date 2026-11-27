@@ -79,12 +79,14 @@ def loading_lines(data, show_completed=False):
     return carriers, rows
 
 
-def loading_tables(data, show_completed=False):
+def loading_tables(data, show_completed=False, *, order="recipe", category="", query=""):
     """Per-carrier table projection. Filtering never changes header totals.
 
     'loaded' is covered target stock, not cumulative deliveries or surplus.
     A missing observation stays None; partial coverage is a lower bound.
     """
+    from loading_goods import project_goods
+
     result = []
     selected = str(data.get("carrier_id") or "")
     for carrier in (data.get("progress") or {}).get("carriers") or []:
@@ -123,7 +125,9 @@ def loading_tables(data, show_completed=False):
                 "loaded": loaded if unknown < target or not target else None,
                 "remaining": None if unknown else target - loaded,
                 "unknown": unknown,
-                "rows": rows,
+                "rows": project_goods(rows, order, category, query),
+                "grouped": order == "category",
+                "filtered": bool(category or query),
                 "updatedAt": carrier.get("updatedAt"),
             }
         )

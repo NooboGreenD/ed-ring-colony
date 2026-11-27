@@ -14593,3 +14593,22 @@ for _locale in ("en", "de", "it", "ko", "zh", "ja"):
 
 for _locale in ("en", "de", "it", "ko", "zh", "ja"):
     CATALOGS.setdefault(_locale, {})["Каталог обновлён: проверьте распределение на сайте."] = "Catalogue updated: review allocations on the website."
+
+# Loading view controls: preserve existing locale entries; English fallback as for
+# the rest of the loading-pattern UI until dedicated translations are available.
+_LOADING_VIEW_EN = {
+    "Группировка и порядок": "Grouping and order",
+    "По списку стройматериалов": "Construction material list",
+    "По категориям": "By category", "По алфавиту": "Alphabetical",
+    "По количеству": "Quantity: largest first", "По остатку": "Remaining: unknown first",
+    "Категория": "Category", "Все категории": "All categories",
+    "Металлы": "Metals", "Промышленные материалы": "Industrial Materials",
+    "Технологии": "Technology", "Продукты питания": "Foods", "Химикаты": "Chemicals",
+    "Оружие": "Weapons", "Машины": "Machinery", "Медикаменты": "Medicines",
+    "Прочее": "Other", "Текстиль": "Textiles", "Отходы": "Waste",
+    "Легальные наркотики": "Legal Drugs", "Потребительские товары": "Consumer Items",
+    "Нет товаров по выбранным условиям": "No commodities match these filters",
+}
+for _locale in ("en", "de", "it", "ko", "zh", "ja"):
+    for _source, _text in _LOADING_VIEW_EN.items():
+        CATALOGS.setdefault(_locale, {}).setdefault(_source, _text)
