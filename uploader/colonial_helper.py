@@ -68,6 +68,7 @@ from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
 )
+from journal_reader import complete_journal_prefix, journal_files
 from exobiology import (
     ExobiologyTracker, ExobiologyCache, PLANET_SEARCH_PRESETS, GENUS_VALUE_CR,
 )
@@ -176,7 +177,8 @@ def _atomic_write_journal_offsets(path: Path, payload: dict, *, replace=None, sl
     sleep = sleep or time.sleep
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_dir = temp_dir if temp_dir is not None else path.parent
+    write_dir = Path(temp_dir) if temp_dir is not None else path.parent
+    write_dir.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
         prefix=f"{path.name}.{os.getpid()}.", suffix=".tmp", dir=str(write_dir)
     )
@@ -4338,35 +4340,8 @@ class ColonialHelperApp:
             pass
 
     def _start_exobio_history_indexer(self):
-        """Фоновая постепенная индексация всех файлов журналов в дисковый кэш экзобиологии."""
-        if not getattr(self, "journal_path", None):
-            return
-
-        def worker():
-            from exobiology import scan_all_journals_for_exobio
-            tracker = getattr(self, "exobiology", None)
-            cache = getattr(self, "exobio_cache", None)
-            if tracker is None or cache is None:
-                return
-            try:
-                count = scan_all_journals_for_exobio(
-                    self.journal_path,
-                    handle_func=tracker.handle,
-                    cache=cache,
-                )
-                if count > 0:
-                    tracker.save_to_cache(cache)
-                    if hasattr(self, "root") and self.root:
-                        def on_indexed():
-                            if hasattr(self, "overlay_manager") and self.overlay_manager:
-                                self.overlay_manager.refresh_exobio()
-                            self._update_tab_exobio()
-                            self.log(f"Экзобиология: проиндексировано {count} событий из истории журналов", "info")
-                        self.root.after(0, on_indexed)
-            except Exception:
-                pass
-
-        threading.Thread(target=worker, daemon=True, name="exobio-history-indexer").start()
+        """Use the same guarded worker as the manual full-history scan."""
+        self._scan_all_journals_for_exobio(background=True)
 
     def _ensure_system_exobio(self, system: str, force_scan: bool = False):
         """Гарантировать наличие данных обо всех телах системы из всех сессий (кэш + журналы)."""
@@ -4453,57 +4428,74 @@ class ColonialHelperApp:
 
         threading.Thread(target=worker, daemon=True, name=f"exobio-sys-scan-{system[:10]}").start()
 
-    def _scan_all_journals_for_exobio(self):
-        """Полное сканирование всех журналов на события экзобиологии для наполнения кэша."""
+    def _scan_all_journals_for_exobio(self, *, background=False):
+        """Index locally in one worker; cache export/write NEVER runs on Qt."""
         tracker = getattr(self, "exobiology", None)
-        if tracker is None or not getattr(self, "journal_path", None):
+        cache = getattr(self, "exobio_cache", None)
+        if tracker is None or cache is None or not getattr(self, "journal_path", None):
             return
         if getattr(self, "_exobio_full_scanning", False):
             return
         self._exobio_full_scanning = True
-        self._set_exobio_status(tr("Сканирование журналов..."), COLOR_ORANGE)
+        if not background:
+            self._set_exobio_status(tr("Сканирование журналов..."), COLOR_ORANGE)
 
         def worker():
             from exobiology import scan_all_journals_for_exobio
+            wall, cpu = time.monotonic(), time.process_time()
+            indexed_files = 0
+            progress_at = 0.0
 
             def on_progress(cur, total):
-                if hasattr(self, "root") and self.root:
-                    try:
-                        self.root.after(0, lambda c=cur, t=total: self._set_exobio_status(
-                            tr("Сканирование: файл {current} из {total}...",
-                               current=c, total=t), COLOR_ORANGE))
-                    except Exception:
-                        pass
+                nonlocal progress_at
+                now = time.monotonic()
+                if background or (cur < total and now - progress_at < 0.15):
+                    return
+                progress_at = now
+                self.root.after(0, lambda c=cur, t=total: self._set_exobio_status(
+                    tr("Сканирование: файл {current} из {total}...", current=c, total=t), COLOR_ORANGE))
 
-            cache = getattr(self, "exobio_cache", None)
-            count = scan_all_journals_for_exobio(
-                self.journal_path,
-                handle_func=tracker.handle,
-                on_progress=on_progress,
-                cache=cache,
-            )
+            def commit(files):
+                nonlocal indexed_files
+                # Metadata and data describe the SAME completed scan. A crash
+                # cannot persist 'indexed' markers ahead of the actual bodies.
+                tracker.save_to_cache(cache, indexed_files=files)
+                indexed_files = len(files)
 
-            def on_finish():
-                self._exobio_full_scanning = False
-                if cache:
-                    tracker.save_to_cache(cache)
-                self._set_exobio_status(
-                    tr("Сканирование завершено: учтено {count} новых событий",
-                       count=count), COLOR_GREEN)
-                self.log(f"Полное сканирование экзобиологии: {count} событий обработано", "info")
-                if hasattr(self, "overlay_manager") and self.overlay_manager:
-                    self.overlay_manager.refresh_exobio()
-                self._update_tab_exobio()
+            try:
+                count = scan_all_journals_for_exobio(
+                    self.journal_path, handle_func=tracker.handle, cache=cache,
+                    on_progress=on_progress, commit=commit,
+                    should_stop=lambda: bool(getattr(self, "_close_started", False)),
+                )
+                if getattr(self, "_close_started", False):
+                    return
+                elapsed_wall = time.monotonic() - wall
+                elapsed_cpu = time.process_time() - cpu
 
-            if hasattr(self, "root") and self.root:
+                def on_finish():
+                    if not background:
+                        self._set_exobio_status(tr("Сканирование завершено: учтено {count} новых событий", count=count), COLOR_GREEN)
+                    if indexed_files or not background:
+                        self.log(f"Local exobio index (not upload): {indexed_files} files, {count} events, "
+                                 f"wall={elapsed_wall:.2f}s, process CPU={elapsed_cpu:.2f}s", "info")
+                        if getattr(self, "overlay_manager", None):
+                            self.overlay_manager.refresh_exobio()
+                        self._update_tab_exobio()
+                self.root.after(0, on_finish)
+            except Exception as exc:
                 try:
-                    self.root.after(0, on_finish)
+                    self.root.after(0, lambda e=str(exc): self.log(f"Индексация экзобиологии не завершена: {e}", "warn"))
                 except Exception:
                     pass
-            else:
-                on_finish()
+            finally:
+                self._exobio_full_scanning = False
 
-        threading.Thread(target=worker, daemon=True, name="exobio-all-scan").start()
+        try:
+            threading.Thread(target=worker, daemon=True, name="exobio-history-indexer").start()
+        except Exception:
+            self._exobio_full_scanning = False
+            raise
 
     # ============================================================
     #  Прежняя карта системы: только совместимость
@@ -5554,6 +5546,9 @@ class ColonialHelperApp:
         if getattr(self, "_close_started", False):
             return
         self._close_started = True
+        stop = getattr(self, "watcher_stop_event", None)
+        if stop is not None:
+            stop.set()
         try:
             if getattr(self, "_powerplay_poll_job", None) is not None:
                 self.root.after_cancel(self._powerplay_poll_job)
@@ -5643,8 +5638,9 @@ class ColonialHelperApp:
             self.log("Введите API токен", "error")
             return
 
-        if self.watcher_active and token != self.api.token:
-            self.log("Перед сменой API-токена остановите Watcher, чтобы не смешать аккаунты.", "error")
+        worker = getattr(self, "watcher_thread", None)
+        if self.watcher_active or (worker is not None and worker.is_alive()):
+            self.log("Перед проверкой API-токена остановите Watcher и дождитесь завершения его потока, чтобы не смешать аккаунты.", "error")
             return
 
         if getattr(self, "_token_check_busy", False):
@@ -6481,6 +6477,13 @@ class ColonialHelperApp:
             self._start_watcher()
 
     def _start_watcher(self):
+        # stop() is asynchronous: never clear its Event while the old worker
+        # is still parsing/uploading. Otherwise both workers share/reset the
+        # cursor map and can overwrite checkpoints with a partial history.
+        worker = getattr(self, "watcher_thread", None)
+        if self.watcher_active or (worker is not None and worker.is_alive()):
+            self.log("Watcher уже работает или завершает остановку. Дождитесь завершения перед повторным запуском.", "warn")
+            return
         if not self.api.is_connected:
             self.log("Сначала введите API токен", "error")
             return
@@ -6536,12 +6539,33 @@ class ColonialHelperApp:
         self._start_exobio_history_indexer()
 
     def _watcher_thread_main(self):
-        """Поток watcher'а: сперва восстановление состояния, затем цикл."""
+        """One worker owns preparation, cursors and polling until it exits."""
+        worker = threading.current_thread()
         try:
-            self._prepare_watcher_state()
+            if self.watcher_stop_event.is_set():
+                return
+            try:
+                self._prepare_watcher_state()
+            except Exception as exc:
+                self.root.after(0, lambda e=exc: self.log(f"Подготовка watcher'а: {e}", "warn"))
+            if not self.watcher_stop_event.is_set():
+                self._watcher_loop()
         except Exception as exc:
-            self.root.after(0, lambda e=exc: self.log(f"Подготовка watcher'а: {e}", "warn"))
-        self._watcher_loop()
+            self.root.after(0, lambda e=exc: self.log(f"Watcher остановлен из-за ошибки: {e}", "error"))
+        finally:
+            try:
+                self.root.after(0, lambda: self._watcher_finished(worker))
+            except Exception:
+                pass  # the window may already be closed
+
+    def _watcher_finished(self, worker):
+        # A queued completion from an old worker must not stop a newer one.
+        if self.watcher_thread is not worker:
+            return
+        self.watcher_active = False
+        self.watcher_stop_event.set()
+        self.upload_page.set_watcher_running(False)
+        self.set_status(tr("Готов"))
 
     def _prepare_watcher_state(self):
         """Восстановить состояние по журналам — выполняется в фоне.
@@ -7108,14 +7132,25 @@ class ColonialHelperApp:
 
     def _load_journal_offsets(self) -> dict:
         path = self.data_dir / ".colonial_helper_journal_offsets.json"
+        reason = "missing checkpoint file"
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return (data.get("offsets", {}) if isinstance(data, dict)
-                    and data.get("target") == self._upload_target()
-                    and isinstance(data.get("offsets"), dict) else {})
-        except (OSError, ValueError):
-            return {}
+            if not isinstance(data, dict) or not isinstance(data.get("offsets"), dict):
+                reason = "legacy or invalid checkpoint format"
+            elif data.get("target") != self._upload_target():
+                reason = "checkpoint belongs to another account/site"
+            else:
+                return data["offsets"]
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as exc:
+            reason = "checkpoint could not be read (" + type(exc).__name__ + ")"
+        # Explain *why* a startup needs history, without printing token/user IDs
+        # or raw cache contents. A journal read is not itself an HTTP retry.
+        self.root.after(0, lambda note=reason: self.log(
+            f"Journal reconciliation: {note}; history will be checked locally", "info"))
+        return {}
 
     def _save_journal_offsets(self):
         path = self.data_dir / ".colonial_helper_journal_offsets.json"
@@ -7283,6 +7318,8 @@ class ColonialHelperApp:
 
     def _watcher_loop(self):
         offsets = self._load_journal_offsets()
+        self._journal_incomplete_tails = {}
+        entries = journal_files(self.journal_path)
         with _JOURNAL_OFFSETS_LOCK:
             self.last_file_mtimes = {}
         first_reconciliation = not bool(offsets)
@@ -7291,18 +7328,16 @@ class ColonialHelperApp:
         # `source_hash`), а дальше отправляются только изменения.
         self._construction_collector = ConstructionSnapshotCollector()
         self._community_goal_collector = CommunityGoalReportCollector()
-        for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime):
+        for f, stat in entries:
             try:
-                # Первый запуск проверяет историю с начала файлов; после этого
-                # сохраняются byte offsets, как в EDDiscovery.
-                with _JOURNAL_OFFSETS_LOCK:
-                    self.last_file_mtimes[str(f)] = int(offsets.get(str(f), 0)) if not first_reconciliation else 0
-            except (OSError, ValueError):
-                pass
+                start = int(offsets.get(str(f), 0))
+            except (TypeError, ValueError, OverflowError):
+                start = 0
+            # Truncated/replaced logs must also be reconciled historically.
+            with _JOURNAL_OFFSETS_LOCK:
+                self.last_file_mtimes[str(f)] = start if 0 <= start <= stat.st_size else 0
         startup_reconciliation = first_reconciliation or any(
-            self.last_file_mtimes.get(str(f), 0) < f.stat().st_size
-            for f in self.journal_path.glob("Journal.*.log")
-            if f.exists()
+            self.last_file_mtimes[str(f)] < stat.st_size for f, stat in entries
         )
         if startup_reconciliation:
             reconcile_wall, reconcile_cpu = time.monotonic(), time.process_time()
@@ -7311,15 +7346,12 @@ class ColonialHelperApp:
             # виден реальный прогресс, а не только сообщение "обработка".
             reconciliation_files = []
             total_bytes = 0
-            for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda p: p.stat().st_mtime):
-                try:
-                    size = f.stat().st_size
-                    start = max(0, int(self.last_file_mtimes.get(str(f), 0)))
-                    if size > start:
-                        reconciliation_files.append((f, start, size))
-                        total_bytes += size - start
-                except OSError:
-                    continue
+            for f, stat in entries:
+                size = stat.st_size
+                start = self.last_file_mtimes[str(f)]
+                if size > start:
+                    reconciliation_files.append((f, start, size))
+                    total_bytes += size - start
             done_bytes = 0
             total_files = len(reconciliation_files)
             self.root.after(0, lambda n=total_files, b=total_bytes: self._show_journal_reconciliation_progress(
@@ -7341,7 +7373,8 @@ class ColonialHelperApp:
                     with _JOURNAL_OFFSETS_LOCK:
                         self.last_file_mtimes[str(f)] = start + processed
                     done_bytes += processed
-                    self._save_journal_offsets()
+                    if processed:
+                        self._save_journal_offsets()
                     self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
                         self._show_journal_reconciliation_progress(d, n, t, i, p)
                     )
@@ -7365,31 +7398,12 @@ class ColonialHelperApp:
         # baseline now, even when saved offsets skipped the historical pass.
         self._carrier_sync_collector().begin_live()
         while not self.watcher_stop_event.is_set():
-            time.sleep(5)
-            if self.watcher_stop_event.is_set():
+            if self.watcher_stop_event.wait(5):
                 break
 
             # 1. Сначала читаем журналы — события урона в реальном времени
             try:
-                files = sorted(self.journal_path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime)
-                for f in files:
-                    fpath = str(f)
-                    try:
-                        current_size = f.stat().st_size
-                    except Exception:
-                        continue
-                    last_size = self.last_file_mtimes.get(fpath, 0)
-                    if current_size < last_size:
-                        # Новый файл/ротация журнала.
-                        last_size = 0
-                    if current_size > last_size:
-                        # live=True: это текущая игра, события уходят в
-                        # EDSM/Inara/Raven и в оверлей.
-                        processed = self._process_journal_changes(f, last_size, current_size, live=True)
-                        # Обновляем только на фактически обработанные байты (полные строки)
-                        with _JOURNAL_OFFSETS_LOCK:
-                            self.last_file_mtimes[fpath] = last_size + processed
-                        self._save_journal_offsets()
+                self._poll_journal_files()
             except Exception as e:
                 self.root.after(0, lambda e=e: self.log(f"Watcher ошибка: {e}", "error"))
 
@@ -7435,6 +7449,27 @@ class ColonialHelperApp:
             # Стройка и первооткрыватель следующей системы: стройка живёт в
             # базе проекта, поэтому её надо спросить у сайта, а не у EDSM.
             self.route.refresh_system_hint(self.api.get_route_hint)
+
+    def _poll_journal_files(self):
+        """Read only new bytes; persist once per changed batch, never for 0 bytes."""
+        changed = False
+        for path, stat in journal_files(self.journal_path):
+            if self.watcher_stop_event.is_set():
+                break
+            key = str(path)
+            start = self.last_file_mtimes.get(key, 0)
+            if stat.st_size < start:
+                start = 0
+                self.last_file_mtimes[key] = 0
+                changed = True
+            if stat.st_size > start:
+                processed = self._process_journal_changes(path, start, stat.st_size, live=True)
+                if processed:
+                    with _JOURNAL_OFFSETS_LOCK:
+                        self.last_file_mtimes[key] = start + processed
+                    changed = True
+        if changed:
+            self._save_journal_offsets()
 
     def _record_session_deliveries(self, deliveries: list):
         """Учесть событие в SESSION сразу после разбора, независимо от ответа API."""
@@ -9337,8 +9372,9 @@ class ColonialHelperApp:
     def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int, live: bool = False) -> int:
         """Обработать изменения в журнале. Возвращает количество обработанных байт.
 
-        Читает только полные строки (заканчивающиеся на \\n).
-        Неполная строка в конце блока остаётся для следующего тика.
+        Читает полные JSONL-строки и законченный JSON-объект на EOF без LF.
+        Незаконченный хвост ждёт изменения размера/mtime, не перечитываясь
+        каждые пять секунд.
 
         `live=False` — исторический разбор (первичная сверка при старте
         watcher'а). В этом режиме события НЕ уходят в EDSM/Inara/Raven и не
@@ -9346,28 +9382,32 @@ class ColonialHelperApp:
         из-за которых первичная загрузка шла часами. `live=True` — обычный тик
         watcher'а за игрой, там поведение прежнее.
         """
+        # A half-written last line is not an upload failure. Keep its cursor
+        # unchanged and retry only when the file changes; read errors are NOT
+        # memoized and remain retryable on the next tick.
+        key = str(filepath)
+        tails = getattr(self, "_journal_incomplete_tails", None)
+        if tails is None:
+            tails = self._journal_incomplete_tails = {}
         try:
+            stamp = filepath.stat().st_mtime_ns
+            signature = (old_size, new_size, stamp)
+            if tails.get(key) == signature:
+                return 0
             with open(filepath, "rb") as f:
                 f.seek(old_size)
                 raw = f.read(new_size - old_size)
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения {filepath.name}: {e}", "error"))
             return 0
-
         if not raw:
             return 0
-
-        # Берём только полные строки — до последнего \\n
-        last_nl = raw.rfind(b'\n')
-        if last_nl == -1:
-            # Нет полных строк — ждём следующего тика
+        processed_bytes = complete_journal_prefix(raw)
+        if not processed_bytes:
+            tails[key] = signature
             return 0
-
-        # raw[:last_nl] — все полные строки (без последнего \\n, он нам не нужен)
-        # +1 чтобы включить \\n в обработанные байты
-        processed_bytes = last_nl + 1
-        new_text = raw[:processed_bytes].decode("utf-8", errors="replace")
-
+        tails.pop(key, None)
+        new_text = raw[:processed_bytes].decode("utf-8-sig", errors="replace")
         if not new_text.strip():
             return processed_bytes
 
