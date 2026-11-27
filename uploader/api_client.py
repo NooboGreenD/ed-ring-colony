@@ -829,6 +829,20 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": tr("Сетевая ошибка: {error}", error=exc)}
 
+    def refresh_squadron_bank(self, carrier_id: int) -> dict:
+        """Server retrieves Frontier bank; no client-supplied inventory/tokens."""
+        if not self.token:
+            return {"ok": False, "error": tr("Нет токена проекта")}
+        try:
+            resp = _session_for_thread().post(
+                f"{self.api_base}/carriers/{int(carrier_id)}/bank/refresh",
+                headers={"Authorization": f"Bearer {self.token}"},
+                allow_redirects=False, timeout=75)
+            data = _safe_json(resp)
+            return {**data, "ok": bool(resp.ok and data.get("ok")), "status": resp.status_code}
+        except Exception:
+            return {"ok": False, "error": "Bank refresh unavailable"}
+
     def sync_capi(self) -> dict:
         """Ask the website to sync its existing Frontier binding.
 

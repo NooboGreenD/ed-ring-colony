@@ -810,3 +810,174 @@ test('legacy notification type check blocks a watched jump and its cargo batch; 
     WHERE conrelid='public.user_notifications'::regclass AND conname='user_notifications_type_check'`)).rows[0].n,0,
   'a schema with no allowlist remains unrestricted');
 });
+
+test('game docking access changes preserve personal/squadron cargo observations and loading progress', async () => {
+  const { buildCarrierView } = await import('../../src/lib/fleetCarriers.ts');
+  const { loadingProgress } = await import('../../src/lib/architect/loadingPatterns.ts');
+  const normalize = events => normalizeCarrierEvents(events, {userId:OWNER,now:new Date('2026-03-06T12:00:00Z')}).ops;
+  for(const [id,type,relation] of [['3708000110','FleetCarrier','own'],['3708000111','SquadronCarrier','squadron']]) {
+    const stats={event:'CarrierStats',timestamp:'2026-03-06T09:59:00Z',CarrierID:id,CarrierType:type,
+      DockingAccess:'all',AllowNotorious:false,SpaceUsage:{Cargo:400,FreeSpace:24600,TotalCapacity:25000}};
+    await apply(normalize([stats]));
+    if(type==='SquadronCarrier') await db.query(`UPDATE fleet_carriers SET squadron_id=1,squadron_source='manual' WHERE carrier_id=$1`,[id]);
+    await apply([{op:'baseline',carrier_id:id,at:'2026-03-06T10:00:00Z',full:false,source_event:'Market',
+      items:[{commodity:'steel',qty:400},{commodity:'water',qty:0}]}]);
+    const plan={name:'Permission check',visibility:'private',buildings:[{installationId:'no_truss',count:1,primary:false}],
+      carriers:[{carrierId:id,name:'Carrier',capacity:25000}],allocations:{[id]:{steel:500,water:100,aluminium:100}}};
+    const cargoRows=async()=>(await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1 ORDER BY commodity',[id])).rows;
+    const project=async()=>{
+      const view=buildCarrierView(await carrier(id),{relation,showFinance:false,cargoRows:await cargoRows()});
+      return loadingProgress(plan,new Map(view.cargo?[[id,view.cargo]]:[]));
+    };
+    const beforeRows=await cargoRows(),before=await project(),beforeCarrier=await carrier(id);
+    assert.equal(before.loaded,400);assert.equal(before.unknown,100,'unobserved aluminium must remain unknown');
+    for(const [index,access] of ['none','friends','squadron','squadronfriends','all'].entries()) {
+      const permission={event:'CarrierDockingPermission',timestamp:`2026-03-06T10:${index*2+10}:00Z`,
+        CarrierID:id,DockingAccess:access,AllowNotorious:index%2===0};
+      const ops=normalize([permission]);assert.deepEqual(ops.map(op=>op.op),['docking']);
+      await apply(ops);
+      const row=await carrier(id);
+      assert.equal(row.docking_access,access);
+      assert.equal(row.stats_at.getTime(),beforeCarrier.stats_at.getTime(),'access is not a new cargo measurement');
+      assert.equal(row.owner_id,beforeCarrier.owner_id);assert.equal(row.squadron_id,beforeCarrier.squadron_id);
+      assert.deepEqual(await cargoRows(),beforeRows,'zero rows, quantities and observation times remain unchanged');
+      assert.deepEqual(await project(),before);
+      // Opening management may produce a full Stats as well. An unchanged,
+      // consistent total must not erase the per-good observations either.
+      await apply(normalize([{...stats,timestamp:`2026-03-06T10:${index*2+11}:00Z`,DockingAccess:access}]));
+      assert.deepEqual(await project(),before);
+      assert.equal(buildCarrierView(await carrier(id),{relation:'public',showFinance:false,cargoRows:await cargoRows()}).cargo,null);
+      // For the next iteration the reference aggregate timestamp is now newer.
+      beforeCarrier.stats_at=(await carrier(id)).stats_at;
+    }
+  }
+});
+
+test('a visiting pilot can reconcile visible sale stock after unreported deliveries, without trading or claiming the carrier', async () => {
+  const { buildCarrierView } = await import('../../src/lib/fleetCarriers.ts');
+  const { loadingProgress } = await import('../../src/lib/architect/loadingPatterns.ts');
+  const id='3708000112';
+  const normalize=events=>normalizeCarrierEvents(events,{userId:OTHER,now:new Date('2026-03-06T12:00:00Z')}).ops;
+  await apply([{op:'identity',carrier_id:id,at:'2026-03-06T09:00:00Z',carrier_type:'FleetCarrier'},
+    {op:'baseline',carrier_id:id,at:'2026-03-06T09:00:00Z',full:false,source_event:'Market',items:[{commodity:'steel',qty:100}]}]);
+  const dock={event:'Docked',timestamp:'2026-03-06T10:00:00Z',MarketID:id,
+    StationType:'FleetCarrier',StationName:'VIS-001',StarSystem:'Sol'};
+  // An uninstrumented pilot delivered goods; a later visitor's Docked event
+  // contains no stock. Do not fabricate the missing delivery or an empty hold.
+  await apply(normalize([dock]),OTHER);
+  assert.deepEqual(await cargo(id),{steel:100});
+  const market={...dock,event:'Market',timestamp:'2026-03-06T10:01:00Z',Items:[
+    {Name:'steel',Stock:650,Producer:true,Consumer:false},
+    {Name:'water',Stock:0,Demand:2000,Producer:false,Consumer:true}]};
+  const ops=normalize([market]);
+  assert.deepEqual(ops.map(op=>op.op),['identity','location','baseline']);
+  await apply(ops,OTHER);
+  assert.deepEqual(await cargo(id),{steel:650},'absolute visible stock includes deliveries from pilots without Helper');
+  assert.equal((await carrier(id)).owner_id,null,'observing another carrier is not ownership proof');
+  const rows=(await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1',[id])).rows;
+  const view=buildCarrierView(await carrier(id),{relation:'own',showFinance:false,cargoRows:rows});
+  const plan={name:'Visit',visibility:'private',buildings:[{installationId:'no_truss',count:1,primary:false}],
+    carriers:[{carrierId:id,name:'Carrier',capacity:25000}],allocations:{[id]:{steel:1000,water:100}}};
+  const progress=loadingProgress(plan,new Map([[id,view.cargo]]));
+  assert.equal(progress.loaded,650);
+  assert.equal(progress.unknown,100,'a buy order does not reveal the owner hold quantity');
+  assert.equal(progress.carriers[0].items.find(item=>item.commodity==='water').aboard,null);
+  assert.equal(buildCarrierView(await carrier(id),{relation:'public',showFinance:false,cargoRows:rows}).cargo,null);
+  await apply(ops,OTHER);
+  assert.deepEqual(await cargo(id),{steel:650},'retry does not add the absolute observation twice');
+});
+
+test('squadron market sale by a non-owner adds the reported goods without reconciling unreported cargo', async () => {
+  const { buildCarrierView } = await import('../../src/lib/fleetCarriers.ts');
+  const { loadingProgress } = await import('../../src/lib/architect/loadingPatterns.ts');
+  const id='3708000113';
+  await apply([{op:'identity',carrier_id:id,at:'2026-03-06T09:00:00Z',carrier_type:'SquadronCarrier'},
+    {op:'baseline',carrier_id:id,at:'2026-03-06T09:00:00Z',full:false,source_event:'Market',items:[{commodity:'steel',qty:100}]}]);
+  await db.query(`UPDATE fleet_carriers SET squadron_id=1,squadron_source='manual' WHERE carrier_id=$1`,[id]);
+  const normalize=events=>normalizeCarrierEvents(events,{userId:MEMBER,now:new Date('2026-03-06T12:00:00Z')}).ops;
+  await apply(normalize([{event:'Docked',timestamp:'2026-03-06T10:00:00Z',MarketID:id,
+    StationType:'FleetCarrier',StationName:'SQD-113',StarSystem:'Sol',StationServices:['dock','squadronbank']},
+    {event:'CarrierDockingPermission',timestamp:'2026-03-06T10:00:01Z',CarrierID:id,DockingAccess:'squadron'}]),MEMBER);
+  const sale={event:'MarketSell',timestamp:'2026-03-06T10:01:00Z',MarketID:id,Type:'steel',Count:50,
+    SellPrice:1000,TotalSale:50000,AvgPricePaid:500};
+  const ops=normalize([sale]);
+  assert.equal(ops.length,1);assert.equal(ops[0].op,'delta');assert.equal(ops[0].delta,50);
+  const result=await apply(ops,MEMBER);
+  assert.equal(result.ignored,0);assert.equal(result.applied,1);
+  assert.deepEqual(await cargo(id),{steel:150},'sale adds 50; it cannot reconstruct an unreported delivery of 500');
+  const row=await carrier(id);
+  assert.equal(row.owner_id,null);assert.equal(Number(row.squadron_id),1);
+  const rows=(await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1',[id])).rows;
+  const view=buildCarrierView(row,{relation:'squadron',showFinance:false,cargoRows:rows});
+  const plan={name:'Squadron visit',visibility:'squadron',buildings:[{installationId:'no_truss',count:1,primary:false}],
+    carriers:[{carrierId:id,name:'Carrier',capacity:25000}],allocations:{[id]:{steel:1000,water:100}}};
+  const progress=loadingProgress(plan,new Map([[id,view.cargo]]));
+  assert.equal(progress.loaded,150);assert.equal(progress.unknown,100);
+  assert.equal(progress.carriers[0].items.find(item=>item.commodity==='water').aboard,null);
+  await apply(ops,MEMBER);assert.deepEqual(await cargo(id),{steel:150},'sale retry is deduplicated');
+});
+
+test('management access change + empty aggregate cannot erase squadron bank, including sparse old clients', async () => {
+ const {bundleFile}=await import('./helpers/bundle.mjs');
+ const {applyCarrierOps}=await import(await bundleFile({entry:'src/lib/fleetCarrierStore.ts'}));
+ const id='3708000114';
+ await apply([{op:'identity',carrier_id:id,carrier_type:'SquadronCarrier',at:'2026-03-06T09:00:00Z'},
+  {op:'baseline',carrier_id:id,full:false,source_event:'Market',at:'2026-03-06T09:01:00Z',items:[{commodity:'steel',qty:400}]}]);
+ await db.query(`UPDATE fleet_carriers SET squadron_id=1,squadron_source='manual' WHERE carrier_id=$1`,[id]);
+ const svc={from(){return {select(){return this},async in(_key,ids){return {data:(await db.query('SELECT carrier_id,carrier_type FROM fleet_carriers WHERE carrier_id=ANY($1::bigint[])',[ids])).rows,error:null}}}},
+ async rpc(_name,p){return {data:await apply(p.p_ops),error:null}}};
+ for(const [n,type] of ['SquadronCarrier',undefined].entries()) {
+  const ops=normalizeCarrierEvents([
+   {event:'CarrierDockingPermission',CarrierID:id,timestamp:`2026-03-06T10:0${n}:00Z`,DockingAccess:'squadron'},
+   {event:'CarrierStats',CarrierID:id,CarrierType:type,timestamp:`2026-03-06T10:0${n}:01Z`,SpaceUsage:{Cargo:0,FreeSpace:60000}}],
+   {userId:MEMBER,now:new Date('2026-03-06T12:00:00Z')}).ops;
+  await applyCarrierOps(svc,MEMBER,'helper',ops);
+  assert.deepEqual(await cargo(id),{steel:400});
+  assert.equal((await carrier(id)).cargo_baseline_at,null);
+  assert.equal(Number((await carrier(id)).squadron_id),1);
+ }
+});
+
+test('CAPI shared bank reconciliation repairs missed deliveries, audits member and rejects access/race/stale snapshots',async()=>{
+ await db.exec(readFileSync(new URL('../../supabase/migrations/20261201090000_squadron_bank_capi_snapshot.sql',import.meta.url),'utf8'));
+ const id='3708000115';await bankFixture(id);
+ await apply([delta('2026-03-10T10:00:00Z','steel',100,hash(),id)],MEMBER);
+ const sync=async(at,items,user=MEMBER,squad=1)=>(await db.query('SELECT sync_squadron_bank_from_capi($1::uuid,$2::bigint,$3::bigint,$4,$5::timestamptz,$6::jsonb) AS r',
+ [user,squad,id,'DNHG',at,JSON.stringify(items)])).rows[0].r;
+ const stock=[{commodity:'steel',qty:650},{commodity:'water',qty:25}];
+ assert.equal((await sync('2026-03-10T11:00:00Z',stock)).ok,true);
+ assert.deepEqual(await cargo(id),{steel:650,water:25});
+ assert.equal((await sync('2026-03-10T11:00:00Z',stock)).duplicate,true);
+ assert.equal((await db.query('SELECT actor_id FROM squadron_bank_reconciliations WHERE carrier_id=$1',[id])).rows[0].actor_id,MEMBER);
+ await assert.rejects(sync('2026-03-10T11:01:00Z',stock,OTHER),e=>e.code==='42501');
+ await assert.rejects(sync('2026-03-10T11:01:00Z',stock,MEMBER,2),e=>e.code==='42501');
+ await assert.rejects(sync('2026-03-10T10:59:00Z',stock),e=>e.code==='P0001');
+ await apply([delta('2026-03-10T11:02:00Z','steel',50,hash(),id)],MEMBER);
+ await assert.rejects(sync('2026-03-10T11:01:00Z',stock),e=>e.code==='P0001');
+ assert.deepEqual(await cargo(id),{steel:700,water:25});
+ for(const role of ['anon','authenticated'])assert.equal((await db.query(`SELECT has_function_privilege($1,'public.sync_squadron_bank_from_capi(uuid,bigint,bigint,text,timestamptz,jsonb)','EXECUTE') AS allowed`,[role])).rows[0].allowed,false);
+});
+
+test('Frontier snapshot -> real reconciliation -> pattern includes deliveries absent from all uploaded journals',async()=>{
+ const {bundleFile}=await import('./helpers/bundle.mjs');
+ const {squadronBankSnapshot}=await import(await bundleFile({entry:'src/lib/capi/squadronBank.ts'}));
+ const {buildCarrierView}=await import('../../src/lib/fleetCarriers.ts');
+ const {loadingProgress}=await import('../../src/lib/architect/loadingPatterns.ts');
+ const id='3708000116';await bankFixture(id);
+ await apply([delta('2026-03-10T10:00:00Z','steel',100,hash(),id)],MEMBER);
+ const snapshot=squadronBankSnapshot({tag:'DNHG',squadronCarrier:{name:{callsign:'DNHG'}},
+  bank:{commodities:{All:[{name:'steel',qty:650},{name:'water',qty:25}]}}},
+  {callsign:'DNHG',carrierId:id},new Date('2026-03-10T11:00:00Z'));
+ assert.ok(snapshot);
+ await db.query('SELECT sync_squadron_bank_from_capi($1::uuid,1,$2::bigint,$3,$4::timestamptz,$5::jsonb)',
+ [MEMBER,id,'DNHG',snapshot.observedAt,JSON.stringify(snapshot.items)]);
+ const row=await carrier(id),rows=(await db.query('SELECT * FROM fleet_carrier_cargo WHERE carrier_id=$1',[id])).rows;
+ const view=buildCarrierView(row,{relation:'squadron',showFinance:false,cargoRows:rows});
+ const plan={name:'Shared bank',visibility:'squadron',buildings:[{installationId:'no_truss',count:1,primary:false}],
+  carriers:[{carrierId:id,name:'Carrier',capacity:60000}],allocations:{[id]:{steel:1000,water:100,gold:10}}};
+ const progress=loadingProgress(plan,new Map([[id,view.cargo]]));
+ assert.equal(progress.loaded,675);assert.equal(progress.unknown,0);
+ assert.equal(progress.carriers[0].items.find(item=>item.commodity==='gold').aboard,0);
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM fleet_carrier_events WHERE carrier_id=$1',[id])).rows[0].n,1,
+  'absolute stock does not invent delivery events or personal contributions');
+});

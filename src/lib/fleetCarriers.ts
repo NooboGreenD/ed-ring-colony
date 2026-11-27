@@ -353,8 +353,8 @@ export function normalizeCarrierEvents(
         ops.push(squadron
           ? squadronClaim(id, at, 'CarrierStats')
           : { op: 'owner', carrier_id: id, at, proof: 'journal' });
-        // Подтверждённо пустой трюм — полный базовый снимок.
-        if (usage?.cargo === 0) {
+        // Personal hold only: Squadron CarrierStats is not a complete bank inventory.
+        if (!squadron && usage?.cargo === 0) {
           ops.push({ op: 'baseline', carrier_id: id, at, full: true, source_event: 'CarrierStats', items: [] });
         }
         break;

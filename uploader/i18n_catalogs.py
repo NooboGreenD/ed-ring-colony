@@ -19,6 +19,22 @@ from typing import Dict
 
 #: Строка → {код языка: перевод}.
 _STRINGS: Dict[str, Dict[str, str]] = {
+    'Эскадренный банк: остатки сверены с Frontier CAPI, включая неучтённые доставки.': {
+        'en': 'Squadron bank: stock reconciled with Frontier CAPI, including unreported deliveries.',
+        'de': 'Geschwaderbank: Bestand mit Frontier CAPI abgeglichen, einschließlich nicht erfasster Lieferungen.',
+        'it': 'Banca dello squadrone: scorte verificate con Frontier CAPI, incluse le consegne non registrate.',
+        'ko': '편대 은행: 미기록 운송분을 포함하여 Frontier CAPI와 재고를 대조했습니다.',
+        'zh': '中队银行：已通过 Frontier CAPI 核对库存，包括未记录的交付。',
+        'ja': '戦隊銀行: 未記録の納品を含め、Frontier CAPI と在庫を照合しました。',
+    },
+    'Эскадренный банк: полная сверка недоступна. Нужны привязка Frontier на сайте и доступ к банку; пока показаны только учтённые операции.': {
+        'en': 'Squadron bank: full reconciliation unavailable. Link Frontier on the website and ensure bank access; only recorded transactions are shown for now.',
+        'de': 'Geschwaderbank: Vollständiger Abgleich nicht verfügbar. Frontier auf der Website verknüpfen und Bankzugriff prüfen; vorerst werden nur erfasste Transaktionen angezeigt.',
+        'it': 'Banca dello squadrone: verifica completa non disponibile. Collega Frontier sul sito e verifica l’accesso alla banca; per ora sono mostrate solo le operazioni registrate.',
+        'ko': '편대 은행: 전체 대조를 사용할 수 없습니다. 웹사이트에서 Frontier를 연결하고 은행 접근 권한을 확인하세요. 현재는 기록된 거래만 표시됩니다.',
+        'zh': '中队银行：无法完整核对。请在网站关联 Frontier 并确保拥有银行访问权限；目前仅显示已记录的交易。',
+        'ja': '戦隊銀行: 完全な照合は利用できません。サイトで Frontier を連携し、銀行へのアクセス権を確認してください。現在は記録済みの取引のみ表示されます。',
+    },
     'груз: по рынку носителя (частичный снимок)': {
         'en': 'cargo: carrier market (partial snapshot)',
         'de': 'Fracht: Trägermarkt (Teilaufnahme)',

@@ -37,20 +37,22 @@ export async function applyCarrierOps(
 ): Promise<ApplyTotals> {
   const totals: ApplyTotals = { applied: 0, duplicates: 0, ignored: 0, stationsMoved: 0, carriers: [] };
   if (!ops.length) return totals;
-  // An inactive commodity-market row is NOT an empty squadron bank. Older
-  // clients omit station services, so resolve carrier type from the ledger too.
+  // Sparse/older clients may omit SquadronCarrier. Resolve it before using
+  // either inactive market rows or an aggregate Cargo=0 as inventory evidence.
   const uncertainZero = (item: any) => Number(item.qty) === 0 && item.stock_observed !== true;
-  const needsGuard = ops.filter(op => op.op === 'baseline' && op.source_event === 'Market'
-    && Array.isArray(op.items) && op.items.some(uncertainZero));
+  const emptyStats = (op: CarrierOp) => op.op === 'baseline' && op.source_event === 'CarrierStats';
+  const needsGuard = ops.filter(op => emptyStats(op) || (op.op === 'baseline' && op.source_event === 'Market'
+    && Array.isArray(op.items) && op.items.some(uncertainZero)));
   if (needsGuard.length) {
     const ids = [...new Set(needsGuard.map(op => op.carrier_id))];
     const { data, error } = await svc.from('fleet_carriers').select('carrier_id, carrier_type').in('carrier_id', ids);
-    if (error) throw new Error(`Fleet carrier market identity: ${error.message}`);
+    if (error) throw new Error(`Fleet carrier inventory identity: ${error.message}`);
     const squadronIds = new Set((data ?? []).filter((row: any) => row.carrier_type === 'SquadronCarrier')
       .map((row: any) => String(row.carrier_id)));
     for (const op of ops) if (op.carrier_type === 'SquadronCarrier') squadronIds.add(op.carrier_id);
-    ops = ops.map(op => needsGuard.includes(op) && squadronIds.has(op.carrier_id)
-      ? { ...op, items: (op.items as any[]).filter(item => !uncertainZero(item)) } : op);
+    ops = ops.filter(op => !(emptyStats(op) && squadronIds.has(op.carrier_id)))
+      .map(op => needsGuard.includes(op) && squadronIds.has(op.carrier_id)
+        ? { ...op, items: (op.items as any[]).filter(item => !uncertainZero(item)) } : op);
   }
   // Хронологический порядок и между вызовами: «owner» должен видеть тип
   // носителя, записанный «identity» того же CarrierStats.

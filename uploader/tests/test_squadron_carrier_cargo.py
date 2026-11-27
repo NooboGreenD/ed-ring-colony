@@ -283,6 +283,21 @@ class SquadronCargoTests(unittest.TestCase):
         self.assertEqual(self.rows()['steel']['amount'], 0)
         self.assertEqual(self.rows()['water']['amount'], 50)
 
+    def test_new_management_stats_never_empty_or_scale_bank_or_claim_it_as_personal(self):
+        self.app.carrier.state.remote_at = 0
+        self.app.carrier.state.delta_at = 0
+        for stamp, usage, typed in [
+                ("2026-03-01T11:00:00Z", {"Cargo": 0, "FreeSpace": 60000}, True),
+                ("2026-03-01T11:01:00Z", {"Cargo": 1, "FreeSpace": 59999}, False)]:
+            event = {"event": "CarrierStats", "CarrierID": SQ, "timestamp": stamp,
+                     "DockingAccess": "squadron", "SpaceUsage": usage}
+            if typed:
+                event["CarrierType"] = "SquadronCarrier"
+            self.app.carrier.handle(event)
+            self.assertEqual(self.app.carrier.state.kind, "squadron")
+            self.assertNotEqual(self.app.carrier.own_carrier_id, SQ)
+            self.assertEqual(self.app.carrier.state.commodities, {"steel": 100, "water": 50})
+
     def test_fresh_market_is_not_trimmed_by_recent_but_older_carrier_stats(self):
         self.app.carrier.handle({'event': 'CarrierStats', 'CarrierID': SQ, 'CarrierType': 'SquadronCarrier',
                                  'timestamp': '2026-03-01T10:00:30Z',
