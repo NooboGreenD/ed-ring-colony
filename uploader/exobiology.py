@@ -33,10 +33,15 @@ import json
 import os
 import re
 import time
+import tempfile
+import threading
+from copy import deepcopy
+from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from i18n import tr
+from journal_reader import journal_files
 
 #: Русские строки файла, которые не являются подписями интерфейса: это
 #: фрагменты, по которым ищется ответ игры в журнале, и значение поля события.
@@ -1469,6 +1474,14 @@ def prediction_rows(body: dict, limit: Optional[int] = None,
 # ============================================================
 #  Отслеживание по журналу
 # ============================================================
+def _state_locked(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
+
+
 class ExobiologyTracker:
     """Собирает состояние экзобиологии из событий журнала.
 
@@ -1477,6 +1490,7 @@ class ExobiologyTracker:
     """
 
     def __init__(self):
+        self._lock = threading.RLock()
         self.current_system: str = ""
         self.current_body: str = ""
         # system|body -> свойства тела
@@ -1560,6 +1574,7 @@ class ExobiologyTracker:
         while len(self.organics) > MAX_TRACKED_BODIES:
             self.organics.pop(next(iter(self.organics)), None)
 
+    @_state_locked
     def handle(self, event: dict) -> None:
         """Обработать одно событие журнала."""
         if not isinstance(event, dict):
@@ -1961,6 +1976,7 @@ class ExobiologyTracker:
         return result
 
     # -- кэш ---------------------------------------------------------------
+    @_state_locked
     def export_system_data(self, system: str) -> dict:
         """Собрать данные системы для сохранения в дисковый кэш."""
         sys_name = str(system or self.current_system or "").strip()
@@ -1983,6 +1999,7 @@ class ExobiologyTracker:
             "known_body_count": int(self.known_body_counts.get(sys_name, 0) or 0),
         }
 
+    @_state_locked
     def import_system_data(self, system: str, data: dict) -> int:
         """Импортировать данные системы из кэша. Возвращает число загруженных тел."""
         if not system or not isinstance(data, dict):
@@ -2020,7 +2037,7 @@ class ExobiologyTracker:
         """Загрузить все системы из ExobiologyCache."""
         if not cache:
             return 0
-        data = cache.load()
+        data = cache.all_systems()
         count = 0
         for sys_name, sys_data in data.items():
             if isinstance(sys_data, dict):
@@ -2028,25 +2045,33 @@ class ExobiologyTracker:
                 count += 1
         return count
 
-    def save_to_cache(self, cache) -> int:
-        """Сохранить все накопленные системы в ExobiologyCache."""
+    def save_to_cache(self, cache, *, indexed_files=None) -> int:
+        """Snapshot in one pass; merge and serialize the full cache only once.
+
+        Never hold the tracker lock across disk IO. The live journal worker
+        can keep updating the tracker while this immutable snapshot is saved.
+        """
         if not cache:
             return 0
-        systems = set()
-        for key in self.bodies:
-            if "|" in key:
-                systems.add(key.split("|", 1)[0])
-        if self.current_system:
-            systems.add(self.current_system)
-        count = 0
-        for sys_name in systems:
-            sys_data = self.export_system_data(sys_name)
-            if sys_data.get("bodies") or sys_data.get("organics") or sys_data.get("known_body_count"):
-                cache.store_system(sys_name, sys_data.get("bodies"), sys_data.get("organics"),
-                                   sys_data.get("known_body_count", 0))
-                count += 1
-        cache.save()
-        return count
+        with self._lock:
+            systems = {}
+            def system_data(name):
+                return systems.setdefault(name, {"bodies": {}, "organics": {},
+                                                 "known_body_count": self.known_body_counts.get(name, 0)})
+            for key, body in self.bodies.items():
+                if "|" in key:
+                    name, body_name = key.split("|", 1)
+                    system_data(name)["bodies"][body_name] = deepcopy(body)
+            for key, organics in self.organics.items():
+                if "|" in key:
+                    name, body_name = key.split("|", 1)
+                    system_data(name)["organics"][body_name] = deepcopy(organics)
+            for name, count in self.known_body_counts.items():
+                if count:
+                    system_data(name)
+        if not cache.store_systems(systems, indexed_files=indexed_files):
+            raise OSError("Не удалось сохранить кэш экзобиологии")
+        return len(systems)
 
 
 # ============================================================
@@ -2060,12 +2085,15 @@ class ExobiologyCache:
     """
 
     def __init__(self, path: Optional[Path] = None, max_systems: int = 2000):
+        self._lock = threading.RLock()
+        self._scan_lock = threading.Lock()
         self.path = Path(path) if path else None
         self.max_systems = max(10, int(max_systems))
         self._data: Dict[str, dict] = {}
         self._indexed_files: Dict[str, float] = {}  # filename -> mtime
         self._loaded = False
 
+    @_state_locked
     def load(self) -> Dict[str, dict]:
         if self._loaded:
             return self._data
@@ -2087,9 +2115,11 @@ class ExobiologyCache:
         self._loaded = True
         return self._data
 
+    @_state_locked
     def save(self) -> bool:
         if not self.path:
             return False
+        self.load()
         try:
             if len(self._data) > self.max_systems:
                 items = sorted(
@@ -2103,23 +2133,34 @@ class ExobiologyCache:
                 "version": 2,
                 "indexed_files": self._indexed_files,
             }
-            tmp_path = self.path.with_name(f"{self.path.name}.tmp.{os.getpid()}")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=1)
-            tmp_path.replace(self.path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp", dir=self.path.parent)
+            tmp_path = Path(temp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=1)
+                tmp_path.replace(self.path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
             return True
         except Exception:
             return False
 
+    @_state_locked
     def is_file_indexed(self, filename: str, mtime: float) -> bool:
         self.load()
         prev = self._indexed_files.get(filename)
-        return prev is not None and abs(prev - mtime) < 0.01
+        try:
+            return prev is not None and abs(float(prev) - mtime) < 0.01
+        except (TypeError, ValueError):
+            return False
 
+    @_state_locked
     def mark_files_indexed(self, files_mtimes: Dict[str, float]) -> None:
         self.load()
         self._indexed_files.update(files_mtimes)
 
+    @_state_locked
     def get_system(self, system: str) -> Optional[dict]:
         self.load()
         sys_name = str(system or "").strip()
@@ -2127,10 +2168,12 @@ class ExobiologyCache:
             return None
         return self._data.get(sys_name)
 
+    @_state_locked
     def all_systems(self) -> Dict[str, dict]:
         self.load()
-        return {k: v for k, v in self._data.items() if k != "_meta"}
+        return deepcopy({k: v for k, v in self._data.items() if k != "_meta"})
 
+    @_state_locked
     def clear_system(self, system: str) -> bool:
         sys_name = str(system or "").strip()
         self.load()
@@ -2140,8 +2183,9 @@ class ExobiologyCache:
             return True
         return False
 
+    @_state_locked
     def store_system(self, system: str, bodies: dict = None, organics: dict = None,
-                     known_body_count: int = 0) -> bool:
+                     known_body_count: int = 0, *, persist: bool = True) -> bool:
         sys_name = str(system or "").strip()
         if not sys_name or sys_name == "_meta":
             return False
@@ -2150,6 +2194,7 @@ class ExobiologyCache:
         merged_bodies = dict(existing.get("bodies") or {})
         for bname, bdata in (bodies or {}).items():
             if isinstance(bdata, dict):
+                bdata = deepcopy(bdata)
                 if bname in merged_bodies:
                     prev = merged_bodies[bname]
                     bdata["mapped"] = bool(prev.get("mapped")) or bool(bdata.get("mapped"))
@@ -2159,7 +2204,7 @@ class ExobiologyCache:
                             prev.get("confirmed_genera", []) + bdata.get("confirmed_genera", [])))
                 merged_bodies[bname] = bdata
 
-        merged_organics = dict(existing.get("organics") or {})
+        merged_organics = deepcopy(existing.get("organics") or {})
         for bname, orgs in (organics or {}).items():
             if isinstance(orgs, dict):
                 merged_organics.setdefault(bname, {}).update(orgs)
@@ -2170,6 +2215,16 @@ class ExobiologyCache:
             "organics": merged_organics,
             "known_body_count": max(int(existing.get("known_body_count") or 0), int(known_body_count or 0)),
         }
+        return self.save() if persist else True
+
+    @_state_locked
+    def store_systems(self, systems, *, indexed_files=None) -> bool:
+        """Commit system data and matching file markers in the SAME JSON write."""
+        for name, data in systems.items():
+            self.store_system(name, data.get("bodies"), data.get("organics"),
+                              data.get("known_body_count", 0), persist=False)
+        if indexed_files:
+            self.mark_files_indexed(indexed_files)
         return self.save()
 
 
@@ -2256,7 +2311,25 @@ def scan_journals_for_system(journal_path, system_name: str, handle_func=None) -
     return found_events
 
 
-def scan_all_journals_for_exobio(journal_path, handle_func=None, on_progress=None, cache=None) -> int:
+_EXOBIO_EVENT_MARKER = re.compile(rb'"event"\s*:\s*"(?:' +
+                                   b'|'.join(re.escape(name.encode()) for name in EXOBIO_JOURNAL_EVENTS) + rb')"')
+
+
+def scan_all_journals_for_exobio(journal_path, handle_func=None, on_progress=None, cache=None,
+                                *, commit=None, should_stop=None) -> int:
+    """Only one full scan per cache at a time; duplicate requests never queue."""
+    lock = cache._scan_lock if cache is not None else threading.Lock()
+    if not lock.acquire(blocking=False):
+        return 0
+    try:
+        return _scan_all_journals_for_exobio(journal_path, handle_func, on_progress, cache,
+                                            commit=commit, should_stop=should_stop)
+    finally:
+        lock.release()
+
+
+def _scan_all_journals_for_exobio(journal_path, handle_func, on_progress, cache,
+                                 *, commit=None, should_stop=None) -> int:
     """Полное сканирование всех журналов на события экзобиологии для наполнения кэша.
 
     Если передан cache, пропускает уже проиндексированные файлы журналов с неизменившимся mtime.
@@ -2266,25 +2339,19 @@ def scan_all_journals_for_exobio(journal_path, handle_func=None, on_progress=Non
     path = Path(journal_path)
     if not path.exists():
         return 0
-    try:
-        files = sorted(path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime)
-    except OSError:
-        return 0
-
     files_to_scan = []
-    for f in files:
-        try:
-            mtime = f.stat().st_mtime
-            if cache and cache.is_file_indexed(f.name, mtime):
-                continue
-            files_to_scan.append((f, mtime))
-        except OSError:
+    for f, stat in journal_files(path):
+        mtime = stat.st_mtime
+        if cache and cache.is_file_indexed(f.name, mtime):
             continue
+        files_to_scan.append((f, mtime))
 
     total = len(files_to_scan)
     count = 0
     indexed_batch: Dict[str, float] = {}
     for idx, (fpath, mtime) in enumerate(files_to_scan):
+        if should_stop and should_stop():
+            break
         if on_progress:
             try:
                 on_progress(idx + 1, total)
@@ -2293,31 +2360,39 @@ def scan_all_journals_for_exobio(journal_path, handle_func=None, on_progress=Non
         try:
             with open(fpath, "rb") as fh:
                 content = fh.read()
-            if not any(f'"{ev}"'.encode("utf-8") in content for ev in EXOBIO_JOURNAL_EVENTS):
+            if not _EXOBIO_EVENT_MARKER.search(content):
                 indexed_batch[fpath.name] = mtime
                 continue
             current_sys = None
-            for line in content.splitlines():
-                for ev_name in EXOBIO_JOURNAL_EVENTS:
-                    if f'"{ev_name}"'.encode("utf-8") in line:
-                        try:
-                            ev = json.loads(line.decode("utf-8", errors="replace"))
-                            name = ev.get("event")
-                            if name in ("FSDJump", "Location", "CarrierJump"):
-                                current_sys = str(ev.get("StarSystem") or "").strip()
-                            elif current_sys and not ev.get("StarSystem"):
-                                ev["StarSystem"] = current_sys
-                            if handle_func:
-                                handle_func(ev)
-                            count += 1
-                        except Exception:
-                            pass
-                        break
-            indexed_batch[fpath.name] = mtime
+            complete = True
+            for line_index, line in enumerate(content.splitlines()):
+                if line_index % 256 == 0 and should_stop and should_stop():
+                    complete = False
+                    break
+                if not _EXOBIO_EVENT_MARKER.search(line):
+                    continue
+                try:
+                    ev = json.loads(line.decode("utf-8", errors="replace"))
+                except (ValueError, UnicodeError):
+                    continue
+                if not isinstance(ev, dict) or ev.get("event") not in EXOBIO_JOURNAL_EVENTS:
+                    continue
+                if ev["event"] in ("FSDJump", "Location", "CarrierJump"):
+                    current_sys = str(ev.get("StarSystem") or "").strip()
+                elif current_sys and not ev.get("StarSystem"):
+                    ev["StarSystem"] = current_sys
+                if handle_func:
+                    handle_func(ev)
+                count += 1
+            if complete:
+                indexed_batch[fpath.name] = mtime
         except Exception:
             continue
 
     if cache and indexed_batch:
-        cache.mark_files_indexed(indexed_batch)
-        cache.save()
+        if commit is not None:
+            commit(indexed_batch)
+        else:
+            cache.mark_files_indexed(indexed_batch)
+            cache.save()
     return count
