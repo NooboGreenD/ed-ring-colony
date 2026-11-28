@@ -15,6 +15,7 @@
  */
 
 import { Fragment, useMemo, useState } from 'react';
+import { localizeLeaderCommodities } from '@/lib/architect/projectLeadersDisplay';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { cardStyle, chipActive, chipStyle, errorText, mutedText, rowStyle, sectionTitle, tableStyle, tdStyle, thStyle } from '@/components/Architect/panelStyles';
 import {
@@ -73,8 +74,10 @@ function toSegments(slices: LeaderSlice[], tone: (key: string) => string): Segme
   return slices.map((slice) => ({ key: slice.key, label: slice.label, value: slice.tons, tone: tone(slice.key) }));
 }
 
-export default function ProjectLeaders({ leaders, loading, error, period, scope, color, onPeriod, onScope }: Props) {
+export default function ProjectLeaders({ leaders: rawLeaders, loading, error, period, scope, color, onPeriod, onScope }: Props) {
   const { t, locale } = useI18n();
+  const leaders = useMemo(() => rawLeaders
+    ? localizeLeaderCommodities(rawLeaders, locale, t('lead.other')) : null, [rawLeaders, locale, t]);
   const tones = useTones(leaders);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showAllPilots, setShowAllPilots] = useState(false);

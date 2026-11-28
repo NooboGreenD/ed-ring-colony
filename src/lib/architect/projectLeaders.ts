@@ -20,6 +20,7 @@
  *     его тонны в сумме остаются, сам пилот всегда видит себя.
  */
 
+import { knownCommodityKey, localizedCommodityName } from '../commodityNames.ts';
 import { COMMODITY_LABELS_RU } from './catalogue.ts';
 import type { ProjectRole } from './projects.ts';
 
@@ -75,6 +76,8 @@ function asciiKey(text: string): string {
 export function canonicalCommodity(raw: unknown): { key: string; label: string } {
   const text = String(raw ?? '').trim();
   if (!text || text.toLowerCase() === 'unknown') return { key: 'unknown', label: 'Неизвестный груз' };
+  const known = knownCommodityKey(text);
+  if (known) return { key: known, label: localizedCommodityName(known, 'ru') };
   const ascii = asciiKey(text);
   if (ascii && COMMODITY_LABELS_RU[ascii]) return { key: ascii, label: COMMODITY_LABELS_RU[ascii] };
   const alias = ascii ? EN_ALIASES[ascii] : undefined;

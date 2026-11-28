@@ -1,0 +1,3061 @@
+{
+  "sources": [
+    {
+      "url": "https://github.com/EDCD/EDDI/tree/a3572ab7a3a541c4b1834738d1d85c6f69dd4202/DataDefinitions/Properties",
+      "note": "Commodities localized game names (resx); retained existing construction translations for other locales."
+    },
+    {
+      "url": "https://github.com/aussig/BGS-Tally/blob/a1b9491689d0a511d4e7403b26702f7f20766933/data/L10n/ru.commodity.csv",
+      "note": "Russian game commodity names, including Steel; not literal English translations."
+    },
+    {
+      "url": "https://github.com/EDCD/FDevIDs/blob/c35612952dd6a547d1a7ac4cffab9c7051e86579/commodity.csv",
+      "note": "Symbols and English market names from stationSearchItems.json."
+    }
+  ],
+  "construction": [
+    "advancedcatalysers",
+    "agriculturalmedicines",
+    "aluminium",
+    "animalmeat",
+    "autofabricators",
+    "basicmedicines",
+    "battleweapons",
+    "beer",
+    "bioreducinglichen",
+    "biowaste",
+    "buildingfabricators",
+    "ceramiccomposites",
+    "cmmcomposite",
+    "coffee",
+    "combatstabilisers",
+    "computercomponents",
+    "copper",
+    "cropharvesters",
+    "emergencypowercells",
+    "evacuationshelter",
+    "fish",
+    "foodcartridges",
+    "fruitandvegetables",
+    "geologicalequipment",
+    "grain",
+    "hazardousenvironmentsuits",
+    "heliostaticfurnaces",
+    "insulatingmembrane",
+    "liquidoxygen",
+    "liquor",
+    "medicaldiagnosticequipment",
+    "microcontrollers",
+    "militarygradefabrics",
+    "mineralextractors",
+    "mutomimager",
+    "nonlethalweapons",
+    "pesticides",
+    "polymers",
+    "powergenerators",
+    "reactivearmour",
+    "resonatingseparators",
+    "robotics",
+    "semiconductors",
+    "steel",
+    "structuralregulators",
+    "superconductors",
+    "surfacestabilisers",
+    "survivalequipment",
+    "tea",
+    "terrainenrichmentsystems",
+    "thermalcoolingunits",
+    "titanium",
+    "water",
+    "waterpurifiers",
+    "wine"
+  ],
+  "aliases": {
+    "Усовершенствованные катализаторы": "advancedcatalysers",
+    "Агромедикаменты": "agriculturalmedicines",
+    "Алюминий": "aluminium",
+    "Мясо животных": "animalmeat",
+    "Автофабрикаторы": "autofabricators",
+    "Базовые медикаменты": "basicmedicines",
+    "Боевое оружие": "battleweapons",
+    "Пиво": "beer",
+    "Биоредуцирующий лишайник": "bioreducinglichen",
+    "Биоотходы": "biowaste",
+    "Строительные фабрикаторы": "buildingfabricators",
+    "Керамические композиты": "ceramiccomposites",
+    "CMM-композит": "cmmcomposite",
+    "Кофе": "coffee",
+    "Боевые стабилизаторы": "combatstabilisers",
+    "Компьютерные компоненты": "computercomponents",
+    "Медь": "copper",
+    "Уборщики урожая": "cropharvesters",
+    "Аварийные энергоячейки": "emergencypowercells",
+    "Эвакуационное убежище": "evacuationshelter",
+    "Рыба": "fish",
+    "Пищевые картриджи": "foodcartridges",
+    "Фрукты и овощи": "fruitandvegetables",
+    "Геологическое оборудование": "geologicalequipment",
+    "Зерно": "grain",
+    "Костюмы для опасных сред": "hazardousenvironmentsuits",
+    "Гелиостатические печи": "heliostaticfurnaces",
+    "Изоляционная мембрана": "insulatingmembrane",
+    "Жидкий кислород": "liquidoxygen",
+    "Ликёр": "liquor",
+    "Мед. диагностическое оборудование": "medicaldiagnosticequipment",
+    "Микроконтроллеры": "microcontrollers",
+    "Ткани военного класса": "militarygradefabrics",
+    "Минеральные экстракторы": "mineralextractors",
+    "Муто-имиджер": "mutomimager",
+    "Нелетальное оружие": "nonlethalweapons",
+    "Пестициды": "pesticides",
+    "Полимеры": "polymers",
+    "Генераторы энергии": "powergenerators",
+    "Реактивная броня": "reactivearmour",
+    "Резонирующие сепараторы": "resonatingseparators",
+    "Роботы": "robotics",
+    "Полупроводники": "semiconductors",
+    "Сталь": "steel",
+    "Структурные регуляторы": "structuralregulators",
+    "Сверхпроводники": "superconductors",
+    "Поверхностные стабилизаторы": "surfacestabilisers",
+    "Спасательное снаряжение": "survivalequipment",
+    "Чай": "tea",
+    "Системы обогащения почвы": "terrainenrichmentsystems",
+    "Термальные охладители": "thermalcoolingunits",
+    "Титан": "titanium",
+    "Вода": "water",
+    "Водоочистители": "waterpurifiers",
+    "Вино": "wine",
+    "Agri-Medicines": "agriculturalmedicines",
+    "Muon Imager": "mutomimager",
+    "H.E. Suits": "hazardousenvironmentsuits",
+    "Land Enrichment Systems": "terrainenrichmentsystems",
+    "CMM Composites": "cmmcomposite",
+    "Microcontroller": "microcontrollers",
+    "Evacuation Shelters": "evacuationshelter",
+    "Insulating Membranes": "insulatingmembrane"
+  },
+  "goods": {
+    "advancedcatalysers": {
+      "en": "Advanced Catalysers",
+      "ru": "Улучшенные катализаторы",
+      "de": "Advanced-Katalysatoren",
+      "it": "Catalizzatori avanzati",
+      "ko": "고급 촉매제",
+      "zh": "高级催化剂",
+      "ja": "高性能触媒"
+    },
+    "advancedmedicines": {
+      "en": "Advanced Medicines",
+      "ru": "Новейшие лекарства",
+      "de": "Fortschrittliche Medikamente",
+      "it": "Medicinali Avanzati",
+      "zh": "先进药物"
+    },
+    "advert1": {
+      "en": "Ultra-Compact Processor Prototypes",
+      "ru": "Экспериментальные ультра компактные процессоры",
+      "de": "Ultrakompakte Prozessorprototypen",
+      "it": "Processore sperimentale ultra-compatto",
+      "zh": "超紧凑型处理器原型"
+    },
+    "aerialedenapple": {
+      "en": "Eden Apples of Aerial",
+      "ru": "Райские яблоки с Эриала",
+      "de": "Eden Äpfel der Luft",
+      "it": "Mele dell'Eden di Aerial",
+      "zh": "艾瑞尔伊甸苹果"
+    },
+    "aganipperush": {
+      "en": "Aganippe Rush",
+      "ru": "Aganippe Rush",
+      "de": "Aganippe-Hirnhetzer",
+      "it": "Stimolatore Aganippe",
+      "zh": "阿佳妮普兴奋剂"
+    },
+    "agriculturalmedicines": {
+      "en": "Agri-Medicines",
+      "ru": "Ветмедикаменты",
+      "de": "Landwirtschaftsmedizin",
+      "it": "Agri-medicine",
+      "ko": "농업 의약품",
+      "zh": "农业药品",
+      "ja": "農業用医薬品"
+    },
+    "agronomictreatment": {
+      "en": "Agronomic Treatment",
+      "ru": "Средство очистки почвы",
+      "de": "Agronomisches Mittel",
+      "it": "Trattamento Agronomico",
+      "zh": "抗枯萎病剂"
+    },
+    "airelics": {
+      "en": "AI Relics",
+      "ru": "Фрагменты ИИ",
+      "de": "AI Relikte",
+      "it": "Resti di Intelligenze Artificiali",
+      "zh": "AI遗物"
+    },
+    "alacarakmoskinart": {
+      "en": "Alacarakmo Skin Art",
+      "ru": "Алакаракмовские татуировки",
+      "de": "Alacarakmo Hautinlays",
+      "it": "Decorazioni per Pelle Alacarakmo",
+      "zh": "阿拉卡拉克莫电子纹身"
+    },
+    "albinoquechuamammoth": {
+      "en": "Albino Quechua Mammoth Meat",
+      "ru": "Мясо белого кечуанского мамонта",
+      "de": "Albinomammut-Fleisch",
+      "it": "Mammut Albino di Quechua",
+      "zh": "白化盖丘亚猛犸象肉"
+    },
+    "alexandrite": {
+      "en": "Alexandrite",
+      "ru": "Александрит",
+      "de": "Alexandrit",
+      "it": "Alessandrite",
+      "zh": "亚历山大变石"
+    },
+    "algae": {
+      "en": "Algae",
+      "ru": "Водоросли",
+      "de": "Algen",
+      "it": "Alghe",
+      "zh": "食用藻"
+    },
+    "alieneggs": {
+      "en": "Leathery Eggs",
+      "ru": "Кожистые яйца",
+      "de": "Ledrige Eier",
+      "it": "Uova Fossilizzate",
+      "zh": "皮革蛋"
+    },
+    "altairianskin": {
+      "en": "Altairian Skin",
+      "ru": "Альтаирская кожа",
+      "de": "Altair-Haut",
+      "it": "Pelle Altairiana",
+      "zh": "牵牛星生物护肤品"
+    },
+    "aluminium": {
+      "en": "Aluminium",
+      "ru": "Алюминий",
+      "de": "Aluminium",
+      "it": "Alluminio",
+      "ko": "알루미늄",
+      "zh": "铝",
+      "ja": "アルミニウム"
+    },
+    "alyabodilysoap": {
+      "en": "Alya Body Soap",
+      "ru": "Алийское мыло для тела",
+      "de": "Alya Körperseife",
+      "it": "Sapone Alya per il Corpo",
+      "zh": "艾丽娅内服外用沐浴露"
+    },
+    "ancientcasket": {
+      "en": "Guardian Casket",
+      "ru": "Древний контейнер",
+      "de": "Guardianschatulle",
+      "it": "Scrigno Antico",
+      "zh": "远古石棺"
+    },
+    "ancientkey": {
+      "en": "Ancient Key",
+      "ru": "Древний ключ",
+      "de": "Uralter Schlüssel",
+      "it": "Chiave Antica",
+      "zh": "远古钥匙"
+    },
+    "ancientorb": {
+      "en": "Guardian Orb",
+      "ru": "Древний шар",
+      "de": "Guardiankugel",
+      "it": "Globo Antico",
+      "zh": "远古宝珠"
+    },
+    "ancientrelic": {
+      "en": "Guardian Relic",
+      "ru": "Древняя реликвия",
+      "de": "Guardian-Relikt",
+      "it": "Antica Reliquia",
+      "zh": "远古遗物"
+    },
+    "ancientrelictg": {
+      "en": "Unclassified Relic",
+      "ru": "Неопознанная реликвия",
+      "de": "Uraltes Tharg-Relikt",
+      "it": "Reliquia non classificata",
+      "zh": "未分类的遗物"
+    },
+    "ancienttablet": {
+      "en": "Guardian Tablet",
+      "ru": "Древняя пластина",
+      "de": "Guardiantafel",
+      "it": "Tavola Antica",
+      "zh": "远古石板"
+    },
+    "ancienttotem": {
+      "en": "Guardian Totem",
+      "ru": "Древний тотем",
+      "de": "Guardian-Totem",
+      "it": "Totem Antico",
+      "zh": "远古图腾"
+    },
+    "ancienturn": {
+      "en": "Guardian Urn",
+      "ru": "Древняя урна",
+      "de": "Guardian-Urne",
+      "it": "Urna Antica",
+      "zh": "远古瓮"
+    },
+    "anduligafireworks": {
+      "en": "Anduliga Fire Works",
+      "ru": "Андулигские фейерверки",
+      "de": "Anduliga Feuerwerk",
+      "it": "Fuochi d'artificio di Anduliga",
+      "zh": "安度利佳烟花"
+    },
+    "animaleffigies": {
+      "en": "Crom Silver Fesh",
+      "ru": "Серебряная дурь Crom",
+      "de": "Crom Silver Fesh",
+      "it": "Fesh argentato di Crom",
+      "zh": "克罗姆白银兴奋剂"
+    },
+    "animalmeat": {
+      "en": "Animal Meat",
+      "ru": "Мясо животных",
+      "de": "Tierfleisch",
+      "it": "Carne animale",
+      "ko": "동물 고기",
+      "zh": "动物肉",
+      "ja": "動物肉"
+    },
+    "animalmonitors": {
+      "en": "Animal Monitors",
+      "ru": "Мониторы фауны",
+      "de": "Tierüberwachung",
+      "it": "Dispositivo di Controllo per Animali",
+      "zh": "动物监测器"
+    },
+    "antimattercontainmentunit": {
+      "en": "Antimatter Containment Unit",
+      "ru": "Контейнер с антиматерией",
+      "de": "Antimaterie-Transporteinheit",
+      "it": "Unità di Contenimento per l'antimateria",
+      "zh": "反物质收容单元"
+    },
+    "antiquejewellery": {
+      "en": "Antique Jewellery",
+      "ru": "Древние ювелирные украшения ",
+      "de": "Antiker Schmuck",
+      "it": "Gioielli Antichi",
+      "zh": "古董首饰"
+    },
+    "antiquities": {
+      "en": "Antiquities",
+      "ru": "Древние реликвии",
+      "de": "Antiquitäten",
+      "it": "Antichità",
+      "zh": "古董"
+    },
+    "anynacoffee": {
+      "en": "Any Na Coffee",
+      "ru": "Кофе Any Na",
+      "de": "Any Na Kaffee",
+      "it": "Caffé Ani Na",
+      "zh": "阿尼娜咖啡"
+    },
+    "apavietii": {
+      "en": "Apa Vietii"
+    },
+    "aquaponicsystems": {
+      "en": "Aquaponic Systems",
+      "ru": "Аквапонные системы",
+      "de": "Aquaponiksysteme",
+      "it": "Sistemi Acquaponici",
+      "zh": "鱼菜共生系统"
+    },
+    "aroucaconventualsweets": {
+      "en": "Arouca Conventual Sweets",
+      "ru": "Монастырские сладости Ароуки",
+      "de": "Arouca Süßigkeiten",
+      "it": "Dolci Conventuali Aruca",
+      "zh": "阿尔欧卡传统糖果"
+    },
+    "articulationmotors": {
+      "en": "Articulation Motors",
+      "ru": "Шарнирные моторы",
+      "de": "Gelenkmotoren",
+      "it": "Motori Articolari",
+      "zh": "关节马达"
+    },
+    "assaultplans": {
+      "en": "Assault Plans",
+      "ru": "Планы атак",
+      "de": "Angriffspläne",
+      "it": "Piani di Assalto",
+      "zh": "突击计划"
+    },
+    "atmosphericextractors": {
+      "en": "Atmospheric Processors",
+      "ru": "Атмосферный процессор",
+      "de": "Atmosphärenprozessoren",
+      "it": "Generatori Atmosferici",
+      "zh": "大气处理器"
+    },
+    "autofabricators": {
+      "en": "Auto-Fabricators",
+      "ru": "Автосинтезаторы",
+      "de": "Auto-Fabrikatoren",
+      "it": "Auto-fabbricatori",
+      "ko": "자동 제작기",
+      "zh": "自动制造机",
+      "ja": "自動製造機"
+    },
+    "azcancriformula42": {
+      "en": "AZ Cancri Formula 42",
+      "de": "AZ Cancri Formel 42",
+      "it": "Formula 42 di AZ Cancri",
+      "zh": "AZ巨蟹座配方42转化器"
+    },
+    "bakedgreebles": {
+      "en": "Baked Greebles",
+      "ru": "Печёные Greebles",
+      "de": "Gebackene Greebles",
+      "it": "Greebles al forno",
+      "zh": "烤格力布贝"
+    },
+    "baltahsinevacuumkrill": {
+      "en": "Baltah'sine Vacuum Krill",
+      "ru": "Вакуумный криль с Балтах'сине",
+      "de": "Vacuumkrill von Baltah'sine",
+      "it": "Krill del Vuoto di Balta Sain",
+      "zh": "巴尔泰辛真空磷虾"
+    },
+    "bankiamphibiousleather": {
+      "en": "Banki Amphibious Leather",
+      "ru": "Кожа банкийских амфибий",
+      "de": "Banki-Amphibienleder",
+      "it": "Pelli di Anfibi di Banchi",
+      "zh": "班基两栖类皮革"
+    },
+    "basicmedicines": {
+      "en": "Basic Medicines",
+      "ru": "Основные лекарства",
+      "de": "Basis-Medikamente",
+      "it": "Medicine di base",
+      "ko": "기본 의약품",
+      "zh": "基础药品",
+      "ja": "基本医薬品"
+    },
+    "basicnarcotics": {
+      "en": "Narcotics",
+      "ru": "Наркотики",
+      "de": "Drogen",
+      "it": "Narcotici",
+      "zh": "毒品"
+    },
+    "bastnasite": {
+      "en": "Bastnasite"
+    },
+    "bastsnakegin": {
+      "en": "Bast Snake Gin",
+      "ru": "Настойка из бастетовых змей",
+      "de": "Bast Snake Gin",
+      "it": "Gin al Serpente di Bast",
+      "zh": "麻蛇杜松子酒"
+    },
+    "battleweapons": {
+      "en": "Battle Weapons",
+      "ru": "Военное оружие",
+      "de": "Kampfwaffen",
+      "it": "Armi da battaglia",
+      "ko": "전투 무기",
+      "zh": "战斗武器",
+      "ja": "戦闘武器"
+    },
+    "bauxite": {
+      "en": "Bauxite",
+      "ru": "Боксит",
+      "de": "Bauxit",
+      "it": "Bauxite",
+      "zh": "铝土矿"
+    },
+    "beer": {
+      "en": "Beer",
+      "ru": "Пиво",
+      "de": "Bier",
+      "it": "Birra",
+      "ko": "맥주",
+      "zh": "啤酒",
+      "ja": "ビール"
+    },
+    "belalansrayleather": {
+      "en": "Belalans Ray Leather",
+      "ru": "Кожа белаланских скатов",
+      "de": "Belalans-Rochenleder",
+      "it": "Pelle di Rei da Belalans",
+      "zh": "贝腊兰鳐鱼皮革"
+    },
+    "benitoite": {
+      "en": "Benitoite",
+      "ru": "Бенитоит",
+      "de": "Benitoit",
+      "it": "Benitoite",
+      "zh": "膨润土"
+    },
+    "bertrandite": {
+      "en": "Bertrandite",
+      "ru": "Бертрандит",
+      "de": "Bertrandit",
+      "it": "Bertrandite",
+      "zh": "勃朗石"
+    },
+    "beryllium": {
+      "en": "Beryllium",
+      "ru": "Бериллий",
+      "de": "Beryllium",
+      "it": "Berillio",
+      "zh": "铍"
+    },
+    "bioreducinglichen": {
+      "en": "Bio-Reducing Lichen",
+      "ru": "Лишайник-биоредуктор",
+      "de": "Bio-reduzierende Flechte",
+      "it": "Lichene bio-riducente",
+      "ko": "생물 환원 지의류",
+      "zh": "生物还原地衣",
+      "ja": "生物還元地衣類"
+    },
+    "biowaste": {
+      "en": "Biowaste",
+      "ru": "Биоотходы",
+      "de": "Biologischer Abfall",
+      "it": "Rifiuti biologici",
+      "ko": "생물 폐기물",
+      "zh": "生物废料",
+      "ja": "生物廃棄物"
+    },
+    "bismuth": {
+      "en": "Bismuth",
+      "ru": "Висмут",
+      "de": "Wismut",
+      "it": "Bismuto",
+      "zh": "铋"
+    },
+    "bluemilk": {
+      "en": "Azure Milk",
+      "ru": "Лазурное молоко",
+      "de": "Azurmilch",
+      "it": "Latte Azzurro",
+      "zh": "蔚蓝牛奶"
+    },
+    "bootlegliquor": {
+      "en": "Bootleg Liquor",
+      "ru": "Самогон",
+      "de": "Schmuggelschnapps",
+      "it": "Liquore di Contrabbando",
+      "zh": "私酒"
+    },
+    "borasetanipathogenetics": {
+      "en": "Borasetani Pathogenetics",
+      "ru": "Боразетанские патогены",
+      "de": "Borasetani Pathogenetik",
+      "it": "Patogenetici Borasetani",
+      "zh": "博拉塞塔尼生物武器"
+    },
+    "bromellite": {
+      "en": "Bromellite",
+      "ru": "Бромеллит",
+      "de": "Bromellit",
+      "it": "Bromellite",
+      "zh": "溴镁石"
+    },
+    "buckyballbeermats": {
+      "en": "Buckyball Beer Mats",
+      "ru": "Подставка под пиво Buckyball",
+      "de": "Buckyball-Bierdeckel",
+      "it": "Sottobicchieri Buckyball",
+      "zh": "巴基球啤酒垫"
+    },
+    "buildingfabricators": {
+      "en": "Building Fabricators",
+      "ru": "Строительные синтезаторы",
+      "de": "Bau-Fabrikatoren",
+      "it": "Fabbricatori edili",
+      "ko": "건설 제작기",
+      "zh": "建筑制造机",
+      "ja": "建築製造機"
+    },
+    "burnhambiledistillate": {
+      "en": "Burnham Bile Distillate",
+      "ru": "Бернхемский желчный дистиллят",
+      "de": "Burnham-Körpersaftdestillat",
+      "it": "Distillato di Bile di Burnam",
+      "zh": "伯纳姆胆汁馏出物"
+    },
+    "cd75catcoffee": {
+      "en": "CD-75 Kitten Brand Coffee",
+      "ru": "Кошачий кофе CD-75",
+      "de": "CD-75 Kätzchen Marken Kaffee",
+      "it": "Caffè Gatto CD75",
+      "zh": "CD-75 小猫牌咖啡"
+    },
+    "centaurimegagin": {
+      "en": "Centauri Mega Gin",
+      "ru": "Кентаврский мега-джин",
+      "de": "Centauri Mega Gin",
+      "it": "Mega Gin di Centauri",
+      "zh": "半人马座超级杜松子酒"
+    },
+    "ceramiccomposites": {
+      "en": "Ceramic Composites",
+      "ru": "Керамокомпозиты",
+      "de": "Keramikverbundstoffe",
+      "it": "Compositi ceramici",
+      "ko": "세라믹 복합재",
+      "zh": "陶瓷复合材料",
+      "ja": "セラミック複合材"
+    },
+    "ceremonialheiketea": {
+      "en": "Ceremonial Heike Tea",
+      "ru": "Церемониальный чай Heike",
+      "de": "Heike-Zeremonientee",
+      "it": "Tè Cerimoniale di Eiche",
+      "zh": "礼仪平家茶"
+    },
+    "cetiaepyornisegg": {
+      "en": "Aepyornis Egg",
+      "ru": "Яйцо эпиорниса",
+      "de": "Aepyornis-Eier",
+      "it": "Uovo di Epiornis",
+      "zh": "埃皮鸟蛋"
+    },
+    "cetirabbits": {
+      "en": "Ceti Rabbits",
+      "ru": "Кролики с Кита",
+      "de": "Ceti-Kaninchen",
+      "it": "Conigli di Ceti",
+      "zh": "鲸鱼座兔子"
+    },
+    "chameleoncloth": {
+      "en": "Chameleon Cloth",
+      "ru": "Ткань-хамелеон",
+      "de": "Chamäleon-Kleidung",
+      "it": "Tessuto Camaleontico",
+      "zh": "变色龙布"
+    },
+    "chateaudeaegaeon": {
+      "en": "Chateau De Aegaeon",
+      "ru": "Шато де Эгеон",
+      "de": "Chateau De Aegaeon",
+      "it": "Chateau De Egeon",
+      "zh": "爱琴庄园葡萄酒"
+    },
+    "chemicalwaste": {
+      "en": "Chemical Waste",
+      "ru": "Радиоактивные материалы",
+      "de": "Chemiemüll",
+      "it": "Rifiuti Chimici",
+      "zh": "化学废料"
+    },
+    "cherbonesbloodcrystals": {
+      "en": "Cherbones Blood Crystals",
+      "ru": "Чербонские кровавые кристаллы",
+      "de": "Cherbones Blutkristalle",
+      "it": "Cristalli Sanguigni di Cerbons",
+      "zh": "切尔本斯血结晶"
+    },
+    "chieridanimarinepaste": {
+      "en": "Chi Eridani Marine Paste",
+      "ru": "Морская паста с Чи Эридана",
+      "de": "Chi Eridani Meerespaste",
+      "it": "Impasto Marino di Ci Eridani",
+      "zh": "奇艾瑞达尼海鲜酱"
+    },
+    "classifiedexperimentalequipment": {
+      "en": "Classified Experimental Equipment",
+      "ru": "Классифицированное экспериментальное оборудование",
+      "de": "Klassifizierte experimentelle Ausrüstung",
+      "it": "Equipaggiamento sperimentale classificato",
+      "zh": "分类实验设备"
+    },
+    "clothing": {
+      "en": "Clothing",
+      "ru": "Одежда",
+      "de": "Kleidung",
+      "it": "Capi di abbigliamento",
+      "zh": "衣物"
+    },
+    "cmmcomposite": {
+      "en": "CMM Composite",
+      "ru": "CMM-композит",
+      "de": "CMM-Verbundstoff",
+      "it": "Composito CMM",
+      "ko": "CMM 복합재",
+      "zh": "CMM 复合材料",
+      "ja": "CMM 複合材"
+    },
+    "cobalt": {
+      "en": "Cobalt",
+      "ru": "Кобальт",
+      "de": "Kobalt",
+      "it": "Cobalto",
+      "zh": "钴"
+    },
+    "coffee": {
+      "en": "Coffee",
+      "ru": "Кофе",
+      "de": "Kaffee",
+      "it": "Caffè",
+      "ko": "커피",
+      "zh": "咖啡",
+      "ja": "コーヒー"
+    },
+    "coltan": {
+      "en": "Coltan",
+      "ru": "Колтан",
+      "de": "Coltan",
+      "it": "Coltan",
+      "zh": "钶钽铁矿石"
+    },
+    "combatstabilisers": {
+      "en": "Combat Stabilisers",
+      "ru": "Боевые стабилизаторы",
+      "de": "Kampfstabilisatoren",
+      "it": "Stabilizzatori da combattimento",
+      "ko": "전투 안정제",
+      "zh": "战斗稳定器",
+      "ja": "戦闘用安定剤"
+    },
+    "comercialsamples": {
+      "en": "Commercial Samples",
+      "ru": "Рекламные образцы",
+      "de": "Werbeproben",
+      "it": "Campioni Commerciali",
+      "zh": "商业样品"
+    },
+    "computercomponents": {
+      "en": "Computer Components",
+      "ru": "Компьютерные компоненты",
+      "de": "Computerkomponenten",
+      "it": "Componenti informatici",
+      "ko": "컴퓨터 부품",
+      "zh": "计算机组件",
+      "ja": "コンピュータ部品"
+    },
+    "conductivefabrics": {
+      "en": "Conductive Fabrics",
+      "ru": "Проводящая ткань",
+      "de": "Leitfähige Stoffe",
+      "it": "Tessuti Conduttivi",
+      "zh": "导电织物"
+    },
+    "consumertechnology": {
+      "en": "Consumer Technology",
+      "ru": "Потребительские товары",
+      "de": "Unterhaltungselektronik",
+      "it": "Tecnologia da Consumo",
+      "zh": "消费科技品"
+    },
+    "coolinghoses": {
+      "en": "Micro-weave Cooling Hoses",
+      "ru": "Шланги системы охлаждения малых диаметров",
+      "de": "Mikroflecht-Kühlschläuche",
+      "it": "Tubi di Raffreddamento a Micro Trama",
+      "zh": "微编织冷却软管"
+    },
+    "copper": {
+      "en": "Copper",
+      "ru": "Медь",
+      "de": "Kupfer",
+      "it": "Rame",
+      "ko": "구리",
+      "zh": "铜",
+      "ja": "銅"
+    },
+    "coquimspongiformvictuals": {
+      "en": "Coquim Spongiform Victuals",
+      "ru": "Губковые продукты с Кокуима",
+      "de": "Coqium Schwammkost",
+      "it": "Vettovaglie Spongiformi di Cochim",
+      "zh": "科金海绵状食物"
+    },
+    "coralsap": {
+      "en": "Coral Sap",
+      "ru": "Coral Sap",
+      "de": "Korallensaft",
+      "it": "Linfa corallina",
+      "zh": "珊瑚树树液"
+    },
+    "cropharvesters": {
+      "en": "Crop Harvesters",
+      "ru": "Уборочный комбайн",
+      "de": "Erntemaschinen",
+      "it": "Mietitrebbie",
+      "ko": "수확기",
+      "zh": "收割机",
+      "ja": "収穫機"
+    },
+    "cryolite": {
+      "en": "Cryolite",
+      "ru": "Криолит",
+      "de": "Kriolyth",
+      "it": "Criolite",
+      "zh": "冰晶石"
+    },
+    "crystallinespheres": {
+      "en": "Crystalline Spheres",
+      "ru": "Прозрачные сферы",
+      "de": "Kristallkugeln",
+      "it": "Sfere Cristalline",
+      "zh": "水晶球"
+    },
+    "curatedcommodity": {
+      "en": "Curated Commodity Package"
+    },
+    "damagedescapepod": {
+      "en": "Damaged Escape Pod",
+      "ru": "Поврежденная спасательная капсула",
+      "de": "Beschädigte Rettungskapsel",
+      "it": "Guscio di Salvataggio Danneggiato",
+      "zh": "损坏的逃生舱"
+    },
+    "damnacarapaces": {
+      "en": "Damna Carapaces",
+      "ru": "Панцири с Дамны",
+      "de": "Damna-Schildpanzer",
+      "it": "Carapaci di Damna",
+      "zh": "达姆纳虫甲壳"
+    },
+    "datacore": {
+      "en": "Data Core",
+      "ru": "Ядро данных",
+      "de": "Datenkern",
+      "it": "Nucleo dati",
+      "zh": "数据核心"
+    },
+    "deltaphoenicispalms": {
+      "en": "Delta Phoenicis Palms",
+      "ru": "Фениксовые пальмы с Дельты",
+      "de": "Delta-Phönix-Palmen",
+      "it": "Palme di Delta Foenicis",
+      "zh": "德尔塔腓尼基棕榈"
+    },
+    "deuringastruffles": {
+      "en": "Deuringas Truffles",
+      "ru": "Трюфели с Деуринги",
+      "de": "Deuringas Trüffel",
+      "it": "Tartufi di Deuringas",
+      "zh": "德林加斯松露"
+    },
+    "deuterium": {
+      "en": "Deuterium"
+    },
+    "diagnosticsensor": {
+      "en": "Hardware Diagnostic Sensor",
+      "ru": "Сенсор диагностики оборудования",
+      "de": "Hardware-Diagnostiksensor",
+      "it": "Sensori Diagnostici",
+      "zh": "硬件诊断传感器"
+    },
+    "diamond": {
+      "en": "Diamond"
+    },
+    "diplomaticbag": {
+      "en": "Diplomatic Bag",
+      "ru": "Дипломатическая сумка",
+      "de": "Diplomatentasche",
+      "it": "Valigia Diplomatica",
+      "zh": "外交公文包"
+    },
+    "disomacorn": {
+      "en": "Diso Ma Corn",
+      "ru": "Зерна дисо ма",
+      "de": "Diso Ma Mais",
+      "it": "Mais di Diso Ma",
+      "zh": "迪索马玉米"
+    },
+    "domesticappliances": {
+      "en": "Domestic Appliances",
+      "ru": "Бытовая техника",
+      "de": "Haushaltsgeräte",
+      "it": "Elettrodomestici",
+      "zh": "家用电器"
+    },
+    "drones": {
+      "en": "Limpets",
+      "ru": "Дроны",
+      "de": "Drohne",
+      "it": "Droni",
+      "zh": "帽贝无人机"
+    },
+    "duradrives": {
+      "en": "Duradrives"
+    },
+    "earthrelics": {
+      "en": "Earth Relics",
+      "ru": "Реликвии с Земли ",
+      "de": "Erdrelikte",
+      "it": "Reliquie della Terra",
+      "zh": "地球遗物"
+    },
+    "eleuthermals": {
+      "en": "Eleu Thermals",
+      "ru": "Элеусская теплая одежда",
+      "de": "Eleu-Thermotextilien",
+      "it": "Vesti Termiche Eleu",
+      "zh": "厄勒乌手工针织保暖内衣"
+    },
+    "emergencypowercells": {
+      "en": "Emergency Power Cells",
+      "ru": "Аварийные энергоячейки",
+      "de": "Notstromzellen",
+      "it": "Celle di emergenza",
+      "ko": "비상 전원 세포",
+      "zh": "应急电源单元",
+      "ja": "緊急電源セル"
+    },
+    "encripteddatastorage": {
+      "en": "Encrypted Data Storage",
+      "ru": "Зашифрованный носитель данных",
+      "de": "Verschlüsselter Datenträger",
+      "it": "Archivio dati criptato",
+      "zh": "加密数据存储器"
+    },
+    "encryptedcorrespondence": {
+      "en": "Encrypted Correspondence",
+      "ru": "Шифрованная переписка",
+      "de": "Verschlüsselte Korrespondenz",
+      "it": "Corrispondenza Criptata",
+      "zh": "加密通信"
+    },
+    "eraninpearlwhisky": {
+      "en": "Eranin Pearl Whisky",
+      "ru": "Эранинское жемчужное виски",
+      "de": "Eranin Perl Whisky",
+      "it": "Whisky Perla di Eranin",
+      "zh": "伊拉宁珍珠威士忌"
+    },
+    "eshuumbrellas": {
+      "en": "Eshu Umbrellas",
+      "ru": "Зонтики Эшу",
+      "de": "Eshu Regenschirme",
+      "it": "Ombrelli Eshu",
+      "zh": "鄂树伞"
+    },
+    "esusekucaviar": {
+      "en": "Esuseku Caviar",
+      "ru": "Эсусекусская осетровая икра",
+      "de": "Esuseku Kaviar",
+      "it": "Caviale Esuseku",
+      "zh": "永濑鱼子酱"
+    },
+    "ethgrezeteabuds": {
+      "en": "Ethgreze Tea Buds",
+      "ru": "Чайные бутоны Этгриза",
+      "de": "Ethgreze Teeknospen",
+      "it": "Germogli di Tè Ethgreze",
+      "zh": "埃格瑞兹茶芽"
+    },
+    "evacuationshelter": {
+      "en": "Evacuation Shelter",
+      "ru": "Эвакуационное убежище",
+      "de": "Evakuierungsunterkunft",
+      "it": "Rifugio di evacuazione",
+      "ko": "대피소",
+      "zh": "疏散避难所",
+      "ja": "避難シェルター"
+    },
+    "exhaustmanifold": {
+      "en": "Exhaust Manifold",
+      "ru": "Выпускной коллектор",
+      "de": "Krümmer",
+      "it": "Collettore di Scarico",
+      "zh": "排气歧管"
+    },
+    "explosives": {
+      "en": "Explosives",
+      "ru": "Взрывчатка",
+      "de": "Sprengstoffe",
+      "it": "Esplosivi",
+      "zh": "爆炸物"
+    },
+    "fish": {
+      "en": "Fish",
+      "ru": "Рыба",
+      "de": "Fisch",
+      "it": "Pesce",
+      "ko": "생선",
+      "zh": "鱼",
+      "ja": "魚"
+    },
+    "foodcartridges": {
+      "en": "Food Cartridges",
+      "ru": "Пищевые брикеты",
+      "de": "Nahrungsmittelkartuschen",
+      "it": "Cartucce alimentari",
+      "ko": "식량 카트리지",
+      "zh": "食品盒",
+      "ja": "食料カートリッジ"
+    },
+    "fossilremnants": {
+      "en": "Fossil Remnants",
+      "ru": "Ископаемые останки",
+      "de": "Fossile Überreste",
+      "it": "Resti Fossili",
+      "zh": "化石遗迹"
+    },
+    "fruitandvegetables": {
+      "en": "Fruit and Vegetables",
+      "ru": "Фрукты и овощи",
+      "de": "Obst und Gemüse",
+      "it": "Frutta e verdura",
+      "ko": "과일과 채소",
+      "zh": "水果和蔬菜",
+      "ja": "果物と野菜"
+    },
+    "fujintea": {
+      "en": "Fujin Tea",
+      "ru": "Фудзинский чай",
+      "de": "Fujin-Tee",
+      "it": "The Fujin",
+      "zh": "富锦茶"
+    },
+    "galactictravelguide": {
+      "en": "Galactic Travel Guide",
+      "ru": "Путеводитель галактического путешественника",
+      "de": "Galaktischer Reiseführer",
+      "it": "Guida per Viaggiatori Galattici",
+      "zh": "银河旅行指南"
+    },
+    "gallite": {
+      "en": "Gallite",
+      "ru": "Галлит",
+      "de": "Gallit",
+      "it": "Gallite",
+      "zh": "硫镓铜矿"
+    },
+    "gallium": {
+      "en": "Gallium",
+      "ru": "Галлий",
+      "de": "Gallium",
+      "it": "Gallio",
+      "zh": "镓"
+    },
+    "geawendancedust": {
+      "en": "Geawen Dance Dust",
+      "ru": "Геавенская танцевальная пыль",
+      "de": "Geawen Tanzstaub",
+      "it": "Polvere di Danza di Geawen",
+      "zh": "格温舞尘"
+    },
+    "genebank": {
+      "en": "Gene Bank",
+      "ru": "Генотека",
+      "de": "Gen-Datenbank",
+      "it": "Banca dei Geni",
+      "zh": "基因库"
+    },
+    "geologicalequipment": {
+      "en": "Geological Equipment",
+      "ru": "Геологическое оборудование",
+      "de": "Geologische Ausrüstung",
+      "it": "Attrezzatura geologica",
+      "ko": "지질 장비",
+      "zh": "地质设备",
+      "ja": "地質装備"
+    },
+    "geologicalsamples": {
+      "en": "Geological Samples",
+      "ru": "Образцы породы",
+      "de": "Geologische Proben",
+      "it": "Campioni Geologici",
+      "zh": "地质样品"
+    },
+    "gerasiangueuzebeer": {
+      "en": "Gerasian Gueuze Beer",
+      "ru": "Герасианское пиво гез",
+      "de": "Gerasisches Gueuze Bier",
+      "it": "Birra Gueuze Gerasiana",
+      "zh": "格拉西亚 古兹啤酒"
+    },
+    "giantirukamasnails": {
+      "en": "Giant Irukama Snails",
+      "ru": "Огромные улитки с Ирукамы",
+      "de": "Irukama-Riesenschnecken",
+      "it": "Lumache Giganti di Irukama",
+      "zh": "巨型伊鲁卡玛蜗牛"
+    },
+    "giantverrix": {
+      "en": "Giant Verrix",
+      "ru": "Гигант Веррикс",
+      "de": "Riesen-Verrix",
+      "it": "Verrix Giganti",
+      "zh": "巨型威力克斯"
+    },
+    "gilyasignatureweapons": {
+      "en": "Gilya Signature Weapons",
+      "ru": "Именное оружие из системы Гилья",
+      "de": "Gilya Signierte Waffen",
+      "it": "Arma Tradizionale Gilya",
+      "zh": "吉利亚个性定制武器"
+    },
+    "gold": {
+      "en": "Gold",
+      "ru": "Золото",
+      "de": "Gold",
+      "it": "Oro",
+      "zh": "黃金"
+    },
+    "gomanyauponcoffee": {
+      "en": "Goman Yaupon Coffee",
+      "ru": "Кофе Goman Yaupon",
+      "de": "Goman Yaupon Kaffee",
+      "it": "Caffé Goman Yaupon",
+      "zh": "戈曼雅蓬咖啡"
+    },
+    "goslarite": {
+      "en": "Goslarite",
+      "ru": "Госларит",
+      "de": "Goslarit",
+      "it": "Goslarite",
+      "zh": "皓矾"
+    },
+    "grain": {
+      "en": "Grain",
+      "ru": "Зерно",
+      "de": "Getreide",
+      "it": "Grano",
+      "ko": "곡물",
+      "zh": "谷物",
+      "ja": "穀物"
+    },
+    "grandidierite": {
+      "en": "Grandidierite",
+      "ru": "Грандидьерит",
+      "de": "Grandidierit",
+      "it": "Grandidierite",
+      "zh": "硅硼镁铝石"
+    },
+    "haematite": {
+      "en": "Haematite",
+      "ru": "Гематит"
+    },
+    "hafnium178": {
+      "en": "Hafnium 178",
+      "ru": "Гафний-178",
+      "de": "Hafnium 178",
+      "it": "Afnio 178",
+      "zh": "铪幺柒捌"
+    },
+    "haidneblackbrew": {
+      "en": "Haiden Black Brew",
+      "ru": "Гайдновский черный напиток",
+      "de": "Haiden-Schwarzbier",
+      "it": "Té Nero di Aidne",
+      "zh": "海德恩黑酿茶"
+    },
+    "harmasilversearum": {
+      "en": "Harma Silver Sea Rum",
+      "ru": "Ром «Серебряное море Harma»",
+      "de": "Harma Silberseerum",
+      "it": "Rum Mare d'Argento Harmaniano",
+      "zh": "哈玛银海朗姆酒"
+    },
+    "havasupaidreamcatcher": {
+      "en": "Havasupai Dream Catcher",
+      "ru": "Хавасупайский ловец снов",
+      "de": "Havasupai Traumfänger",
+      "it": "Cattura Sogni di Avasupai",
+      "zh": "哈瓦苏佩捕梦网"
+    },
+    "hazardousenvironmentsuits": {
+      "en": "Hazardous Environment Suits",
+      "ru": "Защитные костюмы",
+      "de": "Gefahrenschutzanzüge",
+      "it": "Tute per ambienti pericolosi",
+      "ko": "위험 환경 슈트",
+      "zh": "危险环境服",
+      "ja": "危険環境スーツ"
+    },
+    "heatsinkinterlink": {
+      "en": "Heatsink Interlink",
+      "ru": "Радиаторный соединитель",
+      "de": "Kühlkörperverbinder",
+      "it": "Tubi di Raffreddamento",
+      "zh": "散热器互联器"
+    },
+    "heliostaticfurnaces": {
+      "en": "Heliostatic Furnaces",
+      "ru": "Микробные печи",
+      "de": "Heliostatische Öfen",
+      "it": "Forni eliostatici",
+      "ko": "태양열로",
+      "zh": "定日镜炉",
+      "ja": "ヘリオスタット炉"
+    },
+    "helium": {
+      "en": "Helium"
+    },
+    "helium3": {
+      "en": "Helium-3"
+    },
+    "helvetitjpearls": {
+      "en": "Helvetitj Pearls",
+      "ru": "Жемчуг с Хельветитч",
+      "de": "Helvetitj Perlen",
+      "it": "Perle di Helvetiti",
+      "zh": "赫尔维蒂珍珠"
+    },
+    "hip10175bushmeat": {
+      "en": "HIP 10175 Bush Meat",
+      "ru": "Мясо лесной дичи с HIP 10175",
+      "de": "Wildfleisch von HIP 10175",
+      "it": "Carne Selvatica di H I P 10 175",
+      "zh": "HIP 10175野味"
+    },
+    "hip118311swarm": {
+      "en": "HIP 118311 Swarm",
+      "ru": "Рой HIP 118311",
+      "de": "Hip 118311 Schwarm",
+      "it": "Sciame di H I P 118 311",
+      "zh": "HIP 118311死毒蜂群武器"
+    },
+    "hip41181squid": {
+      "en": "HIP Proto-Squid",
+      "ru": "Протокальмар с HIP",
+      "de": "Hip Proto-Tintenfisch",
+      "it": "Proto Calamaro di H I P",
+      "zh": "HIP41181 原鱿鱼"
+    },
+    "hiporganophosphates": {
+      "en": "HIP Organophosphates",
+      "ru": "Мощные органофосфаты",
+      "de": "Hip Organophosphat",
+      "it": "Organofosfati di H I P",
+      "zh": "HIP有机磷酸盐"
+    },
+    "hnshockmount": {
+      "en": "HN Shock Mount",
+      "ru": "Разрядная установка HN",
+      "de": "HN-Dämpferaufhängung",
+      "it": "Stabilizzatore ammortizzante",
+      "zh": "高牛顿减震架"
+    },
+    "holvaduellingblades": {
+      "en": "Holva Duelling Blades",
+      "ru": "Хольванские дуэльные клинки",
+      "de": "Holva Duellierklingen",
+      "it": "Spade da duello Olva",
+      "zh": "霍尔瓦决斗之刃"
+    },
+    "honestypills": {
+      "en": "Honesty Pills",
+      "ru": "Пилюли честности",
+      "de": "Ehrlichkeitspillen",
+      "it": "Pillole dell'Onestà",
+      "zh": "吐真剂"
+    },
+    "hostage": {
+      "en": "Hostages",
+      "ru": "Заложник",
+      "de": "Geisel",
+      "it": "Ostaggio",
+      "zh": "人质"
+    },
+    "hr7221wheat": {
+      "en": "HR 7221 Wheat",
+      "ru": "Пшеница HR 7221",
+      "de": "HR 7221 Weizen",
+      "it": "Grano di H R 72 21",
+      "zh": "HR 7221小麦"
+    },
+    "hydrogenfuel": {
+      "en": "Hydrogen Fuel",
+      "ru": "Водородное топливо",
+      "de": "Wasserstoff-Treibstoff",
+      "it": "Carburante ad Idrogeno",
+      "zh": "氢燃料"
+    },
+    "hydrogenperoxide": {
+      "en": "Hydrogen Peroxide",
+      "ru": "Пероксид водорода",
+      "de": "Wasserstoffperoxid",
+      "it": "Perossido di Idrogeno",
+      "zh": "过氧化氢"
+    },
+    "imperialslaves": {
+      "en": "Imperial Slaves",
+      "ru": "Имперские рабы",
+      "de": "Imperiale Sklaven",
+      "it": "Schiavi Imperiali",
+      "zh": "帝国奴隶"
+    },
+    "indibourbon": {
+      "en": "Indi Bourbon",
+      "ru": "Инди-бурбон",
+      "de": "Indi Bourbon",
+      "it": "Whisky di Indi",
+      "zh": "银地波旁威士忌"
+    },
+    "indite": {
+      "en": "Indite",
+      "ru": "Индит",
+      "de": "Indit",
+      "it": "Indite",
+      "zh": "铟矿石"
+    },
+    "indium": {
+      "en": "Indium",
+      "ru": "Индий",
+      "de": "Indium",
+      "it": "Indio",
+      "zh": "铟"
+    },
+    "insulatingmembrane": {
+      "en": "Insulating Membrane",
+      "ru": "Изолирующая мембрана",
+      "de": "Isoliermembran",
+      "it": "Membrana isolante",
+      "ko": "절연 막",
+      "zh": "绝缘膜",
+      "ja": "絶縁膜"
+    },
+    "iondistributor": {
+      "en": "Ion Distributor",
+      "ru": "Ионный распределитель",
+      "de": "Ionenverteiler",
+      "it": "Distributori di Ioni",
+      "zh": "离子分配器"
+    },
+    "iridium": {
+      "en": "Iridium"
+    },
+    "jadeite": {
+      "en": "Jadeite",
+      "ru": "Жадеит",
+      "de": "Jadeit",
+      "it": "Giadeite",
+      "zh": "翡翠"
+    },
+    "jaquesquinentianstill": {
+      "en": "Jaques Quinentian Still",
+      "ru": "Дистиллятор Жака Квиненциана",
+      "de": "Jaques Quinent-Destille",
+      "it": "Distillatore Portatile Jacques Quinenziano",
+      "zh": "雅克风暴乙醇转化器"
+    },
+    "jaradharrepuzzlebox": {
+      "en": "Jaradharre Puzzle Box",
+      "ru": "Джарадхаррская головоломка",
+      "de": "Jaradharre Puzzelkiste",
+      "it": "Mosaico in scatola Jaradharriano",
+      "zh": "贾拉达尔快乐盒"
+    },
+    "jarouarice": {
+      "en": "Jaroua Rice",
+      "ru": "Жаруйский рис",
+      "de": "Jarous Reis",
+      "it": "Riso di Jaroua",
+      "zh": "雅鲁瓦大米"
+    },
+    "jotunmookah": {
+      "en": "Jotun Mookah",
+      "ru": "Йотунская моока",
+      "de": "Jotun Mookah",
+      "it": "Mookah di Jotun",
+      "zh": "佐敦狇佧"
+    },
+    "kachiriginleaches": {
+      "en": "Kachirigin Filter Leeches",
+      "ru": "Очищающие пиявки с Качиригина",
+      "de": "Kachiriginische Lauge",
+      "it": "Sanguisughe Filtranti Kachiriginiane",
+      "zh": "卡其瑞金过滤水蛭"
+    },
+    "kamitracigars": {
+      "en": "Kamitra Cigars",
+      "ru": "Сигары Kamitra",
+      "de": "Kamitra Zigarren",
+      "it": "Sigari di Kamitra",
+      "zh": "卡米特拉雪茄"
+    },
+    "kamorinhistoricweapons": {
+      "en": "Kamorin Historic Weapons",
+      "ru": "Каморинское историческое оружие",
+      "de": "Kamorins historische Waffen",
+      "it": "Armi d'epoca Kamoriniane",
+      "zh": "卡莫林史实武器"
+    },
+    "karetiicouture": {
+      "en": "Karetii Couture",
+      "ru": "Модные вещи от Karetii",
+      "de": "Karetii Mode",
+      "it": "Acconciatura Karetiiana",
+      "zh": "卡雷蒂时装"
+    },
+    "karsukilocusts": {
+      "en": "Karsuki Locusts",
+      "ru": "Саранча с Карсуки",
+      "de": "Karsuki Heuschrecken",
+      "it": "Locuste Karsukiane",
+      "zh": "卡苏基蝗虫"
+    },
+    "kinagoinstruments": {
+      "en": "Kinago Violins",
+      "ru": "Скрипки Kinago",
+      "de": "Kinago Instrumente",
+      "it": "Violino Kinagoense",
+      "zh": "肯纳格小提琴"
+    },
+    "konggaale": {
+      "en": "Kongga Ale",
+      "ru": "Эль с Кунгги",
+      "de": "Kongga Bier",
+      "it": "Birra di Kongga",
+      "zh": "孔加艾尔啤酒"
+    },
+    "korrokungpellets": {
+      "en": "Koro Kung Pellets",
+      "ru": "Корокунгские катышки",
+      "de": "Koro Kung Tabletten",
+      "it": "Fertilizzante di Koro Kung",
+      "zh": "科罗贡肥料粒"
+    },
+    "landmines": {
+      "en": "Landmines",
+      "ru": "Мины",
+      "de": "Landminen",
+      "it": "Mine",
+      "zh": "地雷"
+    },
+    "lanthanum": {
+      "en": "Lanthanum",
+      "ru": "Лантан",
+      "de": "Lanthan",
+      "it": "Lantanio",
+      "zh": "镧"
+    },
+    "largeexplorationdatacash": {
+      "en": "Large Survey Data Cache",
+      "ru": "Большой пакет с данными исследования",
+      "de": "Großer Erkundungsdatenspeicher",
+      "it": "Grande deposito di dati d'indagini",
+      "zh": "大型调查数据缓存器"
+    },
+    "lavianbrandy": {
+      "en": "Lavian Brandy",
+      "ru": "Лавианский бренди",
+      "de": "Lavian Brandy",
+      "it": "Brandy Laviano",
+      "zh": "拉维安白兰地"
+    },
+    "leather": {
+      "en": "Leather",
+      "ru": "Кожа",
+      "de": "Leder",
+      "it": "Cuoio",
+      "zh": "皮革"
+    },
+    "leestianeviljuice": {
+      "en": "Leestian Evil Juice",
+      "ru": "Леестийский сок зла",
+      "de": "Leesti Teufelssaft",
+      "it": "Succo Maligno Leestiano",
+      "zh": "利斯特恶汁酒"
+    },
+    "lepidolite": {
+      "en": "Lepidolite",
+      "ru": "Лепидолит",
+      "de": "Lepidolith",
+      "it": "Lepidolite",
+      "zh": "锂云母"
+    },
+    "lftvoidextractcoffee": {
+      "en": "Void Extract Coffee",
+      "ru": "Кофе \"Экстракт пустоты\"",
+      "de": "Void Kaffeekonzentrat",
+      "it": "Estratto a Vuoto di Caffè",
+      "zh": "空萃取咖啡"
+    },
+    "liquidoxygen": {
+      "en": "Liquid Oxygen",
+      "ru": "Жидкий кислород",
+      "de": "Flüssigsauerstoff",
+      "it": "Ossigeno liquido",
+      "ko": "액체 산소",
+      "zh": "液氧",
+      "ja": "液体酸素"
+    },
+    "liquor": {
+      "en": "Liquor",
+      "ru": "Спиртное",
+      "de": "Likör",
+      "it": "Liquore",
+      "ko": "리큐어",
+      "zh": "烈酒",
+      "ja": "リキュール"
+    },
+    "lithium": {
+      "en": "Lithium",
+      "ru": "Литий",
+      "de": "Lithium",
+      "it": "Litio",
+      "zh": "锂"
+    },
+    "lithiumhydroxide": {
+      "en": "Lithium Hydroxide",
+      "ru": "Гидроксид лития",
+      "de": "Lithiumhydroxid",
+      "it": "Idrossido di Litio",
+      "zh": "氢氧化锂"
+    },
+    "livehecateseaworms": {
+      "en": "Live Hecate Sea Worms",
+      "ru": "Живые морские черви с Гекаты",
+      "de": "Live-Hecate-Seewürmer",
+      "it": "Vermi di mare Hecatiani vivi",
+      "zh": "活海卡特海虫"
+    },
+    "lowtemperaturediamond": {
+      "en": "Low Temperature Diamonds",
+      "ru": "Низкотемпературные алмазы",
+      "de": "Tieftemperaturdiamanten",
+      "it": "Diamanti a bassa temperatura",
+      "zh": "低温钻石"
+    },
+    "ltthypersweet": {
+      "en": "LTT Hyper Sweet",
+      "ru": "Гиперсладости LTT",
+      "de": "LTT-Hypersüße",
+      "it": "Iperdolci di LTT",
+      "zh": "LTT超甜糖精"
+    },
+    "lyraeweed": {
+      "en": "Lyrae Weed",
+      "ru": "Трава лираи",
+      "de": "Lyrae Grass",
+      "it": "Gramigna Lyraeana",
+      "zh": "天琴草"
+    },
+    "m3_tissuesample_membrane": {
+      "en": "Mollusc Membrane",
+      "ru": "Мембрана моллюска",
+      "de": "Molluskenmembran",
+      "it": "Membrana Malacologica",
+      "zh": "软体动物膜"
+    },
+    "m3_tissuesample_mycelium": {
+      "en": "Mollusc Mycelium",
+      "ru": "Мицелий моллюска",
+      "de": "Molluskenmyzel",
+      "it": "Micelio Malacologico",
+      "zh": "软体动物菌丝体"
+    },
+    "m3_tissuesample_spores": {
+      "en": "Mollusc Spores",
+      "ru": "Споры моллюска",
+      "de": "Molluskensporen",
+      "it": "Spore Malacologiche",
+      "zh": "软体动物孢子"
+    },
+    "m_tissuesample_fluid": {
+      "en": "Mollusc Fluid",
+      "ru": "Жидкость моллюска",
+      "de": "Molluskenflüssigkeit",
+      "it": "Fluido Malacologico",
+      "zh": "软体动物液"
+    },
+    "m_tissuesample_nerves": {
+      "en": "Mollusc Brain Tissue",
+      "ru": "Мозговое вещество моллюска",
+      "de": "Molluskengehirngewebe",
+      "it": "tessuto cerebrale Malacologico",
+      "zh": "软体动物脑组织"
+    },
+    "m_tissuesample_soft": {
+      "en": "Mollusc Soft Tissue",
+      "ru": "Мягкие ткани моллюска",
+      "de": "Mollusken-Weichgewebe",
+      "it": "Tessuto molle Malacologico",
+      "zh": "软体动物软组织"
+    },
+    "magnesite": {
+      "en": "Magnesite"
+    },
+    "magneticemittercoil": {
+      "en": "Magnetic Emitter Coil",
+      "ru": "Спираль магнитного излучателя",
+      "de": "Magnetische Emitterspule",
+      "it": "Bobina per Emettitore Magnetico",
+      "zh": "磁发射线圈"
+    },
+    "marinesupplies": {
+      "en": "Marine Equipment",
+      "ru": "Морское оборудование",
+      "de": "Maritimausstattung",
+      "it": "Equipaggiamento marino",
+      "zh": "船用设备"
+    },
+    "masterchefs": {
+      "en": "Master Chefs",
+      "ru": "Мастер-шефы",
+      "de": "Oberköche",
+      "it": "Capo Cuochi",
+      "zh": "主厨"
+    },
+    "mechucoshightea": {
+      "en": "Mechucos High Tea",
+      "ru": "Мечукосский кайфочай",
+      "de": "Mechucos-High-Tee",
+      "it": "Tè Superiore di Mechucos",
+      "zh": "迈楚科斯爽神茶"
+    },
+    "medbstarlube": {
+      "en": "Medb Starlube",
+      "ru": "Звездная смазка с Медба",
+      "de": "Medb-Sternschmiere",
+      "it": "Stella lubrificante di Medb",
+      "zh": "美德星润滑油"
+    },
+    "medicaldiagnosticequipment": {
+      "en": "Medical Diagnostic Equipment",
+      "ru": "Диагностическое медоборудование",
+      "de": "Medizinische Diagnosegeräte",
+      "it": "Apparecchiature diagnostiche mediche",
+      "ko": "의료 진단 장비",
+      "zh": "医疗诊断设备",
+      "ja": "医療診断装置"
+    },
+    "metaalloys": {
+      "en": "Meta-Alloys",
+      "ru": "Метасплавы",
+      "de": "Meta-Legierungen",
+      "it": "Meta Leghe",
+      "zh": "超合金"
+    },
+    "methaneclathrate": {
+      "en": "Methane Clathrate",
+      "ru": "Клатрат метана",
+      "de": "Methanklathrat",
+      "it": "Clatrato di metano",
+      "zh": "甲烷包合物"
+    },
+    "methanolmonohydratecrystals": {
+      "en": "Methanol Monohydrate Crystals",
+      "ru": "Кристаллы моногидрата метанола",
+      "de": "Methanol-Monohydrat-Kristalle",
+      "it": "Monoidrato di Metanolo",
+      "zh": "一水甲醇"
+    },
+    "microcontrollers": {
+      "en": "Micro Controllers",
+      "ru": "Микроконтроллеры",
+      "de": "Mikrocontroller",
+      "it": "Microcontrollori",
+      "ko": "마이크로컨트롤러",
+      "zh": "微控制器",
+      "ja": "マイクロコントローラ"
+    },
+    "militarygradefabrics": {
+      "en": "Military Grade Fabrics",
+      "ru": "Ткани военного класса",
+      "de": "Militärische Stoffe",
+      "it": "Tessuti militari",
+      "ko": "군용 직물",
+      "zh": "军用布料",
+      "ja": "軍用布地"
+    },
+    "militaryintelligence": {
+      "en": "Military Intelligence",
+      "ru": "Разведданные",
+      "de": "Militär Geheimdienst",
+      "it": "Segreti militari",
+      "zh": "军事情报"
+    },
+    "mineralextractors": {
+      "en": "Mineral Extractors",
+      "ru": "Экстракторы минералов",
+      "de": "Mineralienextraktoren",
+      "it": "Estrattori minerali",
+      "ko": "광물 추출기",
+      "zh": "矿物提取器",
+      "ja": "鉱物抽出機"
+    },
+    "mineraloil": {
+      "en": "Mineral Oil",
+      "ru": "Нефть",
+      "de": "Erdöl",
+      "it": "Olio Minerale",
+      "zh": "矿物油"
+    },
+    "modularterminals": {
+      "en": "Modular Terminals",
+      "ru": "Модульные терминалы",
+      "de": "Modulterminals",
+      "it": "Terminali Modulari",
+      "zh": "模块化终端"
+    },
+    "moissanite": {
+      "en": "Moissanite",
+      "ru": "Муассанит",
+      "de": "Moissanit",
+      "it": "Moissanite",
+      "zh": "莫桑石"
+    },
+    "mokojingbeastfeast": {
+      "en": "Mokojing Beast Feast",
+      "ru": "Мокоджингское зверское яство",
+      "de": "Mokojing Monstermüsli",
+      "it": "Banchetto Bestiale di Mokojing",
+      "zh": "墨寇景野兽全席"
+    },
+    "momusbogspaniel": {
+      "en": "Momus Bog Spaniel",
+      "ru": "Момусовский болотный спаниель",
+      "de": "Momus-Sumpfspaniel",
+      "it": "Botolo di palude Momusiano",
+      "zh": "莫马斯沼泽猎犬"
+    },
+    "monazite": {
+      "en": "Monazite",
+      "ru": "Монацит",
+      "de": "Monazit",
+      "it": "Monazite",
+      "zh": "独居石"
+    },
+    "motronaexperiencejelly": {
+      "en": "Motrona Experience Jelly",
+      "ru": "Мотронское желе",
+      "de": "Motrona Erlebnisgelee",
+      "it": "Gelatina Esperienziale Motroniana",
+      "zh": "摩托罗纳体验果冻"
+    },
+    "mukusubiichitinos": {
+      "en": "Mukusubii Chitin-os",
+      "ru": "Мукусубские хитинос",
+      "de": "Mukusubii Chitin-Os",
+      "it": "Bis Chitina Mukusubiiana",
+      "zh": "椋鸟几丁质-Os"
+    },
+    "mulachigiantfungus": {
+      "en": "Mulachi Giant Fungus",
+      "ru": "Гигантские грибы с Мулачи",
+      "de": "Mulachi Riesenpilz",
+      "it": "Funghi giganti di Mulachi",
+      "zh": "木拉奇巨型真菌"
+    },
+    "musgravite": {
+      "en": "Musgravite",
+      "ru": "Мусгравит",
+      "de": "Musgravit",
+      "it": "Magnesio Taaffeite",
+      "zh": "麝香石"
+    },
+    "mutomimager": {
+      "en": "Muon Imager",
+      "ru": "Мюонное видеоустройство",
+      "de": "Myon-Imager",
+      "it": "Imager muonico",
+      "ko": "뮤온 이미저",
+      "zh": "μ子成像仪",
+      "ja": "ミューオンイメージャー"
+    },
+    "mysteriousidol": {
+      "en": "Mysterious Idol",
+      "ru": "Таинственный идол",
+      "de": "Mysteriöses Idol",
+      "it": "Idolo Misterioso",
+      "zh": "神秘偶像"
+    },
+    "nanobreakers": {
+      "en": "Nanobreakers",
+      "ru": "Нанопрерыватели",
+      "de": "Nanozertrümmerer",
+      "it": "Nanodemolitori",
+      "zh": "纳米破碎机"
+    },
+    "nanomedicines": {
+      "en": "Nanomedicines",
+      "ru": "Нанолекарства",
+      "de": "Nanomedizin",
+      "it": "Nanomedicinali",
+      "zh": "纳米药品"
+    },
+    "naturalfabrics": {
+      "en": "Natural Fabrics",
+      "ru": "Натуральная ткань",
+      "de": "Naturfasern",
+      "it": "Tessuti Naturali",
+      "zh": "天然面料"
+    },
+    "neofabricinsulation": {
+      "en": "Neofabric Insulation",
+      "ru": "Высокотехнологичная изоляция",
+      "de": "Neogewebe-Isolierung",
+      "it": "Isolante Neotessile",
+      "zh": "新面料绝缘材料"
+    },
+    "neritusberries": {
+      "en": "Neritus Berries",
+      "ru": "Нерутские ягоды",
+      "de": "Netitus Beeren",
+      "it": "Bacche Neritusiane",
+      "zh": "尼里图斯浆果"
+    },
+    "nerveagents": {
+      "en": "Nerve Agents",
+      "ru": "Агенты нервно-паралит. действия",
+      "de": "Nervengas",
+      "it": "Agenti Nervini",
+      "zh": "神经毒剂"
+    },
+    "ngadandarifireopals": {
+      "en": "Ngadandari Fire Opals",
+      "ru": "Нгадандарийские огненные опалы",
+      "de": "Ngadandari Feueropale",
+      "it": "Opali di Fuoco Ngadandariane",
+      "zh": "恩加丹达里火蛋白石"
+    },
+    "ngunamodernantiques": {
+      "en": "Nguna Modern Antiques",
+      "ru": "Современные древности с Нгуны",
+      "de": "Nguna Moderne Antiquitäen",
+      "it": "Modernariato Ngunanese",
+      "zh": "恩古纳现代古董"
+    },
+    "njangarisaddles": {
+      "en": "Njangari Saddles",
+      "ru": "Седла Njangari",
+      "de": "Njangari Sättel",
+      "it": "Selle Njangariane",
+      "zh": "恩佳里马鞍"
+    },
+    "noneuclidianexotanks": {
+      "en": "Non Euclidian Exotanks",
+      "ru": "Неевклидовы экзобаки",
+      "de": "Nichteuklidische Exotanks",
+      "it": "Esocontenitori non Euclidei",
+      "zh": "非欧地外生物容器"
+    },
+    "nonlethalweapons": {
+      "en": "Non-Lethal Weapons",
+      "ru": "Нелетальное оружие",
+      "de": "Nichttödliche Waffen",
+      "it": "Armi non letali",
+      "ko": "비살상 무기",
+      "zh": "非致命武器",
+      "ja": "非致死性兵器"
+    },
+    "occupiedcryopod": {
+      "en": "Occupied Escape Pod",
+      "ru": "Спасательная капсула с пассажиром",
+      "de": "Besetzte Rettungskapsel",
+      "it": "Capsula di Salvataggio Occupata",
+      "zh": "被捕获的逃生舱"
+    },
+    "ochoengchillies": {
+      "en": "Ochoeng Chillies",
+      "ru": "Перчик чили с Очоенга",
+      "de": "Ochoeng-Chili",
+      "it": "Peperoncini Ochoenghiani",
+      "zh": "奥冲辣椒"
+    },
+    "olivine": {
+      "en": "Olivine"
+    },
+    "onionhead": {
+      "en": "Onionhead",
+      "ru": "Луковая головка",
+      "de": "Onionhead",
+      "it": "Testa di Cipolla",
+      "zh": "洋葱头大麻"
+    },
+    "onionheada": {
+      "en": "Onionhead Alpha Strain",
+      "ru": "Луковая головка, сорт альфа",
+      "de": "Onionhead (Alpha)",
+      "it": "Distillato Alfa di Testa di Cipolla",
+      "zh": "洋葱头鸦片A变体"
+    },
+    "onionheadb": {
+      "en": "Onionhead Beta Strain",
+      "ru": "Луковая головка, сорт бета",
+      "de": "Onionhead (Beta)",
+      "it": "Distillato Beta di Testa di Cipolla",
+      "zh": "洋葱头鸦片B变体"
+    },
+    "onionheadc": {
+      "en": "Onionhead Gamma Strain",
+      "ru": "Луковая головка, сорт Гамма",
+      "de": "Onionhead (Gamma)",
+      "it": "Distillato Gamma di Testa di Cipolla",
+      "zh": "洋葱头鸦片G变体"
+    },
+    "opal": {
+      "en": "Void Opal",
+      "ru": "Опал",
+      "de": "Leerenopal",
+      "it": "Opale del vuoto",
+      "zh": "Void Opals"
+    },
+    "ophiuchiexinoartefacts": {
+      "en": "Ophiuch Exino Artefacts",
+      "ru": "Артефакты офиух экзино",
+      "de": "Ophiuch Exino Artefakte",
+      "it": "Artefatti Esotici di Ofiuco",
+      "zh": "蛇夫座地外文物"
+    },
+    "orrerianviciousbrew": {
+      "en": "Orrerian Vicious Brew",
+      "ru": "Оррерское жуткое пойло",
+      "de": "Orrerianisches Immerwach",
+      "it": "Birraccia Orreriana",
+      "zh": "奥雷利亚恶毒轻酿"
+    },
+    "osmium": {
+      "en": "Osmium",
+      "ru": "Осмий",
+      "de": "Osmium",
+      "it": "Osmio",
+      "zh": "锇"
+    },
+    "p_particulatesample": {
+      "en": "Anomaly Particles",
+      "ru": "Аномальные частицы",
+      "de": "Anomaliepartikel",
+      "it": "Particole di Anomalia",
+      "zh": "异常粒子"
+    },
+    "painite": {
+      "en": "Painite",
+      "ru": "Пейнит",
+      "de": "Painit",
+      "it": "Painite",
+      "zh": "红硅硼铝钙石"
+    },
+    "palladium": {
+      "en": "Palladium",
+      "ru": "Палладий",
+      "de": "Palladium",
+      "it": "Palladio",
+      "zh": "钯"
+    },
+    "pantaaprayersticks": {
+      "en": "Pantaa Prayer Sticks",
+      "ru": "Пантаские молитвенные палочки",
+      "de": "Pantaa-Weihrauchstöcke",
+      "it": "Bastoncini da Preghiera Pantaani",
+      "zh": "潘塔祈祷棒"
+    },
+    "pavoniseargrubs": {
+      "en": "Pavonis Ear Grubs",
+      "ru": "Павлинские ухочерви",
+      "de": "Pavonis Ohr-Maden",
+      "it": "Larva Auricolare di Pavonis",
+      "zh": "帕沃尼斯耳形蝤"
+    },
+    "performanceenhancers": {
+      "en": "Performance Enhancers",
+      "ru": "Стимуляторы",
+      "de": "Leistungssteigerer",
+      "it": "Incrementatori di Prestazione",
+      "zh": "性能增强剂"
+    },
+    "periclasedunite": {
+      "en": "Periclase Dunite"
+    },
+    "personaleffects": {
+      "en": "Personal Effects",
+      "ru": "Личные вещи",
+      "de": "Persönliches",
+      "it": "Effetti Personali",
+      "zh": "私人物品"
+    },
+    "personalgifts": {
+      "en": "Festive Gifts",
+      "de": "Festliche Geschenke",
+      "it": "Regali delle Feste",
+      "zh": "节日礼物"
+    },
+    "personalweapons": {
+      "en": "Personal Weapons",
+      "ru": "Личное оружие",
+      "de": "Persönliche Waffen",
+      "it": "Armi Personali",
+      "zh": "携行武器"
+    },
+    "pesticides": {
+      "en": "Pesticides",
+      "ru": "Пестициды",
+      "de": "Pestizide",
+      "it": "Pesticidi",
+      "ko": "살충제",
+      "zh": "杀虫剂",
+      "ja": "農薬"
+    },
+    "platinum": {
+      "en": "Platinum",
+      "ru": "Платина",
+      "de": "Platin",
+      "it": "Platino",
+      "zh": "铂金"
+    },
+    "platinumaloy": {
+      "en": "Platinum Alloy",
+      "ru": "Платиновый сплав",
+      "de": "Platinlegierung",
+      "it": "Lega di Platino",
+      "zh": "铂合金"
+    },
+    "politicalprisoner": {
+      "en": "Political Prisoners",
+      "ru": "Политический заключенный",
+      "de": "Politischer Gefangener",
+      "it": "Prigionieri Politici",
+      "zh": "政治犯"
+    },
+    "polymers": {
+      "en": "Polymers",
+      "ru": "Полимеры",
+      "de": "Polymere",
+      "it": "Polimeri",
+      "ko": "폴리머",
+      "zh": "聚合物",
+      "ja": "ポリマー"
+    },
+    "powerconverter": {
+      "en": "Power Converter",
+      "ru": "Преобразователь энергии",
+      "de": "Energiekonverter",
+      "it": "Convertitore di Potenza",
+      "zh": "电力转换器"
+    },
+    "powergenerators": {
+      "en": "Power Generators",
+      "ru": "Электрогенераторы",
+      "de": "Stromgeneratoren",
+      "it": "Generatori di energia",
+      "ko": "발전기",
+      "zh": "发电机",
+      "ja": "発電機"
+    },
+    "powergridassembly": {
+      "en": "Energy Grid Assembly",
+      "ru": "Электросеть в сборе",
+      "de": "Energienetz-Gruppe",
+      "it": "Giunto per Griglie di Energia",
+      "zh": "电网组件"
+    },
+    "powertransferconduits": {
+      "en": "Power Transfer Bus",
+      "ru": "Энергообменная шина",
+      "de": "Energietransferbus",
+      "it": "Circuito di Trasferimento Potenza",
+      "zh": "电力传输总线"
+    },
+    "praseodymium": {
+      "en": "Praseodymium",
+      "ru": "Празеодим",
+      "de": "Praseodymium",
+      "it": "Praseodimio",
+      "zh": "镨"
+    },
+    "preciousgems": {
+      "en": "Precious Gems",
+      "ru": "Драгоценные камни",
+      "de": "Edelsteine",
+      "it": "Gemme preziose",
+      "zh": "稀有宝石"
+    },
+    "progenitorcells": {
+      "en": "Progenitor Cells",
+      "ru": "Прогениторные клетки",
+      "de": "Vorläuferzellen",
+      "it": "Cellule Progenitrici",
+      "zh": "祖细胞"
+    },
+    "prohibitedresearchmaterials": {
+      "en": "Prohibited Research Materials",
+      "ru": "Запретные материалы исследований",
+      "de": "Verbotene Forschungsmaterialien",
+      "it": "Materiali di ricerca Vietati",
+      "zh": "被禁研究材料"
+    },
+    "pyrophyllite": {
+      "en": "Pyrophyllite",
+      "ru": "Пирофиллит",
+      "de": "Pyrophyllit",
+      "it": "Pirofillite",
+      "zh": "叶蜡石"
+    },
+    "quartzpyroxenite": {
+      "en": "Quartz Pyroxenite"
+    },
+    "radiationbaffle": {
+      "en": "Radiation Baffle",
+      "ru": "Отражатель излучения",
+      "de": "Strahlungsabweiser",
+      "it": "Deflettore di Radiazioni",
+      "zh": "辐射挡板"
+    },
+    "rajukrustoves": {
+      "en": "Rajukru Multi-Stoves",
+      "ru": "Мультипечи Rajukru",
+      "de": "Rajukru Multi-Öfen",
+      "it": "Stufe Bruciatutto di Rajukru",
+      "zh": "拉朱克鲁多灶"
+    },
+    "rapabaosnakeskins": {
+      "en": "Rapa Bao Snake Skins",
+      "ru": "Змеиные шкуры с Рапа Бао",
+      "de": "Rapa Bao Schlangenhäute",
+      "it": "Pelle di Rettile di Rapa Bao",
+      "zh": "拉帕宝蛇皮"
+    },
+    "reactivearmour": {
+      "en": "Reactive Armour",
+      "ru": "Реактивная защита",
+      "de": "Reaktivpanzerung",
+      "it": "Corazza reattiva",
+      "ko": "반응 장갑",
+      "zh": "反应装甲",
+      "ja": "リアクティブアーマー"
+    },
+    "reinforcedmountingplate": {
+      "en": "Reinforced Mounting Plate",
+      "ru": "Усиленная монтажная плита",
+      "de": "Verstärkte Trägerplatte",
+      "it": "Placca di montaggio rinforzata",
+      "zh": "加固安装板"
+    },
+    "resonatingseparators": {
+      "en": "Resonating Separators",
+      "ru": "Резонансные сепараторы",
+      "de": "Resonanzseparatoren",
+      "it": "Separatori risonanti",
+      "ko": "공명 분리기",
+      "zh": "共振分离器",
+      "ja": "共振分離装置"
+    },
+    "rhodplumsite": {
+      "en": "Rhodplumsite",
+      "ru": "Родплумсайт",
+      "de": "Rhodplumsit",
+      "it": "Rhodplumsite",
+      "zh": "红铅矿"
+    },
+    "robotics": {
+      "en": "Robotics",
+      "ru": "Роботы",
+      "de": "Robotik",
+      "it": "Robotica",
+      "ko": "로봇공학",
+      "zh": "机器人",
+      "ja": "ロボティクス"
+    },
+    "rockforthfertiliser": {
+      "en": "Rockforth Fertiliser",
+      "ru": "Удобрение Rockforth",
+      "de": "Rockforth Dünger",
+      "it": "Fertilizzante Rockforth",
+      "zh": "洛克福斯肥料"
+    },
+    "ruby": {
+      "en": "Ruby"
+    },
+    "rusanioldsmokey": {
+      "en": "Rusani Old Smokey",
+      "ru": "Старые папиросы Rusani",
+      "de": "Rusani Old Smokey",
+      "it": "Vecchio Fumoso Rusaniano",
+      "zh": "鲁萨尼老烟熏烟草"
+    },
+    "rutile": {
+      "en": "Rutile",
+      "ru": "Рутил",
+      "de": "Rutil",
+      "it": "Rutilo",
+      "zh": "金红石"
+    },
+    "s6_tissuesample_cells": {
+      "en": "Pod Outer Tissue",
+      "ru": "Внешняя ткань семянки",
+      "de": "Zellen Gewebeprobe",
+      "it": "Tessuto Esterno di Baccello",
+      "zh": "太空豆荚外部样本"
+    },
+    "s6_tissuesample_coenosarc": {
+      "en": "Pod Shell Tissue",
+      "ru": "Ткань оболочки семянки",
+      "de": "Coenosarc Gewebeprobe",
+      "it": "Tessuto di Valva di Baccello",
+      "zh": "太空豆荚壳样本"
+    },
+    "s6_tissuesample_mesoglea": {
+      "en": "Pod Mesoglea",
+      "ru": "Мезоглея семянки",
+      "de": "Mesoglea Gewebeprobe",
+      "it": "Mesoglea di Baccello",
+      "zh": "太空豆荚内层样品"
+    },
+    "s9_tissuesample_shell": {
+      "en": "Pod Tissue",
+      "ru": "Ткань семянки",
+      "de": "Schalengewebeprobe",
+      "it": "Tessuto di Baccello",
+      "zh": "太空豆荚样本"
+    },
+    "s_tissuesample_cells": {
+      "en": "Pod Core Tissue",
+      "ru": "Ткань ядра семянки",
+      "de": "Schalenkerngewebeprobe",
+      "it": "Tessuto interno di Baccello",
+      "zh": "太空豆荚核心样本"
+    },
+    "s_tissuesample_core": {
+      "en": "Pod Surface Tissue",
+      "ru": "Поверхностная ткань семянки",
+      "de": "Schalenoberflächengewebeprobe",
+      "it": "Tessuto superficiale di Baccello",
+      "zh": "太空豆荚表面样本"
+    },
+    "s_tissuesample_surface": {
+      "en": "Pod Dead Tissue",
+      "ru": "Мертвая ткань семянки",
+      "de": "Hülsentotgewebe",
+      "it": "Tessuto necrotico di Baccello",
+      "zh": "太空豆荚死亡样本"
+    },
+    "samarium": {
+      "en": "Samarium",
+      "ru": "Самарий",
+      "de": "Samarium",
+      "it": "Samario",
+      "zh": "钐"
+    },
+    "sanumameat": {
+      "en": "Sanuma Decorative Meat",
+      "ru": "Декоративное мясо Sanuma",
+      "de": "Dekoratives Sanuma Fleisch",
+      "it": "Carne decorativa Sanuma",
+      "zh": "萨努玛合成肉"
+    },
+    "sap8corecontainer": {
+      "en": "SAP 8 Core Container",
+      "ru": "Контейнер «SAP 8 Core»",
+      "de": "Container mit SAP 8-Kern",
+      "it": "Contenitore Nucleico SAP 8",
+      "zh": "萨普8核心容器"
+    },
+    "sapphire": {
+      "en": "Sapphire"
+    },
+    "saxonwine": {
+      "en": "Saxon Wine",
+      "ru": "Саксонское вино",
+      "de": "Sachsenwein",
+      "it": "Vino Sassone",
+      "zh": "撒克逊酒"
+    },
+    "scientificresearch": {
+      "en": "Scientific Research",
+      "ru": "Материалы исследования",
+      "de": "Wissenschaftliche Forschung",
+      "it": "Ricerche Scientifiche",
+      "zh": "科学研究"
+    },
+    "scientificsamples": {
+      "en": "Scientific Samples",
+      "ru": "Научные образцы",
+      "de": "Wissenschaftliche Proben",
+      "it": "Campioni Scientifici",
+      "zh": "科学样品"
+    },
+    "scrap": {
+      "en": "Scrap",
+      "ru": "Утильсырье",
+      "de": "Schrott",
+      "it": "Rottame",
+      "zh": "废料"
+    },
+    "semiconductors": {
+      "en": "Semiconductors",
+      "ru": "Полупроводники",
+      "de": "Halbleiter",
+      "it": "Semiconduttori",
+      "ko": "반도체",
+      "zh": "半导体",
+      "ja": "半導体"
+    },
+    "serendibite": {
+      "en": "Serendibite",
+      "ru": "Серендибит",
+      "de": "Serendibit",
+      "it": "Serendibite",
+      "zh": "蓝硅硼钙石"
+    },
+    "shanscharisorchid": {
+      "en": "Shan's Charis Orchid",
+      "ru": "Орхидея Shan Charis",
+      "de": "Shans Charis-Orchidee",
+      "it": "Orchidea Gratitudine di Shan",
+      "zh": "珊查理斯兰花"
+    },
+    "silver": {
+      "en": "Silver",
+      "ru": "Серебро",
+      "de": "Silber",
+      "it": "Argento",
+      "zh": "银"
+    },
+    "skimercomponents": {
+      "en": "Skimmer Components",
+      "ru": "Детали оборон. беспилотников",
+      "de": "Of-Drohnen-Komponenten",
+      "it": "Componenti di Skimmer",
+      "zh": "撇渣器组件"
+    },
+    "slaves": {
+      "en": "Slaves",
+      "ru": "Рабы",
+      "de": "Sklaven",
+      "it": "Schiavi",
+      "zh": "奴隶"
+    },
+    "smallexplorationdatacash": {
+      "en": "Small Survey Data Cache",
+      "ru": "Малый пакет с данными исследования",
+      "de": "Kleiner Erkundungsdatenspeicher",
+      "it": "Piccolo deposito di dati d'indagini",
+      "zh": "小型调查数据缓存器"
+    },
+    "soontillrelics": {
+      "en": "Soontill Relics",
+      "ru": "Реликты Сунтилла",
+      "de": "Soontill-Relikte",
+      "it": "Reliquie Soontilliane",
+      "zh": "苏恩提尔遗物"
+    },
+    "sothiscrystallinegold": {
+      "en": "Sothis Crystalline Gold",
+      "ru": "Кристаллическое золото системы Sothis",
+      "de": "Kristallines Sothis Gold",
+      "it": "Oro Cristallino di Sothis",
+      "zh": "索西斯晶体金"
+    },
+    "spacepioneerrelics": {
+      "en": "Space Pioneer Relics",
+      "ru": "Следы первопроходцев космоса",
+      "de": "Weltraumpionier-Relikte",
+      "it": "Reliquie dei Pionieri dello Spazio",
+      "zh": "太空先锋遗物"
+    },
+    "steel": {
+      "en": "Steel",
+      "ru": "Сталь",
+      "de": "Stahl",
+      "it": "Acciaio",
+      "ko": "강철",
+      "zh": "钢",
+      "ja": "鋼鉄"
+    },
+    "structuralregulators": {
+      "en": "Structural Regulators",
+      "ru": "Конструкционные регуляторы",
+      "de": "Strukturregulatoren",
+      "it": "Regolatori strutturali",
+      "ko": "구조 조절기",
+      "zh": "结构调节器",
+      "ja": "構造調整器"
+    },
+    "superconductors": {
+      "en": "Superconductors",
+      "ru": "Сверхпроводники",
+      "de": "Supraleiter",
+      "it": "Superconduttori",
+      "ko": "초전도체",
+      "zh": "超导体",
+      "ja": "超伝導体"
+    },
+    "surfacestabilisers": {
+      "en": "Surface Stabilisers",
+      "ru": "Стабилизаторы поверхности",
+      "de": "Oberflächenstabilisatoren",
+      "it": "Stabilizzatori di superficie",
+      "ko": "표면 안정제",
+      "zh": "表面稳定器",
+      "ja": "表面安定装置"
+    },
+    "survivalequipment": {
+      "en": "Survival Equipment",
+      "ru": "Снаряжение для выживания",
+      "de": "Überlebensausrüstung",
+      "it": "Equipaggiamento di sopravvivenza",
+      "ko": "생존 장비",
+      "zh": "生存装备",
+      "ja": "生存装備"
+    },
+    "syntheticfabrics": {
+      "en": "Synthetic Fabrics",
+      "ru": "Синтетическая ткань",
+      "de": "Chemiefasern",
+      "it": "Tessuti sintetici",
+      "zh": "合成面料"
+    },
+    "syntheticmeat": {
+      "en": "Synthetic Meat",
+      "ru": "Синтетическое мясо",
+      "de": "Künstliches Fleisch",
+      "it": "Carne sintetica",
+      "zh": "合成肉"
+    },
+    "syntheticreagents": {
+      "en": "Synthetic Reagents",
+      "ru": "Синтетические реагенты",
+      "de": "Synthetische Reagenzstoffe",
+      "it": "Reagenti Sintetici",
+      "zh": "合成试剂"
+    },
+    "taaffeite": {
+      "en": "Taaffeite",
+      "ru": "Тааффеит",
+      "de": "Taaffeit",
+      "it": "Taffeite",
+      "zh": "塔菲石"
+    },
+    "tacticaldata": {
+      "en": "Tactical Data",
+      "ru": "Тактические данные",
+      "de": "Aufklärungsdaten",
+      "it": "Dati tattici",
+      "zh": "战术数据"
+    },
+    "tanmarktranquiltea": {
+      "en": "Tanmark Tranquil Tea",
+      "ru": "Успокаивающий чай Tanmark",
+      "de": "Beruhigender Tanmark Tee",
+      "it": "Tisana Tranquillante Tanmarkiana",
+      "zh": "坦马克宁神茶"
+    },
+    "tantalum": {
+      "en": "Tantalum",
+      "ru": "Тантал",
+      "de": "Tantal",
+      "it": "Tantalio",
+      "zh": "钽"
+    },
+    "tarachtorspice": {
+      "en": "Tarach Spice",
+      "ru": "Таракская пряность",
+      "de": "Tarach Gewürz",
+      "it": "Spezia di Tarach",
+      "zh": "塔拉克香料"
+    },
+    "taurichimes": {
+      "en": "Tauri Chimes",
+      "ru": "Колокольчики с Тельца",
+      "de": "Tauri Glockenspiel",
+      "it": "Campane di Tauri",
+      "zh": "金牛座编钟"
+    },
+    "tea": {
+      "en": "Tea",
+      "ru": "Чай",
+      "de": "Tee",
+      "it": "Tè",
+      "ko": "차",
+      "zh": "茶",
+      "ja": "茶"
+    },
+    "telemetrysuite": {
+      "en": "Telemetry Suite",
+      "ru": "Телеметрический комплект",
+      "de": "Telemetrie-Paket",
+      "it": "Tuta Telemetrica",
+      "zh": "遥测套件"
+    },
+    "terrainenrichmentsystems": {
+      "en": "Terrain Enrichment Systems",
+      "ru": "Системы обогащения почвы",
+      "de": "Bodenanreicherungssysteme",
+      "it": "Sistemi di arricchimento del terreno",
+      "ko": "토양 개량 시스템",
+      "zh": "土地改良系统",
+      "ja": "土壌改良システム"
+    },
+    "terramaterbloodbores": {
+      "en": "Terra Mater Blood Bores",
+      "ru": "Кровяные усилители с Терра матер",
+      "de": "Terra Mater Blutsenkung",
+      "it": "Orifizi Sanguinanti di Terra Mater",
+      "zh": "泰拉梅特血孔兴奋剂"
+    },
+    "thallium": {
+      "en": "Thallium",
+      "ru": "Таллий",
+      "de": "Thallium",
+      "it": "Tallio",
+      "zh": "铊"
+    },
+    "thargoidbonefragments": {
+      "en": "Bone Fragments",
+      "ru": "Фрагменты кости",
+      "de": "Knochenfragmente",
+      "it": "Frammenti d'ossa",
+      "zh": "骨碎片"
+    },
+    "thargoidcystspecimen": {
+      "en": "Cyst Specimen",
+      "ru": "Образец кисты",
+      "de": "Zystenprobe",
+      "it": "Esemplare di Cisti",
+      "zh": "囊肿标本"
+    },
+    "thargoidgeneratortissuesample": {
+      "en": "Caustic Tissue Sample",
+      "ru": "Образец едких тканей",
+      "de": "Ätzende Gewebeprobe",
+      "it": "Campione di tessuto caustico",
+      "zh": "腐蚀性组织样品"
+    },
+    "thargoidheart": {
+      "en": "Thargoid Heart",
+      "ru": "Таргоидское «сердце»",
+      "de": "Thargoiden Herz",
+      "it": "Cuore Thargoid",
+      "zh": "八角心脏"
+    },
+    "thargoidorgansample": {
+      "en": "Organ Sample",
+      "ru": "Образец органа",
+      "de": "Organprobe",
+      "it": "Campione d'organo",
+      "zh": "器官样本"
+    },
+    "thargoidpod": {
+      "en": "Xenobiological Prison Pod",
+      "ru": "Xenobiological Prison Pod",
+      "de": "Thargoid Biospeicherkapsel",
+      "it": "Capsula di Bio-Stoccaggio Thargoid",
+      "zh": "八角生物储存胶囊"
+    },
+    "thargoidscouttissuesample": {
+      "en": "Thargoid Scout Tissue Sample",
+      "ru": "Образец тканей таргоида-разведчика ",
+      "de": "Thargoidenspäher Gewebeprobe",
+      "it": "Campione di tessuto di Esploratore Thargoid",
+      "zh": "八角侦察兵组织样本"
+    },
+    "thargoidtissuesampletype1": {
+      "en": "Thargoid Cyclops Tissue Sample",
+      "ru": "Образец ткани таргоидского корабля «Циклоп» ",
+      "de": "Thargoid Cyclops Gewebeprobe",
+      "it": "Campione di Tessuto di Ciclopide Thargoid",
+      "zh": "八角独眼巨人组织样本"
+    },
+    "thargoidtissuesampletype10a": {
+      "en": "Titan Maw Deep Tissue Sample",
+      "ru": "Образец глубокой ткани пасти титана",
+      "de": "Titan Maw Tiefengewebeprobe",
+      "it": "Campione di stomaco interno di Titano Thargoid",
+      "zh": "泰坦巨口深层组织样本"
+    },
+    "thargoidtissuesampletype10b": {
+      "en": "Titan Maw Tissue Sample",
+      "ru": "Образец ткани пасти таргоидского «Титана»",
+      "de": "Titan Maw Gewebeprobe",
+      "it": "Campione di stomaco di Titano Thargoid",
+      "zh": "泰坦巨口组织样本"
+    },
+    "thargoidtissuesampletype10c": {
+      "en": "Titan Maw Partial Tissue Sample",
+      "ru": "Неполный образец ткани пасти титана",
+      "de": "Titan Maw Teilgewebeprobe",
+      "it": "Campione parziale di stomaco di Titano Thargoid",
+      "zh": "泰坦巨口局部组织样本"
+    },
+    "thargoidtissuesampletype2": {
+      "en": "Thargoid Basilisk Tissue Sample",
+      "ru": "Образец ткани таргоидского корабля «Василиск»",
+      "de": "Thargoid Basilisk Gewebeprobe",
+      "it": "Campione di Tessuto di Basilisco Thargoid",
+      "zh": "八角蛇怪组织样本"
+    },
+    "thargoidtissuesampletype3": {
+      "en": "Thargoid Medusa Tissue Sample",
+      "ru": "Образец ткани таргоидского корабля «Медуза»",
+      "de": "Thargoid Medusa Gewebeprobe",
+      "it": "Campione di Tessuto di Medusa Thargoid",
+      "zh": "八角美杜莎组织样本"
+    },
+    "thargoidtissuesampletype4": {
+      "en": "Thargoid Hydra Tissue Sample",
+      "ru": "Образец ткани таргоидского корабля «Гидра»",
+      "de": "Thargoid Hydra Gewebeprobe",
+      "it": "Campione di Tessuto di Idra Thargoid",
+      "zh": "八角九头蛇组织样本"
+    },
+    "thargoidtissuesampletype5": {
+      "en": "Thargoid Orthrus Tissue Sample",
+      "ru": "Образец ткани таргоидского корабля «Орф»",
+      "de": "Thargoid Orthrus Gewebeprobe",
+      "it": "Campione di tessuto di Orthrus Thargoid",
+      "zh": "八角双头犬组织样本"
+    },
+    "thargoidtissuesampletype6": {
+      "en": "Thargoid Glaive Tissue Sample",
+      "ru": "Образец ткани таргоидского корабля «Глефа»",
+      "de": "Thargoid Glaive Gewebeprobe",
+      "it": "Campione di tessuto di Glaive Thargoid",
+      "zh": "八角偃月刀组织样本"
+    },
+    "thargoidtissuesampletype7": {
+      "en": "Thargoid Scythe Tissue Sample",
+      "ru": "Образец ткани таргоидского корабля «Коса»",
+      "de": "Thargoid Scythe Gewebeprobe",
+      "it": "Campione di tessuto di Scythe Thargoid",
+      "zh": "八角战车镰组织样本"
+    },
+    "thargoidtissuesampletype9a": {
+      "en": "Titan Deep Tissue Sample",
+      "ru": "Образец глубокой ткани корпуса таргоидского «Титана»",
+      "de": "Titan Tiefengewebeprobe",
+      "it": "Campione di tessuto interno di Titano Thargoid",
+      "zh": "泰坦深层组织样本"
+    },
+    "thargoidtissuesampletype9b": {
+      "en": "Titan Tissue Sample",
+      "ru": "Образец ткани с корпуса таргоидского «Титана»",
+      "de": "Titan Gewebeprobe",
+      "it": "Campione di tessuto di Titano Thargoid",
+      "zh": "泰坦组织样本"
+    },
+    "thargoidtissuesampletype9c": {
+      "en": "Titan Partial Tissue Sample",
+      "ru": "Неполный образец ткани титана",
+      "de": "Titan Teilgewebeprobe",
+      "it": "Campione parziale di tessuto di Titano Thargoid",
+      "zh": "泰坦局部组织样本"
+    },
+    "thargoidtitandrivecomponent": {
+      "en": "Titan Drive Component",
+      "ru": "Компонент двигателя титана",
+      "de": "Titan Antriebskomponente",
+      "it": "Componente della guida di Titano Thargoid",
+      "zh": "八角泰坦驱动器组件"
+    },
+    "thehuttonmug": {
+      "en": "The Hutton Mug",
+      "ru": "Кружка Hutton",
+      "de": "Der Hutton-Becher",
+      "it": "La Tazza di Hutton",
+      "zh": "赫顿马克杯"
+    },
+    "thermalcoolingunits": {
+      "en": "Thermal Cooling Units",
+      "ru": "Термальные охладители",
+      "de": "Thermokühleinheiten",
+      "it": "Unità di raffreddamento termico",
+      "ko": "열 냉각 장치",
+      "zh": "热冷却单元",
+      "ja": "熱冷却ユニット"
+    },
+    "thorium": {
+      "en": "Thorium",
+      "ru": "Торий",
+      "de": "Thorium",
+      "it": "Torio",
+      "zh": "钍"
+    },
+    "thortveitite": {
+      "en": "Thortveitite"
+    },
+    "thrutiscream": {
+      "en": "Thrutis Cream",
+      "ru": "Трутисские сливки",
+      "de": "Thrustis Sahne",
+      "it": "Crema di Thrutis",
+      "zh": "特鲁提斯奶油"
+    },
+    "tiegfriessynthsilk": {
+      "en": "Tiegfries Synth Silk",
+      "ru": "Тигфрайский синтешелк",
+      "de": "Künstliche Tiegfries Seide",
+      "it": "Seta Sintetica Tiegfriesiana",
+      "zh": "提格弗里斯合成丝绸"
+    },
+    "timecapsule": {
+      "en": "Time Capsule",
+      "ru": "Мемориальная капсула",
+      "de": "Zeitkapsel",
+      "it": "Capsula Temporale",
+      "zh": "时空胶囊"
+    },
+    "tiolcewaste2pasteunits": {
+      "en": "Tiolce Waste2Paste Units",
+      "ru": "Устройства Мусор-в-пасту Tiolce",
+      "de": "Tiolce Recyclingpaste",
+      "it": "Unità di Riciclaggio Tiolcese",
+      "zh": "蒂奥尔切变废为粮单元"
+    },
+    "titanium": {
+      "en": "Titanium",
+      "ru": "Титан",
+      "de": "Titan",
+      "it": "Titanio",
+      "ko": "티타늄",
+      "zh": "钛",
+      "ja": "チタン"
+    },
+    "tobacco": {
+      "en": "Tobacco",
+      "ru": "Табак",
+      "de": "Tabak",
+      "it": "Tabacco",
+      "zh": "烟草"
+    },
+    "toxandjivirocide": {
+      "en": "Toxandji Virocide",
+      "ru": "Токсанджийские вирициды",
+      "de": "Toxandij Verozid",
+      "it": "Virocida Toxandjiano",
+      "zh": "托克珊吉抗病毒剂"
+    },
+    "toxicwaste": {
+      "en": "Toxic Waste",
+      "ru": "Токсичные отходы",
+      "de": "Giftmüll",
+      "it": "Rifiuti tossici",
+      "zh": "剧毒垃圾"
+    },
+    "transgeniconionhead": {
+      "en": "Lucan Onionhead",
+      "ru": "Луканская луковая головка",
+      "de": "Lucan Onionhead",
+      "it": "Testa di Cipolla Lucaniana",
+      "zh": "卢肯洋葱头鸦片"
+    },
+    "trinketsoffortune": {
+      "en": "Trinkets of Hidden Fortune",
+      "ru": "Безделушки таинственной Фортуны",
+      "de": "Glücksbringer",
+      "it": "Ciondolo della Fortuna Segreta",
+      "zh": "藏财小饰品"
+    },
+    "tritium": {
+      "en": "Tritium",
+      "ru": "Тритий",
+      "de": "Tritium",
+      "it": "Trizio",
+      "zh": "氚"
+    },
+    "unknownartifact": {
+      "en": "Thargoid Sensor",
+      "ru": "Таргоидский сенсор",
+      "de": "Thargoiden-Sensor",
+      "it": "Sensore Thargoid",
+      "zh": "八角传感器"
+    },
+    "unknownartifact2": {
+      "en": "Thargoid Probe",
+      "ru": "Таргоидский зонд",
+      "de": "Thargoiden-Sonde",
+      "it": "Sonda Thargoid",
+      "zh": "八角探针"
+    },
+    "unknownartifact3": {
+      "en": "Thargoid Link",
+      "ru": "Таргоидское звено",
+      "de": "Thargoiden-Verknüpfung",
+      "it": "Collegamento Thargoid",
+      "zh": "八角链接节点"
+    },
+    "unknownbiologicalmatter": {
+      "en": "Thargoid Biological Matter",
+      "ru": "Таргоидская биомасса",
+      "de": "Thargoidenmaterie",
+      "it": "Materiale Biologico Thargoid",
+      "zh": "八角生物物质"
+    },
+    "unknownmineral": {
+      "en": "Impure Spire Mineral",
+      "ru": "Impure Spire Mineral",
+      "de": "Unreines Spitzen-Mineral",
+      "it": "Minerale impuro della Guglia",
+      "zh": "掺杂尖塔矿物"
+    },
+    "unknownrefinedmineral": {
+      "en": "Semi-Refined Spire Mineral",
+      "ru": "Semi-Refined Spire Mineral",
+      "de": "Teilveredeltes Spitzen-Mineral",
+      "it": "Minerale semi-raffinato della Guglia",
+      "zh": "半精炼尖塔矿物"
+    },
+    "unknownresin": {
+      "en": "Thargoid Resin",
+      "ru": "Таргоидская смола",
+      "de": "Thargoiden-Harz",
+      "it": "Resina Thargoid",
+      "zh": "八角树脂"
+    },
+    "unknownsack": {
+      "en": "Protective Membrane Scrap",
+      "ru": "Остаток защитной оболочки",
+      "de": "Schutzmembranen-Schrott",
+      "it": "Resti di membrana protettiva",
+      "zh": "保护膜废料"
+    },
+    "unknowntechnologysamples": {
+      "en": "Thargoid Technology Samples",
+      "ru": "Образцы таргоидских технологий",
+      "de": "Thargoiden-Technologie-Beispiele",
+      "it": "Campioni di tecnologia Thargoid",
+      "zh": "八角科技样本"
+    },
+    "unocuppiedescapepod": {
+      "en": "Unoccupied Escape Pod",
+      "ru": "Пустая спасательная капсула",
+      "de": "Unbesetzte Rettungskapsel",
+      "it": "Capsula di Salvataggio vuota",
+      "zh": "无人居住的逃生舱"
+    },
+    "unstabledatacore": {
+      "en": "Unstable Data Core",
+      "ru": "Нестабильное ядро данных",
+      "de": "Instabiler Datenkern",
+      "it": "Nucleo dati instabile",
+      "zh": "不稳定的数据核心"
+    },
+    "uraninite": {
+      "en": "Uraninite",
+      "ru": "Уранинит",
+      "de": "Uraninit",
+      "it": "Uraninite",
+      "zh": "晶质铀矿"
+    },
+    "uranium": {
+      "en": "Uranium",
+      "ru": "Уран",
+      "de": "Uran",
+      "it": "Uranio",
+      "zh": "铀"
+    },
+    "usscargoancientartefact": {
+      "en": "Ancient Artefact",
+      "ru": "Древний артефакт",
+      "de": "Uraltes Artefakt",
+      "it": "Artefatto antico",
+      "zh": "远古神器"
+    },
+    "usscargoblackbox": {
+      "en": "Black Box",
+      "ru": "Черный ящик",
+      "de": "Black Box",
+      "it": "Scatola Nera",
+      "zh": "黑匣子"
+    },
+    "usscargoexperimentalchemicals": {
+      "en": "Experimental Chemicals",
+      "ru": "Экспериментальные химикаты",
+      "de": "Experimentelle Chemikalien",
+      "it": "Materiale Chimico Sperimentale",
+      "zh": "实验药品"
+    },
+    "usscargomilitaryplans": {
+      "en": "Military Plans",
+      "ru": "Военные планы",
+      "de": "Militärpläne",
+      "it": "Piani Militari",
+      "zh": "军事计划"
+    },
+    "usscargoprototypetech": {
+      "en": "Prototype Tech",
+      "ru": "Экспериментальная техника",
+      "de": "Prototyp Technologie",
+      "it": "Tecnologia Sperimentale",
+      "zh": "原型技术"
+    },
+    "usscargorareartwork": {
+      "en": "Rare Artwork",
+      "ru": "Редкие произведения искусства",
+      "de": "Seltene Kunstgegenstände",
+      "it": "Opera d'Arte Rara",
+      "zh": "稀有艺术品"
+    },
+    "usscargorebeltransmissions": {
+      "en": "Rebel Transmissions",
+      "ru": "Переговоры повстанцев",
+      "de": "Rebellenübertragung",
+      "it": "Trasmissioni Ribelli",
+      "zh": "叛军通讯"
+    },
+    "usscargotechnicalblueprints": {
+      "en": "Technical Blueprints",
+      "ru": "Промышленные чертежи",
+      "de": "Technische Blaupausen",
+      "it": "Progetti Tecnici",
+      "zh": "技术蓝图"
+    },
+    "usscargotradedata": {
+      "en": "Trade Data",
+      "ru": "Торговая информация",
+      "de": "Handelsdaten",
+      "it": "Dati commerciali",
+      "zh": "贸易数据"
+    },
+    "uszaiantreegrub": {
+      "en": "Uszaian Tree Grub",
+      "ru": "Ушжаанский росток дерева",
+      "de": "Uszaianisches Baumgras",
+      "it": "Larvalbero Uszaianiana",
+      "zh": "乌萨亚树蝤"
+    },
+    "utgaroarmillenialeggs": {
+      "en": "Utgaroar Millennial Eggs",
+      "ru": "Миллениальные яйца с Утгарора",
+      "de": "Utgaroar tausendjährige Eier",
+      "it": "Uova Millenarie Utgaroaresi",
+      "zh": "乌特伽罗千禧蛋"
+    },
+    "uzumokulowgwings": {
+      "en": "Uzumoku Low-G Wings",
+      "ru": "Узумокские крылья для малой гравитации",
+      "de": "Uzumokusische niedrig-G Flügel",
+      "it": "Alianti a bassa gravità Uzumokuensi",
+      "zh": "乌祖莫库低重力飞翼"
+    },
+    "vanayequirhinofur": {
+      "en": "Vanayequi Ceratomorpha Fur",
+      "ru": "Мех носорогов с Ванайеку",
+      "de": "Vanayequi-Ceratomorpha-Fell",
+      "it": "Pelliccia di Ceratomorfo Vanayequiano",
+      "zh": "瓦纳耶基角形目毛皮"
+    },
+    "vegaslimweed": {
+      "en": "Vega Slimweed",
+      "ru": "Водоросли для похудения с Веги",
+      "de": "Veganisches Schlankheitskraut",
+      "it": "Gramigna Dimagrante Vegana",
+      "zh": "维加纤细草形虫"
+    },
+    "vherculisbodyrub": {
+      "en": "V Herculis Body Rub",
+      "ru": "Скраб с V Геркулеса",
+      "de": "V Herculis Körperreibe",
+      "it": "Spugna Corpo di V Herculis",
+      "zh": "V大力神磨砂膏"
+    },
+    "vidavantianlace": {
+      "en": "Vidavantian Lace",
+      "ru": "Видавантийский шнурок",
+      "de": "Vidavantianische Spitze",
+      "it": "Stringhe Vidavantiane",
+      "zh": "维达文蒂安蕾丝"
+    },
+    "volkhabbeedrones": {
+      "en": "Volkhab Bee Drones",
+      "ru": "Дроны Volkhab Bee",
+      "de": "Volkhab Bienendrohnen",
+      "it": "Fuchi di Volkhab",
+      "zh": "沃尔哈布蜜蜂无人机"
+    },
+    "water": {
+      "en": "Water",
+      "ru": "Вода",
+      "de": "Wasser",
+      "it": "Acqua",
+      "ko": "물",
+      "zh": "水",
+      "ja": "水"
+    },
+    "waterpurifiers": {
+      "en": "Water Purifiers",
+      "ru": "Водоочистители",
+      "de": "Wasserreiniger",
+      "it": "Depuratori d'acqua",
+      "ko": "정수기",
+      "zh": "净水器",
+      "ja": "浄水器"
+    },
+    "watersofshintara": {
+      "en": "The Waters of Shintara",
+      "ru": "Воды Шинрарты",
+      "de": "Shinrarta-Wasser",
+      "it": "Acque di Shintara",
+      "zh": "新塔拉之水"
+    },
+    "wheemetewheatcakes": {
+      "en": "Wheemete Wheat Cakes",
+      "ru": "Уимитские пшеничные галеты",
+      "de": "Wheemete Weizenkekse",
+      "it": "Torte di Frumento Wheemeteano",
+      "zh": "魏米特小麦饼"
+    },
+    "wine": {
+      "en": "Wine",
+      "ru": "Вино",
+      "de": "Wein",
+      "it": "Vino",
+      "ko": "와인",
+      "zh": "葡萄酒",
+      "ja": "ワイン"
+    },
+    "witchhaulkobebeef": {
+      "en": "Witchhaul Kobe Beef",
+      "ru": "Мясо кобе с Вичхола",
+      "de": "Witchhaul Kobe-Rindfleisch",
+      "it": "Manzo Kobe di Witchhaul",
+      "zh": "威驰侯神户牛肉"
+    },
+    "wolf1301fesh": {
+      "en": "Wolf Fesh",
+      "ru": "Волчья дурь",
+      "de": "Wolf Fesh",
+      "it": "Polverina di Lupo",
+      "zh": "沃尔夫兴奋剂"
+    },
+    "wreckagecomponents": {
+      "en": "Wreckage Components",
+      "ru": "Обломки кораблекрушений",
+      "de": "Bergungsfähige Wrackteile",
+      "it": "Rottami Recuperabili",
+      "zh": "可回收残骸"
+    },
+    "wulpahyperboresystems": {
+      "en": "Wulpa Hyperbore Systems"
+    },
+    "wuthielokufroth": {
+      "en": "Wuthielo Ku Froth",
+      "ru": "Пиво Ку с Вутхиело",
+      "de": "Wuthielo Ku Schaum",
+      "it": "Schiuma di Wuthielo Ku",
+      "zh": "乌西埃罗库泡沫酒"
+    },
+    "xihecompanions": {
+      "en": "Xihe Biomorphic Companions",
+      "ru": "Биоморфные спутники Xihe",
+      "de": "Haustiere aus Xihe",
+      "it": "Animali da Compagnia Biomorfici Xiheani",
+      "zh": "西河生物形态伴侣"
+    },
+    "yasokondileaf": {
+      "en": "Yaso Kondi Leaf",
+      "ru": "Лист ясо Конди",
+      "de": "Yaso Kondi Blatt",
+      "it": "Foglie Yaso Kondiane",
+      "zh": "亚索康地叶"
+    },
+    "zeesszeantglue": {
+      "en": "Zeessze Ant Grub Glue",
+      "ru": "Зесский муравьиный клей",
+      "de": "Zeesszer Ameisenkleber",
+      "it": "Colla di Larve Formicali Zeesszeesi",
+      "zh": "吉泽蚁胶"
+    }
+  }
+}

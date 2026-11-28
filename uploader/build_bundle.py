@@ -114,7 +114,7 @@ def latest_changelog(changes_path: Path, max_lines: int = NOTES_MAX_LINES) -> st
 def bundle_files(source: Path) -> List[str]:
     """Модули программы и явный список ресурсов (не дизайн-исходники)."""
     modules = [p.name for p in source.glob("*.py") if p.name not in EXCLUDE]
-    return sorted(modules + [name for name in (*ICON_ASSETS, "loading_goods.json") if (source / name).is_file()])
+    return sorted(modules + [name for name in (*ICON_ASSETS, "loading_goods.json", "commodity_names.json") if (source / name).is_file()])
 
 
 def bundle_version(source: Path, override: str = "") -> str:

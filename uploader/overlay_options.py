@@ -1,6 +1,8 @@
 """Content preferences and pure HUD projections (no Tk / network dependencies)."""
 import math
 
+from commodity_names import commodity_label
+
 # section -> (UI label, direct child widgets of the overlay content frame)
 CONTENT_OPTIONS = {
     'loading': {
@@ -102,7 +104,8 @@ def filter_carrier_rows(rows, mode='all', query=''):
         except (TypeError, ValueError):
             return 0
     return [row for row in rows if
-            (not query or query in str(row.get('name') or '').casefold()
+            (not query or query in commodity_label(row.get('key') or row.get('symbol'), row.get('name')).casefold()
+             or query in str(row.get('name') or '').casefold()
              or query in str(row.get('symbol') or row.get('key') or '').casefold())
             and (mode not in CARRIER_FILTERS or mode == 'all'
                  or mode == 'aboard' and number(row, 'amount') > 0

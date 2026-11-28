@@ -566,14 +566,13 @@ def _station_resources(station: Optional[MapStation]) -> List[Dict[str, Any]]:
     """Остатки по товарам: строка списка в подсказке постройки."""
     if station is None:
         return []
-    labels = getattr(system_map_module, "COMMODITY_LABELS_RU", {}) or {}
     rows: List[Dict[str, Any]] = []
     for commodity, remaining in (getattr(station, "remaining_by_commodity", None) or {}).items():
         key = str(commodity)
         rows.append({
             # Ключи Raven — «слепые» строчные имена (`liquidoxygen`); в карточке
             # и подсказке показываем человеческое название, как в сводке.
-            "name": tr(str(labels.get(key.lower(), key))),
+            "name": system_map_module.commodity_label(key),
             "key": key,
             "required": round(_as_float(remaining), 2),
             "provided": 0.0,

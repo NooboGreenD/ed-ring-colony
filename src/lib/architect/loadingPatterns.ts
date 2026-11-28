@@ -10,7 +10,10 @@ export type LoadingPattern = {
     capacity: number;
     recipeLimit?: 1 | 2;
   }[];
+  /** Inclusive loading targets: base recipe allocation + explicit extra tonnes. */
   allocations: Record<string, Record<string, number>>;
+  /** Per-cell extra tonnes, already included in allocations. Never part of a recipe. */
+  extras?: Record<string, Record<string, number>>;
 };
 export type LoadingPatternView = {
   id: string;
@@ -97,12 +100,96 @@ export function unassignedLoading(
   pattern: LoadingPattern,
 ): Record<string, number> {
   const goods = loadingRequirements(pattern.buildings);
-  for (const allocation of Object.values(pattern.allocations))
+  for (const [id, allocation] of Object.entries(pattern.allocations))
     for (const [good, qty] of Object.entries(allocation)) {
-      if (Object.hasOwn(goods, good)) goods[good] -= qty;
+      if (Object.hasOwn(goods, good))
+        goods[good] -= qty - (pattern.extras?.[id]?.[good] ?? 0);
     }
   return Object.fromEntries(Object.entries(goods).filter(([, qty]) => qty > 0));
 }
+/** Extras increase loading targets, not the building recipe or its unassigned demand. */
+export function loadingExtraTotal(pattern: LoadingPattern): number {
+  return Object.values(pattern.extras ?? {}).reduce(
+    (sum, rows) => sum + Object.values(rows).reduce((a, b) => a + b, 0),
+    0,
+  );
+}
+
+/** One-shot, all-or-nothing increment of every positive cell, irrespective of UI filters. */
+export function addLoadingExtra(pattern: LoadingPattern, tonnes: number) {
+  if (!Number.isSafeInteger(tonnes) || tonnes < 1 || tonnes > 60000)
+    throw new Error("lp.extraInvalid");
+  // Drafts may be unnamed; validate the accounting before adding anything.
+  parseLoadingPattern({ ...pattern, name: pattern.name.trim() || "Draft" });
+  const shortages: {
+    carrierId: string;
+    name: string;
+    needed: number;
+    free: number;
+    shortfall: number;
+  }[] = [];
+  let changedRows = 0;
+  for (const carrier of pattern.carriers) {
+    const rows = Object.values(pattern.allocations[carrier.carrierId] ?? {});
+    const count = rows.filter((qty) => qty > 0).length;
+    const needed = count * tonnes;
+    const free = carrier.capacity - rows.reduce((a, b) => a + b, 0);
+    changedRows += count;
+    if (needed > free)
+      shortages.push({
+        carrierId: carrier.carrierId,
+        name: carrier.name,
+        needed,
+        free,
+        shortfall: needed - free,
+      });
+  }
+  if (shortages.length || !changedRows)
+    return { pattern, shortages, changedRows: 0 };
+  const allocations = structuredClone(pattern.allocations);
+  const extras = structuredClone(pattern.extras ?? {});
+  for (const carrier of pattern.carriers) {
+    for (const [good, qty] of Object.entries(
+      allocations[carrier.carrierId] ?? {},
+    )) {
+      if (qty <= 0) continue;
+      allocations[carrier.carrierId][good] += tonnes;
+      (extras[carrier.carrierId] ??= {})[good] =
+        (extras[carrier.carrierId]?.[good] ?? 0) + tonnes;
+    }
+  }
+  return {
+    pattern: { ...pattern, allocations, extras },
+    shortages,
+    changedRows,
+  };
+}
+
+/** Editing a total keeps as much explicit reserve as possible; zero clears it. */
+export function setLoadingAllocation(
+  pattern: LoadingPattern,
+  id: string,
+  good: string,
+  quantity: number,
+): LoadingPattern {
+  const extras = structuredClone(pattern.extras ?? {});
+  if (extras[id]?.[good]) {
+    extras[id][good] = Math.min(
+      extras[id][good],
+      Math.max(0, Math.floor(quantity) - 1),
+    );
+    if (!extras[id][good]) delete extras[id][good];
+  }
+  return {
+    ...pattern,
+    allocations: {
+      ...pattern.allocations,
+      [id]: { ...pattern.allocations[id], [good]: quantity },
+    },
+    ...(pattern.extras ? { extras } : {}),
+  };
+}
+
 function parsePattern(
   input: unknown,
   reconcileCatalogue = false,
@@ -176,6 +263,43 @@ function parsePattern(
   const allocations: LoadingPattern["allocations"] = Object.fromEntries(
     carriers.map((row) => [row.carrierId, {}]),
   );
+  const extras: NonNullable<LoadingPattern["extras"]> = {};
+  if (raw.extras !== undefined) {
+    if (
+      !raw.extras ||
+      typeof raw.extras !== "object" ||
+      Array.isArray(raw.extras)
+    )
+      throw new Error("lp.invalid");
+    for (const [id, rows] of Object.entries(raw.extras)) {
+      if (
+        !ids.has(id) ||
+        !rows ||
+        typeof rows !== "object" ||
+        Array.isArray(rows)
+      )
+        throw new Error("lp.invalid");
+      for (const [good, qty] of Object.entries(rows)) {
+        const allocation = raw.allocations as
+          LoadingPattern["allocations"] | undefined;
+        if (
+          (!reconcileCatalogue && !Object.hasOwn(requirements, good)) ||
+          typeof qty !== "number" ||
+          !Number.isSafeInteger(qty) ||
+          qty < 0 ||
+          qty > 60000 ||
+          (qty > 0 &&
+            !(
+              typeof allocation?.[id]?.[good] === "number" &&
+              allocation[id][good] > qty
+            ))
+        )
+          throw new Error("lp.invalid");
+        if (qty && Object.hasOwn(requirements, good))
+          (extras[id] ??= {})[good] = qty;
+      }
+    }
+  }
   if (raw.allocations !== undefined) {
     if (
       !raw.allocations ||
@@ -213,10 +337,16 @@ function parsePattern(
         // accept malformed data or over-capacity assignments.
         load += qty;
         if (!Object.hasOwn(requirements, good)) continue;
+        const extra = extras[id]?.[good] ?? 0;
+        const base = qty - extra;
         const accepted = reconcileCatalogue
-          ? Math.min(qty, Math.max(0, requirements[good] - (totals[good] ?? 0)))
-          : qty;
-        if (accepted) allocations[id][good] = accepted;
+          ? Math.min(
+              base,
+              Math.max(0, requirements[good] - (totals[good] ?? 0)),
+            )
+          : base;
+        if (accepted) allocations[id][good] = accepted + extra;
+        else if (extras[id]) delete extras[id][good];
         totals[good] = (totals[good] ?? 0) + accepted;
         if (totals[good] > requirements[good]) throw new Error("lp.invalid");
       }
@@ -230,6 +360,9 @@ function parsePattern(
     buildings,
     carriers,
     allocations,
+    ...(Object.values(extras).some((rows) => Object.keys(rows).length)
+      ? { extras }
+      : {}),
   };
 }
 /** New writes always use strict current-catalogue validation. */
@@ -265,7 +398,9 @@ export function loadingPatternView(
     updatedAt: row.updated_at,
     pattern,
     requirements,
-    total: Object.values(requirements).reduce((a, b) => a + b, 0),
+    total:
+      Object.values(requirements).reduce((a, b) => a + b, 0) +
+      loadingExtraTotal(pattern),
     unassigned: unassignedLoading(pattern),
     catalogueUpdated,
     allocationsAdjusted,
@@ -342,7 +477,7 @@ export function loadingProgress(
   });
   const total = Object.values(loadingRequirements(pattern.buildings)).reduce(
     (a, b) => a + b,
-    0,
+    loadingExtraTotal(pattern),
   );
   return {
     total,

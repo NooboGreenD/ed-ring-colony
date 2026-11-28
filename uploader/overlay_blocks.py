@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from commodity_names import commodity_label
+
 import foot_map
 import route_hint
 import ship_hud
@@ -1032,7 +1034,7 @@ class CargoOverlay(HudWindow):
 
         for index, item in enumerate(inventory):
             entry = self._cargo_pool[index]
-            name = item.get("Name_Localised") or item.get("Name", "Unknown")
+            name = commodity_label(item.get("Name"), item.get("Name_Localised") or item.get("Name", "Unknown"))
             count = int(item.get("Count") or 0)
             stolen = int(item.get("Stolen") or 0)
             entry["icon"].setText("!" if stolen > 0 else "-")
@@ -1449,7 +1451,7 @@ class CarrierOverlay(HudWindow):
             else:
                 tail, tail_color, board_color = "", COLOR_TEXT_MUTED, COLOR_TEXT
 
-            label = ("● " if available else "") + str(row.get("name") or row.get("key") or "")
+            label = ("● " if available else "") + commodity_label(row.get("key"), row.get("name"))
             if len(label) > self._name_chars:
                 label = label[: self._name_chars - 1] + "…"
             cells["name"].setText(label)

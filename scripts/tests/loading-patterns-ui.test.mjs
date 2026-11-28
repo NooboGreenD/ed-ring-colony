@@ -184,3 +184,91 @@ test('loading UI: progress filters keep unknown rows and overall progress unchan
   assert.ok(!h.doc.body.textContent.includes('Есть несохранённые изменения'));
  }finally{await h.close();}
 });
+
+test('loading UI: visible goods alternate dark/light independently of category headings and filtering',async()=>{
+ const progress={total:10,loaded:5,unknown:3,unassigned:0,carriers:[{carrierId:'123',name:'Alpha',known:false,loaded:5,target:10,items:[{commodity:'steel',required:5,loaded:5,remaining:0},{commodity:'water',required:3,loaded:null,remaining:null},{commodity:'titanium',required:2,loaded:0,remaining:2}]}]};
+ const h=await harness({link:true,api:async(url)=>url.endsWith('/'+id)?{body:{ok:true,pattern:view(),progress}}:null});try{
+  const check=()=>{
+   for(const selector of ['.lp-table tbody .lp-good-row','.lp-progress-grid .lp-progress-item']){
+    const rows=[...h.doc.querySelectorAll(selector)];assert.ok(rows.length>1,selector);
+    rows.forEach((row,index)=>assert.ok(row.classList.contains(`lp-good-row--${index%2?'light':'dark'}`),selector+': '+index));
+   }
+   assert.ok([...h.doc.querySelectorAll('.lp-category-heading')].every(row=>!row.className.includes('lp-good-row--')));
+  };
+  check();
+  await changeSelect(h,'select[aria-label="Группировка и порядок"]','category');
+  assert.ok(h.doc.querySelector('.lp-category-heading'));check();
+  await changeSelect(h,'select[aria-label="Категория"]','Metals');check();
+  await h.click(h.doc.querySelector('.lp-view-checks input[type="checkbox"]'));
+  assert.equal(h.doc.querySelector('.lp-progress-item').classList.contains('lp-good-row--dark'),true);
+  assert.equal(h.calls.filter(c=>c.init?.method==='PATCH').length,0);
+ }finally{await h.close();}
+});
+
+async function changeNumber(h, selector, value) {
+ const input=h.doc.querySelector(selector);assert.ok(input,selector);
+ const setter=Object.getOwnPropertyDescriptor(h.dom.window.HTMLInputElement.prototype,'value').set;
+ await h.act(async()=>{setter.call(input,String(value));input.dispatchEvent(new h.dom.window.Event('input',{bubbles:true}));});
+ await h.flush();
+}
+const extraFixture=(capacity=100)=>({...view(),pattern:{...definition(),carriers:[{carrierId:'123',name:'Alpha',capacity}],allocations:{'123':{steel:2,computercomponents:1,water:0}}}});
+test('loading UI: one-shot extras include hidden positive cells, skip zeros, save metadata and re-auto clears reserve',async()=>{
+ const fixture=extraFixture();
+ const h=await harness({link:true,api:async(url,init)=>url.endsWith('/'+id)&&!init?.method?{body:{ok:true,pattern:fixture}}:null});try{
+  await changeSelect(h,'select[aria-label="Категория"]','Metals');
+  await h.click(h.button('Добавить +1 т к заполненным ячейкам'));
+  assert.equal(h.doc.querySelector('input[aria-label="Alpha: Сталь"]').value,'3');
+  assert.match(h.doc.body.textContent,/всего \+2 т/);
+  assert.match(h.doc.body.textContent,/Есть несохранённые изменения/);
+  assert.equal(h.doc.querySelectorAll('.lp-warning[role="alert"]').length,0);
+  await changeSelect(h,'select[aria-label="Категория"]','');
+  assert.equal(h.doc.querySelector('input[aria-label="Alpha: Компьютерные компоненты"]').value,'2');
+  assert.equal(h.doc.querySelector('input[aria-label="Alpha: Вода"]').value,'0');
+  await changeNumber(h,'input[aria-label="Запас на каждую заполненную ячейку, т"]',2);
+  await h.click(h.button('Добавить +2 т к заполненным ячейкам'));
+  assert.equal(h.doc.querySelector('input[aria-label="Alpha: Сталь"]').value,'5');
+  await h.click(h.button('Сохранить'));
+  const call=h.calls.find(c=>c.init?.method==='PATCH');assert.ok(call);
+  const saved=JSON.parse(call.init.body);
+  assert.deepEqual(saved.extras,{'123':{steel:3,computercomponents:3}});
+  assert.deepEqual(saved.allocations,{'123':{steel:5,computercomponents:4}});
+  assert.doesNotThrow(()=>parseLoadingPattern(saved));
+  // The test server returns the initial pattern after save. Add reserve again
+  // and verify the real auto action explicitly removes it, then clear all.
+  await h.click(h.button('Добавить +2 т к заполненным ячейкам'));
+  assert.ok(h.doc.querySelector('.lp-cell-extra'));
+  await h.click(h.button('Распределить автоматически'));
+  assert.equal(h.doc.querySelector('.lp-cell-extra'),null);
+  await h.click(h.button('Очистить распределение'));
+  assert.equal(h.button('Добавить +2 т к заполненным ячейкам').disabled,true);
+ }finally{await h.close();}
+});
+
+test('loading UI: capacity error changes no assignments and does not dirty a saved pattern; read-only has no extra button',async()=>{
+ const fixture=extraFixture(3);
+ const h=await harness({link:true,api:async(url)=>url.endsWith('/'+id)?{body:{ok:true,pattern:fixture}}:null});try{
+  await h.click(h.button('Добавить +1 т к заполненным ячейкам'));
+  const alert=h.doc.querySelector('[role="alert"]');assert.ok(alert);
+  assert.match(alert.textContent,/Alpha.*нужно 2 т.*свободно 0 т.*не хватает 2 т/);
+  assert.equal(h.doc.querySelector('input[aria-label="Alpha: Сталь"]').value,'2');
+  assert.equal(h.doc.querySelector('.lp-cell-extra'),null);
+  assert.ok(!h.doc.body.textContent.includes('Есть несохранённые изменения'));
+  assert.equal(h.calls.filter(c=>c.init?.method==='PATCH').length,0);
+ }finally{await h.close();}
+ const readonly=await harness({link:true,canEdit:false});try{
+  assert.equal(readonly.doc.querySelector('.lp-extra-controls'),null);
+ }finally{await readonly.close();}
+});
+
+test('loading UI: reserve requires positive whole tonnes and at least one non-zero assignment',async()=>{
+ const h=await harness({link:true,api:async(url)=>url.endsWith('/'+id)?{body:{ok:true,pattern:extraFixture()}}:null});try{
+  for(const value of [0,-1,1.5,60001,'']){
+   await changeNumber(h,'input[aria-label="Запас на каждую заполненную ячейку, т"]',value);
+   assert.equal(h.doc.querySelector('.lp-extra-controls button').disabled,true);
+  }
+  await changeNumber(h,'input[aria-label="Запас на каждую заполненную ячейку, т"]',1);
+  assert.equal(h.doc.querySelector('.lp-extra-controls button').disabled,false);
+  await h.click(h.button('Очистить распределение'));
+  assert.equal(h.doc.querySelector('.lp-extra-controls button').disabled,true);
+ }finally{await h.close();}
+});
