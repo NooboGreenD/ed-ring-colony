@@ -15,6 +15,9 @@ import { authFetch, supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { INSTALLATIONS, installationName } from "@/lib/architect/catalogue";
 import {
+  addLoadingExtra,
+  loadingExtraTotal,
+  setLoadingAllocation,
   distributeLoading,
   distributeLoadingRecipes,
   loadingRequirements,
@@ -50,6 +53,7 @@ export default function LoadingPatternsWorkspace() {
   const [showCompleted, setShowCompleted] = useState(true);
   const [onlyUnassigned, setOnlyUnassigned] = useState(false);
   const [distribution, setDistribution] = useState("sequential");
+  const [extraInput, setExtraInput] = useState("1");
   const [scope, setScope] = useState<"mine" | "public">("mine");
   const [list, setList] = useState<LoadingPatternView[]>([]);
   const [selected, setSelected] = useState<LoadingPatternView | null>(null);
@@ -118,7 +122,17 @@ export default function LoadingPatternsWorkspace() {
       label,
       locale,
     );
-  const total = Object.values(requirements).reduce((a, b) => a + b, 0);
+  const recipeTotal = Object.values(requirements).reduce((a, b) => a + b, 0);
+  const extraTotal = loadingExtraTotal(draft);
+  const total = recipeTotal + extraTotal;
+  const extraTonnes = Number(extraInput);
+  const extraValid =
+    Number.isSafeInteger(extraTonnes) &&
+    extraTonnes >= 1 &&
+    extraTonnes <= 60000;
+  const hasAssignedGoods = Object.values(draft.allocations).some((rows) =>
+    Object.values(rows).some((qty) => qty > 0),
+  );
   const unassigned = useMemo(() => unassignedLoading(draft), [draft]);
   const allocationInvalid = useMemo(() => {
     const totals: Record<string, number> = {};
@@ -133,8 +147,15 @@ export default function LoadingPatternsWorkspace() {
           !Object.hasOwn(requirements, good)
         )
           return true;
+        const extra = draft.extras?.[carrier.carrierId]?.[good] ?? 0;
+        if (
+          !Number.isSafeInteger(extra) ||
+          extra < 0 ||
+          (extra > 0 && extra >= qty)
+        )
+          return true;
         sum += qty;
-        totals[good] = (totals[good] ?? 0) + qty;
+        totals[good] = (totals[good] ?? 0) + qty - extra;
         if (totals[good] > requirements[good]) return true;
       }
       if (sum > carrier.capacity) return true;
@@ -827,10 +848,13 @@ export default function LoadingPatternsWorkspace() {
                     onClick={() => {
                       const allocations = { ...draft.allocations };
                       delete allocations[carrier.carrierId];
+                      const extras = { ...draft.extras };
+                      delete extras[carrier.carrierId];
                       update({
                         ...draft,
                         carriers: draft.carriers.filter((_, n) => n !== i),
                         allocations,
+                        ...(draft.extras ? { extras } : {}),
                       });
                     }}
                   >
@@ -963,6 +987,7 @@ export default function LoadingPatternsWorkspace() {
                       allocations: Object.fromEntries(
                         draft.carriers.map((c) => [c.carrierId, {}]),
                       ),
+                      extras: undefined,
                     })
                   }
                 >
@@ -1003,6 +1028,7 @@ export default function LoadingPatternsWorkspace() {
                       return;
                     update({
                       ...draft,
+                      extras: undefined,
                       allocations:
                         distribution === "kits"
                           ? distributeLoadingRecipes(
@@ -1046,6 +1072,79 @@ export default function LoadingPatternsWorkspace() {
                 {t("lp.adjust")}
               </p>
             )}
+            {editable && (
+              <div className="lp-extra-controls">
+                <div className="lp-actions">
+                  <label>
+                    {t("lp.extraTonnes")}
+                    <input
+                      aria-label={t("lp.extraTonnes")}
+                      type="number"
+                      min={1}
+                      max={60000}
+                      step={1}
+                      value={extraInput}
+                      disabled={busy}
+                      onChange={(e) => setExtraInput(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={
+                      busy ||
+                      allocationInvalid ||
+                      !extraValid ||
+                      !hasAssignedGoods
+                    }
+                    onClick={() => {
+                      try {
+                        const result = addLoadingExtra(draft, extraTonnes);
+                        if (result.shortages.length) {
+                          setNotice("");
+                          setError(
+                            result.shortages
+                              .map((row) =>
+                                t("lp.extraCapacity", {
+                                  carrier: row.name,
+                                  needed: nf.format(row.needed),
+                                  free: nf.format(row.free),
+                                  shortfall: nf.format(row.shortfall),
+                                }),
+                              )
+                              .join(" · "),
+                          );
+                          return;
+                        }
+                        if (!result.changedRows) return;
+                        update(result.pattern);
+                        setNotice(
+                          t("lp.extraAdded", {
+                            tonnes: extraTonnes,
+                            rows: result.changedRows,
+                            total: nf.format(result.changedRows * extraTonnes),
+                          }),
+                        );
+                      } catch {
+                        setError(t("lp.invalid"));
+                      }
+                    }}
+                  >
+                    {t("lp.addExtra", {
+                      tonnes: extraValid ? extraTonnes : "—",
+                    })}
+                  </button>
+                </div>
+                <p className="lp-hint">{t("lp.extraHint")}</p>
+              </div>
+            )}
+            {extraTotal > 0 && (
+              <p className="lp-hint" role="status">
+                {t("lp.extraSummary", {
+                  extra: nf.format(extraTotal),
+                  recipe: nf.format(recipeTotal),
+                })}
+              </p>
+            )}
             <div className="lp-table-scroll">
               <table className="lp-table">
                 <thead>
@@ -1076,7 +1175,9 @@ export default function LoadingPatternsWorkspace() {
                               </th>
                             </tr>
                           )}
-                        <tr>
+                        <tr
+                          className={`lp-good-row lp-good-row--${index % 2 ? "light" : "dark"}`}
+                        >
                           <td
                             className="lp-good-name"
                             style={{
@@ -1093,24 +1194,33 @@ export default function LoadingPatternsWorkspace() {
                                 aria-label={`${c.name}: ${label(good)}`}
                                 type="number"
                                 min={0}
-                                max={qty}
+                                max={Math.min(
+                                  c.capacity,
+                                  qty +
+                                    (draft.extras?.[c.carrierId]?.[good] ?? 0),
+                                )}
                                 value={
                                   draft.allocations[c.carrierId]?.[good] ?? 0
                                 }
                                 disabled={!editable || busy}
                                 onChange={(e) =>
-                                  update({
-                                    ...draft,
-                                    allocations: {
-                                      ...draft.allocations,
-                                      [c.carrierId]: {
-                                        ...draft.allocations[c.carrierId],
-                                        [good]: Number(e.target.value),
-                                      },
-                                    },
-                                  })
+                                  update(
+                                    setLoadingAllocation(
+                                      draft,
+                                      c.carrierId,
+                                      good,
+                                      Number(e.target.value),
+                                    ),
+                                  )
                                 }
                               />
+                              {!!draft.extras?.[c.carrierId]?.[good] && (
+                                <small className="lp-cell-extra">
+                                  {t("lp.cellExtra", {
+                                    tonnes: draft.extras[c.carrierId][good],
+                                  })}
+                                </small>
+                              )}
                             </td>
                           ))}
                           <td
@@ -1216,7 +1326,7 @@ export default function LoadingPatternsWorkspace() {
                                     </div>
                                   )}
                                 <div
-                                  className="lp-progress-item"
+                                  className={`lp-progress-item lp-good-row--${index % 2 ? "light" : "dark"}`}
                                   style={{
                                     borderLeft: `3px solid ${loadingGoodColor(item.commodity)}`,
                                   }}

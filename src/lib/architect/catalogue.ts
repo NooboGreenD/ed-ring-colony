@@ -15,6 +15,8 @@
  * загрузчик честно говорит, что каталог изменился.
  */
 
+import { commodityNames, constructionCommodityKeys } from '../commodityNames.ts';
+
 import type {
   ArchitectBuildClass,
   ArchitectInstallation,
@@ -29,63 +31,9 @@ import { PRIMARY_PORT_SOURCE, RAVEN_PRIMARY_PORT_RECIPES } from './primaryPortRe
 export const CATALOGUE_VERSION = 5;
 
 /** Русские названия товаров (как в русской локализации игры). */
-export const COMMODITY_LABELS_RU: Record<string, string> = {
-  advancedcatalysers: 'Усовершенствованные катализаторы',
-  agriculturalmedicines: 'Агромедикаменты',
-  aluminium: 'Алюминий',
-  animalmeat: 'Мясо животных',
-  autofabricators: 'Автофабрикаторы',
-  basicmedicines: 'Базовые медикаменты',
-  battleweapons: 'Боевое оружие',
-  beer: 'Пиво',
-  bioreducinglichen: 'Биоредуцирующий лишайник',
-  biowaste: 'Биоотходы',
-  buildingfabricators: 'Строительные фабрикаторы',
-  ceramiccomposites: 'Керамические композиты',
-  cmmcomposite: 'CMM-композит',
-  coffee: 'Кофе',
-  combatstabilisers: 'Боевые стабилизаторы',
-  computercomponents: 'Компьютерные компоненты',
-  copper: 'Медь',
-  cropharvesters: 'Уборщики урожая',
-  emergencypowercells: 'Аварийные энергоячейки',
-  evacuationshelter: 'Эвакуационное убежище',
-  fish: 'Рыба',
-  foodcartridges: 'Пищевые картриджи',
-  fruitandvegetables: 'Фрукты и овощи',
-  geologicalequipment: 'Геологическое оборудование',
-  grain: 'Зерно',
-  hazardousenvironmentsuits: 'Костюмы для опасных сред',
-  heliostaticfurnaces: 'Гелиостатические печи',
-  insulatingmembrane: 'Изоляционная мембрана',
-  liquidoxygen: 'Жидкий кислород',
-  liquor: 'Ликёр',
-  medicaldiagnosticequipment: 'Мед. диагностическое оборудование',
-  microcontrollers: 'Микроконтроллеры',
-  militarygradefabrics: 'Ткани военного класса',
-  mineralextractors: 'Минеральные экстракторы',
-  mutomimager: 'Муто-имиджер',
-  nonlethalweapons: 'Нелетальное оружие',
-  pesticides: 'Пестициды',
-  polymers: 'Полимеры',
-  powergenerators: 'Генераторы энергии',
-  reactivearmour: 'Реактивная броня',
-  resonatingseparators: 'Резонирующие сепараторы',
-  robotics: 'Роботы',
-  semiconductors: 'Полупроводники',
-  steel: 'Сталь',
-  structuralregulators: 'Структурные регуляторы',
-  superconductors: 'Сверхпроводники',
-  surfacestabilisers: 'Поверхностные стабилизаторы',
-  survivalequipment: 'Спасательное снаряжение',
-  tea: 'Чай',
-  terrainenrichmentsystems: 'Системы обогащения почвы',
-  thermalcoolingunits: 'Термальные охладители',
-  titanium: 'Титан',
-  water: 'Вода',
-  waterpurifiers: 'Водоочистители',
-  wine: 'Вино',
-};
+export const COMMODITY_LABELS_RU: Record<string, string> = Object.fromEntries(
+  constructionCommodityKeys.map((key) => [key, commodityNames[key].ru]),
+);
 
 /** Русские названия типов экономики системы. */
 export const ECONOMY_LABELS_RU: Record<SystemEconomy, string> = {

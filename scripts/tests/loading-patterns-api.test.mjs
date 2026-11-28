@@ -196,3 +196,20 @@ test('loading API: in-game docking restrictions do not revoke accepted pattern s
  assert.equal(revoked.body.progress.loaded,0);
  assert.ok(revoked.body.progress.unknown>0);
 });
+
+test('loading API: explicit reserves survive PATCH/GET for Helper and do not change building requirements',async()=>{
+ const {addLoadingExtra,loadingRequirements}=await import('../../src/lib/architect/loadingPatterns.ts');
+ const state=setup();
+ const original={...pattern(),allocations:{'123':{steel:5}}};
+ const extra=addLoadingExtra(original,2).pattern;
+ const saved=await detail.PATCH(req('PATCH',{...extra,version:1}),params);
+ assert.equal(saved.status,200);assert.deepEqual(saved.body.pattern.pattern.extras,{'123':{steel:2}});
+ assert.deepEqual(state.tables.carrier_loading_patterns[0].definition.extras,{'123':{steel:2}});
+ const loaded=await detail.GET(req(),params);
+ assert.equal(loaded.status,200);assert.deepEqual(loaded.body.pattern.pattern.allocations,{'123':{steel:7}});
+ assert.deepEqual(loaded.body.pattern.requirements,loadingRequirements(original.buildings));
+ assert.equal(loaded.body.progress.carriers[0].target,7);
+ assert.equal(loaded.body.progress.total,loaded.body.pattern.total);
+ assert.equal(loaded.body.progress.unassigned,Object.values(loadingRequirements(original.buildings)).reduce((a,b)=>a+b,0)-5);
+ globalThis.lpUser='stranger';assert.equal((await detail.PATCH(req('PATCH',{...extra,version:2}),params)).status,404);
+});

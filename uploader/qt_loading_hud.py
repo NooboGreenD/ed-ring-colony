@@ -27,7 +27,7 @@ from hud_window import (
 from i18n import tr
 from loading_patterns import loading_segments, loading_tables
 from loading_goods import CATEGORIES, good_category, category_name
-from system_map import commodity_label
+from commodity_names import commodity_label
 
 
 def tonnes(value):
@@ -169,8 +169,7 @@ class LoadingCarrierTable(QFrame):
                 self.table.setItem(index, 0, cell)
                 self.table.setSpan(index, 0, 1, 3)
                 continue
-            translated = commodity_label(row["commodity"])
-            label = translated if translated != row["commodity"] else row["name"]
+            label = commodity_label(row["commodity"], row["name"])
             for column, text in enumerate(
                 (label, tonnes(row["loaded"]), tonnes(row["remaining"]))
             ):

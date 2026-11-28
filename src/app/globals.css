@@ -8272,3 +8272,15 @@ html[data-hud-effect="glow"]::before {
 .lp-table th:not(:first-child) { min-width:100px; overflow-wrap:break-word; }
 .lp-workspace input,.lp-workspace select,.lp-workspace button { margin:0; }
 .lp-workspace .lp-library-item { margin-top:6px; }
+
+/* Stripe actual goods, not category headings: parity follows the visible list. */
+.lp-good-row--dark { background:#15191f; }
+.lp-good-row--light { background:#29323e; }
+.lp-table .lp-good-row:hover { background:#354354; }
+.lp-progress-item { padding:7px 8px; border-radius:3px; }
+
+.lp-extra-controls { margin:12px 0; padding:10px; border:1px solid var(--line); border-radius:5px; }
+.lp-extra-controls label { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.lp-extra-controls input { width:90px; }
+.lp-extra-controls .lp-hint { margin-bottom:0; }
+.lp-cell-extra { display:block; margin-top:3px; color:var(--muted); white-space:normal; }

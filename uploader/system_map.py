@@ -40,6 +40,7 @@ from colonisation import (
 )
 from event_dispatch import normalize_commodity
 from i18n import tr
+from commodity_names import GOODS as COMMODITY_NAMES, commodity_label as game_commodity_label, known_commodity_key
 
 # ---------------------------------------------------------------------------
 # Типы объектов
@@ -2404,6 +2405,7 @@ COMMODITY_LABELS_RU = {
     "thallium": "Таллий", "scandium": "Скандий",
     "liquidoxygen": "Жидкий кислород", "water": "Вода", "ice": "Лёд",
     "hydrogenperoxide": "Пероксид водорода", "biowaste": "Биоотходы",
+    **{key: names["ru"] for key, names in COMMODITY_NAMES.items() if names.get("ru")},
 }
 
 
@@ -2455,8 +2457,10 @@ def due_note(due_at: str, now=None) -> str:
 
 
 def commodity_label(key: str) -> str:
-    """`liquidoxygen` -> «Жидкий кислород»; неизвестный ключ не трогаем."""
+    """Compatibility entry point; all HUDs share the game-name catalogue."""
     name = str(key or "").strip()
+    if known_commodity_key(name):
+        return game_commodity_label(name)
     return tr(COMMODITY_LABELS_RU.get(name.lower(), name))
 
 
