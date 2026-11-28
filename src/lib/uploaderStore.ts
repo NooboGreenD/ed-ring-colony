@@ -1,4 +1,4 @@
-import { HELPER_RUNTIME_RESOURCES } from './helperRuntimeResources';
+import { HELPER_RUNTIME_RESOURCES, missingHelperRuntimeResource } from './helperRuntimeResources';
 /**
  * Хранилище пакетов Colonial Helper: манифесты, файлы, архивы, каналы.
  *
@@ -1096,8 +1096,9 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
     total += data.length;
     clean.set(path, data);
   }
-  if (clean.has('loading_goods.py') && !clean.has('loading_goods.json')) {
-    return { ok: false, error: 'в пакете отсутствует справочник loading_goods.json' };
+  const missingResource = missingHelperRuntimeResource(clean.keys());
+  if (missingResource) {
+    return { ok: false, error: `в пакете отсутствует справочник ${missingResource}` };
   }
   if (clean.has('bundle.py')) {
     const stamped = Buffer.from(stampTrustedKeysSource(clean.get('bundle.py')!.toString('utf8'), {
@@ -1186,6 +1187,9 @@ export async function publishBundle(input: PublishInput): Promise<PublishResult>
   const checked = checkManifest(input.manifest);
   if (!checked.ok) return { ok: false, error: checked.error };
   const manifest = checked.manifest;
+  // Also guard signed/CI uploads, which bypass createServerRelease filtering.
+  const missingResource = missingHelperRuntimeResource(manifest.files.map((item) => item.path));
+  if (missingResource) return { ok: false, error: `в пакете отсутствует справочник ${missingResource}` };
 
   const signature = verifyManifestSignature(manifest);
   if (!signature.ok) return { ok: false, error: `подпись: ${signature.error}` };

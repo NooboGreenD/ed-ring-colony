@@ -39,7 +39,7 @@ from i18n import tr
 #: Версия лаунчера. Растёт, когда меняется рантайм (новая библиотека, другой
 #: Python) или сам механизм запуска. Пакет кода объявляет `min_launcher`:
 #: если он выше — программа попросит скачать новую базовую сборку.
-LAUNCHER_VERSION = "1.5.0"
+LAUNCHER_VERSION = "1.5.1"
 
 #: Каталог со встроенным пакетом внутри собранного exe.
 EMBEDDED_DIR = "app_bundle"
@@ -521,9 +521,18 @@ def run_helper(argv: Optional[List[str]] = None) -> int:
     # Последняя линия обороны: код, встроенный в exe.
     if embedded_dir is not None:
         try:
+            # The embedded directory may already be at the END of sys.path
+            # (dashboard fallback). Remove failed installed paths and modules,
+            # including successfully imported dependencies of the failed entry.
+            purge_version_modules(root)
+            versions_root = str(bundle.versions_dir(root))
             path = str(embedded_dir)
-            if path not in sys.path:
-                sys.path.insert(0, path)
+            sys.path[:] = [item for item in sys.path
+                           if item != path and not _path_is_inside(item, versions_root)]
+            sys.path.insert(0, path)
+            for name in RELOAD_MODULES:
+                sys.modules.pop(name, None)
+            importlib.invalidate_caches()
             os.environ[ENV_VERSION] = str((embedded_manifest or {}).get("version") or "")
             log(root, "запуск встроенной копии программы")
             return run_module(entry_module(embedded_manifest))

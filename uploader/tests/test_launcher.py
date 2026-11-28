@@ -278,6 +278,36 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(launcher.entry_module({}), "colonial_helper")
         self.assertEqual(launcher.entry_module({"entry": ENTRY}), "fake_app")
 
+    def test_failed_installed_import_does_not_poison_embedded_fallback(self):
+        """An entry fails after importing a dependency; embedded must import its own."""
+        self.choose()
+        self.install_version("1.1.0")
+        failed = bundle.version_dir(self.root, "1.1.0")
+        (failed / "fallback_dependency.py").write_text('MARKER = "broken"\n')
+        (failed / ENTRY).write_text(
+            'import fallback_dependency\nraise FileNotFoundError("commodity_names.json")\n')
+        (self.embedded / "fallback_dependency.py").write_text('MARKER = "embedded"\n')
+        (self.embedded / ENTRY).write_text(
+            'import fallback_dependency\n'
+            'def main():\n    return 0 if fallback_dependency.MARKER == "embedded" else 99\n')
+        manifest = {"entry": ENTRY, "version": "1.0.0"}
+        bundle.save_state(self.root, {"current": "1.1.0", "previous": "1.0.0"})
+        try:
+            with mock.patch.object(bundle, "install_root", return_value=self.root), \
+                 mock.patch.object(launcher, "embedded_bundle", return_value=(self.embedded, manifest)), \
+                 mock.patch.object(launcher, "choose_version", return_value="1.1.0"), \
+                 mock.patch.object(launcher, "configure_tls_ca_bundle"), \
+                 mock.patch.object(launcher, "report_failure") as report:
+                self.assertEqual(launcher.run_helper([]), 0)
+                report.assert_not_called()
+            self.assertEqual(Path(sys.modules["fallback_dependency"].__file__).parent, self.embedded)
+            self.assertNotIn(str(failed), sys.path)
+            self.assertEqual(bundle.load_state(self.root)["current"], "1.0.0")
+        finally:
+            sys.modules.pop("fallback_dependency", None)
+            while str(self.embedded) in sys.path:
+                sys.path.remove(str(self.embedded))
+
     def test_setup_repair_uses_server_bundle_then_embedded_fallback(self):
         embedded_manifest = json.loads(
             (self.embedded / bundle.MANIFEST_NAME).read_text(encoding="utf-8")

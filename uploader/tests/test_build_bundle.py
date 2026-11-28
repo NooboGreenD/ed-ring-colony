@@ -69,6 +69,16 @@ class _Reply:
 
 
 class BuildBundleTests(unittest.TestCase):
+    def test_required_runtime_resources_cannot_be_silently_omitted(self):
+        for module in ("loading_goods", "commodity_names"):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory)
+                (source / f"{module}.py").write_text("pass\n")
+                with self.assertRaisesRegex(SystemExit, f"{module}\\.json"):
+                    build_bundle.bundle_files(source)
+                (source / f"{module}.json").write_text("{}")
+                self.assertIn(f"{module}.json", build_bundle.bundle_files(source))
+
     def setUp(self):
         self.work = Path(tempfile.mkdtemp())
         self.source = self.work / "uploader"
