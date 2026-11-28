@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { requireAdmin } from '@/lib/billing/auth';
 import { createZip, embedTrustedKeys, trustedPublicKeys } from '@/lib/uploaderStore';
 import { apiTranslate } from '@/lib/i18n/apiT';
+import { HELPER_RUNTIME_RESOURCES, missingHelperRuntimeResource } from '@/lib/helperRuntimeResources';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,7 +45,8 @@ export async function GET(request: Request) {
     const root = join(process.cwd(), 'uploader');
     const files = new Map<string, Buffer>();
     for (const entry of await readdir(root, { withFileTypes: true })) {
-      if (!entry.isFile() || !INCLUDED_SUFFIXES.has(suffix(entry.name))) continue;
+      // Include only explicit runtime JSON, never arbitrary config/credentials.
+      if (!entry.isFile() || (!INCLUDED_SUFFIXES.has(suffix(entry.name)) && !HELPER_RUNTIME_RESOURCES.includes(entry.name))) continue;
       let data = await readFile(join(root, entry.name));
       if (entry.name === 'bundle.py') {
         data = Buffer.from(embedTrustedKeys(data.toString('utf8'), keys), 'utf8');
@@ -57,6 +59,11 @@ export async function GET(request: Request) {
       }
       files.set(`ColonialHelper-build/${entry.name}`, data);
     }
+
+    const missingResource = missingHelperRuntimeResource(
+      [...files.keys()].map((path) => path.slice('ColonialHelper-build/'.length)),
+    );
+    if (missingResource) throw new Error(`В пакете отсутствует справочник ${missingResource}`);
 
     const bat = [
       '@echo off',

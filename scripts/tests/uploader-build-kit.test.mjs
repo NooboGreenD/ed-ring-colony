@@ -124,7 +124,7 @@ maybe('комплект первой сборки встраивает серв�
   assert.match(res.headers.get('content-disposition'), /ColonialHelper-build-8\.5\.0\.zip/);
 
   const files = readZip(body);
-  for (const name of ['bundle.py', 'launcher.py', 'build_exe.py', 'build_installer.py', 'installer.py', 'window_chrome.py', 'BUILD-WINDOWS.bat', 'КАК-СОБРАТЬ.md']) {
+  for (const name of ['bundle.py', 'launcher.py', 'build_exe.py', 'build_installer.py', 'installer.py', 'window_chrome.py', 'loading_goods.json', 'commodity_names.json', 'BUILD-WINDOWS.bat', 'КАК-СОБРАТЬ.md']) {
     assert.ok(files.has(`ColonialHelper-build/${name}`), `в комплекте есть ${name}`);
   }
   assert.ok([...files.keys()].every((name) => !name.includes('/tests/')), 'тесты в комплект не попадают');
@@ -210,4 +210,77 @@ maybe('embedTrustedKeys не принимает упоминание TRUSTED_KEY
 
 maybe('embedTrustedKeys без объявления TRUSTED_KEYS падает с понятной ошибкой', () => {
   assert.throws(() => kit.embedTrustedKeys('SCHEMA = 1\n', { k: 'QUJD' }), /в bundle\.py не найден TRUSTED_KEYS/);
+});
+
+maybe('build kit includes only allowlisted runtime JSON and refuses incomplete sources', async () => {
+  const fixture = join(work, 'resource-fixture');
+  const source = join(fixture, 'uploader');
+  mkdirSync(join(source, 'tests'), { recursive: true });
+  for (const name of ['loading_goods.py', 'commodity_names.py', 'loading_goods.json', 'commodity_names.json']) {
+    writeFileSync(join(source, name), readFileSync(join(ROOT, 'uploader', name)));
+  }
+  writeFileSync(join(source, 'config.json'), '{"token":"do-not-ship"}');
+  writeFileSync(join(source, 'unrelated.json'), '{}');
+  writeFileSync(join(source, 'tests', 'commodity_names.json'), '{}');
+  process.chdir(fixture);
+  try {
+    const res = await buildKit('8.6.0');
+    assert.equal(res.status, 200);
+    const files = readZip(Buffer.from(await res.arrayBuffer()));
+    assert.deepEqual([...files.keys()].filter((name) => name.endsWith('.json')).sort(), [
+      'ColonialHelper-build/commodity_names.json',
+      'ColonialHelper-build/loading_goods.json',
+    ]);
+    for (const name of ['loading_goods.json', 'commodity_names.json']) {
+      rmSync(join(source, name));
+      const failed = await buildKit('8.6.0');
+      assert.equal(failed.status, 500, `missing ${name} must prevent ZIP download`);
+      const body = await failed.json();
+      assert.equal(body.ok, false);
+      assert.ok(body.error.includes(name), body.error);
+      writeFileSync(join(source, name), readFileSync(join(ROOT, 'uploader', name)));
+    }
+  } finally {
+    process.chdir(ROOT);
+  }
+});
+
+maybePython('downloaded build kit can build and embed a complete signed code bundle without PyInstaller', async () => {
+  const res = await buildKit('8.6.1');
+  assert.equal(res.status, 200);
+  const files = readZip(Buffer.from(await res.arrayBuffer()));
+  const source = join(work, 'complete-kit');
+  mkdirSync(source, { recursive: true });
+  for (const [name, data] of files) {
+    const relative = name.slice('ColonialHelper-build/'.length);
+    assert.ok(relative && !relative.includes('/'));
+    writeFileSync(join(source, relative), data);
+  }
+  const script = `
+import base64, json, pathlib, sys, zipfile
+source = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(source))
+import build_bundle, bundle
+assert pathlib.Path(build_bundle.__file__).parent == source
+# Ephemeral test-only key, never the production signing seed.
+secret = bytes(range(32))
+manifest = build_bundle.build(source, source / 'dist', '8.6.1', 'stable', '', '1.0.0', secret, 'kit-test')
+keys = {'kit-test': base64.b64encode(bundle.ed25519_public_key(secret)).decode('ascii')}
+assert not bundle.verify_manifest(manifest, keys)
+build_bundle.embed(source, manifest, source / 'app_bundle')
+with zipfile.ZipFile(source / 'dist' / '8.6.1.zip') as archive:
+    for resource in ('loading_goods.json', 'commodity_names.json'):
+        assert any(item['path'] == resource for item in manifest['files'])
+        original = (source / resource).read_bytes()
+        assert archive.read(resource) == original
+        assert (source / 'app_bundle' / resource).read_bytes() == original
+# Import from the embedded payload, not from repository/source files.
+sys.path.insert(0, str(source / 'app_bundle'))
+import commodity_names
+assert pathlib.Path(commodity_names.__file__).parent == source / 'app_bundle'
+assert commodity_names.commodity_label('steel', locale='ru') == 'Сталь'
+assert commodity_names.commodity_label('steel', locale='en') == 'Steel'
+`;
+  const run = spawnSync('python3', ['-I', '-c', script, source], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
 });
