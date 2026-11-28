@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,8 +16,10 @@ process.env.UPLOADER_STORE_DIR = join(work, 'store');
 let store;
 if (esbuild) {
   const outfile = join(work, 'store.mjs');
+  const entry = join(work, 'entry.ts');
+  writeFileSync(entry, `export * from '${join(ROOT, 'src/lib/uploaderStore.ts')}';\nexport { serverSourceFiles } from '${join(ROOT, 'src/lib/helperSourceFiles.ts')}';`);
   await esbuild.build({
-    entryPoints: [join(ROOT, 'src/lib/uploaderStore.ts')],
+    entryPoints: [entry],
     outfile,
     bundle: true,
     format: 'esm',
@@ -191,4 +194,71 @@ maybe('a release with loading metadata module but without its data fails closed'
   const result=await store.createServerRelease({version:'8.5.1',channel:'beta',promote:false,files});
   assert.equal(result.ok,false);assert.match(result.error,/loading_goods\.json/);
   assert.equal(await store.readManifest('8.5.1'),null);
+});
+
+maybe('commodity localization JSON survives directory release filtering and is present in signed manifest and ZIP', async () => {
+  const files = filesFor('8.6.0');
+  files.set('uploader/commodity_names.py', Buffer.from('CATALOG = True\n'));
+  files.set('uploader/commodity_names.json', Buffer.from('{"goods":{"steel":{"ru":"Сталь","en":"Steel"}},"aliases":{}}'));
+  files.set('uploader/config.json', Buffer.from('{"token":"private"}'));
+  files.set('uploader/tests/commodity_names.json', Buffer.from('{"do_not_ship":true}'));
+  const result = await store.createServerRelease({ version: '8.6.0', channel: 'beta', promote: false, files });
+  assert.equal(result.ok, true, result.error);
+  const manifest = await store.readManifest('8.6.0');
+  assert.ok(manifest.files.some((file) => file.path === 'commodity_names.json'));
+  const names = zipEntryNames(await store.readBundleArchive('8.6.0'));
+  assert.ok(names.includes('commodity_names.json'));
+  assert.ok(!names.includes('config.json'));
+  assert.ok(!names.some((name) => name.includes('tests/')));
+});
+
+maybe('missing commodity data prevents publication and leaves the active channel unchanged', async () => {
+  const before = await store.readChannelVersion('stable');
+  const files = filesFor('8.6.1');
+  files.set('uploader/commodity_names.py', Buffer.from('pass\n'));
+  const result = await store.createServerRelease({ version: '8.6.1', channel: 'stable', files });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /commodity_names\.json/);
+  assert.equal(await store.readManifest('8.6.1'), null);
+  assert.equal(await store.readChannelVersion('stable'), before);
+});
+
+maybe('real website source collection publishes both catalogues and importable commodity module', async (t) => {
+  const files = await store.serverSourceFiles('8.7.0', (key) => key);
+  for (const resource of ['loading_goods.json', 'commodity_names.json']) {
+    assert.deepEqual(files.get(resource), readFileSync(join(ROOT, 'uploader', resource)));
+  }
+  assert.match(files.get('colonial_helper.py').toString(), /VERSION = "8\.7\.0"/);
+  assert.ok(!files.has('launcher.py'));
+  assert.ok(!files.has('config.json'));
+  const result = await store.createServerRelease({ version: '8.7.0', channel: 'beta', promote: false, files });
+  assert.equal(result.ok, true, result.error);
+  const manifest = await store.readManifest('8.7.0');
+  const archive = await store.readBundleArchive('8.7.0');
+  for (const resource of ['loading_goods.json', 'commodity_names.json']) {
+    const item = manifest.files.find((item) => item.path === resource);
+    assert.ok(item, `${resource} is signed`);
+    assert.deepEqual(await store.readBlob(item.sha256), files.get(resource));
+    assert.ok(zipEntryNames(archive).includes(resource));
+  }
+  // Python is absent in the web build image: keep manifest/ZIP coverage above
+  // unconditional and skip only this subprocess smoke in that environment.
+  if (spawnSync('python3', ['--version']).error?.code === 'ENOENT') {
+    t.diagnostic('Python unavailable; isolated archive import smoke not run');
+    return;
+  }
+  const zip = join(work, 'website-release.zip');
+  writeFileSync(zip, archive);
+  const smoke = spawnSync('python3', ['-I', '-c', `
+import pathlib, sys, tempfile, zipfile
+with tempfile.TemporaryDirectory() as directory:
+    with zipfile.ZipFile(sys.argv[1]) as archive:
+        archive.extractall(directory)
+    sys.path.insert(0, directory)
+    import commodity_names
+    assert pathlib.Path(commodity_names.__file__).parent == pathlib.Path(directory)
+    assert commodity_names.commodity_label('steel', locale='ru') == 'Сталь'
+    assert commodity_names.commodity_label('steel', locale='en') == 'Steel'
+`, zip], { encoding: 'utf8' });
+  assert.equal(smoke.status, 0, smoke.stderr);
 });

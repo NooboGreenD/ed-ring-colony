@@ -349,3 +349,19 @@ maybe('токен публикации из config.json авторизует т�
   assert.equal(store.isPublishAuthorized(withHeader('Bearer config-token-1234567890')), false);
   assert.equal((await store.storeStatus()).publishTokenSource, 'none');
 });
+
+maybe('signed CI publication refuses missing runtime catalogues without changing channel', async () => {
+  const key = makeKey();
+  process.env.UPLOADER_SIGN_PUBLIC_KEYS = `test:${key.publicB64}`;
+  const before = await store.readChannelVersion('stable');
+  for (const [index, module] of ['loading_goods', 'commodity_names'].entries()) {
+    const files = { ...FILES, [`${module}.py`]: 'pass\n' };
+    const version = `9.3.${index}`;
+    const manifest = signManifest(manifestFor(files, { version }), key);
+    const result = await store.publishBundle({ manifest, files: encodeFiles(files) });
+    assert.equal(result.ok, false);
+    assert.ok(result.error.includes(`${module}.json`), result.error);
+    assert.equal(await store.readManifest(version), null);
+    assert.equal(await store.readChannelVersion('stable'), before);
+  }
+});
